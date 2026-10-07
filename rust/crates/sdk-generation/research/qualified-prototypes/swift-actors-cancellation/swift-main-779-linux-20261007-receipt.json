@@ -1,0 +1,48 @@
+{
+  "schema": "swift-actors-cancellation-qualification/v3",
+  "status": "PENDING_LINUX_SWIFT_TOOLCHAIN_NETWORK",
+  "producer": {
+    "workspace": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+    "revision": "77997805785e8a61f1bf7580ca273e992caee740",
+    "libSourceSha256": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+    "rustLibraryLinuxSha256": "755B758CF1C128C0764B08C5E419989E0EE096C4CAA7E17FF94C56CFA244A231"
+  },
+  "generator": {
+    "source": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "uniffiVersion": "0.31.0",
+    "historicalRevision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "CustomTypeSha256": "10A58FB8890C0D2DF102F45E1330BB2ABBB20938A9C8FC2803652C7A0C9B4035",
+    "EnumTemplateSha256": "C0E66A925F2DB14035C3C80BB3C84E8E2E7F9E2ACD9D41D5EA6469CC47082E81"
+  },
+  "toolchain": {
+    "officialUrl": "https://download.swift.org/swift-6.4.0-release/ubuntu2204/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-ubuntu22.04.tar.gz",
+    "archiveBytes": 1123431313,
+    "license": "Apache-2.0",
+    "download": "C:\\Users\\varun\\.codex\\swift-linux-c8-20261007"
+  },
+  "generated": {
+    "swiftSha256": "699903753C4E4C378E6D05F36917F7BD51D797A9AB0F9D30033F24324DA35140",
+    "uniffiSwiftSha256": "CC419003CCB5A1BA006B2298C52A37FB3955299C41573AB6B3C9255C4D496855",
+    "ffiHeaderSha256": "753B669A97846E510FE20F532F802AABB36867FEBA20F71A8AA469265AA5ED0B",
+    "config": "nominal custom types + immutable records + Start.CurrentHead Rust validator"
+  },
+  "fixtures": {
+    "boundaryOptions": "/tmp/swift-c8-linux-fixture/c8-options.json",
+    "boundarySourceSha256": "6CF32E375FD0EF226882A279D54C3D0F6C90688DF54FB4E43866EF99884B6277",
+    "cancelSource": "C:\\Users\\varun\\.codex\\swift-linux-c8-20261007-cancel.mjs",
+    "negativeCompile": "C:\\Users\\varun\\.codex\\swift-linux-c8-20261007\\negative-compile\\invalid.swift"
+  },
+  "historicalReceipt": "swift-c8-runtime-20261007-receipt.json",
+  "results": {
+    "all19": "PENDING_TOOLCHAIN",
+    "all8": "PENDING_TOOLCHAIN",
+    "fullRange": "PENDING_TOOLCHAIN",
+    "taskCancel": "PENDING_TOOLCHAIN",
+    "negativeCompile": "PENDING_TOOLCHAIN",
+    "staticGenerated": "PASS_NOMINAL_PRIVATE_STORAGE_IMMUTABLE_RECORDS_RUST_VALIDATORS"
+  },
+  "notes": [
+    "Current 779 source and maintained generator were inspected and generated artifacts produced. Official Swift 6.4.0 Ubuntu 22.04 archive acquisition was attempted task-locally; repeated official CDN TLS resets/timeouts prevented complete archive and therefore no Swift compiler/runtime result is claimed. Static nominal/immutable/cancellation adapter checks passed; historical 84a receipt remains unchanged.",
+    "The shared producer workspace advanced after the pinned build to e38646cf52; this receipt intentionally records the exact 7799780578 source revision used for the generated library and does not relabel or silently update it."
+  ]
+}

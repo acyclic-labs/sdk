@@ -1,0 +1,162 @@
+{
+  "artifact": "current-c8-update-request-decomposition",
+  "recorded_at": "2026-10-07",
+  "status": "partial_with_targeted_admission_negatives",
+  "source": {
+    "checkout": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+    "head_observed_after_run": "1ac5b398644d9d7056a95cd579c6a5315dd98db8",
+    "head_note": "Generated-facade commits advanced after proof runs; theorem binding is by exact source hashes and the Kani target path, not HEAD alone.",
+    "toolchain": "nightly-2026-08-21",
+    "kani": "0.68",
+    "cbmc": "6.11.0",
+    "offline": true,
+    "jobs": 1,
+    "files": {
+      "rust/crates/actors/src/domain.rs": "361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257",
+      "rust/crates/actors/src/domain/kani_proofs.rs": "FC6C30F64E9056E8D1C80A5CB15AF90824B00A301F68D99DACF1ACE388F4CD57",
+      "rust/crates/actors/src/contract.rs": "735E6CE63A46319700A92C08C32E0AB1FFD35CB99630369BBB05C5C6F5B79275",
+      "rust/crates/actors/src/wire.rs": "5773FBB750C9FAB97F177C86FD816D3EAEC175C806E30AC4C8ADD07DF363BD77",
+      "rust/crates/actors/src/lib.rs": "12953671CAD77738DB59068976FFAFB47121BEEDD27B215D6B57F99CE9A5F68A"
+    }
+  },
+  "claims": [
+    "For every symbolic u64 expected_configuration_revision, the fixed canonical one-binding wire fixture is passed through production UpdateActorRequest::try_from and production expected_configuration_revision() accessor, and the accessor equals the original u64.",
+    "This is a fixed-fixture conversion property; it does not quantify arbitrary strings, bindings, limits, transport, or full admission."
+  ],
+  "runs": [
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_expected_revision_only_through_production_conversion",
+      "status": "pass",
+      "checks": "0 of 1623 failed (52 unreachable)",
+      "verification_time_seconds": 4.8720174,
+      "terminal": "Kani Manual Harness Summary: Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/update-request-conversion-only-kani068.raw.txt",
+      "raw_sha256": "547B73A1BE907732679F49BDA922498573D7768831403FA8B41E991A22777814"
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_accepts_canonical_fixture",
+      "status": "inconclusive_interrupted",
+      "terminal": "Interrupted by owner after bounded observation; no Kani summary or terminal verification result.",
+      "raw": "audit/update-request-admission-accept-kani068.raw.txt",
+      "raw_sha256": "B5354E43F1494A379EF79360C5A423A24A94DE124BC80F3F72CD2C01275576D9"
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_accepts_zero_binding_fixture",
+      "status": "inconclusive_interrupted",
+      "terminal": "Interrupted by owner after bounded observation; no Kani summary or terminal verification result.",
+      "raw": "audit/update-request-admission-zero-binding-kani068.raw.txt",
+      "raw_sha256": "F992BA8969BD658FC75129A1DFDDA09660D7FBA21FB955D32723D3C8F26CE7E0"
+    },
+    {
+      "harness": "combined decomposition probe",
+      "status": "inconclusive_interrupted",
+      "terminal": "Interrupted after CBMC plateau; no verification result.",
+      "raw": "audit/update-request-decomposition-kani068.raw.txt",
+      "raw_sha256": "CAFAE51B4B30BE1006837F436966BF17FAA31EBDCD891D9650C1089FCDC27723"
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_rejects_missing_limits",
+      "status": "pass",
+      "checks": "0 of 7954 failed (553 unreachable)",
+      "verification_time_seconds": 2.736311,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/update-request-admission-missing-limits-kani068.raw.txt",
+      "raw_sha256": "0D5EAD83E190E611101858EB8D63BCF05DE5C1026829D91EDCD1B170553BEAF4",
+      "assumptions": "expected revision arbitrary u64; actor id, digest, idempotency, positive limits and empty bindings fixed valid; limits field set to None."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_rejects_empty_actor_id",
+      "status": "pass",
+      "checks": "0 of 7968 failed (553 unreachable)",
+      "verification_time_seconds": 2.7375867,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/update-request-admission-empty-actor-kani068.raw.txt",
+      "raw_sha256": "26F5F7A6DC7629B5F5BDBCC41792E215C71B79C430FBA978046EB1B6B60F9F62",
+      "assumptions": "expected revision arbitrary u64; all other request fields fixed valid; actor_id cleared."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_rejects_zero_digest",
+      "status": "pass",
+      "checks": "0 of 7954 failed (553 unreachable)",
+      "verification_time_seconds": 19.094551,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/update-request-admission-zero-digest-kani068-rerun65.raw.txt",
+      "raw_sha256": "8E7497EC2D872710D8A55B5B5CBF59EC06696D73F250B1E83908D9399F80E36C",
+      "assumptions": "expected revision arbitrary u64; all other request fields fixed valid; code_sha256 set to 32 zero bytes; unwind 65 is required for production 32-element iterator."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_rejects_empty_idempotency_key",
+      "status": "pass",
+      "checks": "0 of 7968 failed (553 unreachable)",
+      "verification_time_seconds": 4.2163796,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/update-request-admission-empty-idempotency-kani068.raw.txt",
+      "raw_sha256": "77A4C62FBF0386DDD91C7CC0691F2C8B9614B84EC3E2ADC4E47C5CB0A8A00BA6",
+      "assumptions": "expected revision arbitrary u64; all other request fields fixed valid; idempotency key cleared."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_rejects_zero_handler_timeout_for_any_other_limits",
+      "status": "pass",
+      "checks": "0 of 7954 failed (553 unreachable)",
+      "verification_time_seconds": 3.0748546,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/update-request-admission-zero-timeout-arbitrary-other-limits-kani068.raw.txt",
+      "raw_sha256": "F009189FCBB21FD0630828F8E692295658461DA195E004F454D70DAD1435827B",
+      "assumptions": "expected revision arbitrary u64; memory_bytes and checkpoint_bytes arbitrary u64; handler_timeout_millis fixed zero; all other request fields fixed valid."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::update_request_production_admission_rejects_zero_digest (unwind 2 control)",
+      "status": "inconclusive_unwinding_failure",
+      "checks": "1 of 7955 failed (7954 undetermined)",
+      "terminal": "Kani failed only on unwinding assertion in valid_code_sha256 iterator; rerun at unwind 65 passed.",
+      "raw": "audit/update-request-admission-zero-digest-kani068.raw.txt",
+      "raw_sha256": "A96AEC3CF06CA68B0BC69834E3C4BE6A2D8AD4F5B3B0522E01BA698FB9732B0A"
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "status": "pass",
+      "checks": "0 of 100 failed",
+      "verification_time_seconds": 0.20702405,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/positive-u64-current-c8-kani068.raw.txt",
+      "raw_sha256": "053C5653903CEE0FF168BDA492A5424D42015D3559E79B39117F0C67114D8BFD",
+      "assumptions": "arbitrary u64 constructor input; actual production PositiveU64::new and get."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::actor_limits_constructor_accepts_exactly_positive_values",
+      "status": "pass",
+      "checks": "0 of 127 failed",
+      "verification_time_seconds": 0.8142164,
+      "terminal": "VERIFICATION:- SUCCESSFUL; Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+      "raw": "audit/actor-limits-current-c8-kani068.raw.txt",
+      "raw_sha256": "7B2691B96FCC80BF68C84C6BFA188270331D08B335F8B833B3BBD6400654E0AE",
+      "assumptions": "arbitrary u64 handler, memory and checkpoint values; actual production ActorLimits::new and accessors."
+    }
+  ],
+  "solver": {
+    "options": [
+      "--default-unwind 2",
+      "--slice-formula",
+      "--sat-solver cadical",
+      "CARGO_BUILD_JOBS=1",
+      "CARGO_NET_OFFLINE=true"
+    ],
+    "original_actors_solver": {
+      "pty": 17660,
+      "cbmc_pid": 1031718,
+      "status_at_receipt": "live",
+      "action": "untouched"
+    }
+  },
+  "scope_exclusions": [
+    "arbitrary string quantification",
+    "full validate_update admission",
+    "duplicate-binding rejection",
+    "whole-wire clone",
+    "transport behavior",
+    "whole-SDK guarantee",
+    "accepted-admission proof over arbitrary bindings",
+    "valid arbitrary UTF-8/idempotency contents",
+    "duplicate-binding uniqueness"
+  ]
+}

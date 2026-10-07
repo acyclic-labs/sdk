@@ -1,0 +1,226 @@
+{
+  "schema": "csharp-current-source-cohort/v1",
+  "status": "QUALIFIED_LINUX_WINDOWS_MACOS_RUNTIME_CURRENT_SOURCE",
+  "generatedUtc": "2026-10-07",
+  "producer": {
+    "sourceSnapshot": "Q:\\sdk\\work\\sdkgen-actors-c8-799214a1-source",
+    "revision": "799214a1ec",
+    "revisionShort": "799214a1",
+    "sourceSnapshotKind": "clean git archive of exact revision",
+    "domainSource": "rust/crates/actors/src/domain.rs",
+    "domainSha256": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF",
+    "cargoLock": "Cargo.lock",
+    "cargoLockSha256": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+    "nativeArtifact": "/tmp/actors-c8-799-target/release/libacyclic_actors_uniffi.so",
+    "nativeSha256": "E47EB830DA559F9E747BCEB5F98A5CA11693DC03BC0C3E273757ED353ACD7F54",
+    "nativeBuild": "cargo build --release --locked -p acyclic-actors-uniffi --features bindgen --lib",
+    "bindingMetadata": "Rust-owned UniFFI metadata from the actors-uniffi bindgen feature; C# domain/facade output was generated from this producer",
+    "windowsNativeArtifact": "Q:\\sdk\\work\\sdkgen-actors-c8-799214a1-win-target\\release\\acyclic_actors_uniffi.dll",
+    "windowsNativeSha256": "D6A6C951B1F69EB448C3A975285657DD9506AB2516E03C6C85A42474068EE8F6",
+    "windowsNativeBuild": "cargo build --release --locked -p acyclic-actors-uniffi --features bindgen --lib (Windows MSVC)",
+    "macosNativeArtifact": "/Users/var/codex-c8-799/mac-target/release/libacyclic_actors_uniffi.dylib",
+    "macosNativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1",
+    "macosNativeBuild": "cargo build --release --locked -p acyclic-actors-uniffi --features bindgen --lib (macOS arm64)"
+  },
+  "generator": {
+    "source": "uniffi-bindgen-cs-sourcefix-20261007",
+    "revision": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "sourceStatus": "dirty maintained template patch checkout; binary below is the tested build",
+    "binary": "/tmp/cs-generator-current/release/uniffi-bindgen-cs",
+    "sha256": "59A191F74BEC339C37BE15AB70B0BF638578665B33A057C2D6BA5171298D7F55",
+    "toolchain": "1.98.1",
+    "config": "uniffi.toml",
+    "generation": "uniffi-bindgen-cs --library --crate <producer crate> -c uniffi.toml -o <component output>"
+  },
+  "managed": {
+    "source": "merged-c8-799.cs",
+    "sourceSha256": "DB1AB1F6BFA65570E1B9EFBCDAB88CC8B0167A214E3DD65DFE027521F9B25907",
+    "assembly": "Acyclic.Actors.C8_799.dll",
+    "assemblySha256": "1A373EFD0508FCD0A843E5F5147456145BF6911F108C10BD9A7B0D9CAE6941C5",
+    "framework": "net8.0",
+    "sdk": "8.0.425",
+    "managedCompile": "Windows task-local .NET SDK 8.0.425; 0 warnings, 0 errors"
+  },
+  "roots": {
+    "count": 19,
+    "names": [
+      "PositiveU64",
+      "ErrorCode",
+      "ServiceError",
+      "CreateActorRequest",
+      "UpdateActorRequest",
+      "InspectActorRequest",
+      "AddSubscriptionRequest",
+      "RemoveSubscriptionRequest",
+      "ResumeSubscriptionRequest",
+      "CheckpointActorRequest",
+      "InvokeActorRequest",
+      "CreateActorResponse",
+      "UpdateActorResponse",
+      "InspectActorResponse",
+      "AddSubscriptionResponse",
+      "RemoveSubscriptionResponse",
+      "ResumeSubscriptionResponse",
+      "CheckpointActorResponse",
+      "InvokeActorResponse"
+    ]
+  },
+  "checks": {
+    "all8": {
+      "result": "PASS",
+      "terminal": "all8-terminal.log",
+      "operations": [
+        "CreateActor",
+        "UpdateActor",
+        "InspectActor",
+        "AddSubscription",
+        "RemoveSubscription",
+        "ResumeSubscription",
+        "CheckpointActor",
+        "InvokeActor"
+      ],
+      "fixture": "all8-fixture.mjs",
+      "fixtureOptions": "all8-fixture-options.json",
+      "logSha256": "A25D592D1CD605BB49BC07059E1EFC136C949987AA58EFD36E68B0932F7BA0A1"
+    },
+    "fullUnsignedU64": {
+      "result": "PASS",
+      "max": "18446744073709551615",
+      "terminal": "full-u64-terminal.log",
+      "serviceBoundary": [
+        "ActorLimits.HandlerTimeoutMillis",
+        "ActorLimits.MemoryBytes",
+        "ActorLimits.CheckpointBytes",
+        "Start.Cursor",
+        "CreateActor",
+        "UpdateActor"
+      ],
+      "logSha256": "6DB90B520858AED34EFD38994C1AC370DA853570CB0CA805AC3F01789F771D6"
+    },
+    "cancellation": {
+      "result": "PASS",
+      "terminal": "cancellation-terminal.log",
+      "iterations": 3,
+      "fixture": "pending-fixture.mjs",
+      "fixtureOptions": "pending-fixture-options.json",
+      "serverState": "started=3,aborted=3,active=0",
+      "asyncMap": "baseline=0,pending=1,after=0",
+      "exception": "OperationCanceledException carrying the same CancellationToken",
+      "logSha256": "2972FB14C3098D3188837D4AA337DB7C64837FA97EF019D14D4DC3B273FC34AB"
+    },
+    "rustCurrentHeadMarkerFalse": {
+      "result": "PASS",
+      "terminal": "current-head-terminal.log",
+      "test": "contract::generated::domain::tests::subscription_projection_keeps_canonical_current_head_rule",
+      "meaning": "Rust TryFrom<bool> rejects false with DomainError::InvalidSubscription; true lowers to the canonical wire marker",
+      "logSha256": "40F43D8AA8891BF3E6984634C929A9D183CCC1A4A91FD5D8FB0795603963C74B"
+    },
+    "negativeCompilation": {
+      "result": "EXPECTED_FAILURES",
+      "terminal": "negative-build.log",
+      "diagnostics": [
+        "CS1729 raw ActorsClient constructor",
+        "CS8852 readonly Header.Name",
+        "CS0029 Header to ActorLimits",
+        "CS1503 Header to actor-id string"
+      ],
+      "compileExit": 1
+    },
+    "windowsNative": {
+      "result": "PASS",
+      "nativeArtifact": "acyclic_actors_uniffi.dll",
+      "nativeSha256": "D6A6C951B1F69EB448C3A975285657DD9506AB2516E03C6C85A42474068EE8F6",
+      "all8": {
+        "terminal": "windows-all8-terminal.log",
+        "fixtureOptions": "windows-all8-fixture-options.json",
+        "logSha256": "AC5C452B883D6507243A5732D368AC4B5A66DBF7050E2907C4CD7688A84A129B"
+      },
+      "fullUnsignedU64": {
+        "terminal": "windows-full-u64-terminal.log",
+        "max": "18446744073709551615",
+        "logSha256": "EC3F73C08BE8AFEB9C61DA2467EC1EBA5AC8E77290751236B99A460546A90779"
+      },
+      "cancellation": {
+        "terminal": "windows-cancellation-terminal.log",
+        "fixtureOptions": "windows-pending-fixture-options.json",
+        "serverState": "started=3,aborted=3,active=0",
+        "asyncMap": "baseline=0,pending=1,after=0",
+        "logSha256": "0545150151E6003151BBEEFF2DD44F054D5F74EC6269F240932CEA411469322E"
+      },
+      "currentHeadMarkerFalse": {
+        "terminal": "windows-current-head-terminal.log",
+        "logSha256": "0E1BF7CDC03560E73058EB5F460360B597210C6219482762674919D25FA6573C"
+      },
+      "negativeCompilation": {
+        "terminal": "negative-build.log",
+        "result": "EXPECTED_FAILURES",
+        "diagnostics": [
+          "CS1729 raw ActorsClient constructor",
+          "CS8852 readonly Header.Name",
+          "CS0029 Header to ActorLimits",
+          "CS1503 Header to actor-id string"
+        ]
+      }
+    },
+    "macosNative": {
+      "result": "PASS",
+      "nativeArtifact": "libacyclic_actors_uniffi.dylib",
+      "nativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1",
+      "rustToolchain": "1.98.1-aarch64-apple-darwin",
+      "runtime": "Microsoft.NETCore.App 8.0.31 osx-arm64",
+      "runtimeInfo": "macos-dotnet-runtime-info.log",
+      "all8": {
+        "terminal": "macos-all8-terminal.log",
+        "fixtureOptions": "macos-all8-fixture-options.json",
+        "logSha256": "A25D592D1CD605BB49BC07059E1EFC136C949987AA58EFD36E68B0932F7BA0A1"
+      },
+      "fullUnsignedU64": {
+        "terminal": "macos-full-u64-terminal.log",
+        "max": "18446744073709551615",
+        "logSha256": "6DB90B520858AED34EFD38994C1AC370DA853570CB0CA805AC3F01789F771D6"
+      },
+      "cancellation": {
+        "terminal": "macos-cancellation-terminal.log",
+        "fixtureOptions": "macos-pending-fixture-options.json",
+        "serverState": "started=3,aborted=3,active=0",
+        "asyncMap": "baseline=0,pending=1,after=0",
+        "logSha256": "2972FB14C3098D3188837D4AA337DB7C64837FA97EF019D14D4DC3B273FC34AB"
+      },
+      "currentHeadMarkerFalse": {
+        "terminal": "macos-current-head-terminal.log",
+        "logSha256": "E3F68AEE5E4C64C8B6F7A8A6B9ECD368DD0EC9B01E30EBE5BD33EC8EF5860750"
+      },
+      "negativeCompilation": {
+        "terminal": "negative-build.log",
+        "result": "EXPECTED_FAILURES",
+        "diagnostics": [
+          "CS1729 raw ActorsClient constructor",
+          "CS8852 readonly Header.Name",
+          "CS0029 Header to ActorLimits",
+          "CS1503 Header to actor-id string"
+        ],
+        "compiler": "Windows .NET SDK 8.0.425 against the exact assembly; macOS SDK download was attempted but unavailable from the task host"
+      }
+    }
+  },
+  "platform": {
+    "linux": {
+      "nativeArtifact": "E47EB830DA559F9E747BCEB5F98A5CA11693DC03BC0C3E273757ED353ACD7F54",
+      "result": "QUALIFIED"
+    },
+    "windows": {
+      "nativeArtifact": "acyclic_actors_uniffi.dll",
+      "nativeSha256": "D6A6C951B1F69EB448C3A975285657DD9506AB2516E03C6C85A42474068EE8F6",
+      "result": "QUALIFIED",
+      "consumer": "Windows task-local .NET SDK 8.0.425 against WSL live fixture"
+    },
+    "macos": {
+      "nativeArtifact": "libacyclic_actors_uniffi.dylib",
+      "nativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1",
+      "result": "QUALIFIED_RUNTIME",
+      "consumer": "macOS 15.6 arm64 ivar; task-local .NET runtime 8.0.31",
+      "negativeCompilation": "EXPECTED_FAILURES against exact managed assembly, compiled with Windows SDK 8.0.425 because macOS SDK download was unavailable"
+    }
+  },
+  "provenance": "Fresh Linux, Windows, and macOS native/runtime evidence is bound to source revision 7992141aec, its domain/Cargo.lock hashes, the tested current generator binary, exact generated source and managed assembly, and separate native libraries. Historical 03bb/PRIMARY/0093 receipts are not relabeled. The macOS runtime cohort uses the task-local .NET 8.0.31 arm64 runtime; the negative compiler probe uses the same exact managed assembly under Windows SDK 8.0.425 because the macOS SDK artifact could not be downloaded from the task host."
+}

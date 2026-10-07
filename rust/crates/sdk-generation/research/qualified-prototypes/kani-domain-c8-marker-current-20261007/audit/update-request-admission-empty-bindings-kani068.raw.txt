@@ -1,0 +1,548 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: unused import: `oneof_validator_impl::*`
+ --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:8:9
+  |
+8 | ...se oneof...pl::*;
+  |       ^^^^^...^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `consistency_checks::*`
+  --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:12:9
+   |
+12 | ...se consi...ks::*;
+   |       ^^^^^...^^^^^
+
+   Compiling acyclic-actors v0.2.0 (/mnt/q/sdk/work/sdkgen-actors-c8-minimal/rust/crates/actors)
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:274:19
+    |
+274 | ...=> asser...alse),
+    |       ^^^^^...^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:480:18
+    |
+480 | ...=> asser...== 2),
+    |       ^^^^^...^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:482:19
+    |
+482 | ...=> asser...alse),
+    |       ^^^^^...^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:502:18
+    |
+502 | ...=> asser...== 3),
+    |       ^^^^^...^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:504:19
+    |
+504 | ...=> asser...alse),
+    |       ^^^^^...^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: Found the following unsupported constructs:
+             - caller_location (1)
+             - foreign function (12)
+         
+         Verification will fail if one or more of these constructs is reachable.
+         See https://model-checking.github.io/kani/rust-feature-support.html for more details.
+
+warning: Kani currently does not support concurrency. The following constructs will be treated as sequential operations:
+             - atomic_cxchg (30)
+             - atomic_xadd (5)
+             - atomic_xsub (5)
+             - thread local (replaced by static variable) (1)
+             - atomic_xchg (5)
+             - atomic_cxchgweak (15)
+             - atomic_store (6)
+             - atomic_load (15)
+         
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.36s
+warning: the following packages contain code that will be rejected by a future version of Rust: acyclic-actors v0.2.0 (/mnt/q/sdk/work/sdkgen-actors-c8-minimal/rust/crates/actors)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Checking harness contract::generated::domain::kani_proofs::update_request_production_admission_accepts_empty_bindings_with_arbitrary_revision...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /tmp/kani-domain-c8-targeted/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/f4775ec2f8739337/out/acyclic_actors-f4775ec2f8739337__RNvNtNtNtNtCsjW13Qj6z2k4_14acyclic_actors8contract9generated6domain11kani_proofs82update_request_production_admission_accepts_empty_bindings_with_arbitrary_revision.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/pal/unix/weak/syscall.rs line 7 column 9 function std::sys::random::linux::getrandom::getrandom thread 0
+aborting path on assume(false) at file /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/unix/linux_like/linux/mod.rs line 3643 column 5 function std::sys::sync::futex::unix::futex_wake_all thread 0
+aborting path on assume(false) at  thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 41 column 9 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 59 column 9 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 69 column 5 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 558 column 13 function <std::ops::RangeFrom<usize> as std::slice::SliceIndex<[u8]>>::index_mut thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/random/linux.rs line 127 column 25 function std::sys::random::linux::getrandom thread 0
+Unwinding loop _RNvNtNtNtCs3GJ6w2eqr8A_3std3sys6random5linux9getrandom.0 iteration 1 file rust/crates/actors/src/lib.rs line 0 column 0 function std::sys::random::linux::getrandom thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/pal/unix/weak/syscall.rs line 7 column 9 function std::sys::random::linux::getrandom::getrandom thread 0
+aborting path on assume(false) at file /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/unix/linux_like/linux/mod.rs line 3643 column 5 function std::sys::sync::futex::unix::futex_wake_all thread 0
+aborting path on assume(false) at  thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 1 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+Not unwinding loop _RNvXs3_NtNtCs8xvirJzNMvV_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs3iwMtye0phf_9axum_core.0 iteration 2 file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/hash/sip.rs line 282 column 9 function <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as std::hash::Hasher>::write thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 41 column 9 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 50 column 9 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 59 column 9 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 69 column 5 function core::slice::index::slice_index_fail::do_panic::runtime thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs line 2641 column 9 function core::slice::index::slice_index_fail::do_panic thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs line 177 column 9 function core::slice::index::slice_index_fail thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/index.rs line 558 column 13 function <std::ops::RangeFrom<usize> as std::slice::SliceIndex<[u8]>>::index_mut thread 0
+aborting path on assume(false) at file library/kani_core/src/models.rs line 203 column 17 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function <usize as kani::rustc_intrinsics::ToISize>::to_isize thread 0
+aborting path on assume(false) at file library/kani/src/lib.rs line 57 column 1 function kani::mem::cbmc::same_allocation thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/random/linux.rs line 127 column 25 function std::sys::random::linux::getrandom thread 0
+Not unwinding loop _RNvNtNtNtCs3GJ6w2eqr8A_3std3sys6random5linux9getrandom.0 iteration 2 file rust/crates/actors/src/lib.rs line 0 column 0 function std::sys::random::linux::getrandom thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1230 column 15 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1871 column 5 function std::result::unwrap_failed thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1232 column 23 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1230 column 15 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1871 column 5 function std::result::unwrap_failed thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1232 column 23 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panicking.rs line 452 column 17 function core::panicking::assert_failed_inner thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panicking.rs line 407 column 5 function core::panicking::assert_failed::<usize, usize> thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/macros/mod.rs line 52 column 21 function prost::bytes::bytes::promotable_odd_drop thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1230 column 15 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1871 column 5 function std::result::unwrap_failed thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1232 column 23 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1230 column 15 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1871 column 5 function std::result::unwrap_failed thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 1232 column 23 function std::result::Result::<std::alloc::Layout, std::alloc::LayoutError>::unwrap thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panicking.rs line 452 column 17 function core::panicking::assert_failed_inner thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panicking.rs line 407 column 5 function core::panicking::assert_failed::<usize, usize> thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/macros/mod.rs line 52 column 21 function prost::bytes::bytes::promotable_even_drop thread 0
+Runtime Symex: 2.42768s
+size of program expression: 99388 steps
+slicing removed 58795 assignments
+Generated 14160 VCC(s), 2133 remaining after simplification
+Runtime Postprocess Equation: 0.077693s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.494032s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 1.11236s
+Solving with CaDiCaL 3.0.0
+1137346 variables, 4204538 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 11.1645s
+Runtime decision procedure: 11.6806s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137347 variables, 4204539 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.693014s
+Runtime decision procedure: 0.706838s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137348 variables, 4204540 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0649737s
+Runtime decision procedure: 0.0833529s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137349 variables, 4204541 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0375886s
+Runtime decision procedure: 0.0529766s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137350 variables, 4204542 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0366793s
+Runtime decision procedure: 0.0528278s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137351 variables, 4204543 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0426941s
+Runtime decision procedure: 0.0581169s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137352 variables, 4204544 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0368942s
+Runtime decision procedure: 0.0525559s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137353 variables, 4204545 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0366318s
+Runtime decision procedure: 0.0511596s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137354 variables, 4204546 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0352473s
+Runtime decision procedure: 0.0530597s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137355 variables, 4204547 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0373858s
+Runtime decision procedure: 0.0540966s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137356 variables, 4204548 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0385091s
+Runtime decision procedure: 0.0589788s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137357 variables, 4204549 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0355627s
+Runtime decision procedure: 0.0550667s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137358 variables, 4204550 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0367614s
+Runtime decision procedure: 0.0513969s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137359 variables, 4204551 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.10886s
+Runtime decision procedure: 0.122048s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137360 variables, 4204552 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0368561s
+Runtime decision procedure: 0.0504212s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137361 variables, 4204553 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0352067s
+Runtime decision procedure: 0.0496906s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137362 variables, 4204554 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.201288s
+Runtime decision procedure: 0.212774s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137363 variables, 4204555 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0724338s
+Runtime decision procedure: 0.0861437s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137364 variables, 4204556 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0391479s
+Runtime decision procedure: 0.0501683s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137365 variables, 4204557 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0388374s
+Runtime decision procedure: 0.0498903s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137366 variables, 4204558 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0778873s
+Runtime decision procedure: 0.0891954s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137367 variables, 4204559 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0400669s
+Runtime decision procedure: 0.0510238s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137368 variables, 4204560 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0830868s
+Runtime decision procedure: 0.0944135s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137369 variables, 4204561 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0415365s
+Runtime decision procedure: 0.0555069s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137370 variables, 4204562 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.108044s
+Runtime decision procedure: 0.12055s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137371 variables, 4204563 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.900961s
+Runtime decision procedure: 0.912328s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137372 variables, 4204564 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0737058s
+Runtime decision procedure: 0.0852886s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137373 variables, 4204565 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0693283s
+Runtime decision procedure: 0.0809911s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137374 variables, 4204566 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.174185s
+Runtime decision procedure: 0.184939s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137375 variables, 4204567 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0366839s
+Runtime decision procedure: 0.0471638s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137376 variables, 4204568 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0692323s
+Runtime decision procedure: 0.0799345s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137377 variables, 4204569 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0314729s
+Runtime decision procedure: 0.0417194s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137378 variables, 4204570 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0536141s
+Runtime decision procedure: 0.0641331s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137379 variables, 4204571 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.653625s
+Runtime decision procedure: 0.663452s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137380 variables, 4204572 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.151465s
+Runtime decision procedure: 0.169291s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137381 variables, 4204573 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.251015s
+Runtime decision procedure: 0.261093s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137382 variables, 4204574 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0366012s
+Runtime decision procedure: 0.0461868s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137383 variables, 4204575 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0330266s
+Runtime decision procedure: 0.0423365s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137384 variables, 4204576 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.762135s
+Runtime decision procedure: 0.771582s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137385 variables, 4204577 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.321055s
+Runtime decision procedure: 0.331079s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137386 variables, 4204578 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0263128s
+Runtime decision procedure: 0.035673s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1137387 variables, 4204579 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 1.87315s
+Runtime decision procedure: 1.89049s
+Running propositional reduction

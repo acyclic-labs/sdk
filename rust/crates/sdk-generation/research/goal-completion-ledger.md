@@ -381,3 +381,13 @@ Draftstatusverifiedtrue; no release/registrypublication. DiskcurrentlyC229.9GiB/
 No newmerge. Goal active, broadlanguage/streaming/docs/sourcecoverage stillincomplete.
 
 Root independently found and reviewer reproduced a public TypeScript brand-construction gap: installed package exports no runtime ActorId, CodeSha256 or PositiveU64 constructors; internal import is blocked; no-cast consumer fails. Native and browser invalid inputs are correctly Rust-rejected without network, but public Rust-backed constructors remain a merge gate. Actors WIP is verified remotely at 098e93f31884e45f5d44e096175f073fd88e977d. Kotlin now has real macOS JVM qualification; Swift Linux remains viable and outstanding, not excluded merely for missing tools.
+
+### Signed Filesystem cutover and independent generation audit — 2026-10-07
+
+PR267 current signed head d09267fec3474572a8222327f109963b4dd5a38b unifies canonical core enums through maintained Tsify/NAPI derives. Root independently verified signatures, remote PR head and package/native hashes. GitHub CI run37651963273 failed native workspace compilation because TypeScript feature unification enables wasm-only Tsify derives; policy also reports duplicate cfg_attr. Filesystem owner is correcting these locally before a new signed freeze. No merge performed.
+
+Root preserved exact d092 package in the existing unpublished recovery draft: asset619261343 fs-d09267fec3-0.2.0.tgz, remote digest120719fd97406bc82aba87cf9874a8b66b97ace098ba58029a3414aaa5ab7936. Native recovery archive asset619261377 fs-native-d09267fec3-win32-x64.tgz, remote digest58b4b2470d98d73e7c02d3e423a545e0d0b738f84b75957adf022b3851c84f95. Raw native file4b7b870930da5505f98b93a6da750aed1597b89326b747bb87aaac886533d157. Root verified remote asset state uploaded and API SHA256 values.
+
+Docs source WIP signed remote checkpoint054933436f0e2b408feb6bad1a097ef2e8c73991; Stream producer WIP343703e867a599bf1de18931ac06840e6d835634. These are preservation checkpoints, not qualification claims. Actors latest1ac5b398644d9d7056a95cd579c6a5315dd98db8 preserves no-argument JSON route contract; root executed the Rust exporter and observed all8 routes. Signed final Actors review/package freeze remains outstanding.
+
+Independent docs review reproduced stale Rustdoc acceptance during generation, manifest identity tamper acceptance, release scenario bypass, source inventory omissions, and Unix rename overwrite risk. Owners are correcting the actual CLI; fixture determinism alone does not establish finished source authority. Goal remains active. All16 child slots replenished with useful current-source work.

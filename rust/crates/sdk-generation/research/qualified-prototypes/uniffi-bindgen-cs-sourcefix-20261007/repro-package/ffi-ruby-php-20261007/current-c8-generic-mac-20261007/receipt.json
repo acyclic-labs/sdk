@@ -1,0 +1,64 @@
+{
+  "schema": "acyclic.ruby.current-c8-generic.v1",
+  "status": "QUALIFIED_MACOS_ARM64_CURRENT_SOURCE",
+  "date": "2026-10-07",
+  "scope": "MacOS ivar arm64 only; Windows and WSL final generic rebuild excluded with concrete platform/toolchain evidence below",
+  "producer": {
+    "checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+    "revision": "737775737a54c31c1d50b11c677ca9ae900b45b2",
+    "sourceFiles": {
+      "rust/crates/actors-uniffi/src/lib.rs": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+      "rust/crates/actors/src/domain.rs": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF",
+      "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E",
+      "Cargo.lock": "667F0C498F90DD32613CD4D9F41689E980AD0B0F783AC077DD0A5B91983F08E7",
+      ".cargo/config.toml": "7426B88D87912E30E0AD753B4B90578A15CB5F8EA73E0CCFA5F4830D9AEB8A91"
+    }
+  },
+  "native": {
+    "path": "libacyclic_actors_uniffi.dylib",
+    "sha256": "15C00202420752EA3FA0D12FCE93FF3CA64CDDED17DC2370F9CA76BF16600B32",
+    "bytes": 5172112
+  },
+  "generator": {
+    "version": "uniffi_bindgen 0.31.0",
+    "binary": "actors-uniffi-bindgen",
+    "sha256": "3D9036D67526FA1A84F6833104ADB9A0041D93C697E1C5DE4B99FDF69083DFB3",
+    "asyncPatch": "rust/crates/actors-uniffi/generator-patches/uniffi-0.31.0-ruby-async.patch",
+    "asyncPatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "genericPatch": "rust/crates/actors-uniffi/generator-patches/uniffi-0.31.0-ruby-generic-external.patch",
+    "genericPatchSha256": "3144A8B6390D995888E54E7FB6E806200A00404CF845516A99BE3DF4C050C231",
+    "configSha256": "FBCBD2238A14422476CA14297B760DC3AA34D07F34D74509181A47D3D8AF65C"
+  },
+  "generated": {
+    "records": "acyclic_actors.rb",
+    "recordsSha256": "310DBF9D712B00757E3897863DB6D15406DA4A51BB1DA07C8C5559D1A28114C2",
+    "ffi": "acyclic_actors_uniffi.rb",
+    "ffiSha256": "7052BB3128B56D4BEE4E1264AD79F0FD56A09A3EA613B77CEABB9FFE199729F7",
+    "syntax": "PASS",
+    "externalTypes": "ActorId,CodeSha256,CurrentHeadMarker,PositiveU64 from source-owned external AcyclicActors component; generic external RustBuffer forwarding emitted from metadata"
+  },
+  "package": {
+    "gem": "gem-artifact.gem",
+    "version": "0.2.0.c8generic20261007",
+    "sha256": "FB964B840D6AD8427F6C5725D0B6EF22C0D6F637A0D41CC49FF06E00B597596D",
+    "installed": "PASS",
+    "consumer": "installed-all8.rb",
+    "consumerTerminal": "installed-terminal.txt"
+  },
+  "runtime": {
+    "fixture": "fixture-options.json",
+    "all8": "PASS",
+    "all8Terminal": "all8-terminal.txt",
+    "pendingCancellation": "PASS",
+    "cancelTerminal": "cancel-terminal.txt",
+    "serverMarker": "pending-marker.txt",
+    "nominalNegative": "PASS",
+    "negativeTerminal": "negative-terminal.txt",
+    "typedErrors": "BindingError::Semantic, BindingError::Contract, BindingError::Cancelled",
+    "fullU64": "9007199254740993",
+    "currentHead": "true-only CurrentHeadMarker constructor and Start::CURRENT_HEAD",
+    "readonly": "attr_reader assignment rejected",
+    "windows": "EXCLUDED: final generator source patch was rebuilt on ivar arm64 only; prior Windows/WSL candidate evidence is retained separately and was not retagged",
+    "wsl": "EXCLUDED: final generator source patch was rebuilt on ivar arm64 only; prior Windows/WSL candidate evidence is retained separately and was not retagged"
+  }
+}
