@@ -6,7 +6,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
 use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
 use uuid::Uuid;
@@ -143,6 +143,81 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Uuid::from_bytes(bytes).to_string())
+}
+
+/// Validates transport-only options before the HTTP adapter constructs a
+/// request. Endpoint URL policy remains in JavaScript because this crate does
+/// not carry a URL parser; token and response-bound policy stay Rust-owned.
+#[wasm_bindgen(js_name = validateTransportOptions)]
+pub fn validate_transport_options(
+    #[wasm_bindgen(unchecked_param_type = "string")] token: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: JsValue,
+) -> Result<(), JsValue> {
+    let token = token.as_string().ok_or_else(|| {
+        js_error(
+            "invalid-token",
+            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+        )
+    })?;
+    let maximum_response_bytes = maximum_response_bytes.as_f64().ok_or_else(|| {
+        js_error(
+            "invalid-maximum",
+            "maximumResponseBytes must be a positive safe integer",
+        )
+    })?;
+    if token.chars().all(is_js_whitespace)
+        || token.as_bytes().len() > 8192
+        || token
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return Err(js_error(
+            "invalid-token",
+            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+        ));
+    }
+    if !public::is_safe_integer(maximum_response_bytes) || maximum_response_bytes <= 0.0 {
+        return Err(js_error(
+            "invalid-maximum",
+            "maximumResponseBytes must be a positive safe integer",
+        ));
+    }
+    Ok(())
+}
+
+fn is_js_whitespace(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+/// Validates the canonical Machines page-size policy before any provider is
+/// called, including custom TypeScript providers.
+#[wasm_bindgen(js_name = validatePageSize)]
+pub fn validate_page_size(
+    #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
+) -> Result<(), JsValue> {
+    let value = value
+        .as_f64()
+        .ok_or_else(|| js_error("invalid-page-size", "machine page limit must be 1..=256"))?;
+    if !public::is_safe_integer(value) || value < 1.0 || value > MAX_PAGE_SIZE as f64 {
+        return Err(js_error(
+            "invalid-page-size",
+            "machine page limit must be 1..=256",
+        ));
+    }
+    Ok(())
 }
 
 /// Parses and normalizes an immutable OCI image reference using the canonical
