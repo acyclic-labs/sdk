@@ -184,7 +184,7 @@ function nativeBinding(): ActorsRustBinding {
       // @ts-ignore generated native metadata is intentionally untracked
       const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as { default?: NativeTargetMetadata } & NativeTargetMetadata;
       const metadata = metadataModule.default ?? metadataModule;
-      if (!hasNativeArtifactForRuntime(metadata)) {
+      if (!(await hasNativeArtifactForRuntime(metadata))) {
         return wasmBinding().connect(endpoint, token, signal, caCertificate);
       }
       let module: NativeActorsModule;
@@ -259,14 +259,50 @@ interface NativeTargetMetadata {
   readonly artifacts?: readonly { readonly path?: string }[];
 }
 
-function hasNativeArtifactForRuntime(metadata: NativeTargetMetadata): boolean {
+async function hasNativeArtifactForRuntime(metadata: NativeTargetMetadata): Promise<boolean> {
   const artifacts = metadata.artifacts ?? [];
   const names = artifacts.map(artifact => artifact.path?.split(/[\\/]/).pop() ?? "");
+  return (await nativeRuntimeArtifactNames()).some(name => names.includes(name));
+}
+
+/**
+ * Keep the preflight selector aligned with the maintained NAPI-RS loader that
+ * is staged beside this metadata. In particular, Linux's GNU and musl names
+ * are distinct artifacts; a prefix check would select a binary for the wrong
+ * libc and turn a clean WASM fallback into a native load failure.
+ */
+async function nativeRuntimeArtifactNames(): Promise<readonly string[]> {
   const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
-  if (process.platform === "darwin") {
-    return names.some(name => name === "index.darwin-universal.node" || name === `index.darwin-${arch}.node`);
+  if (process.platform === "linux") {
+    const libc = (await isMuslRuntime()) ? "musl" : "gnu";
+    const suffix = arch === "arm" ? (libc === "musl" ? "musleabihf" : "gnueabihf") : libc;
+    return [`index.linux-${arch}-${suffix}.node`];
   }
-  return names.some(name => name.startsWith(`index.${process.platform}-${arch}-`) && name.endsWith(".node"));
+  if (process.platform === "win32") {
+    const config = process.config as { variables?: { shlib_suffix?: string; node_target_type?: string } } | undefined;
+    const flavor = config?.variables?.shlib_suffix === "dll.a" || config?.variables?.node_target_type === "shared_library" ? "gnu" : "msvc";
+    return [`index.win32-${arch}-${flavor}.node`];
+  }
+  if (process.platform === "darwin") return ["index.darwin-universal.node", `index.darwin-${arch}.node`];
+  return [`index.${process.platform}-${arch}.node`];
+}
+
+async function isMuslRuntime(): Promise<boolean> {
+  if (process.platform !== "linux") return false;
+  try {
+    const fs = await import("node:fs");
+    if (fs.readFileSync("/usr/bin/ldd", "utf8").includes("musl")) return true;
+  } catch { /* use the maintained report/ldd probes below */ }
+  const reportProcess = process as typeof process & { report?: { getReport?: () => { header?: { glibcVersionRuntime?: string }; sharedObjects?: readonly string[] } } };
+  const report = reportProcess.report?.getReport?.() as { header?: { glibcVersionRuntime?: string }; sharedObjects?: readonly string[] } | undefined;
+  if (report?.header?.glibcVersionRuntime) return false;
+  if (report?.sharedObjects?.some(path => /(?:^|[\\/])(libc\.musl-|ld-musl-)/.test(path))) return true;
+  try {
+    const childProcess = await import("node:child_process");
+    return childProcess.execFileSync("ldd", ["--version"], { encoding: "utf8" }).includes("musl");
+  } catch {
+    return false;
+  }
 }
 
 function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
@@ -293,7 +329,13 @@ function wasmBinding(): ActorsRustBinding {
       // The generated module is produced by `build:wasm` immediately before tsc.
       // @ts-ignore generated Rust WASM module is intentionally untracked
       const module = await import("../generated/wasm/acyclic_actors_wasm.js");
-      await module.default();
+      if (isNodeRuntime()) {
+        const fs = await import("node:fs/promises");
+        const bytes = await fs.readFile(new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url));
+        await module.default(bytes);
+      } else {
+        await module.default();
+      }
       const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
@@ -308,6 +350,11 @@ function wasmBinding(): ActorsRustBinding {
       return { ...client, transport: wasm.transport } as ActorsRustClient;
     },
   };
+}
+
+function isNodeRuntime(): boolean {
+  const scope = globalThis as { process?: { versions?: { node?: string } } };
+  return scope.process?.versions?.node !== undefined;
 }
 
 interface WasmActorsClient {
