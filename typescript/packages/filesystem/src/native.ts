@@ -1,5 +1,6 @@
 import { copyBytes, copyOptionalBytes, requireIdentity } from "./binding-values.js";
 import { adaptOperationWindowCoordinator } from "./operation-windows.js";
+import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
 import type {
   EngineCapabilities,
@@ -147,6 +148,7 @@ const TARGETS = new Set([
 ]);
 
 let bindingPromise: Promise<NativeBindings> | undefined;
+const requireNativeCompanion = createRequire(import.meta.url);
 
 type NativeModuleNamespace = NativeBindings & {
   readonly default?: NativeBindings;
@@ -157,8 +159,12 @@ async function bindings(): Promise<NativeBindings> {
   if (!TARGETS.has(target)) {
     throw new Error(`@acyclic-labs/fs has no native companion for ${target}`);
   }
-  bindingPromise ??= import(`@acyclic-labs/fs-${target}`).then((module): NativeBindings => {
-    const namespace = module as NativeModuleNamespace;
+  bindingPromise ??= Promise.resolve().then((): NativeBindings => {
+    // N-API companions are Node native modules. `import()` asks the ESM loader
+    // to interpret the `.node` file and fails in both Node and Bun, while
+    // createRequire resolves the optional companion from this package's
+    // installed node_modules directory and delegates loading to Node-API.
+    const namespace = requireNativeCompanion(`@acyclic-labs/fs-${target}`) as NativeModuleNamespace;
     const candidate =
       typeof namespace.nativeCapabilities === "function" ? namespace : namespace.default;
     if (candidate === undefined) {
@@ -186,18 +192,9 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
   if (options.root.length === 0) {
     throw new RangeError("native filesystem root must be non-empty");
   }
-  // The generated N-API binding admits the u32 cache limits through Rust's
-  // exact numeric converter. `maximumBytes` is the one public number that this
-  // adapter converts to bigint, so retain its lossless conversion guard here.
-  requirePositiveSafeInteger(options.objectCache.maximumBytes, "maximum cache bytes");
   const binding = await bindings();
   return adaptFs(
-    await binding.NativeFs.open(options.root, {
-      maximumEntries: options.objectCache.maximumEntries,
-      maximumBytes: BigInt(options.objectCache.maximumBytes),
-      maximumInFlight: options.objectCache.maximumInFlight,
-      maximumWaitersPerObject: options.objectCache.maximumWaitersPerObject,
-    }),
+    await binding.NativeFs.open(options.root, options.objectCache),
   );
 }
 
@@ -991,15 +988,6 @@ function parseWork(value: string): WorkCounters {
   }
   return result;
 }
-
-
-
-function requirePositiveSafeInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
-}
-
 function nativeMount(
   targetPlatform: string,
   available: boolean,

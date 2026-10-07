@@ -17,20 +17,20 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Hard protocol ceiling applied before allocating attached-reader state.
-pub const MAX_FORK_AGENTS: usize = 1_024;
+/// Largest portable count representable by the contract.
+pub const MAX_FORK_AGENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
 /// Maximum selected resources in one fork request or seed.
-pub const MAX_FORK_RESOURCES: usize = 4_096;
+pub const MAX_FORK_RESOURCES: usize = crate::conversation::MAX_PORTABLE_COUNT;
 /// Maximum references or grants in one fork.
-pub const MAX_FORK_REFERENCES: usize = 65_536;
+pub const MAX_FORK_REFERENCES: usize = u32::MAX as usize;
 /// Maximum aggregate attachment manifest bytes in one fork seed.
-pub const MAX_FORK_ATTACHMENT_MANIFEST_BYTES: u64 = 64 * 1_024 * 1_024;
+pub const MAX_FORK_ATTACHMENT_MANIFEST_BYTES: u64 = u64::MAX;
 /// Maximum inherited context bytes in one fork preparation.
-pub const MAX_FORK_INHERITED_BYTES: u64 = 64 * 1_024 * 1_024;
+pub const MAX_FORK_INHERITED_BYTES: u64 = u64::MAX;
 /// Maximum aggregate referenced file bytes in one fork seed.
-pub const MAX_FORK_REFERENCE_BYTES: u64 = 64 * 1_024 * 1_024 * 1_024;
-/// Hard ceiling independent of a deployment's lower configured prefix limit.
-pub const MAX_FORK_INHERITED_MESSAGES: u64 = 16_384;
+pub const MAX_FORK_REFERENCE_BYTES: u64 = u64::MAX;
+/// Largest sequence representable by the contract.
+pub const MAX_FORK_INHERITED_MESSAGES: u64 = u64::MAX;
 
 type DirectManifestReads = BTreeSet<(String, AgentId)>;
 type ManifestMemberGrants = BTreeMap<String, BTreeMap<String, BTreeSet<AgentId>>>;
@@ -75,12 +75,7 @@ impl InheritedConversationPrefix {
                 "inherited prefix exceeds parent history".into(),
             ));
         }
-        if through_sequence > MAX_FORK_INHERITED_MESSAGES {
-            return Err(Error::Invalid(
-                "inherited prefix exceeds protocol message limit".into(),
-            ));
-        }
-        if attached_agents.len() > MAX_FORK_AGENTS {
+        if attached_agents.len() as u64 > MAX_FORK_AGENTS as u64 {
             return Err(Error::Invalid(
                 "too many attached agents for inherited context".into(),
             ));
@@ -331,7 +326,7 @@ impl CompositeForkVerifier {
             manifest_members = manifest_members
                 .checked_add(items.len())
                 .ok_or_else(|| Error::Invalid("fork manifest membership count overflow".into()))?;
-            if manifest_members > MAX_FORK_REFERENCES {
+            if manifest_members as u64 > MAX_FORK_REFERENCES as u64 {
                 return Err(Error::Invalid(
                     "fork manifests exceed aggregate member limit".into(),
                 ));
@@ -706,7 +701,7 @@ impl ResourceRevision {
             {
                 volume.validate()?;
                 generation.validate()?;
-                if paths.len() > MAX_FORK_RESOURCES {
+                if paths.len() as u64 > MAX_FORK_RESOURCES as u64 {
                     return Err(Error::Invalid("too many scratch paths".into()));
                 }
                 for path in paths {
@@ -783,7 +778,7 @@ impl AttestedBoundary {
     /// Validates an attestation envelope without claiming to verify its proof.
     pub fn validate(&self) -> Result<()> {
         self.provider.validate()?;
-        if self.evidence.is_empty() || self.evidence.len() > 4_096 {
+        if self.evidence.is_empty() {
             return Err(Error::Invalid("fork boundary evidence is invalid".into()));
         }
         Ok(())
@@ -844,12 +839,9 @@ impl ForkPreparation {
             || self.child_private_volume.provider() != self.child_project_volume.provider()
             || self.child_private_volume.provider().family() != "filesystem"
             || self.maximum_inherited_messages == 0
-            || self.maximum_inherited_messages > MAX_FORK_INHERITED_MESSAGES
             || self.inherited_through_sequence > self.maximum_inherited_messages
             || self.maximum_inherited_bytes == 0
-            || self.maximum_inherited_bytes > MAX_FORK_INHERITED_BYTES
             || self.maximum_inherited_references == 0
-            || self.maximum_inherited_references as usize > MAX_FORK_REFERENCES
         {
             return Err(Error::Invalid("fork preparation is invalid".into()));
         }
@@ -903,8 +895,8 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
 impl ForkRequest {
     /// Checks identities, resource selections and optional attestation metadata.
     pub fn validate(&self) -> Result<()> {
-        if self.attached_agents.len() > MAX_FORK_AGENTS
-            || self.selections.len() > MAX_FORK_RESOURCES
+        if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
+            || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(Error::Invalid(
                 "fork request exceeds protocol limits".into(),
@@ -1200,11 +1192,10 @@ impl ForkReport {
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
-        if self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
-            || self.inherited_context.len() > MAX_FORK_RESOURCES
-            || self.shared_grants.len() > MAX_FORK_REFERENCES
-            || self.reference_grants.len() > MAX_FORK_REFERENCES
-            || self.attachment_manifests.len() > MAX_FORK_RESOURCES
+        if self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
+            || self.shared_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.attachment_manifests.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(Error::Invalid("fork report exceeds protocol limits".into()));
         }
@@ -1254,7 +1245,7 @@ impl ForkReport {
                         "fork capture source does not match selection".into(),
                     ));
                 }
-                Capture::Unsupported(reason) if reason.is_empty() || reason.len() > 4_096 => {
+                Capture::Unsupported(reason) if reason.is_empty() => {
                     return Err(Error::Invalid("fork capture reason is invalid".into()));
                 }
                 _ => {}
@@ -1385,13 +1376,13 @@ impl ForkSeed {
         reason = "validates the complete fork seed contract"
     )]
     pub fn validate(&self) -> Result<()> {
-        if self.attached_agents.len() > MAX_FORK_AGENTS
-            || self.resources.len().saturating_add(self.omissions.len()) > MAX_FORK_RESOURCES
-            || self.reference_grants.len() > MAX_FORK_REFERENCES
-            || self.shared_grants.len() > MAX_FORK_REFERENCES
-            || self.inherited_context.len() > MAX_FORK_RESOURCES
-            || self.attachment_manifests.len() > MAX_FORK_RESOURCES
-            || self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
+        if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
+            || self.resources.len().saturating_add(self.omissions.len()) as u64
+                > MAX_FORK_RESOURCES as u64
+            || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.shared_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
+            || self.attachment_manifests.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(Error::Invalid("fork seed exceeds protocol limits".into()));
         }
@@ -1489,11 +1480,6 @@ impl ForkSeed {
             manifest_bytes = manifest_bytes
                 .checked_add(manifest.descriptor().byte_length())
                 .ok_or_else(|| Error::Invalid("fork attachment manifest bytes overflow".into()))?;
-            if manifest_bytes > MAX_FORK_ATTACHMENT_MANIFEST_BYTES {
-                return Err(Error::Invalid(
-                    "fork attachment manifests exceed aggregate safety limit".into(),
-                ));
-            }
             if manifest.descriptor().media_type()
                 != "application/vnd.acyclic.harness.attachments+json"
                 || !manifest_ids.insert(manifest.read_capability()?)
@@ -1733,11 +1719,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn inherited_prefix_bounds_readers_before_copying_history() -> Result<()> {
-        let readers = (0..=MAX_FORK_AGENTS)
+    fn inherited_prefix_accepts_more_than_a_thousand_readers() -> Result<()> {
+        let readers = (0_u64..=1_024)
             .map(|index| {
                 let mut bytes = [0_u8; 16];
-                bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                bytes[..8].copy_from_slice(&index.to_le_bytes());
                 AgentId::from_bytes(bytes)
             })
             .collect::<Vec<_>>();
@@ -1753,7 +1739,7 @@ mod tests {
                 &readers,
                 &[],
             )
-            .is_err()
+            .is_ok()
         );
         Ok(())
     }
@@ -2210,25 +2196,6 @@ mod tests {
             futures::executor::block_on(missing_manifest.verify(&manifest_seed)),
             Err(Error::NotFound(_))
         ));
-        let mut oversized = seed.clone();
-        for index in 0_u8..2 {
-            oversized.attachment_manifests.push(FileRef::new(
-                manifest.volume().clone(),
-                format!("lists/oversized-{index}.json"),
-                format!("oversized-{index}"),
-                FileDescriptor::new(
-                    [index + 1; 32],
-                    MAX_FORK_ATTACHMENT_MANIFEST_BYTES / 2 + 1,
-                    "application/vnd.acyclic.harness.attachments+json",
-                )?,
-                format!("oversized-{index}.json"),
-            )?);
-        }
-        assert!(matches!(oversized.validate(), Err(Error::Invalid(_))));
-        assert!(matches!(
-            futures::executor::block_on(verifier.verify(&oversized)),
-            Err(Error::Invalid(_))
-        ));
         assert!(matches!(
             futures::executor::block_on(verifier.verify(&manifest_seed)),
             Err(Error::Invalid(_))
@@ -2342,8 +2309,8 @@ mod tests {
         changed_prefix.inherited_through_sequence = 1;
         assert!(changed_prefix.validate().is_err());
         let mut widened_request = report.request.clone();
-        widened_request.preparation.maximum_inherited_messages = MAX_FORK_INHERITED_MESSAGES + 1;
-        assert!(widened_request.validate().is_err());
+        widened_request.preparation.maximum_inherited_messages = 16_385;
+        assert!(widened_request.validate().is_ok());
         let published = report.into_seed()?;
         assert_eq!(published.omissions.len(), 1);
         let omission = published

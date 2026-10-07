@@ -26,7 +26,10 @@ use crate::{
     resources::{ArtifactRef, GenerationRef, SandboxRef},
     scheduler::InboxItem,
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
-    workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
+    workflow::{
+        DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
+        MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowJournal,
+    },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
@@ -44,16 +47,10 @@ use std::{
     },
 };
 
-/// Maximum number of direct owner-retained children returned by one page.
-pub const MAX_CHILD_PAGE: usize = 1_024;
 /// Default number of direct children requested by the SDK facade.
 pub const DEFAULT_CHILD_PAGE: usize = 256;
-/// Maximum UTF-8 byte length of a parent-local child slot.
-pub const MAX_CHILD_SLOT_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Default number of entries requested by the private-directory SDK facade.
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
-/// Maximum number of inputs admitted by one durable batch.
-pub const MAX_BATCH_INPUTS: usize = 65_536;
 
 #[cfg(not(target_arch = "wasm32"))]
 type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
@@ -184,6 +181,98 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(())
     }
 
+    /// Opens the registered task's retained workflow under its exact lease.
+    /// Recovery reads the committed checkpoint/outbox; advancing still requires
+    /// uncancelled ownership and an atomically task-fenced journal provider.
+    pub async fn open(
+        self: &Arc<Self>,
+        context: &TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession>
+    where
+        I: 'static,
+        O: 'static,
+    {
+        let registered = context
+            .harness
+            .tasks
+            .get_version::<I, O>(&self.identity.name, &self.identity.version)?;
+        if !Arc::ptr_eq(&registered, self) {
+            return Err(Error::Conflict(
+                "task definition is not the registered version".into(),
+            ));
+        }
+        let TaskImplementation::Resumable(machine) = &self.implementation else {
+            return Err(Error::Unsupported(
+                "live tasks have no resumable workflow".into(),
+            ));
+        };
+        let task_id = context.durable_task.ok_or_else(|| {
+            Error::Unauthorized("task workflow requires a durable task context".into())
+        })?;
+        let host = context
+            .harness
+            .host
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("task workflow ownership is not bound".into()))?;
+        host.verify_execution_owner(task_id, fence.clone()).await?;
+        if journal.task_binding() != Some((task_id, fence.clone())) {
+            return Err(Error::Unauthorized(
+                "workflow journal is not bound to this task lease".into(),
+            ));
+        }
+        let retained = host.observe_admission(task_id).await?;
+        context.harness.validate_observed_admission(&retained)?;
+        if retained.task != self.identity
+            || retained.machine != *machine.identity()
+            || retained.input_schema != self.input_schema
+            || retained.output_schema != self.output_schema
+            || context.task_id != retained.operation_id
+            || context.scope.grants() != &retained.grants
+            || context.scope.limits() != retained.limits
+            || context.scope.run_limits() != retained.run_limits
+            || context.scope.extensions() != retained.extensions.as_ref()
+        {
+            return Err(Error::Conflict(
+                "task workflow differs from its admitted definition or scope".into(),
+            ));
+        }
+        let admission = WorkflowAdmission {
+            operation_id: retained.operation_id,
+            request_digest: crate::contract::canonical_json_digest(&retained)?,
+            initial: MachineCheckpoint {
+                machine: retained.machine,
+                revision: 0,
+                state: machine.initialize(&retained.input)?,
+            },
+        };
+        let mut registry = MachineRegistry::default();
+        registry.register(machine.clone())?;
+        registry.validate_checkpoint(&admission.initial)?;
+        match journal.admission().await? {
+            Some(existing) if existing == admission => {}
+            Some(_) => return Err(Error::Conflict("task workflow admission changed".into())),
+            None => {
+                if journal.admit(admission.clone()).await? != admission {
+                    return Err(Error::Conflict("task workflow admission changed".into()));
+                }
+            }
+        }
+        let workflow = DurableWorkflowHost::open(registry, admission.initial, journal).await?;
+        if let Some(transition) = workflow.latest_transition().await? {
+            validate_task_transition(&self.output_schema, &transition)?;
+        }
+        host.verify_execution_owner(task_id, fence.clone()).await?;
+        Ok(ResumableTaskSession {
+            task_id,
+            fence,
+            host: host.clone(),
+            workflow,
+            output_schema: self.output_schema.clone(),
+        })
+    }
+
     /// Returns the version and implementation identity pinned at admission.
     #[must_use]
     pub const fn identity(&self) -> &ComponentIdentity {
@@ -194,6 +283,67 @@ impl<I, O> TaskDefinition<I, O> {
     #[must_use]
     pub(crate) fn requirements(&self) -> &BTreeSet<String> {
         &self.requirements
+    }
+}
+
+fn validate_task_transition(output_schema: &Value, transition: &MachineTransition) -> Result<()> {
+    if let MachineStatus::Completed { value } = &transition.status {
+        validate_value(output_schema, value, "task output")?;
+    }
+    Ok(())
+}
+
+/// A registered task's current checkpoint and bounded workflow replay index.
+/// The existing workflow journal remains authoritative; dropping this handle
+/// discards its projection and retains no waiting worker future.
+pub struct ResumableTaskSession {
+    task_id: TaskId,
+    fence: crate::scheduler::LeaseFence,
+    host: Arc<dyn DurableTaskHost>,
+    workflow: DurableWorkflowHost,
+    output_schema: Value,
+}
+
+impl ResumableTaskSession {
+    /// Returns the owner-retained task identity.
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    /// Returns the latest committed task checkpoint.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &MachineCheckpoint {
+        self.workflow.checkpoint()
+    }
+
+    /// Reads the latest committed outbox/status for recovery without advancing.
+    pub async fn latest_transition(&self) -> Result<Option<MachineTransition>> {
+        self.workflow.latest_transition().await
+    }
+
+    /// Commits one deterministic task transition and its outbox. Both fresh
+    /// steps and exact retries require the current uncancelled lease.
+    pub async fn step(
+        &mut self,
+        operation_id: OperationId,
+        idempotency_key: crate::IdempotencyKey,
+        input: Value,
+    ) -> Result<MachineTransition> {
+        self.host
+            .verify_dispatch_owner(self.task_id, self.fence.clone())
+            .await?;
+        let output_schema = &self.output_schema;
+        let transition = self
+            .workflow
+            .step_checked(operation_id, idempotency_key, input, |transition| {
+                validate_task_transition(output_schema, transition)
+            })
+            .await?;
+        self.host
+            .verify_dispatch_owner(self.task_id, self.fence.clone())
+            .await?;
+        Ok(transition)
     }
 }
 
@@ -300,6 +450,32 @@ struct TaskEntry {
     output_schema: Value,
     requirements: BTreeSet<String>,
     definition: Arc<StoredDefinition>,
+    workflow_definition: Option<Arc<dyn RegisteredTaskDefinition>>,
+}
+
+// An erased view of the same registered Arc, not another definition or registry.
+// Workers need not know a task's Rust input/output types to reopen its workflow.
+trait RegisteredTaskDefinition: acyclic_stream::ProviderPlatform {
+    fn open_workflow(
+        self: Arc<Self>,
+        context: TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> BoxFuture<'static, Result<ResumableTaskSession>>;
+}
+
+impl<I: 'static, O: 'static> RegisteredTaskDefinition for TaskDefinition<I, O>
+where
+    TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
+{
+    fn open_workflow(
+        self: Arc<Self>,
+        context: TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> BoxFuture<'static, Result<ResumableTaskSession>> {
+        Box::pin(async move { self.open(&context, fence, journal).await })
+    }
 }
 
 /// Immutable typed definitions indexed by their exact name and version.
@@ -322,6 +498,7 @@ impl TaskRegistry {
                 "task {name}@{version} is already registered"
             )));
         }
+        let definition = Arc::new(definition);
         self.0.insert(
             (name, version),
             TaskEntry {
@@ -334,8 +511,11 @@ impl TaskRegistry {
                 input_schema: definition.input_schema.clone(),
                 output_schema: definition.output_schema.clone(),
                 requirements: definition.requirements.clone(),
-                // Erase the shared handle, preserving its exact registered pointer.
-                definition: Arc::new(Arc::new(definition)),
+                workflow_definition: match &definition.implementation {
+                    TaskImplementation::Live(_) => None,
+                    TaskImplementation::Resumable(_) => Some(definition.clone()),
+                },
+                definition: Arc::new(definition),
             },
         );
         Ok(())
@@ -386,6 +566,56 @@ impl TaskRegistry {
                     "task {name}@{version} has different input/output types"
                 ))
             })
+    }
+
+    /// Uses the same registered metadata for an erased stock child command.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn child_admission(
+        &self,
+        operation: OperationId,
+        name: &str,
+        version: &str,
+        input: Value,
+        parent: TaskId,
+        scope: &RuntimeScope,
+    ) -> Result<TaskAdmissionRecord> {
+        let entry = self
+            .0
+            .get(&(name.to_owned(), version.to_owned()))
+            .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?;
+        require_descendant_grant(scope.grants(), &entry.identity)?;
+        let machine = entry
+            .machine
+            .as_ref()
+            .filter(|_| entry.resumable)
+            .ok_or_else(|| Error::Unsupported("live task cannot be a durable command".into()))?;
+        if scope.extensions().is_some()
+            || entry
+                .requirements
+                .iter()
+                .any(|requirement| requirement.starts_with("extension:"))
+        {
+            return Err(Error::Unsupported(
+                "stock child extension runner is not composed".into(),
+            ));
+        }
+        TaskAdmissionRecord::from_parts(
+            operation,
+            name,
+            version,
+            input,
+            entry.input_schema.clone(),
+            entry.output_schema.clone(),
+            &entry.requirements,
+            &machine.digest,
+            Some(parent),
+            scope.grants().clone(),
+            scope.limits(),
+            scope.run_limits(),
+            None,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn validate_durable_admission(
@@ -635,6 +865,52 @@ impl TaskAdmissionRecord {
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
 pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
+    /// Requires the current uncancelled running lease before a fresh task step
+    /// or dispatch. Settlement ownership alone does not authorize new work.
+    fn verify_dispatch_owner<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable dispatch ownership is not bound".into(),
+            ))
+        })
+    }
+
+    /// Checks that this lease still owns execution or reconciliation. A retained
+    /// cancelled lease may reconcile an existing attempt, but cannot dispatch.
+    fn verify_execution_owner<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable execution ownership is not bound".into(),
+            ))
+        })
+    }
+
+    /// Charges one exact durable model attempt under the current task owner.
+    /// The host derives ceilings from its retained admission; callers cannot
+    /// choose or reset usage. Uncertain claims remain charged.
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _attempt_id: OperationId,
+        _step: u32,
+        _request_digest: [u8; 32],
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable model accounting is not bound".into(),
+            ))
+        })
+    }
+
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -1967,6 +2243,40 @@ pub(crate) fn check_tool_approval(outcome: InteractionOutcome) -> Result<()> {
     }
 }
 
+/// Binds typed and stock tool approvals to the same runtime-owned action.
+/// Provider call names are part of the exact invocation, not operation IDs.
+pub(crate) fn tool_approval_request(
+    task: TaskId,
+    policy: &ComponentIdentity,
+    definition: &ToolDefinition,
+    invocation: &ToolInvocation,
+    prompt: String,
+) -> Result<(OperationId, Interaction)> {
+    let (operation, digest) = tool_approval_binding(task, policy, definition, invocation)?;
+    Ok((
+        operation,
+        Interaction::approval(prompt, invocation.operation_id, digest)?,
+    ))
+}
+
+/// Derives retained approval authority without evaluating or dispatching a policy.
+pub(crate) fn tool_approval_binding(
+    task: TaskId,
+    policy: &ComponentIdentity,
+    definition: &ToolDefinition,
+    invocation: &ToolInvocation,
+) -> Result<(OperationId, [u8; 32])> {
+    validate_policy_identity(policy)?;
+    invocation.validate()?;
+    let digest = crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?;
+    let mut id_bytes = [0_u8; 16];
+    id_bytes.copy_from_slice(
+        &blake3::hash(&[b"harness:tool-approval:v2".as_slice(), digest.as_slice()].concat())
+            .as_bytes()[..16],
+    );
+    Ok((OperationId::from_bytes(id_bytes), digest))
+}
+
 /// Provider-owned, scope-bound file handles. The reader verifies every exact
 /// ref; the optional writer can only publish into its original owner's volume.
 #[derive(Clone)]
@@ -2030,7 +2340,7 @@ impl Bindings {
             tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::default(),
-            concurrency: 64,
+            concurrency: tokio::sync::Semaphore::MAX_PERMITS,
             durable_host: None,
             state: None,
             spawner: None,
@@ -2158,10 +2468,7 @@ pub(crate) fn validate_child_page_request(
 ) -> Result<()> {
     if parent == [0; 16]
         || maximum == 0
-        || maximum > MAX_CHILD_PAGE
-        || after_slot.is_some_and(|slot| {
-            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
-        })
+        || after_slot.is_some_and(|slot| slot.chars().any(char::is_control))
     {
         return Err(Error::Invalid(format!("{label} page request is invalid")));
     }
@@ -2184,7 +2491,6 @@ pub(crate) fn validate_child_page<'a>(
     for (slot, id) in entries {
         if id == [0; 16]
             || slot.trim().is_empty()
-            || slot.len() > MAX_CHILD_SLOT_BYTES
             || slot.chars().any(char::is_control)
             || previous.is_some_and(|previous| slot <= previous)
             || !ids.insert(id)
@@ -3025,6 +3331,7 @@ impl AgentHarness {
                         descendants,
                         scope,
                         policy_overrides: policies,
+                        owned_interactions: None,
                         model_steps: Arc::new(AtomicUsize::new(0)),
                     },
                     input,
@@ -3157,6 +3464,71 @@ impl AgentHarness {
             output_schema: definition.output_schema.clone(),
             extensions: Some(extensions),
         })
+    }
+
+    /// Opens an admitted registered task from its retained input and workflow.
+    /// The supplied journal must attest the exact task lease and atomically
+    /// fence its publications through that owner.
+    pub async fn open_task<I: 'static, O: 'static>(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        definition: &Arc<TaskDefinition<I, O>>,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
+        let retained = state.observe_admission(task_id).await?;
+        let context = self.durable_context(task_id, retained.operation_id).await?;
+        context
+            .open_resumable_task(definition, fence, journal)
+            .await
+    }
+
+    /// Builds the stock child request from the existing registered metadata.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn registered_child_admission(
+        &self,
+        operation: OperationId,
+        name: &str,
+        version: &str,
+        input: Value,
+        parent: TaskId,
+        scope: &RuntimeScope,
+    ) -> Result<TaskAdmissionRecord> {
+        self.assert_durable_policy_bindings()?;
+        self.tasks
+            .child_admission(operation, name, version, input, parent, scope)
+    }
+
+    /// Reopens an admitted task through its exact registered definition without
+    /// requiring the worker to know its Rust input/output types. Uses the same
+    /// definition Arc and validation path as `open_task`.
+    pub async fn open_registered_task(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
+        let retained = state.observe_admission(task_id).await?;
+        self.validate_observed_admission(&retained)?;
+        let entry = self
+            .tasks
+            .0
+            .get(&(retained.task.name.clone(), retained.task.version.clone()))
+            .ok_or_else(|| Error::NotFound("admitted task definition".into()))?;
+        let definition = entry
+            .workflow_definition
+            .clone()
+            .ok_or_else(|| Error::Unsupported("live tasks have no resumable workflow".into()))?;
+        let context = self.durable_context(task_id, retained.operation_id).await?;
+        definition.open_workflow(context, fence, journal).await
     }
 
     /// Discovers direct durable children from their owner, not from fork or
@@ -3305,6 +3677,7 @@ impl AgentHarness {
             descendants,
             scope,
             policy_overrides: Vec::new(),
+            owned_interactions: None,
             model_steps: Arc::new(AtomicUsize::new(0)),
         })
     }
@@ -3402,10 +3775,26 @@ pub struct TaskContext {
     descendants: TaskGroup,
     scope: RuntimeScope,
     policy_overrides: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
+    owned_interactions: Option<Arc<dyn InteractionRouter>>,
     model_steps: Arc<AtomicUsize>,
 }
 
 impl TaskContext {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_owned_interactions(
+        mut self,
+        task: TaskId,
+        router: Arc<dyn InteractionRouter>,
+    ) -> Result<Self> {
+        if self.durable_task != Some(task) {
+            return Err(Error::Unauthorized(
+                "interaction owner differs from task context".into(),
+            ));
+        }
+        self.owned_interactions = Some(router);
+        Ok(self)
+    }
+
     /// Returns this invocation's stable local operation identity.
     #[must_use]
     pub const fn id(&self) -> OperationId {
@@ -3598,7 +3987,7 @@ impl TaskContext {
             model: binding.model.clone(),
             messages,
             tools,
-            max_output_tokens: Some(max_output_tokens.unwrap_or(4_096)),
+            max_output_tokens,
         };
         let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
         let mut events = Vec::new();
@@ -4035,6 +4424,16 @@ impl TaskContext {
         )
     }
 
+    /// Opens this context's registered task from its retained admission.
+    pub async fn open_resumable_task<I: 'static, O: 'static>(
+        &self,
+        definition: &Arc<TaskDefinition<I, O>>,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession> {
+        definition.open(self, fence, journal).await
+    }
+
     /// Opens one registered, version-pinned resumable tool under this task's
     /// exact call scope. The owner-supplied journal retains the admission and
     /// subsequent transitions; callers must reconcile the same operation
@@ -4073,6 +4472,19 @@ impl TaskContext {
         definition: &ToolDefinition,
         invocation: &ToolInvocation,
     ) -> Result<()> {
+        match self.authorize_tool_pending(definition, invocation).await? {
+            Some(operation) => Err(Error::Indeterminate(operation)),
+            None => Ok(()),
+        }
+    }
+
+    // Only a successfully routed, durably pending outcome becomes a wait.
+    // Publication/evaluation errors, including indeterminate errors, propagate.
+    pub(crate) async fn authorize_tool_pending(
+        &self,
+        definition: &ToolDefinition,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<OperationId>> {
         if let Some(policy) = &self.harness.policy {
             if self.harness.policy_identity.as_ref() != Some(&policy.identity()) {
                 return Err(Error::Conflict(
@@ -4083,7 +4495,11 @@ impl TaskContext {
                 .policy_approval(policy.as_ref(), definition, invocation)
                 .await?
             {
-                check_tool_approval(self.interact(approval_id, request).await?)?;
+                let outcome = self.interact(approval_id, request).await?;
+                if let InteractionOutcome::Indeterminate { operation_id } = outcome {
+                    return Ok(Some(operation_id));
+                }
+                check_tool_approval(outcome)?;
             }
         }
         for (identity, policy) in &self.policy_overrides {
@@ -4096,10 +4512,14 @@ impl TaskContext {
                 .policy_approval(policy.as_ref(), definition, invocation)
                 .await?
             {
-                check_tool_approval(self.interact(approval_id, request).await?)?;
+                let outcome = self.interact(approval_id, request).await?;
+                if let InteractionOutcome::Indeterminate { operation_id } = outcome {
+                    return Ok(Some(operation_id));
+                }
+                check_tool_approval(outcome)?;
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Computes a policy decision without routing it through a caller-owned
@@ -4121,25 +4541,10 @@ impl TaskContext {
             ToolPolicyDecision::Allow => Ok(None),
             ToolPolicyDecision::Deny { reason } => Err(Error::Unauthorized(reason)),
             ToolPolicyDecision::RequireApproval { prompt } => {
-                let digest = crate::contract::canonical_json_digest(&(
-                    &self.task_id,
-                    identity,
-                    definition,
-                    invocation,
-                ))?;
-                let mut id_bytes = [0_u8; 16];
-                id_bytes.copy_from_slice(
-                    &blake3::hash(
-                        &[b"harness:tool-approval:v2".as_slice(), digest.as_slice()].concat(),
-                    )
-                    .as_bytes()[..16],
-                );
-                let approval_id = OperationId::from_bytes(id_bytes);
-                let action_id = OperationId::parse(&invocation.call_id)?;
-                Ok(Some((
-                    approval_id,
-                    Interaction::approval(prompt, action_id, digest)?,
-                )))
+                let task = self
+                    .durable_task
+                    .unwrap_or_else(|| TaskId::from_bytes(self.task_id.into_bytes()));
+                tool_approval_request(task, &identity, definition, invocation, prompt).map(Some)
             }
         }
     }
@@ -4235,6 +4640,14 @@ impl TaskContext {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }
         if let Some(task) = self.durable_task {
+            if operation_id.into_bytes() == task.into_bytes() {
+                return Err(Error::Invalid(
+                    "interaction operation must differ from task admission".into(),
+                ));
+            }
+            if let Some(router) = &self.owned_interactions {
+                return router.route(operation_id, interaction).await;
+            }
             let host = self
                 .harness
                 .state
@@ -4288,7 +4701,7 @@ impl TaskContext {
 
     /// Reads a bounded durable inbox page after the last observed sequence.
     pub async fn inbox(&self, after: u64, limit: usize) -> Result<Vec<InboxItem>> {
-        if limit == 0 || limit > 1_024 {
+        if limit == 0 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
         }
         if !self.scope.grants.contains(capability::MAIL_READ) {
@@ -4601,9 +5014,6 @@ impl DurableBatchRequest {
     /// Validates the complete retained manifest before any child is observed
     /// or admitted. A syntactically valid JSON envelope is not sufficient.
     pub fn validate(&self) -> Result<()> {
-        if self.inputs.len() > MAX_BATCH_INPUTS {
-            return Err(Error::Invalid("batch has too many inputs".into()));
-        }
         validate_identity(&self.task.name, &self.task.version)?;
         validate_component_label(&self.machine.name, "machine name")?;
         validate_component_label(&self.machine.version, "machine version")?;
@@ -5029,9 +5439,6 @@ impl RuntimeGroup {
             return Err(Error::Unsupported(
                 "durable batch policy overrides require a pinned host policy".into(),
             ));
-        }
-        if batch.inputs.len() > MAX_BATCH_INPUTS {
-            return Err(Error::Invalid("batch has too many inputs".into()));
         }
         let registered = self
             .harness
@@ -6223,6 +6630,7 @@ mod tests {
             descendants: TaskGroup::new(2),
             scope,
             policy_overrides: Vec::new(),
+            owned_interactions: None,
             model_steps: Arc::new(AtomicUsize::new(0)),
         };
         let message = ModelMessage {
@@ -6384,6 +6792,7 @@ mod tests {
             descendants: TaskGroup::new(1),
             scope,
             policy_overrides: Vec::new(),
+            owned_interactions: None,
             model_steps: Arc::new(AtomicUsize::new(0)),
         };
         let narrowed = context.scoped_policy(child_policy)?;
@@ -6643,12 +7052,9 @@ mod tests {
         let parent = TaskId::from_bytes([1; 16]);
         assert!(validate_children_request(TaskId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_children_request(parent, None, 0).is_err());
-        assert!(validate_children_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
+        validate_children_request(parent, None, usize::MAX)?;
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
-        assert!(
-            validate_children_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
-                .is_err()
-        );
+        validate_children_request(parent, Some(&"x".repeat(1_024)), 1)?;
         validate_children_request(parent, Some("résumé"), 1)?;
 
         let child = TaskChild {
@@ -7408,5 +7814,135 @@ mod tests {
             );
         }
         assert_eq!(check_tool_approval(InteractionOutcome::Approved), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() -> Result<()> {
+        let policy = FixedPolicy {
+            identity: ComponentIdentity {
+                name: "approval.policy".into(),
+                version: "1".into(),
+                digest: [9; 32],
+            },
+            decision: ToolPolicyDecision::RequireApproval {
+                prompt: "Approve echo".into(),
+            },
+        };
+        let task = TaskId::from_bytes([42; 16]);
+        let scope = RuntimeScope::default();
+        let context = TaskContext {
+            harness: AgentHarness::new(
+                TaskRegistry::default(),
+                ToolRegistry::new(),
+                scope.clone(),
+                1,
+                None,
+            )?,
+            task_id: OperationId::from_bytes([41; 16]),
+            durable_task: Some(task),
+            descendants: TaskGroup::new(1),
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            model_steps: Arc::new(AtomicUsize::new(0)),
+        };
+        let definition = ToolDefinition {
+            name: "test.echo".into(),
+            revision: "1".into(),
+            description: "Echo".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+            output_schema: serde_json::json!({}),
+        };
+        let invocation = ToolInvocation::for_model_call(
+            OperationId::from_bytes([40; 16]),
+            0,
+            "provider-call-name".into(),
+            definition.name.clone(),
+            serde_json::json!({"text":"hello"}),
+        );
+        let approval = context
+            .policy_approval(&policy, &definition, &invocation)
+            .await?
+            .ok_or_else(|| Error::NotFound("policy approval".into()))?;
+        assert!(
+            matches!(&approval.1, Interaction::Approval { operation_id, .. } if *operation_id == invocation.operation_id)
+        );
+        assert_eq!(
+            approval,
+            tool_approval_request(
+                task,
+                &policy.identity,
+                &definition,
+                &invocation,
+                "Approve echo".into()
+            )?
+        );
+        assert_eq!(
+            context
+                .policy_approval(&policy, &definition, &invocation)
+                .await?,
+            Some(approval.clone())
+        );
+        for (changed_task, changed_policy, changed_definition, changed_invocation) in [
+            (
+                TaskId::from_bytes([43; 16]),
+                policy.identity.clone(),
+                definition.clone(),
+                invocation.clone(),
+            ),
+            (
+                task,
+                ComponentIdentity {
+                    version: "2".into(),
+                    digest: [8; 32],
+                    ..policy.identity.clone()
+                },
+                definition.clone(),
+                invocation.clone(),
+            ),
+            (
+                task,
+                policy.identity.clone(),
+                ToolDefinition {
+                    revision: "2".into(),
+                    ..definition.clone()
+                },
+                invocation.clone(),
+            ),
+            (
+                task,
+                policy.identity.clone(),
+                definition.clone(),
+                ToolInvocation {
+                    arguments: serde_json::json!({"text":"different"}),
+                    ..invocation.clone()
+                },
+            ),
+            (
+                task,
+                policy.identity.clone(),
+                definition.clone(),
+                ToolInvocation::for_model_call(
+                    OperationId::from_bytes([40; 16]),
+                    1,
+                    invocation.call_id.clone(),
+                    invocation.name.clone(),
+                    invocation.arguments.clone(),
+                ),
+            ),
+        ] {
+            assert_ne!(
+                approval.0,
+                tool_approval_request(
+                    changed_task,
+                    &changed_policy,
+                    &changed_definition,
+                    &changed_invocation,
+                    "Approve echo".into()
+                )?
+                .0
+            );
+        }
+        Ok(())
     }
 }

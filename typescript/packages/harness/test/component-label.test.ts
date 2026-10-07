@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import { validateComponentLabel } from "../src/model.js";
 
-test("component labels preserve the Rust UTF-8 byte ceiling", () => {
+test("component labels accept long UTF-8 labels", () => {
   expect(() => validateComponentLabel("a".repeat(255), "label")).not.toThrow();
-  expect(() => validateComponentLabel("a".repeat(256), "label")).toThrow("label is invalid");
+  expect(() => validateComponentLabel("a".repeat(256), "label")).not.toThrow();
   expect(() => validateComponentLabel("é".repeat(127), "label")).not.toThrow();
-  expect(() => validateComponentLabel("é".repeat(128), "label")).toThrow("label is invalid");
+  expect(() => validateComponentLabel("é".repeat(128), "label")).not.toThrow();
   expect(() => validateComponentLabel("😀".repeat(63), "label")).not.toThrow();
-  expect(() => validateComponentLabel("😀".repeat(64), "label")).toThrow("label is invalid");
+  expect(() => validateComponentLabel("😀".repeat(64), "label")).not.toThrow();
 });
 
 test("component labels reject Rust whitespace, controls, separators, and dot segments", () => {

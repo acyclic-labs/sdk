@@ -94,7 +94,7 @@ impl InteractionTicket {
     pub fn validate_request_bytes(&self, bytes: &[u8]) -> Result<Interaction> {
         self.validate()?;
         self.request.descriptor().verify(bytes)?;
-        let request: Interaction = serde_json::from_slice(bytes).map_err(|error| {
+        let request: Interaction = crate::contract::json_from_slice(bytes).map_err(|error| {
             Error::Invalid(format!("invalid interaction request JSON: {error}"))
         })?;
         request.validate()?;
@@ -142,7 +142,7 @@ impl InteractionTicket {
             return Err(Error::Invalid("interaction answer must be JSON".into()));
         }
         answer.descriptor().verify(bytes)?;
-        let response: InteractionResponse = serde_json::from_slice(bytes)
+        let response: InteractionResponse = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("invalid interaction answer JSON: {error}")))?;
         request.validate_response(&response)
     }
@@ -164,7 +164,7 @@ impl InteractionTicket {
         }
         detail.validate()?;
         detail.descriptor().verify(bytes)?;
-        let response: InteractionResponse = serde_json::from_slice(bytes)
+        let response: InteractionResponse = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("invalid approval decision JSON: {error}")))?;
         request.validate_response(&response)?;
         match (outcome, response) {

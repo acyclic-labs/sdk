@@ -2,9 +2,8 @@ import { validateComponentLabel, validateToolName, type AgentInput, type AgentLo
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DiscoveredContext, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
-import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
+import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
-import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
 import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { WasmModelContent, WasmModelContentPart, WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
@@ -879,7 +878,6 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     admittedInputs?: readonly Input[]): Promise<BatchAdmissionRequest> {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
-    if (batch.inputs.length > HARNESS_MAX_BATCH_INPUTS) throw new BatchInputError("batch has too many inputs");
     let request: BatchAdmissionRequest;
     try {
       const contracts = this.#harness.contracts;
@@ -934,7 +932,6 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   #validateBatchInputs<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>): readonly Input[] {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
-    if (batch.inputs.length > HARNESS_MAX_BATCH_INPUTS) throw new BatchInputError("batch has too many inputs");
     try {
       const contracts = this.#harness.contracts;
       const admittedInputs: Input[] = [];
@@ -1575,6 +1572,7 @@ function pinForkPublisher(contracts: NativeContracts, value: ForkPublisher): For
 
 /** Replaceable runtime boundaries; registries remain versioned builder entries. */
 export interface HarnessBindings {
+  readonly modelOutputTokens?: number;
   readonly model?: Readonly<{ identity: Model; provider: ModelProvider }>;
   readonly agentLoop?: AgentLoop;
   readonly context?: ContextBuilder;
@@ -1611,8 +1609,10 @@ export class HarnessBuilder {
   #model?: BoundModel; #loop?: AgentLoop; #context?: ContextBuilder; #interactions?: InteractionHandler; #interactionResolver?: InteractionResolver; #policy?: Policy; #host?: HarnessRuntimeHost; #state?: HarnessRuntimeState; #spawner?: HarnessRuntimeSpawner; #execution?: HarnessExecutionProvider; #content?: ContentBindings; #artifacts?: ContentBindings; #forkPreparer?: ForkPreparer; #forkPublisher?: ForkPublisher; #workspaces?: ProjectWorkspaceProvider;
   readonly #grants: string[] = [];
   #limits: Limits = DEFAULT_LIMITS;
+  #modelOutputTokens: number | undefined;
   /** Bind independent providers together without creating a second registry. */
   bindings(value: HarnessBindings): this {
+    if (value.modelOutputTokens !== undefined) this.modelOutputTokens(value.modelOutputTokens);
     if (value.model) this.model(value.model.identity, value.model.provider);
     if (value.agentLoop) this.agentLoop(value.agentLoop);
     if (value.context) this.context(value.context);
@@ -1633,6 +1633,14 @@ export class HarnessBuilder {
     return this;
   }
   model(identity: Model, provider: ModelProvider): this { this.contracts.encodeCanonicalJson(identity.options); this.#model = bindModel(identity, provider); return this; }
+  /** Set the caller's output token budget for stock model requests. */
+  modelOutputTokens(maximum: number): this {
+    if (!Number.isInteger(maximum) || maximum <= 0 || maximum > 0xffff_ffff) {
+      throw new TypeError("model output token budget must be a positive u32");
+    }
+    this.#modelOutputTokens = maximum;
+    return this;
+  }
   agentLoop(value: AgentLoop): this { this.#loop = value; return this; }
   inheritedModelPrefix(value: InheritedModelPrefix): this {
     const scope = structuredClone(value.scope);
@@ -1734,7 +1742,7 @@ export class HarnessBuilder {
     this.#selectedTools.set(name, revision);
     return this;
   }
-  build(): AgentHarness { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
+  build(): AgentHarness { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#modelOutputTokens !== undefined) components.modelOutputTokens = this.#modelOutputTokens; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
     if (!this.#grants.includes("fork:publish") && !this.#grants.includes("project:merge")) throw new TypeError("project workspaces require fork:publish or project:merge");
     components.workspaces = this.#workspaces;
   } if (this.#forkPreparer) {
@@ -1751,7 +1759,7 @@ export class HarnessBuilder {
   } validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants); return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction); }
 }
 
-interface AgentHarnessComponents { inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
+interface AgentHarnessComponents { modelOutputTokens?: number; inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
 const harnessConstruction = Symbol("HarnessBuilder-owned construction");
 export class AgentHarness {
   readonly #tasks: ReadonlyMap<string, ErasedTaskDefinition>; readonly #tools: ReadonlyMap<string, ErasedRegisteredTool>;
@@ -2360,7 +2368,7 @@ export class AgentHarness {
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
-        const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: 4_096 });
+        const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), ...(this.components.modelOutputTokens === undefined ? {} : { maxOutputTokens: this.components.modelOutputTokens }) });
         const prefix = this.components.inheritedModelPrefix;
         let bytes: Uint8Array;
         if (prefix === undefined) bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
@@ -2390,7 +2398,7 @@ export class AgentHarness {
             name: tool.name, revision: tool.revision, description: tool.description,
             inputSchema: tool.input_schema as ToolJsonSchema, outputSchema: tool.output_schema as ToolJsonSchema,
           })),
-          maxOutputTokens: wire.max_output_tokens!,
+          ...(wire.max_output_tokens == null ? {} : { maxOutputTokens: wire.max_output_tokens }),
           signal: context.signal,
         };
         for await (const event of model.provider.generate(admittedRequest)) {
@@ -2455,9 +2463,8 @@ export class AgentHarness {
   async children(parent: RuntimeTaskId, expectedRevision: bigint | null = null,
     afterSlot: string | null = null, maximum = HARNESS_CHILD_PAGE_DEFAULT): Promise<TaskChildrenPage> {
     this.contracts.validateIdentity("task", parent);
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > HARNESS_CHILD_PAGE_MAXIMUM
-      || afterSlot !== null && (new TextEncoder().encode(afterSlot).byteLength > HARNESS_CHILD_SLOT_MAX_BYTES
-        || [...afterSlot].some(character => /[\x00-\x1f\x7f]/u.test(character)))) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1
+      || afterSlot !== null && ([...afterSlot].some(character => /[\x00-\x1f\x7f]/u.test(character)))) {
       throw new RangeError("task child page request is invalid");
     }
     if (expectedRevision !== null && (typeof expectedRevision !== "bigint" || expectedRevision < 0n)) {

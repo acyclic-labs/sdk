@@ -22,12 +22,13 @@ import type { PrivateDirectoryPage } from "./runtime.js";
 import { NativeContracts } from "./native-contracts.js";
 import { aggregateKindToWire, decodeAggregateKind } from "./enums.js";
 import type { AggregateKind, AuthorityLevel } from "./enums.js";
-import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "./conversation-page-contract.js";
+import { HARNESS_CONVERSATION_PAGE_DEFAULT, HARNESS_CONVERSATION_PAGE_MAXIMUM } from "./conversation-page-contract.js";
 
 export * from "./cache.js";
 export * from "./enums.js";
 export * from "./conversation.js";
 export * from "./native-contracts.js";
+export type { SessionLimitsWire } from "./limits-contract.js";
 export * from "./fork.js";
 export * from "./project.js";
 export * from "./interaction.js";
@@ -407,7 +408,7 @@ export class Harness {
   }
 
   /** Reads one bounded immutable page from the Rust reducer. */
-  conversationPage(afterSequence: bigint, limit = HARNESS_CONVERSATION_PAGE_MAXIMUM): ConversationPage {
+  conversationPage(afterSequence: bigint, limit = HARNESS_CONVERSATION_PAGE_DEFAULT): ConversationPage {
     if (typeof afterSequence !== "bigint" || afterSequence < 0n
       || !Number.isSafeInteger(limit) || limit <= 0 || limit > HARNESS_CONVERSATION_PAGE_MAXIMUM) {
       throw new TypeError("conversation page cursor or limit is invalid");

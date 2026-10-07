@@ -46,6 +46,37 @@ fn covers(held: &BTreeMap<String, u64>, request: &ResourceRequest) -> bool {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceSnapshot(pub BTreeMap<String, u64>);
 
+/// Immutable ceilings for one root task and its complete descendant session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLimits {
+    /// Maximum simultaneously owned execution reservations.
+    pub active_tasks: u64,
+    /// Maximum retained tasks, including the root and terminal tasks.
+    pub total_tasks: u64,
+    /// Maximum parent edges from root to descendant; zero permits only root.
+    pub depth: u32,
+    /// Maximum distinct admitted model attempts across the session.
+    pub model_steps: u64,
+}
+
+impl SessionLimits {
+    /// Rejects empty or inconsistent session ceilings.
+    pub fn validate(&self) -> Result<()> {
+        if self.active_tasks == 0
+            || self.total_tasks == 0
+            || self.model_steps == 0
+            || self.active_tasks > self.total_tasks
+            || [self.active_tasks, self.total_tasks, self.model_steps]
+                .iter()
+                .any(|value| *value > crate::conversation::MAX_EXACT_JS_INTEGER)
+        {
+            return Err(Error::Invalid("session limits are invalid".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Explicit lifetime owner for durable work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -138,6 +169,8 @@ pub enum OperationPhase {
     Running,
     /// Parent is suspended and consumes no execution reservation.
     WaitingForChildren,
+    /// Task workflow is durably suspended without an execution reservation.
+    Suspended,
     /// External completion requires reconciliation.
     Reconciling,
     /// Terminal result is known.
@@ -184,6 +217,10 @@ pub struct OperationState {
     pub reservation: Option<Reservation>,
     /// Latest durable resumable checkpoint.
     pub checkpoint: Option<CheckpointRef>,
+    /// Registered workflow revision and its one retained resume input. This is
+    /// separate from the Machines-owned execution sandbox checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowSuspension>,
     /// Terminal result when known.
     pub outcome: Option<Outcome<FileRef>>,
     /// Whether cancellation was requested but not yet observed.
@@ -192,10 +229,48 @@ pub struct OperationState {
     pub revision: u64,
 }
 
+/// One durable workflow suspension/resume slot in the existing scheduler.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowSuspension {
+    /// Exact committed workflow revision at which execution suspended.
+    pub revision: u64,
+    /// Exact outbox command whose passive wait released the reservation.
+    /// Absent for a machine awaiting external input or a legacy suspension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_command: Option<OperationId>,
+    /// Immutable wake input, retained through admission and worker recovery.
+    /// Absent while awaiting a wake; a workflow step consumes it by advancing
+    /// beyond this suspension revision, without a separate consumption ledger.
+    pub input: Option<FileRef>,
+}
+
 /// One deterministic scheduler transition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchedulerEvent {
+    /// Pins one root session budget before descendants or execution exist.
+    SessionConfigured {
+        /// Existing root operation.
+        operation_id: OperationId,
+        /// Immutable session ceilings.
+        limits: SessionLimits,
+    },
+    /// Charges one exact model request before its execution journal dispatch claim.
+    ModelDispatchClaimed {
+        /// Task owning this model request.
+        operation_id: OperationId,
+        /// Durable turn identity within the owning task.
+        attempt_id: OperationId,
+        /// Stable model step within that turn.
+        step: u32,
+        /// Exact immutable model request digest.
+        request_digest: [u8; 32],
+        /// Current execution owner.
+        fence: LeaseFence,
+        /// Admitted task ceiling, no greater than its session ceiling.
+        ceiling: u64,
+    },
     /// A new operation was declared.
     Declared {
         /// Immutable operation declaration.
@@ -250,6 +325,35 @@ pub enum SchedulerEvent {
         /// Active reservation fence being released.
         fence: LeaseFence,
     },
+    /// A committed registered workflow suspended and released its active slot.
+    WorkflowSuspended {
+        /// Owned task operation.
+        operation_id: OperationId,
+        /// Exact active reservation being released.
+        fence: LeaseFence,
+        /// Committed workflow revision, not a sandbox checkpoint reference.
+        workflow_revision: u64,
+        /// Selected passive wait in that committed workflow outbox.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_command: Option<OperationId>,
+    },
+    /// Owner-authorized input made one exact suspended workflow ready again.
+    WorkflowResumed {
+        /// Suspended task operation.
+        operation_id: OperationId,
+        /// Revision whose one resume slot this input fills.
+        workflow_revision: u64,
+        /// Immutable owner-verified input staged before publication.
+        input: FileRef,
+    },
+    /// The same retained owner resumed its reconciliation work, without
+    /// releasing capacity or admitting another worker.
+    ReconciliationResumed {
+        /// Operation with an indeterminate observation.
+        operation_id: OperationId,
+        /// Exact reservation still retained through uncertainty.
+        fence: LeaseFence,
+    },
     /// A dead worker's fenced lease was released for recovery.
     LeaseReleased {
         /// Operation returned to capacity admission.
@@ -270,7 +374,7 @@ pub enum SchedulerEvent {
         operation_id: OperationId,
         /// Terminal or uncertain outcome.
         outcome: Outcome<FileRef>,
-        /// Required for worker-owned completion; absent for reconciliation/cancellation.
+        /// Required whenever an execution reservation is still owned.
         fence: Option<LeaseFence>,
         /// Measured monotonic worker execution duration. Absent from historical events and
         /// non-worker reconciliation; never inferred from coordinator commit timestamps.
@@ -294,12 +398,28 @@ pub enum SchedulerEvent {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct TaskModelClaims {
+    ceiling: u64,
+    attempts: BTreeMap<OperationId, BTreeMap<u32, [u8; 32]>>,
+}
+
+impl TaskModelClaims {
+    fn used(&self) -> u64 {
+        self.attempts.values().map(|steps| steps.len() as u64).sum()
+    }
+}
+
 /// Pure reducer for dependency, capacity, ownership, and cancellation state.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Scheduler {
     operations: BTreeMap<OperationId, OperationState>,
     child_slots: BTreeMap<(OperationId, String), OperationId>,
     completion_order: Vec<OperationId>,
+    #[serde(default)]
+    sessions: BTreeMap<OperationId, SessionLimits>,
+    #[serde(default)]
+    model_claims: BTreeMap<OperationId, TaskModelClaims>,
 }
 
 impl Scheduler {
@@ -310,6 +430,8 @@ impl Scheduler {
             operations: BTreeMap::new(),
             child_slots: BTreeMap::new(),
             completion_order: Vec::new(),
+            sessions: BTreeMap::new(),
+            model_claims: BTreeMap::new(),
         }
     }
 
@@ -327,18 +449,14 @@ impl Scheduler {
             ));
         }
         spec.state.validate()?;
-        if spec.placement.len() > 32
-            || spec.placement.iter().any(|(key, value)| {
-                key.is_empty()
-                    || key.len() > COMPONENT_LABEL_MAX_BYTES
-                    || value.len() > COMPONENT_LABEL_MAX_BYTES
-                    || key.chars().any(char::is_control)
-                    || value.chars().any(char::is_control)
-            })
-        {
-            return Err(Error::Invalid(
-                "placement labels exceed scheduler limits".into(),
-            ));
+        if spec.placement.iter().any(|(key, value)| {
+            key.is_empty()
+                || key.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
+                || value.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
+                || key.chars().any(char::is_control)
+                || value.chars().any(char::is_control)
+        }) {
+            return Err(Error::Invalid("placement labels are invalid".into()));
         }
         crate::contract::compile_json_schema(&spec.entrypoint.result_schema, "entrypoint result")?;
         if self.operations.contains_key(&spec.operation_id) {
@@ -354,7 +472,7 @@ impl Scheduler {
         }
         if let Some(parent) = &spec.parent {
             if parent.slot.trim().is_empty()
-                || parent.slot.len() > COMPONENT_LABEL_MAX_BYTES
+                || parent.slot.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
                 || parent.slot.chars().any(char::is_control)
             {
                 return Err(Error::Invalid("structured child slot is invalid".into()));
@@ -370,10 +488,30 @@ impl Scheduler {
             {
                 return Err(Error::Conflict("parent child slot is already bound".into()));
             }
-            if parent_operation.phase == OperationPhase::Terminal {
+            if parent_operation.phase == OperationPhase::Terminal
+                || parent_operation.cancellation_requested
+            {
                 return Err(Error::Conflict(
                     "terminal parent cannot accept children".into(),
                 ));
+            }
+        }
+        if let Some(parent) = &spec.parent {
+            let (root, depth) = self.session_root(parent.operation_id)?;
+            if let Some(limits) = self.sessions.get(&root) {
+                let count = self
+                    .operations
+                    .keys()
+                    .filter(|id| {
+                        self.session_root(**id)
+                            .is_ok_and(|(candidate, _)| candidate == root)
+                    })
+                    .count() as u64;
+                if depth >= limits.depth || count >= limits.total_tasks {
+                    return Err(Error::Invalid(
+                        "session task or depth limit exhausted".into(),
+                    ));
+                }
             }
         }
         Ok(SchedulerEvent::Declared {
@@ -395,26 +533,82 @@ impl Scheduler {
         capacity: &ResourceSnapshot,
         labels: &BTreeMap<String, String>,
     ) -> Vec<OperationId> {
+        // The full listing API amortizes shared-slot counting across all
+        // candidates. Single-task pulls use next_ready_for without this map.
+        let mut owned = BTreeMap::<OperationId, u64>::new();
+        for (id, state) in &self.operations {
+            if state.reservation.is_some()
+                && let Ok((root, _)) = self.session_root(*id)
+            {
+                *owned.entry(root).or_default() += 1;
+            }
+        }
         self.operations
             .values()
             .filter(|operation| {
-                matches!(
-                    operation.phase,
-                    OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-                ) && self.dependencies_succeeded(operation)
-                    && !operation.cancellation_requested
-                    && operation
-                        .spec
-                        .placement
-                        .iter()
-                        .all(|(key, value)| labels.get(key) == Some(value))
-                    && remaining_resources(operation).fits(capacity)
+                self.resources_ready(operation, capacity, labels)
+                    && self
+                        .session_root(operation.spec.operation_id)
+                        .is_ok_and(|(root, _)| {
+                            operation.reservation.is_some()
+                                || self.sessions.get(&root).is_none_or(|limits| {
+                                    owned.get(&root).copied().unwrap_or(0) < limits.active_tasks
+                                })
+                        })
             })
             .map(|operation| operation.spec.operation_id)
             .collect()
     }
 
+    pub(crate) fn next_ready_for(
+        &self,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+        owner: Option<&Authority>,
+    ) -> Option<OperationId> {
+        self.ready_operations(capacity, labels, owner).next()
+    }
+
+    fn ready_operations<'a>(
+        &'a self,
+        capacity: &'a ResourceSnapshot,
+        labels: &'a BTreeMap<String, String>,
+        owner: Option<&'a Authority>,
+    ) -> impl Iterator<Item = OperationId> + 'a {
+        self.operations
+            .values()
+            .filter(move |operation| {
+                owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
+                    && self.resources_ready(operation, capacity, labels)
+                    && self
+                        .require_session_capacity(operation.spec.operation_id)
+                        .is_ok()
+            })
+            .map(|operation| operation.spec.operation_id)
+    }
+
+    fn resources_ready(
+        &self,
+        operation: &OperationState,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+    ) -> bool {
+        matches!(
+            operation.phase,
+            OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
+        ) && !operation.cancellation_requested
+            && self.dependencies_succeeded(operation)
+            && operation
+                .spec
+                .placement
+                .iter()
+                .all(|(key, value)| labels.get(key) == Some(value))
+            && remaining_resources_fit(operation, capacity)
+    }
+
     /// Subtracts active reservations for one placement from advertised capacity.
+    /// The result retains exactly the advertised resource keys; absent keys
+    /// still represent zero capacity.
     #[must_use]
     pub fn available_for(
         &self,
@@ -429,8 +623,9 @@ impl Scheduler {
             .filter(|reservation| reservation.placement == placement)
         {
             for (resource, quantity) in &reservation.admitted.0 {
-                let remaining = available.entry(resource.clone()).or_default();
-                *remaining = remaining.saturating_sub(*quantity);
+                if let Some(remaining) = available.get_mut(resource) {
+                    *remaining = remaining.saturating_sub(*quantity);
+                }
             }
         }
         ResourceSnapshot(available)
@@ -472,6 +667,100 @@ impl Scheduler {
             next_revision(operation.revision)?;
         }
         match event {
+            SchedulerEvent::SessionConfigured {
+                operation_id,
+                limits,
+            } => {
+                limits.validate()?;
+                let operation = self
+                    .operation(operation_id)
+                    .ok_or_else(|| Error::NotFound("session root".into()))?;
+                if operation.spec.parent.is_some()
+                    || operation.reservation.is_some()
+                    || operation.cancellation_requested
+                    || !matches!(
+                        operation.phase,
+                        OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
+                    )
+                    || self.children(operation_id).next().is_some()
+                {
+                    return Err(Error::Conflict(
+                        "session must be configured before descendants or dispatch".into(),
+                    ));
+                }
+                if self
+                    .sessions
+                    .get(&operation_id)
+                    .is_some_and(|existing| *existing != limits)
+                {
+                    return Err(Error::Conflict("session limits are already pinned".into()));
+                }
+                self.sessions.insert(operation_id, limits);
+            }
+            SchedulerEvent::ModelDispatchClaimed {
+                operation_id,
+                attempt_id,
+                step,
+                request_digest,
+                fence,
+                ceiling,
+            } => {
+                let operation = self
+                    .operation(operation_id)
+                    .ok_or_else(|| Error::NotFound("model task".into()))?;
+                require_model_owner(operation, &fence)?;
+                if request_digest == [0; 32] || ceiling == 0 {
+                    return Err(Error::Invalid(
+                        "model dispatch claim is invalid or cancelled".into(),
+                    ));
+                }
+                let (root, _) = self.session_root(operation_id)?;
+                let limits = self
+                    .sessions
+                    .get(&root)
+                    .ok_or_else(|| Error::Unsupported("session budget is not configured".into()))?;
+                if ceiling > limits.model_steps {
+                    return Err(Error::Unauthorized("task ceiling exceeds session".into()));
+                }
+                let claims = self.model_claims.get(&operation_id);
+                if claims.is_some_and(|claims| ceiling != claims.ceiling) {
+                    return Err(Error::Unauthorized(
+                        "task model ceiling differs from its admission".into(),
+                    ));
+                }
+                if let Some(existing) =
+                    claims.and_then(|claims| claims.attempts.get(&attempt_id)?.get(&step))
+                {
+                    if *existing != request_digest {
+                        return Err(Error::Conflict("model attempt changed request".into()));
+                    }
+                } else {
+                    let used = self
+                        .model_claims
+                        .iter()
+                        .filter(|(id, _)| {
+                            self.session_root(**id)
+                                .is_ok_and(|(candidate, _)| candidate == root)
+                        })
+                        .map(|(_, claims)| claims.used())
+                        .sum::<u64>();
+                    if used >= limits.model_steps
+                        || claims.map_or(0, |claims| claims.used()) >= ceiling
+                    {
+                        return Err(Error::Invalid("model step budget exhausted".into()));
+                    }
+                    self.model_claims
+                        .entry(operation_id)
+                        .or_insert_with(|| TaskModelClaims {
+                            ceiling,
+                            attempts: BTreeMap::new(),
+                        })
+                        .attempts
+                        .entry(attempt_id)
+                        .or_default()
+                        .insert(step, request_digest);
+                }
+            }
             SchedulerEvent::Declared { spec } => {
                 let spec = *spec;
                 let event = self.declare(spec.clone())?;
@@ -489,6 +778,7 @@ impl Scheduler {
                         phase: OperationPhase::WaitingForDependencies,
                         reservation: None,
                         checkpoint: None,
+                        workflow: None,
                         outcome: None,
                         cancellation_requested: false,
                         revision: 0,
@@ -506,6 +796,7 @@ impl Scheduler {
                 reservation,
             } => {
                 self.require_dependencies_ready(operation_id)?;
+                self.require_session_capacity(operation_id)?;
                 let operation = self.mutable(operation_id)?;
                 if !matches!(
                     operation.phase,
@@ -542,6 +833,7 @@ impl Scheduler {
                 reservation,
             } => {
                 self.require_dependencies_ready(operation_id)?;
+                self.require_session_capacity(operation_id)?;
                 let operation = self.mutable(operation_id)?;
                 if !matches!(
                     operation.phase,
@@ -583,9 +875,10 @@ impl Scheduler {
                     OperationPhase::WaitingForDependencies
                         | OperationPhase::WaitingForCapacity
                         | OperationPhase::Admitted
-                ) {
+                ) || operation.reservation.is_some()
+                {
                     return Err(Error::Conflict(
-                        "operation cannot be rejected after execution starts".into(),
+                        "owned operation requires a fenced release".into(),
                     ));
                 }
                 operation.reservation = None;
@@ -637,6 +930,70 @@ impl Scheduler {
                     operation.phase = OperationPhase::WaitingForChildren;
                 }
             }
+            SchedulerEvent::WorkflowSuspended {
+                operation_id,
+                fence,
+                workflow_revision,
+                waiting_command,
+            } => {
+                let operation = self.mutable(operation_id)?;
+                require_execution_owner(operation, &fence, false)?;
+                if workflow_revision == 0
+                    || operation.workflow.as_ref().is_some_and(|previous| {
+                        workflow_revision < previous.revision
+                            || (workflow_revision == previous.revision && previous.input.is_none())
+                    })
+                {
+                    return Err(Error::Conflict(
+                        "workflow suspension revision did not advance".into(),
+                    ));
+                }
+                operation.workflow = Some(WorkflowSuspension {
+                    revision: workflow_revision,
+                    waiting_command,
+                    input: None,
+                });
+                operation.reservation = None;
+                operation.phase = OperationPhase::Suspended;
+            }
+            SchedulerEvent::WorkflowResumed {
+                operation_id,
+                workflow_revision,
+                input,
+            } => {
+                input.validate()?;
+                let operation = self.mutable(operation_id)?;
+                require_phase(operation, OperationPhase::Suspended)?;
+                if operation.cancellation_requested
+                    || operation.workflow.as_ref().is_none_or(|slot| {
+                        slot.revision != workflow_revision || slot.input.is_some()
+                    })
+                {
+                    return Err(Error::Conflict(
+                        "workflow resume slot is not available".into(),
+                    ));
+                }
+                // The selected command remains pinned until checkpoint advance.
+                if let Some(slot) = &mut operation.workflow {
+                    slot.input = Some(input);
+                }
+                operation.phase = OperationPhase::WaitingForCapacity;
+            }
+            SchedulerEvent::ReconciliationResumed {
+                operation_id,
+                fence,
+            } => {
+                let operation = self.mutable(operation_id)?;
+                require_phase(operation, OperationPhase::Reconciling)?;
+                require_fence(operation, &fence)?;
+                if operation.cancellation_requested {
+                    return Err(Error::Conflict(
+                        "cancelled reconciliation cannot start fresh work".into(),
+                    ));
+                }
+                operation.phase = OperationPhase::Running;
+                operation.outcome = None;
+            }
             SchedulerEvent::LeaseReleased {
                 operation_id,
                 fence,
@@ -644,7 +1001,9 @@ impl Scheduler {
                 let operation = self.mutable(operation_id)?;
                 if !matches!(
                     operation.phase,
-                    OperationPhase::Admitted | OperationPhase::Running
+                    OperationPhase::WaitingForCapacity
+                        | OperationPhase::Admitted
+                        | OperationPhase::Running
                 ) {
                     return Err(Error::Conflict(
                         "only an active lease can be released".into(),
@@ -693,6 +1052,7 @@ impl Scheduler {
                 if operation.phase == OperationPhase::Terminal {
                     if operation.outcome.as_ref() == Some(&outcome)
                         && execution_duration_ns.is_none()
+                        && fence.is_none()
                     {
                         return Ok(());
                     }
@@ -719,7 +1079,7 @@ impl Scheduler {
                         "operation cannot complete in its current phase".into(),
                     ));
                 }
-                if matches!(operation.phase, OperationPhase::Running) {
+                if operation.reservation.is_some() {
                     require_fence(
                         operation,
                         fence.as_ref().ok_or_else(|| {
@@ -729,10 +1089,11 @@ impl Scheduler {
                 } else if fence.is_some() {
                     return Err(Error::Conflict("completion fence is not active".into()));
                 }
-                operation.reservation = None;
-                operation.phase = match outcome {
-                    Outcome::Indeterminate { .. } => OperationPhase::Reconciling,
-                    _ => OperationPhase::Terminal,
+                operation.phase = if matches!(outcome, Outcome::Indeterminate { .. }) {
+                    OperationPhase::Reconciling
+                } else {
+                    operation.reservation = None;
+                    OperationPhase::Terminal
                 };
                 operation.outcome = Some(outcome);
                 if operation.phase == OperationPhase::Terminal
@@ -1012,21 +1373,110 @@ impl Scheduler {
     /// Returns operations made impossible by a terminal non-success dependency.
     #[must_use]
     pub fn blocked_by_dependencies(&self) -> Vec<OperationId> {
+        self.blocked_operations(None).collect()
+    }
+
+    pub(crate) fn next_blocked_by_dependencies(
+        &self,
+        owner: Option<&Authority>,
+    ) -> Option<OperationId> {
+        self.blocked_operations(owner).next()
+    }
+
+    fn blocked_operations<'a>(
+        &'a self,
+        owner: Option<&'a Authority>,
+    ) -> impl Iterator<Item = OperationId> + 'a {
         self.operations
             .values()
-            .filter(|operation| {
-                matches!(
-                    operation.phase,
-                    OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-                ) && operation.spec.dependencies.iter().any(|dependency| {
-                    self.operations.get(dependency).is_some_and(|state| {
-                        state.phase == OperationPhase::Terminal
-                            && !matches!(state.outcome, Some(Outcome::Succeeded(_)))
+            .filter(move |operation| {
+                owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
+                    && matches!(
+                        operation.phase,
+                        OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
+                    )
+                    && operation.spec.dependencies.iter().any(|dependency| {
+                        self.operations.get(dependency).is_some_and(|state| {
+                            state.phase == OperationPhase::Terminal
+                                && !matches!(state.outcome, Some(Outcome::Succeeded(_)))
+                        })
                     })
-                })
             })
             .map(|operation| operation.spec.operation_id)
-            .collect()
+    }
+
+    /// Reads the immutable root session ceilings for an admitted task.
+    pub fn session_limits(&self, operation_id: OperationId) -> Result<SessionLimits> {
+        let (root, _) = self.session_root(operation_id)?;
+        self.sessions
+            .get(&root)
+            .copied()
+            .ok_or_else(|| Error::Unsupported("session budget is not configured".into()))
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn require_model_claim(
+        &self,
+        task: OperationId,
+        attempt: OperationId,
+        step: u32,
+        digest: &[u8; 32],
+    ) -> Result<()> {
+        if self
+            .model_claims
+            .get(&task)
+            .and_then(|claims| claims.attempts.get(&attempt)?.get(&step))
+            == Some(digest)
+        {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "model dispatch lacks its exact shared budget claim".into(),
+            ))
+        }
+    }
+
+    fn session_root(&self, mut id: OperationId) -> Result<(OperationId, u32)> {
+        let mut depth = 0_u32;
+        loop {
+            let state = self
+                .operation(id)
+                .ok_or_else(|| Error::NotFound("session task".into()))?;
+            let Some(parent) = &state.spec.parent else {
+                return Ok((id, depth));
+            };
+            id = parent.operation_id;
+            depth = depth
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("task depth overflow".into()))?;
+        }
+    }
+
+    fn require_session_capacity(&self, id: OperationId) -> Result<()> {
+        let (root, _) = self.session_root(id)?;
+        let Some(limits) = self.sessions.get(&root) else {
+            return Ok(());
+        };
+        if self
+            .operation(id)
+            .is_some_and(|state| state.reservation.is_some())
+        {
+            return Ok(());
+        }
+        let owned = self
+            .operations
+            .iter()
+            .filter(|(id, state)| {
+                state.reservation.is_some()
+                    && self
+                        .session_root(**id)
+                        .is_ok_and(|(candidate, _)| candidate == root)
+            })
+            .count() as u64;
+        if owned >= limits.active_tasks {
+            return Err(Error::Invalid("session active task limit exhausted".into()));
+        }
+        Ok(())
     }
 
     /// Closes an operation that holds no running work and asks a running one
@@ -1040,8 +1490,12 @@ impl Scheduler {
             OperationPhase::WaitingForDependencies
             | OperationPhase::WaitingForCapacity
             | OperationPhase::Admitted
-            | OperationPhase::WaitingForChildren => true,
+            | OperationPhase::WaitingForChildren
+            | OperationPhase::Suspended => true,
         };
+        // Admission itself can own capacity before dispatch starts. Keep that
+        // exact reservation until its fenced release acknowledges stopped work.
+        let close = close && operation.reservation.is_none();
         operation.revision = next_revision(operation.revision)?;
         if close {
             operation.reservation = None;
@@ -1097,15 +1551,21 @@ impl Scheduler {
     }
 }
 
-fn remaining_resources(operation: &OperationState) -> ResourceRequest {
-    let mut remaining = operation.spec.resources.0.clone();
-    if let Some(reservation) = &operation.reservation {
-        for (resource, admitted) in &reservation.admitted.0 {
-            let value = remaining.entry(resource.clone()).or_default();
-            *value = value.saturating_sub(*admitted);
-        }
-    }
-    ResourceRequest(remaining)
+fn remaining_resources_fit(operation: &OperationState, capacity: &ResourceSnapshot) -> bool {
+    operation
+        .spec
+        .resources
+        .0
+        .iter()
+        .all(|(resource, requested)| {
+            let admitted = operation
+                .reservation
+                .as_ref()
+                .and_then(|reservation| reservation.admitted.0.get(resource))
+                .copied()
+                .unwrap_or(0);
+            requested.saturating_sub(admitted) <= capacity.0.get(resource).copied().unwrap_or(0)
+        })
 }
 
 /// Deterministic output of join/race/quorum/reduce inspection.
@@ -1202,6 +1662,34 @@ fn require_phase(operation: &OperationState, expected: OperationPhase) -> Result
     }
 }
 
+pub(crate) fn require_model_owner(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
+    require_execution_owner(operation, fence, false)
+}
+
+pub(crate) fn require_execution_owner(
+    operation: &OperationState,
+    fence: &LeaseFence,
+    settlement: bool,
+) -> Result<()> {
+    if settlement {
+        if !matches!(
+            operation.phase,
+            OperationPhase::Running | OperationPhase::Reconciling
+        ) {
+            return Err(Error::Conflict("task has no execution owner".into()));
+        }
+    } else {
+        require_phase(operation, OperationPhase::Running)?;
+    }
+    require_fence(operation, fence)?;
+    if operation.cancellation_requested && !settlement {
+        return Err(Error::Conflict(
+            "cancelled task cannot publish new execution work".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn require_fence(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
     let reservation = operation
         .reservation
@@ -1234,7 +1722,12 @@ impl SchedulerEvent {
     pub(crate) fn operation_id(&self) -> OperationId {
         match self {
             Self::Declared { spec } => spec.operation_id,
-            Self::WaitingForCapacity { operation_id }
+            Self::SessionConfigured { operation_id, .. }
+            | Self::ModelDispatchClaimed { operation_id, .. }
+            | Self::WorkflowSuspended { operation_id, .. }
+            | Self::WorkflowResumed { operation_id, .. }
+            | Self::ReconciliationResumed { operation_id, .. }
+            | Self::WaitingForCapacity { operation_id }
             | Self::Admitted { operation_id, .. }
             | Self::PartiallyAdmitted { operation_id, .. }
             | Self::Rejected { operation_id, .. }
@@ -1429,6 +1922,7 @@ mod tests {
         WaitForChildren(u8, u8),
         ReleaseLease(u8, u8),
         Cancel(u8, bool),
+        ModelClaim(u8, u8, u8, u8, u8),
         Complete(u8, u8, Option<u8>),
         Orchestrate(u8),
         /// The next lifecycle event for the operation's current phase.
@@ -1465,6 +1959,9 @@ mod tests {
             3 => (op(), lease()).prop_map(|(op, lease)| Step::WaitForChildren(op, lease)),
             1 => (op(), lease()).prop_map(|(op, lease)| Step::ReleaseLease(op, lease)),
             1 => (op(), any::<bool>()).prop_map(|(op, recursive)| Step::Cancel(op, recursive)),
+            4 => (op(), lease(), 0..2_u8, 0..3_u8, 0..4_u8)
+                .prop_map(|(op, lease, attempt, step, digest)|
+                    Step::ModelClaim(op, lease, attempt, step, digest)),
             4 => (op(), 0..4_u8, proptest::option::weighted(0.8, lease()))
                 .prop_map(|(op, outcome, fence)| Step::Complete(op, outcome, fence)),
             4 => op().prop_map(Step::Orchestrate),
@@ -1552,6 +2049,16 @@ mod tests {
                 operation_id: id(op),
                 recursive,
             },
+            Step::ModelClaim(op, lease, attempt, step, digest) => {
+                SchedulerEvent::ModelDispatchClaimed {
+                    operation_id: id(op),
+                    attempt_id: id(attempt),
+                    step: u32::from(step),
+                    request_digest: [digest; 32],
+                    fence: fence(lease),
+                    ceiling: 2,
+                }
+            }
             Step::Complete(op, outcome, lease) => SchedulerEvent::Completed {
                 operation_id: id(op),
                 outcome: match outcome {
@@ -1588,7 +2095,7 @@ mod tests {
                     OperationPhase::Running => Step::Complete(op, choice % 4, Some(lease)),
                     OperationPhase::WaitingForChildren => Step::Orchestrate(op),
                     OperationPhase::Reconciling => Step::Complete(op, choice % 3, None),
-                    OperationPhase::Terminal => return Ok(None),
+                    OperationPhase::Suspended | OperationPhase::Terminal => return Ok(None),
                 };
                 return event(scheduler, next);
             }
@@ -1646,6 +2153,17 @@ mod tests {
                 if let Some(event) = event(&scheduler, declared).map_err(fail)? {
                     scheduler.apply(event).map_err(fail)?;
                 }
+                if parent.is_none() {
+                    scheduler.apply(SchedulerEvent::SessionConfigured {
+                        operation_id: id(op),
+                        limits: SessionLimits {
+                            active_tasks: 2,
+                            total_tasks: 5,
+                            depth: 3,
+                            model_steps: 2,
+                        },
+                    }).map_err(fail)?;
+                }
             }
             for step in steps {
                 let Some(event) = event(&scheduler, step).map_err(fail)? else {
@@ -1676,12 +2194,37 @@ mod tests {
                             OperationPhase::Terminal | OperationPhase::Reconciling
                         )
                     );
+                    // Uncertain completion retains the dispatch reservation
+                    // until reconciliation proves quiescence.
                     prop_assert!(operation.reservation.is_none() || matches!(
                         operation.phase,
                         OperationPhase::WaitingForCapacity
                             | OperationPhase::Admitted
                             | OperationPhase::Running
+                            | OperationPhase::Reconciling
                     ));
+                }
+                // Claims cannot be refunded by lifecycle changes or exact
+                // retries, and all descendants consume the same admitted budget.
+                for (op, prior) in &before.model_claims {
+                    let current = scheduler.model_claims.get(op);
+                    prop_assert!(current.is_some_and(|current|
+                        current.ceiling == prior.ceiling
+                            && prior.attempts.iter().all(|(attempt, steps)|
+                                current.attempts.get(attempt).is_some_and(|retained|
+                                    steps.iter().all(|(step, digest)|
+                                        retained.get(step) == Some(digest))))));
+                }
+                for (root, limits) in &scheduler.sessions {
+                    let used = scheduler.model_claims.iter()
+                        .filter(|(op, _)| scheduler.session_root(**op)
+                            .is_ok_and(|(candidate, _)| candidate == *root))
+                        .map(|(_, claims)| claims.used())
+                        .sum::<u64>();
+                    prop_assert!(used <= limits.model_steps);
+                }
+                for claims in scheduler.model_claims.values() {
+                    prop_assert!(claims.used() <= claims.ceiling);
                 }
                 let completed = scheduler.completion_order.iter().collect::<BTreeSet<_>>();
                 prop_assert_eq!(completed.len(), scheduler.completion_order.len());
@@ -1696,8 +2239,153 @@ mod tests {
         }
     }
 
+    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) -> u64 {
+        if remaining.is_empty() {
+            return 1;
+        }
+        let used = |state: &Scheduler| {
+            state
+                .model_claims
+                .values()
+                .map(TaskModelClaims::used)
+                .sum::<u64>()
+        };
+        let mut leaves = 0;
+        for (index, event) in remaining.iter().enumerate() {
+            let mut next = scheduler.clone();
+            let accepted = next.apply(event.clone()).is_ok();
+            if !accepted {
+                assert_eq!(&next, scheduler, "rejected event mutated state: {event:?}");
+            }
+            if matches!(event, SchedulerEvent::LeaseReleased { .. }) {
+                assert!(!accepted, "stale fence released ownership: {event:?}");
+            }
+            if let SchedulerEvent::ModelDispatchClaimed {
+                operation_id,
+                attempt_id,
+                step,
+                request_digest,
+                ..
+            } = event
+            {
+                if scheduler
+                    .operation(*operation_id)
+                    .is_some_and(|op| op.cancellation_requested)
+                {
+                    assert!(!accepted, "cancelled owner charged work: {event:?}");
+                }
+                if let Some(retained) = scheduler
+                    .model_claims
+                    .get(operation_id)
+                    .and_then(|claims| claims.attempts.get(attempt_id))
+                    .and_then(|steps| steps.get(step))
+                    && retained != request_digest
+                {
+                    assert!(!accepted, "changed request accepted as retry: {event:?}");
+                }
+                if accepted {
+                    let existing = scheduler
+                        .model_claims
+                        .get(operation_id)
+                        .and_then(|claims| claims.attempts.get(attempt_id))
+                        .is_some_and(|steps| steps.contains_key(step));
+                    assert_eq!(
+                        used(&next),
+                        used(scheduler) + u64::from(!existing),
+                        "exact retry changed accounting: {event:?}"
+                    );
+                }
+            }
+            assert!(used(&next) <= 2, "shared budget exceeded: {event:?}");
+            for (op, prior) in &scheduler.model_claims {
+                let current = next.model_claims.get(op).expect("claim refunded");
+                assert_eq!(current.ceiling, prior.ceiling);
+                for (attempt, steps) in &prior.attempts {
+                    for (step, digest) in steps {
+                        assert_eq!(
+                            current
+                                .attempts
+                                .get(attempt)
+                                .and_then(|retained| retained.get(step)),
+                            Some(digest),
+                            "retained request changed: {event:?}"
+                        );
+                    }
+                }
+            }
+            // Cancellation and uncertainty cannot free either owned slot.
+            for op in [id(2), id(3)] {
+                assert_eq!(
+                    next.operation(op).and_then(|op| op.reservation.as_ref()),
+                    scheduler
+                        .operation(op)
+                        .and_then(|op| op.reservation.as_ref()),
+                    "uncertainty released ownership: {event:?}"
+                );
+            }
+            let mut pending = remaining.to_vec();
+            pending.remove(index);
+            leaves += check_model_claim_orderings(&next, &pending);
+        }
+        leaves
+    }
+
+    /// Bounded exhaustive checking of the production reducer, not a second
+    /// transition implementation. Three tasks, two attempts, two leases and
+    /// eight inputs define this proof scenario; none is a runtime ceiling.
     #[test]
-    fn declarations_store_state_references_and_bound_placement_metadata() -> Result<()> {
+    fn all_model_claim_cancellation_and_uncertainty_orders_preserve_accounting() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(1),
+            limits: SessionLimits {
+                active_tasks: 2,
+                total_tasks: 3,
+                depth: 1,
+                model_steps: 2,
+            },
+        })?;
+        for (op, lease) in [(2, 0), (3, 1)] {
+            let mut child = spec(id(op), Orchestration::Leaf)?;
+            child.parent = Some(ParentLink {
+                operation_id: id(1),
+                slot: op.to_string(),
+            });
+            scheduler.apply(scheduler.declare(child)?)?;
+            scheduler.apply(
+                event(&scheduler, Step::Admit(op, lease, 0))?
+                    .ok_or_else(|| Error::Invalid("model admission missing".into()))?,
+            )?;
+            scheduler.apply(
+                event(&scheduler, Step::Start(op, lease))?
+                    .ok_or_else(|| Error::Invalid("model start missing".into()))?,
+            )?;
+        }
+        let actions = [
+            Step::ModelClaim(2, 0, 0, 0, 1),
+            Step::ModelClaim(2, 0, 0, 0, 1), // exact retry
+            Step::ModelClaim(2, 0, 0, 0, 2), // changed request negative control
+            Step::ModelClaim(3, 1, 0, 0, 1),
+            Step::ModelClaim(2, 0, 1, 0, 1), // competing fresh attempt
+            Step::Cancel(1, true),
+            Step::Complete(2, 3, Some(0)), // uncertainty retains the lease
+            Step::ReleaseLease(2, 1),      // another task's fence negative control
+        ]
+        .into_iter()
+        .map(|step| {
+            event(&scheduler, step)?.ok_or_else(|| Error::Invalid("model action missing".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+        assert_eq!(
+            check_model_claim_orderings(&scheduler, &actions),
+            (1..=actions.len() as u64).product::<u64>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn declarations_store_state_references_and_accept_long_placement_metadata() -> Result<()> {
         let scheduler = Scheduler::new();
         let event = scheduler.declare(spec(id(1), Orchestration::Leaf)?)?;
         let encoded =
@@ -1706,10 +2394,201 @@ mod tests {
         assert_eq!(encoded["spec"]["state"]["descriptor"]["byte_length"], 4);
         let mut oversized = spec(id(2), Orchestration::Leaf)?;
         oversized.placement.insert("region".into(), "x".repeat(256));
-        assert!(matches!(
-            scheduler.declare(oversized),
-            Err(Error::Invalid(_))
-        ));
+        assert!(scheduler.declare(oversized).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_suspension_releases_shared_capacity_and_fences_wakes() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        let root = spec(id(91), Orchestration::Leaf)?;
+        scheduler.apply(scheduler.declare(root.clone())?)?;
+        let legacy = serde_json::to_value(scheduler.operation(id(91)))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(legacy.get("workflow").is_none());
+        let decoded: OperationState =
+            serde_json::from_value(legacy).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(decoded.workflow.is_none());
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(91),
+            limits: SessionLimits {
+                active_tasks: 1,
+                total_tasks: 2,
+                depth: 1,
+                model_steps: 1,
+            },
+        })?;
+        let mut child = spec(id(92), Orchestration::Leaf)?;
+        child.owner = root.owner;
+        child.parent = Some(ParentLink {
+            operation_id: id(91),
+            slot: "child".into(),
+        });
+        scheduler.apply(scheduler.declare(child)?)?;
+        let reservation = Reservation {
+            id: "first".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        let first = LeaseFence::from(&reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(91),
+            reservation,
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(91),
+            fence: first.clone(),
+        })?;
+        assert!(
+            !scheduler
+                .ready(&ResourceSnapshot::default())
+                .contains(&id(92))
+        );
+        let stale = LeaseFence {
+            reservation_id: "wrong".into(),
+            placement: "worker".into(),
+        };
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(91),
+                    fence: stale,
+                    workflow_revision: 1,
+                    waiting_command: None,
+                })
+                .is_err()
+        );
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(91),
+                    fence: first.clone(),
+                    workflow_revision: 0,
+                    waiting_command: None,
+                })
+                .is_err()
+        );
+        scheduler.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(91),
+            fence: first.clone(),
+            workflow_revision: 1,
+            waiting_command: None,
+        })?;
+        let suspended = scheduler
+            .operation(id(91))
+            .ok_or_else(|| Error::NotFound("root".into()))?;
+        assert_eq!(suspended.phase, OperationPhase::Suspended);
+        assert!(suspended.reservation.is_none());
+        assert_eq!(
+            suspended.workflow,
+            Some(WorkflowSuspension {
+                revision: 1,
+                waiting_command: None,
+                input: None
+            })
+        );
+        assert!(
+            scheduler
+                .ready(&ResourceSnapshot::default())
+                .contains(&id(92))
+        );
+        assert!(
+            !scheduler
+                .ready(&ResourceSnapshot::default())
+                .contains(&id(91))
+        );
+        let input = result_ref(b"7")?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowResumed {
+                    operation_id: id(91),
+                    workflow_revision: 2,
+                    input: input.clone()
+                })
+                .is_err()
+        );
+        scheduler.apply(SchedulerEvent::WorkflowResumed {
+            operation_id: id(91),
+            workflow_revision: 1,
+            input: input.clone(),
+        })?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowResumed {
+                    operation_id: id(91),
+                    workflow_revision: 1,
+                    input
+                })
+                .is_err()
+        );
+        let second_reservation = Reservation {
+            id: "second".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        let second = LeaseFence::from(&second_reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(91),
+            reservation: second_reservation,
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(91),
+            fence: second.clone(),
+        })?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(91),
+                    fence: first,
+                    workflow_revision: 2,
+                    waiting_command: None,
+                })
+                .is_err()
+        );
+        // A durable wake may poll an outbox that remains pending. Releasing
+        // that new lease at the same checkpoint consumes the wake slot.
+        let mut polled = scheduler.clone();
+        polled.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(91),
+            fence: second.clone(),
+            workflow_revision: 1,
+            waiting_command: None,
+        })?;
+        assert!(
+            polled
+                .operation(id(91))
+                .and_then(|state| state.workflow.as_ref())
+                .is_some_and(|slot| slot.input.is_none())
+        );
+        scheduler.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(91),
+            fence: second,
+            workflow_revision: 2,
+            waiting_command: None,
+        })?;
+        assert!(
+            scheduler
+                .operation(id(91))
+                .and_then(|state| state.workflow.as_ref())
+                .is_some_and(|slot| slot.input.is_none() && slot.revision == 2)
+        );
+        scheduler.apply(SchedulerEvent::CancellationRequested {
+            operation_id: id(91),
+            recursive: true,
+        })?;
+        assert_eq!(
+            scheduler.operation(id(91)).map(|state| &state.outcome),
+            Some(&Some(Outcome::Cancelled))
+        );
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowResumed {
+                    operation_id: id(91),
+                    workflow_revision: 2,
+                    input: result_ref(b"7")?
+                })
+                .is_err()
+        );
         Ok(())
     }
 
@@ -1889,6 +2768,30 @@ mod tests {
             .operation(id(1))
             .ok_or_else(|| Error::NotFound("parent".into()))?
             .revision;
+        let mut suspended_loser = scheduler.clone();
+        suspended_loser.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(2),
+            fence: LeaseFence {
+                reservation_id: "lease-a".into(),
+                placement: "worker".into(),
+            },
+            workflow_revision: 1,
+            waiting_command: None,
+        })?;
+        suspended_loser.apply(SchedulerEvent::Orchestrated {
+            operation_id: id(1),
+            expected_revision,
+            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
+            cancel: vec![id(2)],
+            reducer: None,
+            reduction_digest: None,
+        })?;
+        assert!(
+            suspended_loser
+                .operation(id(2))
+                .is_some_and(|state| state.phase == OperationPhase::Terminal
+                    && state.outcome == Some(Outcome::Cancelled))
+        );
         scheduler.apply(SchedulerEvent::Orchestrated {
             operation_id: id(1),
             expected_revision,
@@ -1911,6 +2814,494 @@ mod tests {
             scheduler
                 .operation(id(2))
                 .is_some_and(|state| state.cancellation_requested)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn session_ceilings_are_shared_and_claims_survive_recovery() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(40), Orchestration::Join)?)?)?;
+        let limits = SessionLimits {
+            active_tasks: 1,
+            total_tasks: 3,
+            depth: 1,
+            model_steps: 2,
+        };
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(40),
+            limits,
+        })?;
+        for index in [41, 42] {
+            let mut child = spec(id(index), Orchestration::Leaf)?;
+            child.parent = Some(ParentLink {
+                operation_id: id(40),
+                slot: index.to_string(),
+            });
+            let event = scheduler.declare(child)?;
+            scheduler.apply(event)?;
+            if index == 41 {
+                let mut too_deep = spec(id(43), Orchestration::Leaf)?;
+                too_deep.parent = Some(ParentLink {
+                    operation_id: id(41),
+                    slot: "too-deep".into(),
+                });
+                assert!(scheduler.declare(too_deep).is_err());
+            }
+        }
+        let mut excess = spec(id(43), Orchestration::Leaf)?;
+        excess.parent = Some(ParentLink {
+            operation_id: id(40),
+            slot: "excess".into(),
+        });
+        assert!(scheduler.declare(excess).is_err());
+        let reservation = Reservation {
+            id: "root-lease".into(),
+            placement: "one".into(),
+            admitted: ResourceRequest::default(),
+        };
+        let root_fence = LeaseFence::from(&reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(40),
+            reservation,
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(40),
+            fence: root_fence.clone(),
+        })?;
+        assert!(scheduler.ready(&ResourceSnapshot::default()).is_empty());
+        let child_reservation = Reservation {
+            id: "child-lease".into(),
+            placement: "two".into(),
+            admitted: ResourceRequest::default(),
+        };
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::Admitted {
+                    operation_id: id(41),
+                    reservation: child_reservation.clone()
+                })
+                .is_err()
+        );
+        let claim = SchedulerEvent::ModelDispatchClaimed {
+            operation_id: id(40),
+            attempt_id: id(40),
+            step: 0,
+            request_digest: [1; 32],
+            fence: root_fence.clone(),
+            ceiling: 2,
+        };
+        scheduler.apply(claim.clone())?;
+        scheduler.apply(claim)?;
+        assert_eq!(
+            scheduler
+                .model_claims
+                .get(&id(40))
+                .map(TaskModelClaims::used),
+            Some(1)
+        );
+        let before = scheduler.clone();
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::ModelDispatchClaimed {
+                    operation_id: id(40),
+                    attempt_id: id(40),
+                    step: 0,
+                    request_digest: [2; 32],
+                    fence: root_fence.clone(),
+                    ceiling: 2
+                })
+                .is_err()
+        );
+        assert_eq!(scheduler, before);
+        scheduler.apply(SchedulerEvent::WaitingForChildren {
+            operation_id: id(40),
+            fence: root_fence,
+        })?;
+        let child_fence = LeaseFence::from(&child_reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(41),
+            reservation: child_reservation,
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(41),
+            fence: child_fence.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::ModelDispatchClaimed {
+            operation_id: id(41),
+            attempt_id: id(41),
+            step: 0,
+            request_digest: [2; 32],
+            fence: child_fence.clone(),
+            ceiling: 2,
+        })?;
+        let before = scheduler.clone();
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::ModelDispatchClaimed {
+                    operation_id: id(41),
+                    attempt_id: id(42),
+                    step: 0,
+                    request_digest: [3; 32],
+                    fence: child_fence.clone(),
+                    ceiling: 2
+                })
+                .is_err()
+        );
+        assert_eq!(scheduler, before);
+        scheduler.apply(SchedulerEvent::Completed {
+            operation_id: id(41),
+            outcome: Outcome::Indeterminate {
+                operation_id: id(41),
+            },
+            fence: Some(child_fence),
+            execution_duration_ns: None,
+        })?;
+        assert!(scheduler.ready(&ResourceSnapshot::default()).is_empty());
+        assert_eq!(
+            scheduler
+                .model_claims
+                .values()
+                .map(TaskModelClaims::used)
+                .sum::<u64>(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_retains_owned_capacity_until_fenced_acknowledgement() -> Result<()> {
+        for recursive in [false, true] {
+            for partial in [false, true] {
+                let mut scheduler = Scheduler::new();
+                let mut parent = spec(id(30), Orchestration::Join)?;
+                parent.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 2)]));
+                let owner = parent.owner.clone();
+                scheduler.apply(scheduler.declare(parent)?)?;
+                let target = if recursive { id(31) } else { id(30) };
+                if recursive {
+                    let mut child = spec(target, Orchestration::Leaf)?;
+                    child.owner = owner;
+                    child.parent = Some(ParentLink {
+                        operation_id: id(30),
+                        slot: "child".into(),
+                    });
+                    child.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 2)]));
+                    scheduler.apply(scheduler.declare(child)?)?;
+                }
+                let reservation = Reservation {
+                    id: "owned".into(),
+                    placement: "worker".into(),
+                    admitted: ResourceRequest(BTreeMap::from([(
+                        "cpu".into(),
+                        if partial { 1 } else { 2 },
+                    )])),
+                };
+                let fence = LeaseFence::from(&reservation);
+                scheduler.apply(if partial {
+                    SchedulerEvent::PartiallyAdmitted {
+                        operation_id: target,
+                        reservation: reservation.clone(),
+                    }
+                } else {
+                    SchedulerEvent::Admitted {
+                        operation_id: target,
+                        reservation: reservation.clone(),
+                    }
+                })?;
+                scheduler.apply(SchedulerEvent::CancellationRequested {
+                    operation_id: id(30),
+                    recursive,
+                })?;
+                assert_eq!(
+                    scheduler
+                        .operation(target)
+                        .and_then(|state| state.reservation.as_ref()),
+                    Some(&reservation)
+                );
+                assert!(
+                    scheduler
+                        .operation(target)
+                        .is_some_and(|state| state.cancellation_requested)
+                );
+                assert!(
+                    scheduler
+                        .apply(SchedulerEvent::Rejected {
+                            operation_id: target,
+                            reason: "cancel".into()
+                        })
+                        .is_err()
+                );
+                assert!(
+                    scheduler
+                        .apply(SchedulerEvent::Completed {
+                            operation_id: target,
+                            outcome: Outcome::Cancelled,
+                            fence: None,
+                            execution_duration_ns: None,
+                        })
+                        .is_err()
+                );
+                assert!(
+                    scheduler
+                        .apply(SchedulerEvent::Started {
+                            operation_id: target,
+                            fence: fence.clone()
+                        })
+                        .is_err()
+                );
+                scheduler.apply(if partial {
+                    SchedulerEvent::LeaseReleased {
+                        operation_id: target,
+                        fence,
+                    }
+                } else {
+                    SchedulerEvent::Completed {
+                        operation_id: target,
+                        outcome: Outcome::Cancelled,
+                        fence: Some(fence),
+                        execution_duration_ns: None,
+                    }
+                })?;
+                assert_eq!(
+                    scheduler
+                        .operation(target)
+                        .and_then(|state| state.outcome.as_ref()),
+                    Some(&Outcome::Cancelled)
+                );
+                assert!(
+                    scheduler
+                        .operation(target)
+                        .is_some_and(|state| state.reservation.is_none())
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn single_pull_selection_preserves_partial_slots_and_advertised_resource_keys() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(1),
+            limits: SessionLimits {
+                active_tasks: 1,
+                total_tasks: 2,
+                depth: 1,
+                model_steps: 1,
+            },
+        })?;
+        let mut child = spec(id(2), Orchestration::Leaf)?;
+        child.parent = Some(ParentLink {
+            operation_id: id(1),
+            slot: "child".into(),
+        });
+        child.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 2)]));
+        child.placement = BTreeMap::from([("zone".into(), "a".into())]);
+        scheduler.apply(scheduler.declare(child)?)?;
+        let parent = Reservation {
+            id: "parent".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(1),
+            reservation: parent.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(1),
+            fence: (&parent).into(),
+        })?;
+        scheduler.apply(SchedulerEvent::WaitingForChildren {
+            operation_id: id(1),
+            fence: (&parent).into(),
+        })?;
+        let partial = Reservation {
+            id: "partial".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
+        };
+        scheduler.apply(SchedulerEvent::PartiallyAdmitted {
+            operation_id: id(2),
+            reservation: partial,
+        })?;
+        let mut other = spec(id(3), Orchestration::Leaf)?;
+        other.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 1)]));
+        scheduler.apply(scheduler.declare(other)?)?;
+        // Existing reservations may name resources this worker no longer
+        // advertises. They must not expand its capacity projection with zero keys.
+        for value in 60..140 {
+            let mut declaration = spec(id(value), Orchestration::Leaf)?;
+            declaration.resources =
+                ResourceRequest(BTreeMap::from([(format!("retired-{value}"), 1)]));
+            let admitted = declaration.resources.clone();
+            scheduler.apply(scheduler.declare(declaration)?)?;
+            scheduler.apply(SchedulerEvent::Admitted {
+                operation_id: id(value),
+                reservation: Reservation {
+                    id: format!("held-{value}"),
+                    placement: "worker".into(),
+                    admitted,
+                },
+            })?;
+        }
+        let advertised = ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)]));
+        let available = scheduler.available_for("worker", &advertised);
+        assert_eq!(
+            available,
+            ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)]))
+        );
+        let labels = BTreeMap::from([("zone".into(), "a".into())]);
+        // Partial ownership already occupies the session's sole slot. Selection
+        // must finish that reservation using only its missing resource quantity.
+        assert_eq!(
+            scheduler.next_ready_for(&available, &labels, None),
+            Some(id(2))
+        );
+        assert_eq!(scheduler.ready_for(&available, &labels), vec![id(2), id(3)]);
+        assert_eq!(
+            scheduler.next_ready_for(&available, &BTreeMap::new(), None),
+            Some(id(3))
+        );
+        let less = ResourceSnapshot(BTreeMap::from([("cpu".into(), 0)]));
+        assert_eq!(scheduler.next_ready_for(&less, &labels, None), None);
+        Ok(())
+    }
+
+    #[test]
+    fn uncertain_execution_retains_capacity_and_rejects_stale_owners() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        let mut declaration = spec(id(32), Orchestration::Leaf)?;
+        declaration.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 1)]));
+        scheduler.apply(scheduler.declare(declaration)?)?;
+        let reservation = Reservation {
+            id: "current".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
+        };
+        let fence = LeaseFence::from(&reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(32),
+            reservation: reservation.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(32),
+            fence: fence.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::Completed {
+            operation_id: id(32),
+            outcome: Outcome::Indeterminate {
+                operation_id: id(32),
+            },
+            fence: Some(fence.clone()),
+            execution_duration_ns: None,
+        })?;
+        assert_eq!(
+            scheduler
+                .operation(id(32))
+                .and_then(|state| state.reservation.as_ref()),
+            Some(&reservation)
+        );
+        let capacity = ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)]));
+        assert_eq!(
+            scheduler.available_for("worker", &capacity).0.get("cpu"),
+            Some(&0)
+        );
+        let replayed: Scheduler = serde_json::from_value(
+            serde_json::to_value(&scheduler).map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(replayed, scheduler);
+        let mut resumed = scheduler.clone();
+        assert!(
+            resumed
+                .apply(SchedulerEvent::ReconciliationResumed {
+                    operation_id: id(32),
+                    fence: LeaseFence {
+                        reservation_id: "stale".into(),
+                        placement: "worker".into()
+                    },
+                })
+                .is_err()
+        );
+        resumed.apply(SchedulerEvent::ReconciliationResumed {
+            operation_id: id(32),
+            fence: fence.clone(),
+        })?;
+        assert_eq!(
+            resumed.available_for("worker", &capacity).0.get("cpu"),
+            Some(&0)
+        );
+        assert!(
+            resumed
+                .ready(&capacity)
+                .iter()
+                .all(|operation| *operation != id(32))
+        );
+        assert_eq!(
+            resumed
+                .operation(id(32))
+                .and_then(|state| state.reservation.as_ref()),
+            Some(&reservation)
+        );
+        scheduler.apply(SchedulerEvent::CancellationRequested {
+            operation_id: id(32),
+            recursive: true,
+        })?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::ReconciliationResumed {
+                    operation_id: id(32),
+                    fence: fence.clone()
+                })
+                .is_err()
+        );
+        let before = scheduler.clone();
+        for candidate in [
+            None,
+            Some(LeaseFence {
+                reservation_id: "stale".into(),
+                placement: "worker".into(),
+            }),
+        ] {
+            assert!(
+                scheduler
+                    .apply(SchedulerEvent::Completed {
+                        operation_id: id(32),
+                        outcome: Outcome::Cancelled,
+                        fence: candidate,
+                        execution_duration_ns: None,
+                    })
+                    .is_err()
+            );
+            assert_eq!(scheduler, before);
+        }
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::LeaseReleased {
+                    operation_id: id(32),
+                    fence: fence.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(scheduler, before);
+        scheduler.apply(SchedulerEvent::Completed {
+            operation_id: id(32),
+            outcome: Outcome::Cancelled,
+            fence: Some(fence.clone()),
+            execution_duration_ns: None,
+        })?;
+        assert_eq!(scheduler.available_for("worker", &capacity), capacity);
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::Completed {
+                    operation_id: id(32),
+                    outcome: Outcome::Cancelled,
+                    fence: Some(fence),
+                    execution_duration_ns: None,
+                })
+                .is_err()
         );
         Ok(())
     }

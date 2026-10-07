@@ -10,6 +10,18 @@ const wasm = readFileSync(
   fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)),
 );
 
+test("canonical JSON has no fixed nesting or node ceiling and still rejects malformed input", async () => {
+  const contracts = await NativeContracts.create(wasm);
+  const nested = `${"[".repeat(129)}0${"]".repeat(129)}`;
+  const bytes = new TextEncoder().encode(nested);
+  expect(contracts.encodeCanonicalJson(contracts.decodeModelJson(bytes))).toEqual(bytes);
+  expect(contracts.encodeCanonicalJson(Array(1_000_001).fill(0)).byteLength).toBe(2_000_003);
+  expect(() => contracts.decodeModelJson(new TextEncoder().encode("{} {}"))).toThrow();
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  expect(() => contracts.encodeCanonicalJson(cyclic)).toThrow("cyclic");
+});
+
 test("WASM turn planner emits a fresh selection and rejects stale retry state", async () => {
   const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
   const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
@@ -270,4 +282,4 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
   } finally {
     harness.free();
   }
-});
+}, 0);

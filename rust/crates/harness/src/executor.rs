@@ -2,7 +2,7 @@
 
 use crate::contract::capability;
 use crate::{
-    Error, InteractionId, OperationId, Result,
+    Error, InteractionId, OperationId, Result, TaskId,
     context::{ContextInput, ContextPipeline},
     conversation::{Attachment, FileRef, Limits, VolumeClass},
     interaction::{Interaction, InteractionOutcome},
@@ -13,7 +13,8 @@ use crate::{
     projection::SelectedModelContext,
     registry::ComponentIdentity,
     runtime::{
-        RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
+        DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
+        tool_approval_request, validate_policy_identity,
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
@@ -22,6 +23,18 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
+
+/// Internal replay batch size; callers may request any positive page allowance.
+pub(crate) const EXECUTION_REPLAY_PAGE_RECORDS: u32 = 64;
+
+pub(crate) fn validate_execution_page(_after: u64, maximum: u32) -> Result<()> {
+    if maximum == 0 {
+        return Err(Error::Invalid(
+            "execution replay page bound is invalid".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -170,10 +183,14 @@ impl ToolFailureKind {
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Implementations must scope sequences and retry keys by `operation_id`.
-    /// Replays the complete retained journal before execution resumes.
+    /// Reads at most `maximum` records after the exclusive one-based sequence
+    /// `after`. Zero starts at the first record. A provider may return a shorter
+    /// internal batch than requested; no complete-history fallback is provided.
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
+        after: u64,
+        maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>>;
 
     /// Appends one reconstructable executor observation.
@@ -252,6 +269,90 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>>;
 }
 
+/// Incremental replay validation retaining only a cursor and retry digests.
+/// Pages are returned to the caller and are never retained by this cursor.
+pub struct ExecutionReplay {
+    operation_id: OperationId,
+    after: u64,
+    keys: BTreeSet<[u8; 32]>,
+}
+
+impl ExecutionReplay {
+    /// Starts validation at the first observation of one exact execution.
+    #[must_use]
+    pub fn new(operation_id: OperationId) -> Self {
+        Self {
+            operation_id,
+            after: 0,
+            keys: BTreeSet::new(),
+        }
+    }
+
+    /// Last successfully validated one-based sequence, zero for an empty journal.
+    #[must_use]
+    pub const fn tail(&self) -> u64 {
+        self.after
+    }
+
+    /// Reads one bounded page, or `None` at the current tail. Invalid pages do
+    /// not advance the cursor.
+    pub async fn next_page(
+        &mut self,
+        journal: &dyn ExecutionJournal,
+    ) -> Result<Option<Vec<ExecutionRecord>>> {
+        validate_execution_page(self.after, EXECUTION_REPLAY_PAGE_RECORDS)?;
+        let page = journal
+            .replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS)
+            .await?;
+        if page.len() > EXECUTION_REPLAY_PAGE_RECORDS as usize {
+            return Err(Error::Storage("execution replay page exceeds bound".into()));
+        }
+        if page.is_empty() {
+            return Ok(None);
+        }
+        let mut keys = BTreeSet::new();
+        for (index, record) in page.iter().enumerate() {
+            let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
+            if record.operation_id != self.operation_id
+                || record.sequence != self.after + index as u64 + 1
+                || record.idempotency_key.is_empty()
+                || self.keys.contains(&key)
+                || !keys.insert(key)
+            {
+                return Err(Error::Conflict(
+                    "execution journal identity or sequence is invalid".into(),
+                ));
+            }
+        }
+        self.after += page.len() as u64;
+        self.keys.extend(keys);
+        Ok(Some(page))
+    }
+}
+
+pub(crate) async fn replay_execution(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    maximum_selected: usize,
+    select: impl Fn(&ExecutionEvent) -> bool,
+) -> Result<(u64, Vec<ExecutionRecord>)> {
+    let mut replay = ExecutionReplay::new(operation_id);
+    let mut selected = Vec::new();
+    while let Some(page) = replay.next_page(journal).await? {
+        for record in page {
+            if select(&record.event) {
+                if selected.len() >= maximum_selected {
+                    return Err(Error::Invalid(
+                        "selected execution records exceed bound".into(),
+                    ));
+                }
+                selected.push(record);
+            }
+        }
+    }
+    Ok((replay.tail(), selected))
+}
+
 /// Terminal result produced by an executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnOutput {
@@ -264,6 +365,28 @@ pub struct TurnOutput {
     pub metadata: Value,
     /// Number of completed model steps.
     pub steps: u32,
+}
+
+pub(crate) enum StockTurnProgress {
+    Ready(TurnOutput),
+    Pending(OperationId),
+    Rejected(crate::InteractionRejection),
+}
+
+impl StockTurnProgress {
+    pub(crate) fn into_output(self) -> Result<TurnOutput> {
+        match self {
+            Self::Ready(output) => Ok(output),
+            Self::Pending(operation) => Err(Error::Indeterminate(operation)),
+            Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
+        }
+    }
+}
+
+enum ToolCallProgress {
+    Settled,
+    Pending(OperationId),
+    Rejected(crate::InteractionRejection),
 }
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
@@ -280,6 +403,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
@@ -287,6 +411,11 @@ pub struct StockExecutor {
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_identity: Option<ComponentIdentity>,
+    task: Option<(
+        Arc<dyn DurableTaskHost>,
+        TaskId,
+        crate::scheduler::LeaseFence,
+    )>,
     inherited_prefix: Option<(
         FileRef,
         Arc<dyn crate::conversation::ContentResidencyVerifier>,
@@ -304,6 +433,7 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            max_output_tokens: None,
             provider,
             context,
             tools,
@@ -311,8 +441,32 @@ impl StockExecutor {
             tool_scope: RuntimeScope::default(),
             policy: None,
             policy_identity: None,
+            task: None,
             inherited_prefix: None,
         }
+    }
+
+    /// Sets the caller's output token budget for each model request.
+    pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
+        if maximum == 0 {
+            return Err(Error::Invalid("model output token budget is zero".into()));
+        }
+        self.max_output_tokens = Some(maximum);
+        Ok(self)
+    }
+
+    /// Binds this worker's exact admitted task and execution fence. Fresh model
+    /// attempts consume the existing owner journal before dispatch; replay and
+    /// reconciliation do not consume another unit.
+    #[must_use]
+    pub fn with_durable_task(
+        mut self,
+        host: Arc<dyn DurableTaskHost>,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+    ) -> Self {
+        self.task = Some((host, task_id, fence));
+        self
     }
 
     /// Applies the composition's checked bounds to the stock loop.
@@ -350,61 +504,40 @@ impl StockExecutor {
         step: u32,
         call_id: &str,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let records = journal.replay(input.operation_id).await?;
+        let records = self
+            .prefix_records(journal, input.operation_id, step)
+            .await?;
         let identity = self.request_digest(input)?;
-        if records.iter().enumerate().any(|(index, record)| {
-            record.operation_id != input.operation_id || record.sequence != index as u64 + 1
-        }) || !matches!(records.first().map(|record| &record.event),
-            Some(ExecutionEvent::Started { request_digest }) if request_digest == &identity)
+        if !matches!(records.first(), Some(record) if record.sequence == 1 &&
+            matches!(&record.event, ExecutionEvent::Started { request_digest } if request_digest == &identity))
         {
             return Err(Error::Conflict(
                 "tool prefix has another execution identity".into(),
             ));
         }
-        let (digest, file) = records
-            .iter()
-            .find_map(|record| match &record.event {
-                ExecutionEvent::ModelStarted {
-                    step: recorded,
-                    request_digest,
-                    request,
-                } if *recorded == step => Some((*request_digest, request)),
-                _ => None,
-            })
+        let retained = retained_model_step(journal, &records, step, self.limits).await?;
+        let prepared = retained
+            .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
-        let prepared = load_model_request(journal, file, self.limits).await?;
-        if prepared.manifest().request_digest != digest {
-            return Err(Error::Conflict("tool prefix request digest differs".into()));
-        }
         let mut request = prepared.request().clone();
-        let mut admission = ModelEventAdmission::default();
         let mut calls = Vec::new();
-        for record in &records {
-            if let ExecutionEvent::Model {
-                step: recorded,
-                event,
-            } = &record.event
-                && *recorded == step
+        for event in retained.events {
+            if let ModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } = event
             {
-                let event = load_json::<ModelEvent>(journal, event).await?;
-                admission.observe(&event, self.limits)?;
-                if let ModelEvent::ToolCall {
+                calls.push(ToolInvocation::for_model_call(
+                    input.operation_id,
+                    step,
                     call_id,
                     name,
                     arguments,
-                } = event
-                {
-                    calls.push(ToolInvocation::for_model_call(
-                        input.operation_id,
-                        step,
-                        call_id,
-                        name,
-                        arguments,
-                    ));
-                }
+                ));
             }
         }
-        if !admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
+        if !retained.admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
             return Err(Error::Indeterminate(input.operation_id));
         }
         for invocation in calls {
@@ -457,17 +590,25 @@ impl StockExecutor {
     }
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v3",
+        let mut request = json!({
+            "executor": "acyclic.stock.v4",
             "input": input,
             "model": self.model,
+            "max_output_tokens": self.max_output_tokens,
             "context": self.context.contracts(),
             "tools": self.tools.definitions()?,
             "limits": self.limits,
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
             "policy": self.policy_identity.as_ref(),
             "inherited_prefix": self.inherited_prefix.as_ref().map(|(reference, _)| reference),
-        }))
+        });
+        if let Some((_, task_id, _)) = &self.task {
+            request
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("executor request is not an object".into()))?
+                .insert("task_id".into(), json!(task_id));
+        }
+        crate::contract::canonical_json_digest(&request)
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -477,13 +618,14 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
     ) -> Result<()> {
-        let records = journal.replay(input.operation_id).await?;
-        for (index, record) in records.iter().enumerate() {
-            if record.operation_id != input.operation_id || record.sequence != index as u64 + 1 {
-                return Err(Error::Conflict(
-                    "execution journal is not gapless or belongs to another turn".into(),
-                ));
-            }
+        let (tail, records) = replay_execution(journal, input.operation_id, 1, |event| {
+            matches!(event, ExecutionEvent::Started { .. })
+        })
+        .await?;
+        if tail != 0 && records.first().is_none_or(|record| record.sequence != 1) {
+            return Err(Error::Conflict(
+                "execution journal has no initial request binding".into(),
+            ));
         }
         let request_digest = self.request_digest(input)?;
         match records.first().map(|record| &record.event) {
@@ -545,41 +687,19 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
-        let records = journal.replay(input.operation_id).await?;
-        let mut replayed_model = Vec::new();
-        let mut admission = ModelEventAdmission::default();
-        for record in &records {
-            if let ExecutionEvent::Model {
-                step: event_step,
-                event,
-            } = &record.event
-                && *event_step == step
-            {
-                let event = load_json::<ModelEvent>(journal, event).await?;
-                admission.observe(&event, self.limits)?;
-                replayed_model.push(event);
-            }
+        if let Some((host, task_id, fence)) = &self.task {
+            host.verify_execution_owner(*task_id, fence.clone()).await?;
         }
-        let started = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ModelStarted {
-                step: event_step,
-                request_digest,
-                request,
-            } if *event_step == step => Some((*request_digest, request)),
-            _ => None,
-        });
-        if started.is_none() && !replayed_model.is_empty() {
-            return Err(Error::Storage(
-                "model observations exist without an admitted attempt".into(),
-            ));
-        }
-        let request = if let Some((digest, reference)) = started {
-            let recorded = load_model_request(journal, reference, self.limits).await?;
-            if recorded.manifest().request_digest != digest {
-                return Err(Error::Conflict(
-                    "recorded model request digest differs from admission".into(),
-                ));
-            }
+        let (_, records) = self
+            .model_records(journal, input.operation_id, step)
+            .await?;
+        let RetainedModelStep {
+            request: retained_request,
+            mut admission,
+            events: replayed_model,
+        } = retained_model_step(journal, &records, step, self.limits).await?;
+        let started = retained_request.is_some();
+        let request = if let Some(recorded) = retained_request {
             recorded
         } else {
             let context = self
@@ -607,7 +727,7 @@ impl StockExecutor {
                             .contains(&capability::tool_call(&tool.name))
                     })
                     .collect(),
-                max_output_tokens: Some(4_096),
+                max_output_tokens: self.max_output_tokens,
             };
             if let Some((prefix, verifier)) = &self.inherited_prefix {
                 crate::model::PreparedModelRequest::inherit(
@@ -630,7 +750,7 @@ impl StockExecutor {
         let replay_completed = admission.completed;
         let model_events = if replay_completed {
             replayed_model
-        } else if started.is_some() {
+        } else if started {
             let Some(mut continuation) = self
                 .provider
                 .reconcile(ModelAttempt {
@@ -662,7 +782,9 @@ impl StockExecutor {
             }
             observed
         } else {
-            let current = journal.replay(input.operation_id).await?;
+            let (tail, current) = self
+                .model_records(journal, input.operation_id, step)
+                .await?;
             if let Some(existing) = current.iter().find_map(|record| match &record.event {
                 ExecutionEvent::ModelStarted {
                     step: event_step,
@@ -685,10 +807,20 @@ impl StockExecutor {
                 request.bytes().to_vec(),
             )
             .await?;
+            if let Some((host, task_id, fence)) = &self.task {
+                host.claim_model_dispatch(
+                    *task_id,
+                    input.operation_id,
+                    step,
+                    request_digest,
+                    fence.clone(),
+                )
+                .await?;
+            }
             let claimed = journal
                 .append_if_tail(
                     input.operation_id,
-                    current.len() as u64,
+                    tail,
                     format!("model:{step}:claim:{}", OperationId::new()),
                     ExecutionEvent::ModelStarted {
                         step,
@@ -728,6 +860,64 @@ impl StockExecutor {
         Ok(model_events)
     }
 
+    async fn prefix_records(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+    ) -> Result<Vec<ExecutionRecord>> {
+        let maximum = self
+            .limits
+            .model_events_per_step
+            .saturating_add(self.limits.tool_calls_per_step.saturating_mul(3))
+            .saturating_add(2);
+        let (_, records) = replay_execution(journal, operation_id, maximum, |event| match event {
+            ExecutionEvent::Started { .. } => true,
+            ExecutionEvent::ModelStarted { step: recorded, .. }
+            | ExecutionEvent::Model { step: recorded, .. }
+            | ExecutionEvent::ToolStarted { step: recorded, .. }
+            | ExecutionEvent::ToolCompleted { step: recorded, .. }
+            | ExecutionEvent::ToolFailed { step: recorded, .. } => *recorded == step,
+        })
+        .await?;
+        Ok(records)
+    }
+
+    async fn model_records(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+    ) -> Result<(u64, Vec<ExecutionRecord>)> {
+        replay_execution(
+            journal,
+            operation_id,
+            self.limits.model_events_per_step.saturating_add(1),
+            |event| {
+                matches!(event,
+                ExecutionEvent::ModelStarted { step: event_step, .. }
+                | ExecutionEvent::Model { step: event_step, .. } if *event_step == step)
+            },
+        )
+        .await
+    }
+
+    async fn tool_records(
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+    ) -> Result<(u64, Vec<ExecutionRecord>)> {
+        replay_execution(journal, operation_id, 3, |event| {
+            matches!(event,
+            ExecutionEvent::ToolStarted { step: event_step, call_id: existing, .. }
+            | ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
+            | ExecutionEvent::ToolFailed { step: event_step, call_id: existing, .. }
+            if *event_step == step && existing == call_id)
+        })
+        .await
+    }
+
     async fn record_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,
@@ -736,7 +926,7 @@ impl StockExecutor {
         call_id: &str,
         reason: ToolFailureKind,
     ) -> Result<()> {
-        let current = journal.replay(operation_id).await?;
+        let (tail, current) = Self::tool_records(journal, operation_id, step, call_id).await?;
         if current.iter().any(|record| {
             matches!(&record.event,
             ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
@@ -748,7 +938,7 @@ impl StockExecutor {
         match journal
             .append_if_tail(
                 operation_id,
-                current.len() as u64,
+                tail,
                 format!("tool:{step}:{call_id}:failed:{}", OperationId::new()),
                 ExecutionEvent::ToolFailed {
                     step,
@@ -782,8 +972,9 @@ impl StockExecutor {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<()> {
-        let records = journal.replay(operation_id).await?;
+    ) -> Result<ToolCallProgress> {
+        let (_, records) =
+            Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
         invocation.validate()?;
         let tool = self
             .tools
@@ -875,38 +1066,38 @@ impl StockExecutor {
                                     "stock tool approval requires interaction:route".into(),
                                 ));
                             }
-                            let digest = crate::contract::canonical_json_digest(&(
-                                &operation_id,
-                                step,
+                            let task = self.task.as_ref().map_or(
+                                TaskId::from_bytes(operation_id.into_bytes()),
+                                |(_, task, _)| *task,
+                            );
+                            let (approval_operation, request) = tool_approval_request(
+                                task,
+                                self.policy_identity.as_ref().ok_or_else(|| {
+                                    Error::Conflict("stock policy identity is missing".into())
+                                })?,
                                 &tool.definition,
                                 &invocation,
-                            ))?;
-                            let mut identity = [0_u8; 16];
-                            identity.copy_from_slice(
-                                &blake3::hash(
-                                    &[
-                                        b"harness:stock-tool-approval:v2".as_slice(),
-                                        operation_id.into_bytes().as_slice(),
-                                        &step.to_be_bytes(),
-                                        invocation.call_id.as_bytes(),
-                                    ]
-                                    .concat(),
-                                )
-                                .as_bytes()[..16],
-                            );
-                            let approval = InteractionId::from_bytes(identity);
-                            journal
-                                .open_interaction(
-                                    approval,
-                                    Interaction::approval(prompt, operation_id, digest)?,
-                                )
-                                .await?;
-                            check_tool_approval(
-                                journal
-                                    .interaction_outcome(approval)
-                                    .await?
-                                    .unwrap_or(InteractionOutcome::Indeterminate { operation_id }),
+                                prompt,
                             )?;
+                            let approval =
+                                crate::durable_host::task_interaction_id(task, approval_operation);
+                            journal.open_interaction(approval, request).await?;
+                            let Some(outcome) = journal.interaction_outcome(approval).await? else {
+                                if started.is_some() {
+                                    return Err(Error::Indeterminate(invocation.operation_id));
+                                }
+                                return Ok(ToolCallProgress::Pending(invocation.operation_id));
+                            };
+                            match check_tool_approval(outcome) {
+                                Ok(()) => {}
+                                Err(Error::InteractionRejected(reason)) if started.is_none() => {
+                                    return Ok(ToolCallProgress::Rejected(reason));
+                                }
+                                Err(Error::InteractionRejected(_)) => {
+                                    return Err(Error::Indeterminate(invocation.operation_id));
+                                }
+                                Err(error) => return Err(error),
+                            }
                         }
                     }
                 }
@@ -921,7 +1112,8 @@ impl StockExecutor {
                     &invocation,
                 )
                 .await?;
-                let current = journal.replay(operation_id).await?;
+                let (tail, current) =
+                    Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
                 if current.iter().any(|record| {
                     matches!(&record.event,
                     ExecutionEvent::ToolStarted { step: event_step, call_id, .. }
@@ -932,7 +1124,7 @@ impl StockExecutor {
                 match journal
                     .append_if_tail(
                         operation_id,
-                        current.len() as u64,
+                        tail,
                         format!(
                             "tool:{step}:{}:claim:{}",
                             invocation.call_id,
@@ -1087,7 +1279,8 @@ impl StockExecutor {
                     ));
                 }
             };
-            let current = journal.replay(operation_id).await?;
+            let (tail, current) =
+                Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
             if current.iter().any(|record| {
                 matches!(&record.event,
                 ExecutionEvent::ToolCompleted { step: event_step, call_id, .. }
@@ -1099,7 +1292,7 @@ impl StockExecutor {
             match journal
                 .append_if_tail(
                     operation_id,
-                    current.len() as u64,
+                    tail,
                     format!(
                         "tool:{step}:{}:completed:{}",
                         invocation.call_id,
@@ -1138,7 +1331,7 @@ impl StockExecutor {
         };
         message.content.validate_limits(self.limits)?;
         prior_messages.push(message);
-        Ok(())
+        Ok(ToolCallProgress::Settled)
     }
 
     async fn validate_turn_input(
@@ -1178,13 +1371,16 @@ impl StockExecutor {
     }
 }
 
-impl Executor for StockExecutor {
-    fn execute<'a>(
+impl StockExecutor {
+    pub(crate) fn execute_progress<'a>(
         &'a self,
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
-    ) -> BoxFuture<'a, Result<TurnOutput>> {
+    ) -> BoxFuture<'a, Result<StockTurnProgress>> {
         Box::pin(async move {
+            if let Some((host, task_id, fence)) = &self.task {
+                host.verify_execution_owner(*task_id, fence.clone()).await?;
+            }
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
@@ -1192,9 +1388,9 @@ impl Executor for StockExecutor {
             for step in 0..input.max_steps {
                 let mut calls = Vec::new();
                 let mut completed = None;
-                let model_events = self
-                    .run_model_step(journal, &input, step, &prior_messages)
-                    .await?;
+                // Keep nested durable provider futures within native worker stacks.
+                let model_events =
+                    Box::pin(self.run_model_step(journal, &input, step, &prior_messages)).await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
@@ -1230,12 +1426,12 @@ impl Executor for StockExecutor {
                     return Err(Error::Indeterminate(input.operation_id));
                 };
                 if calls.is_empty() {
-                    return Ok(TurnOutput {
+                    return Ok(StockTurnProgress::Ready(TurnOutput {
                         text,
                         attachments: Vec::new(),
                         metadata,
                         steps: step + 1,
-                    });
+                    }));
                 }
                 for invocation in calls {
                     let message = ModelMessage {
@@ -1248,14 +1444,23 @@ impl Executor for StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    self.resolve_tool_call(
+                    match Box::pin(self.resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
                         invocation,
                         &mut prior_messages,
-                    )
-                    .await?;
+                    ))
+                    .await?
+                    {
+                        ToolCallProgress::Settled => {}
+                        ToolCallProgress::Pending(wait) => {
+                            return Ok(StockTurnProgress::Pending(wait));
+                        }
+                        ToolCallProgress::Rejected(reason) => {
+                            return Ok(StockTurnProgress::Rejected(reason));
+                        }
+                    }
                 }
             }
             Err(Error::Conflict("executor step limit reached".into()))
@@ -1263,7 +1468,17 @@ impl Executor for StockExecutor {
     }
 }
 
-async fn completed_tool_projection(
+impl Executor for StockExecutor {
+    fn execute<'a>(
+        &'a self,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        Box::pin(async move { self.execute_progress(input, journal).await?.into_output() })
+    }
+}
+
+pub(crate) async fn completed_tool_projection(
     journal: &dyn ExecutionJournal,
     records: &[ExecutionRecord],
     step: u32,
@@ -1331,8 +1546,12 @@ async fn stage_bytes(
     bytes: Vec<u8>,
 ) -> Result<FileRef> {
     let expected = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json")?;
+    // An unpublished staged payload may survive a failed journal append. A
+    // reconciled value at that position may differ; only the journal's exact
+    // append claim chooses the authoritative value, not the orphaned file.
+    let payload_key = format!("{key}:{}", blake3::hash(&bytes).to_hex());
     let reference = journal
-        .stage(operation_id, key.into(), bytes, "application/json")
+        .stage(operation_id, payload_key, bytes, "application/json")
         .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
@@ -1347,6 +1566,65 @@ async fn stage_bytes(
         ));
     }
     Ok(reference)
+}
+
+/// Validated retained model artifacts without provider dispatch.
+pub(crate) struct RetainedModelStep {
+    pub(crate) request: Option<crate::model::PreparedModelRequest>,
+    pub(crate) admission: ModelEventAdmission,
+    pub(crate) events: Vec<ModelEvent>,
+}
+
+/// Reads only durable artifacts; never evaluates context, policy or providers.
+pub(crate) async fn retained_model_step(
+    journal: &dyn ExecutionJournal,
+    records: &[ExecutionRecord],
+    step: u32,
+    limits: Limits,
+) -> Result<RetainedModelStep> {
+    let mut events = Vec::new();
+    let mut admission = ModelEventAdmission::default();
+    for record in records {
+        if let ExecutionEvent::Model {
+            step: event_step,
+            event,
+        } = &record.event
+            && *event_step == step
+        {
+            let event = load_json::<ModelEvent>(journal, event).await?;
+            admission.observe(&event, limits)?;
+            events.push(event);
+        }
+    }
+    let started = records.iter().find_map(|record| match &record.event {
+        ExecutionEvent::ModelStarted {
+            step: event_step,
+            request_digest,
+            request,
+        } if *event_step == step => Some((*request_digest, request)),
+        _ => None,
+    });
+    if started.is_none() && !events.is_empty() {
+        return Err(Error::Storage(
+            "model observations exist without an admitted attempt".into(),
+        ));
+    }
+    let request = if let Some((digest, reference)) = started {
+        let recorded = load_model_request(journal, reference, limits).await?;
+        if recorded.manifest().request_digest != digest {
+            return Err(Error::Conflict(
+                "recorded model request digest differs from admission".into(),
+            ));
+        }
+        Some(recorded)
+    } else {
+        None
+    };
+    Ok(RetainedModelStep {
+        request,
+        admission,
+        events,
+    })
 }
 
 async fn load_model_request(
@@ -1375,14 +1653,18 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     reference: &FileRef,
 ) -> Result<T> {
     let bytes = load_json_bytes(journal, reference).await?;
-    let parsed: Value = serde_json::from_slice(&bytes)
+    decode_json(&bytes)
+}
+
+pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let parsed: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
         return Err(Error::Storage(
             "execution journal JSON is not canonical".into(),
         ));
     }
-    serde_json::from_slice(&bytes)
+    crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
 }
 
@@ -1447,7 +1729,7 @@ impl ModelEventAdmission {
         }
     }
 
-    pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+    pub(crate) fn validate_next(&self, event: &ModelEvent, limits: Limits) -> Result<()> {
         if self.count >= limits.model_events_per_step {
             return Err(Error::Invalid("model event limit exceeded".into()));
         }
@@ -1459,13 +1741,24 @@ impl ModelEventAdmission {
         match event {
             ModelEvent::ToolCall { call_id, name, .. } => {
                 ToolInvocation::validate_identity(call_id, name)?;
-                if self.calls.len() >= limits.tool_calls_per_step
-                    || !self.calls.insert(call_id.clone())
-                {
+                if self.calls.len() >= limits.tool_calls_per_step || self.calls.contains(call_id) {
                     return Err(Error::Invalid(
                         "model tool call limit exceeded or identity repeated".into(),
                     ));
                 }
+            }
+            ModelEvent::Completed { .. }
+            | ModelEvent::Content { .. }
+            | ModelEvent::Reasoning { .. } => {}
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+        self.validate_next(event, limits)?;
+        match event {
+            ModelEvent::ToolCall { call_id, .. } => {
+                self.calls.insert(call_id.clone());
             }
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
@@ -1483,7 +1776,7 @@ impl ModelEventAdmission {
 mod tests {
     use super::*;
     use crate::{
-        AgentId, Capabilities,
+        AgentId, Capabilities, Outcome,
         conversation::{FileDescriptor, VolumeOwner, VolumeRef},
         resources::ProviderRef,
     };
@@ -1618,12 +1911,17 @@ mod tests {
             _: crate::model::PreparedModelRequest,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(stream::iter(vec![
-                Ok(ModelEvent::Content {
-                    delta: "partial-".into(),
-                }),
-                Err(Error::Storage("stream interrupted".into())),
-            ]))
+            Box::pin(stream::iter(
+                (0..70)
+                    .map(|_| {
+                        Ok(ModelEvent::Content {
+                            delta: "partial-".into(),
+                        })
+                    })
+                    .chain(std::iter::once(Err(Error::Storage(
+                        "stream interrupted".into(),
+                    )))),
+            ))
         }
 
         fn reconcile<'a>(
@@ -1633,9 +1931,12 @@ mod tests {
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
                 if attempt.observed
-                    != vec![ModelEvent::Content {
-                        delta: "partial-".into(),
-                    }]
+                    != vec![
+                        ModelEvent::Content {
+                            delta: "partial-".into(),
+                        };
+                        70
+                    ]
                 {
                     return Err(Error::Conflict("unexpected model event prefix".into()));
                 }
@@ -1682,6 +1983,7 @@ mod tests {
     struct Journal(
         Mutex<Vec<ExecutionRecord>>,
         Mutex<HashMap<String, (FileRef, Vec<u8>)>>,
+        Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
     );
 
     #[tokio::test]
@@ -1705,14 +2007,20 @@ mod tests {
         fn replay<'a>(
             &'a self,
             operation_id: OperationId,
+            after: u64,
+            maximum: u32,
         ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
             async move {
+                validate_execution_page(after, maximum)?;
                 self.0
                     .lock()
                     .map(|records| {
                         records
                             .iter()
-                            .filter(|record| record.operation_id == operation_id)
+                            .filter(|record| {
+                                record.operation_id == operation_id && record.sequence > after
+                            })
+                            .take(maximum as usize)
                             .cloned()
                             .collect()
                     })
@@ -1841,17 +2149,40 @@ mod tests {
 
         fn open_interaction<'a>(
             &'a self,
-            _: InteractionId,
-            _: Interaction,
+            id: InteractionId,
+            request: Interaction,
         ) -> BoxFuture<'a, Result<()>> {
-            async { Err(Error::Unsupported("interactions".into())) }.boxed()
+            async move {
+                request.validate()?;
+                let mut interactions = self
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                if let Some((original, _)) = interactions.get(&id) {
+                    if original != &request {
+                        return Err(Error::Conflict("approval request changed".into()));
+                    }
+                } else {
+                    interactions.insert(id, (request, None));
+                }
+                Ok(())
+            }
+            .boxed()
         }
 
         fn interaction_outcome<'a>(
             &'a self,
-            _: InteractionId,
+            id: InteractionId,
         ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
-            async { Ok(None) }.boxed()
+            async move {
+                Ok(self
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .get(&id)
+                    .and_then(|(_, outcome)| outcome.clone()))
+            }
+            .boxed()
         }
     }
 
@@ -1922,7 +2253,8 @@ mod tests {
             provider.clone(),
             ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::new(),
-        );
+        )
+        .with_max_output_tokens(8_192)?;
         let journal = Journal::default();
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -1933,6 +2265,26 @@ mod tests {
         assert!(executor.model_step(&journal, &input, 1, &[]).await.is_err());
         let first = executor.model_step(&journal, &input, 0, &[]).await?;
         assert_eq!(first, executor.model_step(&journal, &input, 0, &[]).await?);
+        assert_eq!(
+            crate::model::PreparedModelRequest::decode(
+                &provider
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("test lock".into()))?[0],
+                Limits::default(),
+            )?
+            .request()
+            .max_output_tokens,
+            Some(8_192)
+        );
+        assert!(
+            executor
+                .clone()
+                .with_max_output_tokens(16_384)?
+                .model_step(&journal, &input, 0, &[])
+                .await
+                .is_err()
+        );
         assert_eq!(stage.0.load(Ordering::SeqCst), 1);
         assert_eq!(
             provider
@@ -1995,6 +2347,8 @@ mod tests {
         executor.execute(input.clone(), journal.as_ref()).await?;
         executor.execute(input.clone(), journal.as_ref()).await?;
         let mut expected = root.request().clone();
+        // An inherited prefix carries history, while the child chooses its budget.
+        expected.max_output_tokens = None;
         expected.messages.push(ModelMessage {
             role: ModelRole::User,
             content: input.input.clone(),
@@ -2071,6 +2425,14 @@ mod tests {
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let _ = base.execute(input.clone(), &journal).await?;
+        assert!(
+            model
+                .requests
+                .lock()
+                .map_err(|_| Error::Storage("test lock".into()))?
+                .iter()
+                .all(|request| request.max_output_tokens.is_none())
+        );
         let changed = Limits {
             model_steps: 3,
             ..Limits::default()
@@ -2079,6 +2441,147 @@ mod tests {
             base.with_limits(changed).execute(input, &journal).await,
             Err(Error::Conflict(_))
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Result<()> {
+        struct ApprovalPolicy;
+        impl ToolPolicy for ApprovalPolicy {
+            fn identity(&self) -> ComponentIdentity {
+                ComponentIdentity {
+                    name: "test.approval".into(),
+                    version: "1".into(),
+                    digest: [7; 32],
+                }
+            }
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a ToolInvocation,
+                _: &'a RuntimeScope,
+            ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
+                Box::pin(async {
+                    Ok(ToolPolicyDecision::RequireApproval {
+                        prompt: "Approve echo".into(),
+                    })
+                })
+            }
+        }
+        for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
+            let model = Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            });
+            let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+            let mut tools = ToolRegistry::new();
+            tools.register(crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema: json!({"type": "object"}),
+                    output_schema: json!({"type": "object"}),
+                },
+                executor: tool_executor.clone(),
+                projection: Arc::new(Projection),
+            })?;
+            let executor = StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo", capability::INTERACTION_ROUTE]),
+                    Limits::default(),
+                )?,
+                Some(Arc::new(ApprovalPolicy)),
+            )?;
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: OperationId::from_bytes([28; 16]),
+                input: ModelContent::Text("hello".into()),
+                selected_context: None,
+                max_steps: 4,
+            };
+            let invocation = ToolInvocation::for_model_call(
+                input.operation_id,
+                0,
+                "call-1".into(),
+                "example.echo".into(),
+                json!({"value":"hello"}),
+            );
+            for _ in 0..2 {
+                assert!(
+                    matches!(executor.execute_progress(input.clone(), &journal).await?, StockTurnProgress::Pending(operation) if operation == invocation.operation_id)
+                );
+            }
+            assert!(
+                matches!(executor.execute(input.clone(), &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
+            );
+            assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+            let (id, request) = {
+                let interactions = journal
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                assert_eq!(interactions.len(), 1);
+                interactions
+                    .iter()
+                    .next()
+                    .map(|(id, (request, _))| (*id, request.clone()))
+                    .ok_or_else(|| Error::NotFound("approval".into()))?
+            };
+            assert!(
+                matches!(request, Interaction::Approval { operation_id, .. } if operation_id == invocation.operation_id)
+            );
+            journal
+                .2
+                .lock()
+                .map_err(|_| Error::Storage("interaction lock".into()))?
+                .get_mut(&id)
+                .ok_or_else(|| Error::NotFound("approval".into()))?
+                .1 = Some(outcome.clone());
+            if outcome == InteractionOutcome::Approved {
+                assert!(matches!(
+                    executor.execute_progress(input.clone(), &journal).await?,
+                    StockTurnProgress::Ready(TurnOutput { steps: 2, .. })
+                ));
+                assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+                executor.execute(input, &journal).await?;
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(matches!(
+                    executor.execute_progress(input.clone(), &journal).await?,
+                    StockTurnProgress::Rejected(crate::InteractionRejection::Denied)
+                ));
+                assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+                // A retained in-flight tool is uncertainty, even if approval is
+                // subsequently rejected. It cannot become a passive wait or a
+                // terminal result without provider settlement.
+                let reference =
+                    stage_json(&journal, input.operation_id, "tool-start", &invocation).await?;
+                journal
+                    .append(
+                        input.operation_id,
+                        "tool:0:call-1:started".into(),
+                        ExecutionEvent::ToolStarted {
+                            step: 0,
+                            call_id: invocation.call_id.clone(),
+                            invocation: reference,
+                        },
+                    )
+                    .await?;
+                assert!(
+                    matches!(executor.execute_progress(input, &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
+                );
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+            }
+        }
         Ok(())
     }
 
@@ -2190,6 +2693,13 @@ mod tests {
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
                     .clone(),
             ),
+            Mutex::new(
+                journal
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .clone(),
+            ),
         );
         assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
         let incomplete = Journal(
@@ -2210,6 +2720,13 @@ mod tests {
                     .1
                     .lock()
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+            Mutex::new(
+                reopened
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
         );
@@ -2237,6 +2754,13 @@ mod tests {
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
                     .clone(),
             ),
+            Mutex::new(
+                incomplete
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .clone(),
+            ),
         );
         assert!(matches!(
             executor
@@ -2244,7 +2768,25 @@ mod tests {
                 .await,
             Err(Error::Conflict(_))
         ));
-        let request_key = format!("{}:model:0:request", input.operation_id);
+        let request_ref = reopened
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    step: 0, request, ..
+                } => Some(request.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound("recorded model start".into()))?;
+        let request_key = reopened
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .iter()
+            .find_map(|(key, (reference, _))| (reference == &request_ref).then(|| key.clone()))
+            .ok_or_else(|| Error::NotFound("recorded request".into()))?;
         reopened
             .1
             .lock()
@@ -2559,6 +3101,50 @@ mod tests {
 
     #[tokio::test]
     async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> {
+        struct DispatchObserver {
+            claims: AtomicUsize,
+            owned: std::sync::atomic::AtomicBool,
+        }
+        impl DurableTaskHost for DispatchObserver {
+            fn verify_execution_owner<'a>(
+                &'a self,
+                _: TaskId,
+                _: crate::scheduler::LeaseFence,
+            ) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async move {
+                    if self.owned.load(Ordering::SeqCst) {
+                        Ok(())
+                    } else {
+                        Err(Error::Conflict("stale test owner".into()))
+                    }
+                })
+            }
+            fn claim_model_dispatch<'a>(
+                &'a self,
+                _: TaskId,
+                _: OperationId,
+                _: u32,
+                _: [u8; 32],
+                _: crate::scheduler::LeaseFence,
+            ) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async move {
+                    self.claims.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }
+            fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+                Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+            fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+        }
+        // This observer checks executor calls, not budget semantics. The real
+        // CoordinatorTaskHost test covers the authoritative pinned ceiling.
+        let host = Arc::new(DispatchObserver {
+            claims: AtomicUsize::new(0),
+            owned: std::sync::atomic::AtomicBool::new(true),
+        });
         let model = Arc::new(RecoverableModel {
             generate_calls: AtomicUsize::new(0),
             reconcile_calls: AtomicUsize::new(0),
@@ -2568,6 +3154,14 @@ mod tests {
             model.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
+        )
+        .with_durable_task(
+            host.clone(),
+            TaskId::from_bytes([11; 16]),
+            crate::scheduler::LeaseFence {
+                reservation_id: "lease".into(),
+                placement: "worker".into(),
+            },
         );
         let journal = Journal::default();
         let input = TurnInput {
@@ -2582,12 +3176,161 @@ mod tests {
             Err(Error::Storage(_))
         ));
         let recovered = executor.execute(input.clone(), &journal).await?;
-        let replayed = executor.execute(input, &journal).await?;
+        let replayed = executor.execute(input.clone(), &journal).await?;
 
-        assert_eq!(recovered.text, "partial-restored");
+        assert_eq!(recovered.text, format!("{}restored", "partial-".repeat(70)));
         assert_eq!(replayed, recovered);
         assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
         assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(host.claims.load(Ordering::SeqCst), 1);
+        assert_eq!(journal.replay(input.operation_id, 0, 64).await?.len(), 64);
+        assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 10);
+        assert!(journal.replay(input.operation_id, 74, 64).await?.is_empty());
+        host.owned.store(false, Ordering::SeqCst);
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption() -> Result<()>
+    {
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([29; 16]);
+        for step in 0..70 {
+            journal
+                .append(
+                    operation,
+                    format!("step-{step}"),
+                    ExecutionEvent::ModelStarted {
+                        step,
+                        request_digest: [1; 32],
+                        request: journal
+                            .stage(
+                                operation,
+                                "page-fixture".into(),
+                                b"null".to_vec(),
+                                "application/json",
+                            )
+                            .await?,
+                    },
+                )
+                .await?;
+        }
+        let (tail, selected) = replay_execution(&journal, operation, 1, |event| {
+            matches!(event, ExecutionEvent::ModelStarted { step: 69, .. })
+        })
+        .await?;
+        assert_eq!(tail, 70);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].sequence, 70);
+        assert_eq!(journal.replay(operation, 0, 64).await?.len(), 64);
+        assert_eq!(journal.replay(operation, 64, 64).await?.len(), 6);
+        assert_eq!(journal.replay(operation, 0, 65).await?.len(), 65);
+        assert!(journal.replay(operation, 0, 0).await.is_err());
+        assert!(
+            replay_execution(&journal, operation, 1, |_| true)
+                .await
+                .is_err()
+        );
+        let original = {
+            let mut records = journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock".into()))?;
+            let original = records[69].idempotency_key.clone();
+            records[69].idempotency_key = records[0].idempotency_key.clone();
+            original
+        };
+        assert!(matches!(
+            replay_execution(&journal, operation, 0, |_| false).await,
+            Err(Error::Conflict(_))
+        ));
+        let mut cursor = ExecutionReplay::new(operation);
+        assert_eq!(
+            cursor.next_page(&journal).await?.map(|page| page.len()),
+            Some(64)
+        );
+        for _ in 0..2 {
+            assert!(matches!(
+                cursor.next_page(&journal).await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(
+                cursor.tail(),
+                64,
+                "a corrupt page must not advance partially"
+            );
+        }
+        {
+            let mut records = journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock".into()))?;
+            records[69].idempotency_key = original;
+            records[69].sequence += 1;
+        }
+        assert!(matches!(
+            replay_execution(&journal, operation, 0, |_| false).await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
+        let mut executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        );
+        // Exercise the address-width boundary on every platform. On WASM32,
+        // these are the default counts, even when the retained history is tiny.
+        executor.limits.model_events_per_step = usize::MAX;
+        executor.limits.tool_calls_per_step = usize::MAX;
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([27; 16]);
+        journal
+            .append(
+                operation,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+            )
+            .await?;
+        let records = executor.prefix_records(&journal, operation, 0).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sequence, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn independently_selected_event_budget_still_rejects_excess_observations() -> Result<()> {
+        let limits = Limits {
+            model_events_per_step: 1,
+            ..Limits::default()
+        };
+        limits.validate()?;
+        let mut admission = ModelEventAdmission::default();
+        let event = ModelEvent::ToolCall {
+            call_id: "call-1".into(),
+            name: "example.echo".into(),
+            arguments: Value::Null,
+        };
+        admission.observe(&event, limits)?;
+        assert!(matches!(
+            admission.observe(&ModelEvent::Completed { metadata: Value::Null }, limits),
+            Err(Error::Invalid(reason)) if reason == "model event limit exceeded"
+        ));
         Ok(())
     }
 
@@ -2607,12 +3350,16 @@ mod tests {
                 )
                 .await?;
         }
-        let replayed_first = journal.replay(first).await?;
+        let replayed_first = journal
+            .replay(first, 0, EXECUTION_REPLAY_PAGE_RECORDS)
+            .await?;
         let [first_entry] = replayed_first.as_slice() else {
             unreachable!("expected exactly one replayed event for the first operation");
         };
         assert_eq!(first_entry.sequence, 1);
-        let replayed_second = journal.replay(second).await?;
+        let replayed_second = journal
+            .replay(second, 0, EXECUTION_REPLAY_PAGE_RECORDS)
+            .await?;
         let [second_entry] = replayed_second.as_slice() else {
             unreachable!("expected exactly one replayed event for the second operation");
         };

@@ -62,7 +62,7 @@ binding is a new admission, not a replacement for an existing operation identity
 ## Bounds and authority
 
 Each capture has combined directory and entry budgets, a frontmatter-prefix
-budget (at most 65,536 bytes), and an instruction-file byte budget. Pagination
+budget selected by the caller, and an instruction-file byte budget. Pagination
 pins one generation and checks ordered advancing cursors, page sizes and provider
 identity. Instruction capture rejects oversize before requesting a complete
 read. Missing declared directories, missing retained data, malformed frontmatter,
@@ -77,7 +77,10 @@ probe and the declared `header_bytes` for skill metadata. Complete instruction
 reads remain bounded by `instruction_bytes`; a smaller owner read limit returns
 an explicit error.
 
-The YAML parser uses explicit event, node, nesting and scalar budgets; aliases,
+Admitted frontmatter has no additional fixed byte, name, description, event,
+node, scalar or nesting ceilings. Discovery enforces the caller's prefix budget;
+direct parsing consumes only the supplied slice. The YAML format requires one
+document; aliases,
 anchors, merge keys, duplicate keys and unsupported tags are rejected. Include
 and property-expansion features are not enabled. This retains ordinary YAML
 frontmatter without a custom parsing language or filesystem side effects.
@@ -95,7 +98,7 @@ explicit exact destination write grant supplied by the caller's approval workflo
 | No reads or authority from construction | Plain declarations and immutable source stage; the embedding owner authenticates reads | Empty/disabled discovery with a denied reader; explicit denied capture |
 | Work stays bounded and metadata remains lazy | Pinned pages and authenticated bounded prefix; provider honors retained generations | Entry and instruction limits; discovery succeeds with a body larger than the full-read bound |
 | Invalid replacements cannot alter active context | Complete replacement values and existing pipeline reload | Changed/invalid skill, retained old pipeline, serialized snapshot reconstruction |
-| Metadata validation applies after restart | Shared metadata and snapshot validators | Forged names/fields, duplicate keys, aliases, deep nesting, invalid UTF-8 and folded CRLF YAML |
+| Metadata validation applies after restart | Shared metadata and snapshot validators | Forged names/fields, duplicate keys, aliases, invalid UTF-8 and folded CRLF YAML; accepted deep nesting and metadata beyond former fixed ceilings |
 | Admitted replay retains exact revision | Existing Stream/Filesystem journal and executor request artifact; trusted provider durability | Reconstructed journal/executor after invalid source update, one model dispatch, metadata without body, old pinned body readable |
 | Skills and project writeback remain separate | Existing C volume grants and explicit fork/import | Existing `skills_are_explicitly_forked_and_imported_with_read_only_builtins` consumer |
 

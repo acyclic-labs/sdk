@@ -117,7 +117,6 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     root: join(engineRoot, "public-adapter"),
     objectCache: {
       ...DEFAULT_OBJECT_CACHE_OPTIONS,
-      maximumBytes: Number(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
     },
   });
   try {
@@ -152,7 +151,6 @@ async function qualifyAdapter(bindingPath, engineRoot) {
       root: join(engineRoot, "foreign-adapter"),
       objectCache: {
         ...DEFAULT_OBJECT_CACHE_OPTIONS,
-        maximumBytes: Number(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
       },
     });
     try {

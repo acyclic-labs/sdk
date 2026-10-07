@@ -197,6 +197,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-objects",
  "acyclic-stream",
+ "async-trait",
  "blake3",
  "bytes",
  "futures",

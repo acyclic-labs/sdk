@@ -39,6 +39,20 @@ recovery; it never reloads sources or transforms. New projections require new
 admissions. A custom loop must finish each tool exchange before requesting the
 next model step or publishing a child prefix.
 
+Stock output-token budgets are caller-controlled: Rust exposes
+`StockExecutor::with_max_output_tokens`, and TypeScript exposes
+`HarnessBuilder.modelOutputTokens`. Neither adds an output-token ceiling when
+the caller omits the budget; explicit budgets accept any positive value
+representable by the model request's `u32` field. Rust binds the
+budget into the durable execution identity; admitted requests retain it on replay.
+
+Default admission and projection limits use representable values, with counts
+fitting the 32-bit WASM runtime and byte lengths fitting exact JavaScript integers.
+Callers may choose narrower budgets. The local runtime's default concurrency uses
+the semaphore's representable permit count; explicit concurrency still controls
+scheduling. Replay page and cache sizes control processing and retention, without
+limiting the total admitted history.
+
 `ContextPipeline` composes ordered sources and transformations. `SelectionStage`
 registers a pinned file/span or schema-validated custom attribute with a typed
 `ContextRenderer`; full, summary and reference representations are explicit
@@ -105,13 +119,13 @@ Model context is a separate explicit selection over canonical conversation histo
 
 `ForkCaptureProvider` is the replaceable boundary for non-Filesystem selections. The Filesystem preparer journals the parent request and each selected provider attempt/result. After a started attempt loses its reply, it calls `reconcile` under the same operation identity and never blindly repeats an effect; an unobserved result stays indeterminate. The Machines adapter captures forkable checkpoints, and the Objects adapter captures exact version-pinned artifacts without loading their bodies. Publication still requires the matching `ForkSeedVerifier` for every selected provider.
 
-Default model projection preserves the full ordered attachment list in canonical storage but includes at most 1,022 attachment refs per message in a model request, followed by an explicit omitted-count marker when needed. A provider-specific projector can make a different bounded selection without mutating history.
+Model projection preserves the full ordered attachment list in canonical storage and uses the caller-selected attachment allowance. A caller or provider adapter may explicitly select a narrower projection; omitted references receive an explicit count marker without mutating history. There is no fixed 1,022-reference policy ceiling.
 
 Use the `filesystem` module (feature `filesystem`) for mutable volumes, forks, project merge, and execution journals, or the `objects` module (feature `objects`) for immutable owner-bound content and attachment manifests. Both supply the same provider-neutral `ContentBindings`; each is an optional feature, so Harness core pulls neither provider in by default. The `machines` feature adds the Machines checkpoint and execution adapter, and `grpc` adds the tonic server for the wire API. For file-only providers, `ContentForkVerifier` proves exact file residency; `CompositeForkVerifier` reads every selected manifest from its owner and checks all cross-provider members and grants before fork publication. Resource captures still require a provider-specific revision verifier. The [custom executor example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/harness/examples/custom_executor.rs) shows replacement composition. The wire contract is `acyclic.harness.v2`; v1 histories are not read or migrated.
 
 Stock model dispatch now takes `PreparedModelRequest`, exposing read-only
 `request()`, `bytes()` and `manifest()` views. Admission validates the complete
-ordered exchange against pinned model/tool bindings, positive output ceilings
+ordered exchange against pinned model/tool bindings, optional caller-selected output budgets
 and independent input limits. The execution journal retains the exact request
 artifact and rechecks it before replay or reconciliation. TypeScript providers
 receive the same Rust-admitted bytes as `serializedInput`.
