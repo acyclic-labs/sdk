@@ -158,6 +158,7 @@ export const browserworkspace_delete: (a: number, b: number, c: number) => any;
 export const browserworkspace_diff: (a: number, b: number, c: number, d: number) => any;
 export const browserworkspace_fork: (a: number, b: number, c: number, d: number, e: number) => any;
 export const browserworkspace_forkAt: (a: number, b: number, c: number, d: number, e: any) => any;
+export const browserworkspace_generation: (a: number, b: number, c: number) => any;
 export const browserworkspace_head: (a: number) => any;
 export const browserworkspace_id: (a: number) => [number, number];
 export const browserworkspace_joinInto: (a: number, b: number, c: any) => any;

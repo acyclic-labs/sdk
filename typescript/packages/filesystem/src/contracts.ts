@@ -160,6 +160,8 @@ export interface FsWorkspace {
   readonly name: string;
   readonly id: Uint8Array;
   head(): Promise<Uint8Array>;
+  /** Reopen exact retained state; rejects missing, foreign, or corrupt generations. */
+  generation(id: Uint8Array): Promise<FsGeneration>;
   /** Observe the current immutable head for pinned reads and directory pagination. */
   sync(): Promise<FsGeneration>;
   checkpoint(label: string): Promise<FsGeneration>;
@@ -1143,6 +1145,7 @@ export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
 }, {
   beginTransaction: WasmRawTransaction;
   checkpoint: WasmRawGeneration;
+  generation: WasmRawGeneration;
   diff: WasmRawChangeSet;
   fork: WasmRawWorkspace;
   forkAt: WasmRawWorkspace;

@@ -1,7 +1,7 @@
 import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
-import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { NativeContracts, type BatchAdmissionProjectionInput, type DiscoveredContext, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -1651,6 +1651,25 @@ export class HarnessBuilder {
     return this;
   }
   context(value: ContextBuilder): this { this.#context = value; return this; }
+  /** Bind a validated immutable snapshot through the ordinary context builder. No reads occur. */
+  declaredContext(snapshot: DiscoveredContext): this {
+    const projected = this.contracts.projectDiscoveredContext(snapshot,
+      { messages: [], metadata: {} }, "prepend", this.#limits);
+    const sources: readonly ModelMessage[] = Object.freeze(projected.messages.map(message => {
+      const content = message.content;
+      if (typeof content === "string") return Object.freeze({ role: message.role, content });
+      if (content && "kind" in content && content.kind === "file") {
+        return Object.freeze({ role: message.role, content: Object.freeze({ ...content,
+          file: this.contracts.validate("file_ref", content.file as FileRef) }) });
+      }
+      throw new TypeError("unsupported declared context message");
+    }));
+    const previous = this.#context;
+    this.#context = { build: async (input, messages) => [
+      ...sources, ...(previous ? await previous.build(input, messages) : messages),
+    ] };
+    return this;
+  }
   interactions(value: InteractionHandler): this { this.#interactions = value; return this; }
   interactionResolver(value: InteractionResolver): this { this.#interactionResolver = value; return this; }
   policy(value: Policy): this { this.#policy = value; return this; }

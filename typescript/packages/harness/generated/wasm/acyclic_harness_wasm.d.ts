@@ -1,6 +1,16 @@
 /* tslint:disable */
 /* eslint-disable */
 
+/** Bound owner authenticates each read; declarations confer no authority.
+ * Functions are captured for one call and never retained in a process catalog. */
+export interface ContextDiscoveryReader {
+    list(query: ContextDirectoryQuery): Promise<PrivateDirectoryPage>;
+    prefix(query: ContextReadQuery): Promise<Uint8Array>;
+    read(query: ContextReadQuery): Promise<ContextPathResult>;
+}
+
+
+
 export interface WasmMachineIdentityWire {
     readonly name: string;
     readonly version: string;
@@ -218,14 +228,54 @@ export interface WasmTurnPreparation {
 
 
 /**
+ * A bounded page from one exact owner-private generation.
+ */
+export interface PrivateDirectoryPage {
+    /**
+     * Exact immutable generation from which this page was read.
+     */
+    generation: WasmResourceRefWire & { kind: 'generation' };
+    /**
+     * Ordered entries returned for the requested directory segment.
+     */
+    entries: PrivateDirectoryEntry[];
+    /**
+     * Whether another page may be requested with the returned cursor.
+     */
+    hasMore: boolean;
+}
+
+/**
  * A declared representation; summary creation remains an admitted model operation.
  */
 export type ContextRepresentation = "full" | "summary" | "reference";
 
 /**
+ * A host-declared directory boundary. A declaration conveys no authority.
+ */
+export interface ContextRoot {
+    /**
+     * Exact volume identity, independently of consumer role.
+     */
+    volume: WasmVolumeRefWire;
+    /**
+     * Exact owner-issued subtree capability boundary; empty denotes the volume root.
+     */
+    directory: string;
+}
+
+/**
  * A pinned input; a file reference conveys no read authority.
  */
 export type ContextSourceValue = { kind: "file"; file: WasmFileRefWire } | { kind: "attribute"; attribute: ContextAttribute };
+
+/**
+ * Admission barrier for every version-pinned file in a conversation message.
+ *
+ * Implementations must verify exact byte residency and access before Stream
+ * publishes references. The provider retains admitted versions independently.
+ */
+export type PrivateDirectoryEntryKind = "file" | "directory";
 
 /**
  * An authoritative attribute state, shared by prompt rebuilds and updates.
@@ -259,6 +309,50 @@ export interface ContextAttribute {
 export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
 
 /**
+ * Explicit finite discovery bounds, independent of the retained workspace count.
+ */
+export interface ContextDiscoveryLimits {
+    /**
+     * Combined directory entries inspected, including nonmatching names.
+     */
+    entries: number;
+    /**
+     * Combined directories visited, including instruction ancestor scopes.
+     */
+    directories: number;
+    /**
+     * Maximum frontmatter prefix bytes read per skill.
+     */
+    header_bytes: number;
+    /**
+     * Maximum complete instruction bytes per file.
+     */
+    instruction_bytes: number;
+}
+
+/**
+ * Frontmatter only; the body is not fetched or injected by discovery.
+ */
+export interface SkillMetadata {
+    /**
+     * Stable frontmatter name.
+     */
+    name: string;
+    /**
+     * Frontmatter description.
+     */
+    description: string;
+    /**
+     * Additional declarative frontmatter fields; no execution authority is inferred.
+     */
+    fields: Record<string, WasmModelJsonValue>;
+    /**
+     * Exact lazy body location and provenance.
+     */
+    source: PinnedContextPath;
+}
+
+/**
  * Host-approved selection and representation. Model suggestions need host policy approval.
  */
 export interface ContextSelection {
@@ -277,6 +371,39 @@ export interface ContextSelection {
 }
 
 /**
+ * Immutable discovery revision. Serialize this value through the existing admitted
+ * caller journal for restart; it contains no credentials or mutable provider handles.
+ */
+export interface DiscoveredContext {
+    /**
+     * Root-to-leaf instructions in declared root/filename order.
+     */
+    instructions: WasmFileRefWire[];
+    /**
+     * Skills in declared root and lexical directory order; duplicate names reject discovery.
+     */
+    skills: SkillMetadata[];
+}
+
+/**
+ * Immutable path selected by discovery; resolving it never follows a newer head.
+ */
+export interface PinnedContextPath {
+    /**
+     * Declared volume and read boundary.
+     */
+    root: ContextRoot;
+    /**
+     * Exact retained filesystem generation.
+     */
+    generation: WasmResourceRefWire & { kind: 'generation' };
+    /**
+     * Volume-relative path.
+     */
+    path: string;
+}
+
+/**
  * Mutable context assembled for one model step.
  */
 export interface Context {
@@ -291,9 +418,45 @@ export interface Context {
 }
 
 /**
+ * One lazily discovered name, without eager byte or ref transfer.
+ */
+export interface PrivateDirectoryEntry {
+    /**
+     * One normalized child name relative to the listed directory.
+     */
+    name: string;
+    /**
+     * Whether the name resolves to a regular file or another directory.
+     */
+    kind: PrivateDirectoryEntryKind;
+}
+
+/**
  * Ordered authority-resolution level from the runtime root to one invocation.
  */
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
+
+/**
+ * Ordinary declaration values used by both explicit reload and live bindings.
+ */
+export interface ContextDiscovery {
+    /**
+     * Ordered repository scopes.
+     */
+    instructions: InstructionScope[];
+    /**
+     * Ordered independent skill roots (builtins and editable skills can be separate).
+     */
+    skills: ContextRoot[];
+    /**
+     * Replaceable filenames and enablement policy.
+     */
+    policy: ContextDiscoveryPolicy;
+    /**
+     * Explicit work and byte limits.
+     */
+    limits: ContextDiscoveryLimits;
+}
 
 /**
  * Placement of source messages relative to existing context.
@@ -311,9 +474,42 @@ export interface WasmModelMessageInput {
 }
 
 /**
+ * Refresh timing selected by the embedding admitted workflow.
+ */
+export type ContextReloadPolicy = "explicit" | "next_request";
+
+/**
  * Rendering mode for the same immutable source state.
  */
 export type ContextRenderMode = "prompt" | "update";
+
+/**
+ * Replaceable discovery policy. Empty lists disable either discovery independently.
+ */
+export interface ContextDiscoveryPolicy {
+    /**
+     * Instruction filenames, evaluated in this order at each ancestor scope.
+     */
+    instruction_names: string[];
+    /**
+     * Skill entry filename. `None` disables skill discovery.
+     */
+    skill_name: string | undefined;
+}
+
+/**
+ * Repository instruction scope, evaluated from the declared root to the active directory.
+ */
+export interface InstructionScope {
+    /**
+     * Declared repository boundary.
+     */
+    root: ContextRoot;
+    /**
+     * Directory relative to that boundary; empty selects only root instructions.
+     */
+    active_directory: string;
+}
 
 /**
  * Stable wire identity used during compatibility handshakes.
@@ -339,6 +535,24 @@ export interface WasmModelWire {
     name: string;
     revision: string;
     options: WasmModelJsonValue;
+}
+
+export interface ContextDirectoryQuery {
+    root: ContextRoot;
+    path: string;
+    expected_generation: (WasmResourceRefWire & { kind: 'generation' }) | null;
+    after: string | undefined;
+    maximum_entries: number;
+}
+
+export interface ContextPathResult {
+    file: WasmFileRefWire;
+    bytes: Uint8Array;
+}
+
+export interface ContextReadQuery {
+    source: PinnedContextPath;
+    maximum_bytes: bigint;
 }
 
 export interface WasmBatchAdmissionInput {
@@ -714,6 +928,16 @@ export function applyContextProjection(context: Context, messages: readonly Wasm
 export function batchMemberOperationId(group: string, batch: string, index: number): string;
 
 /**
+ * Caller admits refresh through its ordinary workflow; this function starts no watcher.
+ */
+export function captureDiscoveredContext(declaration: ContextDiscovery, reader: ContextDiscoveryReader): Promise<DiscoveredContext>;
+
+/**
+ * Select an immutable revision using Rust's explicit or next-request refresh policy.
+ */
+export function contextForRequest(declaration: ContextDiscovery, reader: ContextDiscoveryReader, current: DiscoveredContext, reload: ContextReloadPolicy): Promise<DiscoveredContext>;
+
+/**
  * Decodes a generated aggregate kind using the native enum mapping.
  */
 export function decodeAggregateKind(value: number): any;
@@ -787,6 +1011,11 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 export function forkSeedFromReport(report: any): any;
 
 /**
+ * Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
+ */
+export function parseSkillMetadata(prefix: Uint8Array, source: PinnedContextPath): SkillMetadata;
+
+/**
  * Plans one deterministic conversation turn before any model or content
  * callback runs.  The reducer state and payload checks are shared with the
  * native filesystem memory host; JavaScript retains ownership of asynchronous
@@ -798,6 +1027,17 @@ export function prepareConversationTurn(conversation: any, operation_id: string,
  * Constructs the same canonical request bytes used by native providers.
  */
 export function prepareModelRequest(request: any, limits: any): Uint8Array;
+
+/**
+ * Projects a discovered revision using the native messages, placement and bounds.
+ * Discovery/body reads and their authority remain in ordinary provider bindings.
+ */
+export function projectDiscoveredContext(snapshot: DiscoveredContext, context: Context, placement: ContextPlacement, limits: WasmModelLimitsInput): Context;
+
+/**
+ * Ordinary bounded owner read of a discovered body; no model projection or execution is implied.
+ */
+export function readPinnedContextPath(source: PinnedContextPath, reader: ContextDiscoveryReader, maximum_bytes: number): Promise<ContextPathResult>;
 
 /**
  * Runs the canonical Rust conversation projection over bytes captured by the
@@ -974,6 +1214,8 @@ export interface InitOutput {
     readonly admitTask: (a: any) => [number, number, number];
     readonly applyContextProjection: (a: any, b: any, c: any, d: any, e: any) => [number, number, number];
     readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly captureDiscoveredContext: (a: any, b: any) => any;
+    readonly contextForRequest: (a: any, b: any, c: any, d: any) => any;
     readonly decodeAggregateKind: (a: number) => [number, number, number];
     readonly decodeApplyResponse: (a: number, b: number) => [number, number, number];
     readonly decodeAttachmentManifest: (a: any, b: number, c: number, d: number) => [number, number, number];
@@ -987,8 +1229,11 @@ export interface InitOutput {
     readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
+    readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
+    readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];

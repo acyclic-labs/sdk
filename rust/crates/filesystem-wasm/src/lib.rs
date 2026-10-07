@@ -648,6 +648,29 @@ mod bindings {
             Ok(id.digest().into_bytes().to_vec())
         }
 
+        /// Reopens an authenticated exact retained generation without moving the head.
+        #[wasm_bindgen]
+        pub async fn generation(&self, id: Vec<u8>) -> Result<BrowserGeneration, JsValue> {
+            let id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                &id,
+                "generation identity",
+            )?));
+            let engine = match &self.engine {
+                BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
+                    Box::pin(value.generation(id)).await.map_err(js_error)?,
+                ),
+                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
+                    BrowserGenerationEngine::IndexedDbOpfs(
+                        Box::pin(value.generation(id)).await.map_err(js_error)?,
+                    )
+                }
+                BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
+                    Box::pin(value.generation(id)).await.map_err(js_error)?,
+                ),
+            };
+            Ok(BrowserGeneration { engine })
+        }
+
         /// Synchronizes prior operations and returns the exact immutable head.
         #[wasm_bindgen]
         pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {

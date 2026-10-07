@@ -2,6 +2,8 @@
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput,
+  ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
+  DiscoveredContext, PinnedContextPath, SkillMetadata,
   InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
@@ -30,7 +32,10 @@ export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
 export type NativeJsonValue = WasmToolJsonValue;
 /** Pinned composition values generated from the production Rust types. */
 export type { Context, ContextAttribute, ContextSourceValue, ContextSelection,
-  ContextRepresentation, ContextExtent, ContextRenderMode, ContextPlacement } from "../generated/wasm/acyclic_harness_wasm.js";
+  ContextRepresentation, ContextExtent, ContextRenderMode, ContextPlacement,
+  ContextRoot, InstructionScope, ContextDiscoveryPolicy, ContextDiscoveryLimits,
+  ContextDiscovery, ContextReloadPolicy, ContextDiscoveryReader, ContextDirectoryQuery,
+  ContextReadQuery, ContextPathResult, DiscoveredContext, PinnedContextPath, SkillMetadata } from "../generated/wasm/acyclic_harness_wasm.js";
 export type TaskAdmissionWire = WasmTaskAdmissionWire;
 export type DurableBatchWire = WasmDurableBatchWire;
 export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
@@ -220,6 +225,41 @@ export class NativeContracts {
   /** Validate host-approved selections without granting read authority. */
   validateContextSelection(selection: ContextSelection, limits: Limits): void {
     this.native.validateContextSelection(selection, limits);
+  }
+
+  /** Parse only the bounded frontmatter prefix through the native Rust parser. */
+  parseSkillMetadata(prefix: Uint8Array, source: PinnedContextPath): SkillMetadata {
+    return freezeNative(normalizeNativeValue(this.native.parseSkillMetadata(prefix, source))) as SkillMetadata;
+  }
+
+  /** Call-scoped owner reads feeding the same Rust discovery implementation. */
+  async captureDiscoveredContext(declaration: ContextDiscovery, reader: ContextDiscoveryReader): Promise<DiscoveredContext> {
+    return freezeNative(normalizeNativeValue(await this.native.captureDiscoveredContext(declaration, reader))) as DiscoveredContext;
+  }
+
+  /** Select an immutable revision at the caller's admitted request boundary. */
+  async contextForRequest(declaration: ContextDiscovery, reader: ContextDiscoveryReader,
+    current: DiscoveredContext, reload: ContextReloadPolicy): Promise<DiscoveredContext> {
+    return freezeNative(normalizeNativeValue(await this.native.contextForRequest(declaration, reader, current, reload))) as DiscoveredContext;
+  }
+
+  /** Bounded pinned body read; the bytes belong to this result and remain a Uint8Array. */
+  async readPinnedContextPath(source: PinnedContextPath, reader: ContextDiscoveryReader,
+    maximumBytes: number): Promise<ContextPathResult> {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0 || maximumBytes > 0xffff_ffff) {
+      throw new RangeError("pinned context read bound is invalid");
+    }
+    const result = await this.native.readPinnedContextPath(source, reader, maximumBytes);
+    return Object.freeze({ file: freezeNative(normalizeNativeValue(result.file)) as ContextPathResult["file"],
+      bytes: Uint8Array.from(result.bytes) });
+  }
+
+  /** Project an immutable discovery revision using the same Rust source and bounds. */
+  projectDiscoveredContext(snapshot: DiscoveredContext, context: Context,
+    placement: ContextPlacement, limits: Limits): Context {
+    return freezeNative(normalizeNativeValue(this.native.projectDiscoveredContext(
+      snapshot, context, placement, limits,
+    ))) as Context;
   }
 
   /** Shared Rust projection placement and finite bounds; performs no effects. */

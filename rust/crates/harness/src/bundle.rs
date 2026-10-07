@@ -58,10 +58,6 @@ const CODING_TOOLS: &[(&str, &str)] = &[
         "Invoke an admitted Model Context Protocol tool.",
     ),
     (
-        "acyclic.skills",
-        "Load and apply a versioned runtime skill.",
-    ),
-    (
         "acyclic.delegation",
         "Dispatch or coordinate an admitted child task.",
     ),
@@ -272,6 +268,17 @@ impl HarnessBuilder {
     pub fn context(mut self, value: ContextPipeline) -> Self {
         self.context = value;
         self
+    }
+
+    /// Binds already captured declared instructions and skill metadata through
+    /// the ordinary context pipeline. Capture/reload is an explicit authorized
+    /// caller operation; construction performs no reads and grants no authority.
+    /// A later `context` call replaces these stages as well.
+    pub fn declared_context(mut self, snapshot: crate::context::DiscoveredContext) -> Result<Self> {
+        self.context = self.context.with(Arc::new(
+            snapshot.stage(crate::context::ContextPlacement::Prepend)?,
+        ));
+        Ok(self)
     }
 
     /// Selects the versioned tool registry.

@@ -42,6 +42,36 @@ try {
   const harness = await Harness.create(options);
   globalThis.fetch = originalFetch;
   const contracts = await NativeContracts.create();
+  const provider = { namespace: "browser", family: "filesystem", version: "2" };
+  const skillSource = {
+    root: { volume: { provider, id: "skills", class: "session_shared", owner: { kind: "session", id: "test" } }, directory: "" },
+    generation: { kind: "generation", provider, key: [1], version: "pinned" }, path: "inspect/SKILL.md",
+  };
+  const skill = contracts.parseSkillMetadata(new TextEncoder().encode(
+    "---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY"), skillSource);
+  const skillContext = contracts.projectDiscoveredContext({ instructions: [], skills: [skill] },
+    { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS);
+  if (skill.description !== "Inspect files" || skillContext.messages.length !== 1
+      || JSON.stringify(skillContext).includes("SECRET BODY")) throw new Error("skill metadata projection failed");
+  let invalidSkillRejected = false;
+  try { contracts.projectDiscoveredContext({ instructions: [], skills: [{ ...skill, name: "Invalid" }] },
+    { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS); }
+  catch { invalidSkillRejected = true; }
+  if (!invalidSkillRejected) throw new Error("forged skill snapshot accepted");
+  const { exerciseDiscovery } = await import("./discovery-consumer.mjs");
+  const { openBrowserFs, DEFAULT_OBJECT_CACHE_OPTIONS } = await import("/dist/browser.js");
+  const discoveryOptions = {
+    databaseName: `harness-discovery-${crypto.randomUUID()}`,
+    maximumObjectBytes: 1024 * 1024, objectAcceleration: "opfs",
+    objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+  };
+  let discoveryEngine = await openBrowserFs(discoveryOptions);
+  try { await exerciseDiscovery(discoveryEngine, "browser", async previous => {
+    previous.close();
+    discoveryEngine = await openBrowserFs(discoveryOptions);
+    return discoveryEngine;
+  }); }
+  finally { discoveryEngine.close(); }
   const role = new URL(location.href).searchParams.get("role") ?? "browser";
   const selection = { source: { kind: "attribute", attribute: {
     type_name: "example.role", type_revision: "1", state_revision: "2",

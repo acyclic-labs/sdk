@@ -809,6 +809,7 @@ impl TaskOutcomeRecord {
 /// publishes references. The provider retains admitted versions independently.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum PrivateDirectoryEntryKind {
     /// A named regular file; resolve its current immutable ref by path.
     File,
@@ -819,6 +820,7 @@ pub enum PrivateDirectoryEntryKind {
 /// One lazily discovered name, without eager byte or ref transfer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PrivateDirectoryEntry {
     /// One normalized child name relative to the listed directory.
     pub name: String,
@@ -829,8 +831,13 @@ pub struct PrivateDirectoryEntry {
 /// A bounded page from one exact owner-private generation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PrivateDirectoryPage {
     /// Exact immutable generation from which this page was read.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "WasmResourceRefWire & { kind: 'generation' }")
+    )]
     pub generation: GenerationRef,
     /// Ordered entries returned for the requested directory segment.
     pub entries: Vec<PrivateDirectoryEntry>,
@@ -869,6 +876,24 @@ impl PrivateDirectoryPage {
 
 /// Provider boundary that authenticates and reads immutable content refs.
 pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
+    /// Reads an authenticated bounded prefix without fetching the remaining body.
+    /// The supplied generation pins subsequent ordinary path reads. Providers
+    /// must authenticate the range and return at most the supplied byte bound.
+    fn read_private_prefix<'a>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _generation: &'a GenerationRef,
+        _maximum_bytes: u64,
+    ) -> ContentFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "bounded prefix reads are unavailable".into(),
+            ))
+        })
+    }
+
     /// Resolves and checks the exact referenced file version.
     fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>>;
 
@@ -1056,6 +1081,22 @@ impl CompositeContentVerifier {
 }
 
 impl ContentResidencyVerifier for CompositeContentVerifier {
+    fn read_private_prefix<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        generation: &'a GenerationRef,
+        maximum_bytes: u64,
+    ) -> ContentFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            self.directory_owner(volume, granted_prefix, path)
+                .await?
+                .read_private_prefix(volume, granted_prefix, path, generation, maximum_bytes)
+                .await
+        })
+    }
+
     fn list_private_directory<'a>(
         &'a self,
         volume: &'a VolumeRef,
