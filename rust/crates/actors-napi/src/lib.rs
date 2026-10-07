@@ -258,6 +258,7 @@ impl NativeActorsCancellation {
         Self::default()
     }
     /// Cancel attached operations.
+    #[napi]
     pub fn cancel(&self) {
         self.state.token.cancel();
     }
