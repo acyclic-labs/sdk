@@ -1,0 +1,22 @@
+{
+  "status": "prepared_not_run",
+  "artifact": "kani-exact-u32-f64-latest265-20261007",
+  "source_checkout": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/work/filesystem-main-port-latest265",
+  "source_revision": "f775b8465d836cf69b358f9fa9ebd8edbfa819db",
+  "source_status": "clean for rust/crates/filesystem/src/numeric.rs and src/lib.rs at capture",
+  "production_symbol": "acyclic_fs::exact_u32_from_f64",
+  "production_source": "rust/crates/filesystem/src/numeric.rs",
+  "harness": "src/bin/kani_exact_u32_f64.rs",
+  "theorem": "For every u64 IEEE-754 bit pattern interpreted as f64, exact_u32_from_f64 accepts iff the number is finite, integral, and in [0,u32::MAX]; on acceptance, the returned u32 re-embeds as the same numeric f64; otherwise it returns Err.",
+  "model_substitution": false,
+  "execution": {
+    "status": "deferred",
+    "reason": "Actors CBMC PTY 17660 / PID 1031718 remains active",
+    "planned_toolchain": "Kani 0.68 / CBMC 6.11 / nightly-2026-08-21"
+  },
+  "copied_source_sha256": {
+    "src/bin/kani_exact_u32_f64.rs": "4E4D0A887CEDB5B6A06E6B02C068A044EB667681DF79659E514AAFAAD8AF204F",
+    "source/numeric.rs": "51276AA1FF76487DF226F6C6000F951842DBF0F2FEE7948796B4FBDE8FF05551",
+    "source/lib.rs": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB"
+  }
+}

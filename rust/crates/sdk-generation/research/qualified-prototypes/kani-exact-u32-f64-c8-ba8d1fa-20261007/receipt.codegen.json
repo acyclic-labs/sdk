@@ -1,0 +1,21 @@
+{
+  "status": "codegen_pass_proof_not_run",
+  "source_checkout": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/work/filesystem-main-port-latest265",
+  "source_revision": "f775b8465d836cf69b358f9fa9ebd8edbfa819db",
+  "production_symbol": "acyclic_fs::exact_u32_from_f64",
+  "harness": "src/bin/kani_exact_u32_f64.rs",
+  "harness_sha256": "4E4D0A887CEDB5B6A06E6B02C068A044EB667681DF79659E514AAFAAD8AF204F",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21"
+  },
+  "command_mode": "cargo-kani --only-codegen -Z unstable-options",
+  "codegen_exit_code": 0,
+  "codegen_elapsed": "6m34s",
+  "verification": {
+    "status": "not_run",
+    "reason": "Actors CBMC PTY 17660 / PID 1031718 remains active"
+  },
+  "evidence": "audit/codegen-only.txt"
+}

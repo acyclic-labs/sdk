@@ -1,0 +1,13 @@
+{
+  "observed_utc": "2026-10-07T13:50:33.2119233Z",
+  "source_checkout": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\work\\filesystem-main-port-latest265",
+  "proof_receipt": "receipt.json",
+  "proof_source_revision": "f775b8465d836cf69b358f9fa9ebd8edbfa819db",
+  "current_checkout_head": "42874b98e8079c14a32981216b0b2d19e365dcf6",
+  "current_head_subject": "Derive filesystem boundary metadata from Rust",
+  "relevant_files_git_status": "clean",
+  "relevant_files_diff_from_proof_revision": "none",
+  "numeric_rs_sha256": "51276AA1FF76487DF226F6C6000F951842DBF0F2FEE7948796B4FBDE8FF05551",
+  "lib_rs_sha256": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB",
+  "interpretation": "Receipt remains bound to f775 launch snapshot. Current checkout tip is recorded separately; relevant production files retain the receipt hashes, but this observation does not retag the proof as a proof of the later commit."
+}

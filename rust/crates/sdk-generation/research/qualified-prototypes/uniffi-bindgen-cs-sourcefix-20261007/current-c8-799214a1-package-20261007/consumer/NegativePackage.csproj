@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <BaseIntermediateOutputPath>obj-negative\</BaseIntermediateOutputPath>
+    <OutputPath>bin-negative\</OutputPath>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="NegativePackage.cs" /><PackageReference Include="Acyclic.Actors" Version="0.2.0-c8.799214a1" /></ItemGroup>
+</Project>

@@ -1,11 +1,12 @@
 STREAM QUALIFICATION RAW RECEIPT
 Date: 2026-10-07
 Prototype root: Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007
+Primary research manifest: C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\kotlin-actors-all8\audit\stream-uniffi-source-minimality-20261007.md
 
 [toolchains]
 rustc: rustc 1.98.1 (48a229cea 2026-09-01)
 cargo: invoked as rustup run 1.98.1 cargo
-java: OpenJDK 17.0.14 Temurin
+java: OpenJDK 17.0.14 Temurin on Windows; OpenJDK 17.0.20.1 Ubuntu WSL
 maven: Apache Maven 3.9.9
 uniffi source: 0.31.0, MPL-2.0
 
@@ -18,60 +19,86 @@ StreamProvider::read/follow/children: lines 544-559
 StreamClient::children: lines 625-633
 Stream::read/follow: lines 814-841
 gRPC TLS client/service: rust\crates\stream\src\grpc.rs, Client::connect_with_ca_certificate and Service<P>
+prototype producer: Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\src\lib.rs
 remote fixture: Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\remote-fixture\src\main.rs
 
 [dependency and lock identity]
 acyclic-stream: 0.2.0, path dependency ../sdkgen-actors-c8-minimal/rust/crates/stream, feature grpc
 uniffi: 0.31.0, registry checksum b8c6dec3fc6645f71a16a3fa9ff57991028153bd194ca97f4b55e610c73ce66a
-Cargo.lock SHA256: 7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB
+prototype Cargo.lock SHA256: 7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB
 prototype Cargo.toml SHA256: 2C186AAE94FCFF2D99774EF453507CE0DD861C314C939828E2AB9A014720B9BD
 prototype src/lib.rs SHA256: 407A338212CF2B208D99280B0804C3F83FB4AE01315519CB671C3167B12F58D9
 prototype uniffi.toml SHA256: ADAB4F663D8E89E40167715922CBA7EAD525F9E110C9C55C7960E7C69A8CE824
 
 [maintained generator identity]
 source: Q:\sdk\work\actors-uniffi-generator-kotlin-nominal-20261007-v2\uniffi_bindgen-0.31.0
-Cargo.toml SHA256: 4DA1459C0D8A22407115033CAA3E5000BFA827E6ABD76D114ACF13BB80C1F1A9
+source license/version: MPL-2.0 / 0.31.0
+Kotlin generator Cargo.toml SHA256: 4DA1459C0D8A22407115033CAA3E5000BFA827E6ABD76D114ACF13BB80C1F1A9
 Kotlin generator mod.rs SHA256: 38F10E9858061AE0A7311197A5762FDF745707E03F98B0F941EBB31A765E6B22
 local wrapper Cargo.toml SHA256: CB49218D4925BEEB1BEB9B2CA584A786E3F51D06351320F72FCB4661A0188C2B
-local wrapper src/main.rs SHA256: 1CF38B84DEAB9F874D8686A2F5D7105368F444EE870F60266560E8743E27F84A
+local wrapper src/main.rs SHA256: 597B6BC68D6D7580861831DAFE24D1E41519E0D4C4674C28380B28E798C1BF02
 opaque-constructor patch receipt: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
 nominal/immutable patch receipt: 24DC53FC5EDC354A0368F0766B53D00FAD7FBFA2C8CA74483B4849B1BC4F15C3
 
+[source minimality]
+Handwritten Kotlin integration is limited to StreamFlows.kt, qualification probes, and compile-only PublicSurfaceProbe.kt. StreamFlows.kt has one generic cursor-to-Flow helper and three local/remote overloads; its only lifecycle logic is NonCancellable closeCursor() in finally. There are no Actors operation lists, Rust record mirrors, semantic predicates, callback stream implementations, recovery/replay/buffering logic, or translated ordering algorithms. The maintained generator source contains no Actors/Stream domain names. The generator wrapper passes an explicit uniffi.toml path; this is required for reproducible immutable-record policy discovery.
+
 [qualification commands and raw results]
-Binding comparison: maintained UniFFI async object methods generated suspend `next`/`closeCursor`; the Kotlin Flow layer is a thin adapter. No callback-interface stream or translated recovery layer was introduced.
-$ rustup run 1.98.1 cargo build --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\Cargo.toml
+$ rustup run 1.98.1 cargo build --locked --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\Cargo.toml
 Finished dev profile — PASS
 
-$ rustup run 1.98.1 cargo run --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\generator\Cargo.toml -- target\debug\actors_stream_uniffi_kotlin_prototype.dll generated-patched
-Finished dev profile; generated Kotlin — PASS
+$ rustup run 1.98.1 cargo run --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\generator\Cargo.toml -- target\debug\actors_stream_uniffi_kotlin_prototype.dll generated-patched2 Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\uniffi.toml
+Generated Kotlin with val records — PASS
 
-$ mvn -q -DskipTests package
-PASS
+$ mvn -DskipTests package
+Maven/JNA package compilation — PASS
 
 $ java -cp target/classes;<dependency classpath> research.stream.StreamFlowProbeKt
 STREAM_KOTLIN_FLOW_ORDERED_TYPED_PASS
 STREAM_KOTLIN_ACTIVE_ABORT_CLEANUP_PASS
 
-$ rustup run 1.98.1 cargo check --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\remote-fixture\Cargo.toml
-Finished dev profile — PASS
+$ wsl.exe -d Ubuntu; RUSTC_WRAPPER= CARGO_TARGET_DIR=target-linux rustup run 1.98.1 cargo build --locked
+Linux SO rebuilt from the same source/lock — PASS
 
-$ rustup run 1.98.1 cargo build --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\remote-fixture\Cargo.toml
-Finished dev profile — PASS
+$ wsl.exe -d Ubuntu -- java -cp actors-stream-uniffi-kotlin-prototype-0.0.0-linux.jar:<JDK17 dependency classpath> research.stream.StreamFlowProbeKt
+STREAM_KOTLIN_FLOW_ORDERED_TYPED_PASS
+STREAM_KOTLIN_ACTIVE_ABORT_CLEANUP_PASS
+
+$ rustup run 1.98.1 cargo build --locked --manifest-path Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\remote-fixture\Cargo.toml
+Windows TLS fixture — PASS
+
+$ wsl.exe -d Ubuntu; RUSTC_WRAPPER= CARGO_TARGET_DIR=target-linux rustup run 1.98.1 cargo build --locked --manifest-path remote-fixture/Cargo.toml
+Linux TLS fixture — PASS
 
 $ java -cp target/classes;<dependency classpath> research.stream.RemoteStreamFlowProbeKt <fixture-directory>
 STREAM_KOTLIN_REMOTE_TLS_ORDERED_TYPED_PASS
 STREAM_KOTLIN_REMOTE_RECOVERY_CURSOR_PASS
 STREAM_KOTLIN_REMOTE_SERVER_ABORT_PASS
 
+$ wsl.exe -d Ubuntu -- java -cp actors-stream-uniffi-kotlin-prototype-0.0.0-linux.jar:<JDK17 dependency classpath> research.stream.RemoteStreamFlowProbeKt <fixture-directory>
+STREAM_KOTLIN_REMOTE_TLS_ORDERED_TYPED_PASS
+STREAM_KOTLIN_REMOTE_RECOVERY_CURSOR_PASS
+STREAM_KOTLIN_REMOTE_SERVER_ABORT_PASS
+
+$ mvn -DskipTests package (with PublicSurfaceProbe.kt)
+Compile-only full-width and typed-error surface — PASS
+
 [artifact hashes]
-generated Kotlin SHA256: 74CBCD5820B94248021D689210E4478D98572D7A276EDB4D742E1EB3623E642E
+generated Kotlin SHA256: 2302DFE9C777CF3247E81848C9DF21D11107AF78F955A51A9F8317229418F25B
 Windows native DLL SHA256: 394D30E10400F725A0BFB8DA85342BAD7301B2D4FE8EE7F64350E1BE1DCFFB96
-installed consumer JAR SHA256: 89DE1B22146DB7394E6EA45CFA6F1A92F0FEC9DD6D1E3E55FD2BDFF4E2FD8E52
+Linux native SO SHA256: DF7E5BD07517D776EF9250F42ECEAC1D775458637F12A3C3881A4428053890B3
+Windows installed consumer JAR SHA256: B28EEB3D12A43A2147CAE1FC718448B87EC4EF553DD44725A5C4D460C813249F
+Linux installed consumer JAR SHA256: F548D44FE97A68A9F0074FA5A7B81C9889E03CA851C9A07B4ED0E14DE060A248
 Flow adapter SHA256: 569D4D6F3FD1AEDB58E2E93E01A380F94CA43204AF1222050F3AE5CB252C1751
 remote probe SHA256: 82E2FA0C159BF2349796A2C3EC7175F9459D6DFB0A57F7DA5B3BEF866AAD77BB
+full-width/error compile probe SHA256: 02D5CC2247A8507C49637D496762B6184AFA949E25D874B07FD5D8DCE3617A87
+Linux remote fixture executable SHA256: 677B0E48EB037BC825D61E497ECBA0C323FAE350FE2A5CEA8C64C88A5FF41C94
+Windows remote fixture source SHA256: 3E41E6DF7A8FA8B0321F938FD5809083CD258B972154D76303395A74CB2E1C29
 remote fixture Cargo.lock SHA256: E1BDBAD2CE744C1AA9A0594C626BCAB5E1C085CBCC633DBC37815FECB466E99D
-remote fixture src/main.rs SHA256: 3E41E6DF7A8FA8B0321F938FD5809083CD258B972154D76303395A74CB2E1C29
 remote fixture Cargo.toml SHA256: 9AAAAB6BC8319975CEEC92F0160BB2F5AC3A95C2B4F1B8ADA0DFEC4409F49728
 
+[platform provenance]
+Windows DLL and Linux SO were separately built from prototype src/lib.rs SHA 407A... and prototype lock SHA 7B2A..., with Rust 1.98.1. The Linux installed JAR was made by adding the SO under standard JNA resource root linux-x86-64/; the Windows JAR retains win32-x86-64/. No old native bytes were retagged. No macOS host or macOS native build is connected to this task; macOS installed-JAR qualification remains explicitly pending.
+
 [boundary]
-The original runtime backend is MemoryStream and remains separately receipt-scoped. The remote fixture uses the maintained Rust gRPC Service and Client over TLS, with a server-side RAII guard writing `follow-open` and `follow-closed` markers. The remote PASS marker therefore proves the server process observed the follow stream drop after Kotlin cancellation. No source-cohort retagging was performed. No product merge, publish, deployment, or global registry mutation was performed.
+MemoryStream local and TLS remote receipts are separate. The remote fixture uses the maintained Rust gRPC Service and Client over real TLS, checks exact Bearer fixture-token, and wraps the actual provider follow BoxStream with a server-side RAII guard writing follow-open/follow-closed. Remote PASS therefore proves server-observed stream drop after Kotlin cancellation. The PublicSurfaceProbe is compile-only and does not claim a fabricated U64-max record. No merge, publish, deployment, or global registry mutation was performed.Reusable Linux runner: run-linux-remote.sh SHA256 622C5FC0A29FC6DA85EFF3A35F964B7F131527A8306E04F18DBB132C001C2A66.

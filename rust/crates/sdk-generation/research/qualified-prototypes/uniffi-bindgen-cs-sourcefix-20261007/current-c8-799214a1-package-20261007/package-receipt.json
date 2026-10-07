@@ -1,0 +1,125 @@
+{
+  "schema": "acyclic.actors.uniffi.csharp.nupkg.qualification.v2",
+  "status": "QUALIFIED_PACKAGE_WINDOWS_LINUX_MACOS_RUNTIME_RECEIPT_MAC_ASSET_PENDING",
+  "generatedUtc": "2026-10-07",
+  "package": {
+    "id": "Acyclic.Actors",
+    "version": "0.2.0-c8.799214a1",
+    "archive": "out/Acyclic.Actors.0.2.0-c8.799214a1.nupkg",
+    "archiveSha256": "D59BFD515EEF721BE2715A868B503FB1E959F89314F18C2DD2715D5434377F1A",
+    "published": false,
+    "layout": [
+      "lib/net8.0/Acyclic.Actors.dll",
+      "runtimes/win-x64/native/acyclic_actors_uniffi.dll",
+      "runtimes/linux-x64/native/libacyclic_actors_uniffi.so"
+    ]
+  },
+  "producer": {
+    "revision": "7992141ec",
+    "revisionShort": "7992141a",
+    "domainSha256": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF",
+    "cargoLockSha256": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+    "linuxNativeSha256": "E47EB830DA559F9E747BCEB5F98A5CA11693DC03BC0C3E273757ED353ACD7F54",
+    "windowsNativeSha256": "D6A6C951B1F69EB448C3A975285657DD9506AB2516E03C6C85A42474068EE8F6",
+    "macosNativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1",
+    "sourceReceipt": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\current-c8-799214a1-20261007\\receipt.json"
+  },
+  "generator": {
+    "revision": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "binarySha256": "59A191F74BEC339C37BE15AB70B0BF638578665B33A057C2D6BA5171298D7F55",
+    "toolchain": "1.98.1",
+    "license": "MPL-2.0",
+    "patchScope": "generic templates only; no Actors-specific strings or semantic predicates"
+  },
+  "managed": {
+    "sourceSha256": "DB1AB1F6BFA65570E1B9EFBCDAB88CC8B0167A214E3DD65DFE027521F9B25907",
+    "assembly": "Acyclic.Actors.dll",
+    "assemblySha256": "1EAD2FFD43D23CDB7989E724A76CB4854C1DCDF716BFD680E52A8AAC862E109D",
+    "assemblySimpleName": "Acyclic.Actors",
+    "assemblyVersion": "0.2.0.0",
+    "framework": "net8.0",
+    "sdk": "8.0.425",
+    "build": "0 errors; generated-doc warnings only",
+    "publicRoots": 19
+  },
+  "files": {
+    "README.md": {
+      "sha256": "4B67E96B3789D261E9A3C767284EC5E769B9ACE7E7ABCFB3F354743E8E966EF0",
+      "bytes": 1420
+    },
+    "out\\Acyclic.Actors.0.2.0-c8.799214a1.nupkg": {
+      "sha256": "D59BFD515EEF721BE2715A868B503FB1E959F89314F18C2DD2715D5434377F1A",
+      "bytes": 4168435
+    },
+    "bin\\Release\\net8.0\\Acyclic.Actors.dll": {
+      "sha256": "1EAD2FFD43D23CDB7989E724A76CB4854C1DCDF716BFD680E52A8AAC862E109D",
+      "bytes": 128512
+    },
+    "native\\win-x64\\acyclic_actors_uniffi.dll": {
+      "sha256": "D6A6C951B1F69EB448C3A975285657DD9506AB2516E03C6C85A42474068EE8F6",
+      "bytes": 4580864
+    },
+    "native\\linux-x64\\libacyclic_actors_uniffi.so": {
+      "sha256": "E47EB830DA559F9E747BCEB5F98A5CA11693DC03BC0C3E273757ED353ACD7F54",
+      "bytes": 6538232
+    },
+    "consumer\\windows-all8.log": {
+      "sha256": "B634FB9E8BF186099D80DDE27FE520B66BFF33EBDDD89A197E87A867FD0FE856",
+      "bytes": 64
+    },
+    "consumer\\windows-u64.log": {
+      "sha256": "7F7DF5D9A17FDC2A0BDB84277550BE6EDC0ABBEF27A092EA6A69B8AF870B6365",
+      "bytes": 111
+    },
+    "consumer\\windows-cancellation.log": {
+      "sha256": "A6665A5AD01BC4F8C08FCE269E3DB9347C3FAFC91CABE32E1DC0A649F5046D2F",
+      "bytes": 343
+    },
+    "consumer\\linux-all8.log": {
+      "sha256": "AB55EF716CDD3BB1E0BD6D6BEE8BD17C302356EC03BC20D4E28D89E7E7633CAF",
+      "bytes": 63
+    },
+    "consumer\\linux-u64.log": {
+      "sha256": "1E41B06896F148BA65A679C2D29E6447D7A43BCE27C6C912E0E5E989471AD9BA",
+      "bytes": 110
+    },
+    "consumer\\linux-cancellation.log": {
+      "sha256": "5C77141D8FE20F9CDCBB4DF2BABE02120627D3529F22B0B736AB611AE7193D32",
+      "bytes": 345
+    },
+    "consumer\\negative-build.log": {
+      "sha256": "674203A7DD57DCBBA0B912B8B45BE827CC98F8326A09549B76214DA1A0CB6AAE",
+      "bytes": 4281
+    }
+  },
+  "checks": {
+    "windows": {
+      "all8": "PASS",
+      "fullU64": "PASS",
+      "cancellation": "PASS; started=9 aborted=9 active=0; async map baseline=0 peaks=1,1,1",
+      "externalConsumer": "PackageReference restore from local nupkg; win-x64 native asset"
+    },
+    "linux": {
+      "all8": "PASS",
+      "fullU64": "PASS",
+      "cancellation": "PASS; started=12 aborted=12 active=0; async map baseline=0 peaks=1,1,1",
+      "externalConsumer": "PackageReference restore from local nupkg under WSL; Linux native asset extracted from package (SDK RID restore unavailable offline)"
+    },
+    "negative": {
+      "result": "EXPECTED_FAILURES",
+      "diagnostics": [
+        "CS1729 raw ActorsClient constructor",
+        "CS8852 readonly Header.Name",
+        "CS0029 Header to ActorLimits",
+        "CS0029 Header to string"
+      ],
+      "compileExit": 1
+    },
+    "macos": {
+      "runtime": "PASS in immutable 799 receipt against exact managed source/assembly and native hash",
+      "packageAsset": "PENDING exact macOS dylib unavailable on Windows packaging host; stale dylibs rejected by hash",
+      "expectedNativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1"
+    }
+  },
+  "provenance": "Fresh package consumers are bound to this package archive and current 799 producer/generator identities. The immutable 799 receipt remains unchanged and is referenced for prior three-platform runtime evidence; no stale package receipt was relabeled."
+}

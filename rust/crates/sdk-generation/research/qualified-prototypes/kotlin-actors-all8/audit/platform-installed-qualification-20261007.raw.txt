@@ -1,0 +1,42 @@
+STREAM UNIFFI INSTALLED PLATFORM QUALIFICATION RAW
+Date: 2026-10-07
+Cohort source: Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\src\lib.rs SHA256 407A338212CF2B208D99280B0804C3F83FB4AE01315519CB671C3167B12F58D9
+Cohort Cargo.lock SHA256 7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB
+Generated Kotlin SHA256 2302DFE9C777CF3247E81848C9DF21D11107AF78F955A51A9F8317229418F25B (StreamRecord fields val; sequence/committedAtMicros ULong)
+
+WINDOWS installed consumer target/actors-stream-uniffi-kotlin-prototype-0.0.0.jar
+JAR SHA256 B28EEB3D12A43A2147CAE1FC718448B87EC4EF553DD44725A5C4D460C813249F
+Native resource win32-x86-64/actors_stream_uniffi_kotlin_prototype.dll
+DLL SHA256 394D30E10400F725A0BFB8DA85342BAD7301B2D4FE8EE7F64350E1BE1DCFFB96
+java -cp target/classes;<dependency classpath> research.stream.StreamFlowProbeKt
+STREAM_KOTLIN_FLOW_ORDERED_TYPED_PASS
+STREAM_KOTLIN_ACTIVE_ABORT_CLEANUP_PASS
+java -cp target/classes;<dependency classpath> research.stream.RemoteStreamFlowProbeKt <fixture-directory>
+STREAM_KOTLIN_REMOTE_TLS_ORDERED_TYPED_PASS
+STREAM_KOTLIN_REMOTE_RECOVERY_CURSOR_PASS
+STREAM_KOTLIN_REMOTE_SERVER_ABORT_PASS
+follow-open=present
+follow-closed=present
+
+LINUX installed consumer target/actors-stream-uniffi-kotlin-prototype-0.0.0-linux.jar
+JAR SHA256 F548D44FE97A68A9F0074FA5A7B81C9889E03CA851C9A07B4ED0E14DE060A248
+Native resource linux-x86-64/libactors_stream_uniffi_kotlin_prototype.so
+SO SHA256 DF7E5BD07517D776EF9250F42ECEAC1D775458637F12A3C3881A4428053890B3
+wsl Ubuntu; OpenJDK 17.0.20.1; java -cp <linux-installed-jar>:<JDK17 dependency classpath> research.stream.StreamFlowProbeKt
+STREAM_KOTLIN_FLOW_ORDERED_TYPED_PASS
+STREAM_KOTLIN_ACTIVE_ABORT_CLEANUP_PASS
+wsl Ubuntu; java -cp <linux-installed-jar>:<JDK17 dependency classpath> research.stream.RemoteStreamFlowProbeKt <fixture-directory>
+STREAM_KOTLIN_REMOTE_TLS_ORDERED_TYPED_PASS
+STREAM_KOTLIN_REMOTE_RECOVERY_CURSOR_PASS
+STREAM_KOTLIN_REMOTE_SERVER_ABORT_PASS
+follow-open=present
+follow-closed=present
+Linux fixture executable SHA256 677B0E48EB037BC825D61E497ECBA0C323FAE350FE2A5CEA8C64C88A5FF41C94
+
+COMPILE-ONLY PUBLIC SURFACE
+mvn -DskipTests package with PublicSurfaceProbe.kt
+PASS: all public local/remote append/read/follow/children/activeRecordCursors and cursor next/closeCursor compile; ULong.MAX_VALUE and UInt.MAX_VALUE accepted; StreamRecord/StreamChild fields compile; StreamBridgeException.Stream and Closed are exhaustively handled.
+PublicSurfaceProbe SHA256 02D5CC2247A8507C49637D496762B6184AFA949E25D874B07FD5D8DCE3617A87
+
+MACOS
+No connected macOS host or macOS native compiler is available in this task. No macOS JAR/resource hash is claimed or borrowed from another cohort.

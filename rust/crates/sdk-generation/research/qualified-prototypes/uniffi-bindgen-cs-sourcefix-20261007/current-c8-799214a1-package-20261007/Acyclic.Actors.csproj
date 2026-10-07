@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Acyclic.Actors</AssemblyName>
+    <RootNamespace>Acyclic.Actors</RootNamespace>
+    <Version>0.2.0-c8.799214a1</Version>
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <FileVersion>0.2.0.0</FileVersion>
+    <InformationalVersion>0.2.0-c8.799214a1</InformationalVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>Acyclic.Actors</PackageId>
+    <Authors>Rust Foundation Actors</Authors>
+    <Description>Generated C# binding for the Rust-owned Actors UniFFI facade.</Description>
+    <PackageTags>rust actors uniffi csharp</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <RepositoryUrl>https://github.com/NordSecurity/uniffi-bindgen-cs</RepositoryUrl>
+    <RepositoryCommit>e10ce410eb3a10cc19c7928b93ea8d84e038c034</RepositoryCommit>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageOutputPath>$(MSBuildProjectDirectory)\out</PackageOutputPath>
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="src\Acyclic.Actors.cs" />
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <None Include="native\win-x64\acyclic_actors_uniffi.dll" Pack="true" PackagePath="runtimes\win-x64\native\acyclic_actors_uniffi.dll" />
+    <None Include="native\linux-x64\libacyclic_actors_uniffi.so" Pack="true" PackagePath="runtimes\linux-x64\native\libacyclic_actors_uniffi.so" />
+  </ItemGroup>
+</Project>
+
+
