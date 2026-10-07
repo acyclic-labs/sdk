@@ -16,6 +16,7 @@ const buildInputsSchema = "acyclic.stream.native-build-inputs.v3";
 const buildInputsReceiptSchema = "acyclic.stream.native-build-inputs-receipt.v1";
 const generationManifestName = "generation-manifest.json";
 const buildInputsReceiptName = "stream-native-build-inputs.receipt.json";
+const cargoCacheTag = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n";
 const require = createRequire(import.meta.url);
 const sourceRoots = [
   "Cargo.toml",
@@ -158,6 +159,22 @@ function optionalCommandIdentity(command, args) {
 
 function envValue(name, environment = process.env) {
   return Object.prototype.hasOwnProperty.call(environment, name) ? environment[name] : null;
+}
+
+export async function ensureCargoTargetDirectory(targetDir) {
+  await mkdir(targetDir, { recursive: true });
+  const tagPath = resolve(targetDir, "CACHEDIR.TAG");
+  try {
+    const existing = (await readFile(tagPath)).toString("utf8");
+    if (existing !== cargoCacheTag) throw new Error(`native target directory has an invalid ${tagPath}`);
+    return;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if ((await readdir(targetDir)).length !== 0) {
+    throw new Error(`native target directory ${targetDir} is pre-existing without a valid CACHEDIR.TAG`);
+  }
+  await writeFile(tagPath, cargoCacheTag);
 }
 
 function splitRustflags(value) {
@@ -738,6 +755,7 @@ async function build(options) {
   const revision = sourceRevision();
   const source = await sourceSnapshot();
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
+  await ensureCargoTargetDirectory(targetDir);
   const attestedInputs = await withDeterministicRustflags(root, targetDir, options.target, async () => {
     const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
     const rootManifest = await rootPackageJson();

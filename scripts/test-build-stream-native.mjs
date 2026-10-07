@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, linkerInputs, normalizeBuildInputs, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -414,5 +414,22 @@ test("native capture restores nested wrappers and PATH and receipts retain the i
     assert.equal(process.env.PATH, prior.PATH);
   } finally {
     restore();
+  }
+});
+
+test("native builds create a Cargo cache tag only for an empty producer target directory", async () => {
+  const empty = await mkdtemp(resolve(tmpdir(), "stream-native-target-tag-test-"));
+  const populated = await mkdtemp(resolve(tmpdir(), "stream-native-target-untagged-test-"));
+  try {
+    await rm(empty, { recursive: true, force: true });
+    await ensureCargoTargetDirectory(empty);
+    const tag = (await readFile(resolve(empty, "CACHEDIR.TAG"))).toString("utf8");
+    assert.match(tag, /^Signature: 8a477f597d28d172789f06886806bc55\n/u);
+    await ensureCargoTargetDirectory(empty);
+    await writeFile(resolve(populated, "foreign.txt"), "foreign");
+    await assert.rejects(ensureCargoTargetDirectory(populated), /pre-existing without a valid CACHEDIR\.TAG/u);
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+    await rm(populated, { recursive: true, force: true });
   }
 });
