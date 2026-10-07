@@ -13,6 +13,7 @@ node_modules/
 # Actors native artifacts are release-built and attested by build-actors-native.mjs.
 /typescript/packages/actors/generated/native/*
 !/typescript/packages/actors/generated/native/
+/native-bundle/
 !/typescript/packages/filesystem/generated/wasm/.npmignore
 !/typescript/packages/filesystem/generated/wasm/package.json
 # Keep the Rust-generated type surface available to clean standalone project
