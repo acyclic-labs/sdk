@@ -26,7 +26,7 @@ use crate::storage::{
 };
 use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +44,9 @@ const MAXIMUM_RESIDENT_BYTES: u64 = 4 * 1_024 * 1_024;
 // window and a drain step up to a whole segment, so the spill shrinks to
 // empty, and its file is reused, however long publication is deferred.
 const MAXIMUM_SPILL_BYTES: u64 = 1_024 * 1_024 * 1_024;
+// Identities remembered as drained since the last sweep. Past this many the
+// memory starts over, so it stays bounded however long the engine runs.
+const MAXIMUM_DRAINED_IDENTITIES: usize = 4_096;
 
 enum Staged {
     /// Held in memory. `referenced` records a read since the window last
@@ -142,6 +145,13 @@ struct Index {
     // Append offset of the spill file; space is reused only once no staged
     // object remains spilled.
     spill_end: u64,
+    // Objects the durable provider acknowledged while the collection's sweep
+    // count was `drained_at`. Only a sweep removes a durable object, so while
+    // the count is unchanged each is still durable, and staging one again
+    // (as every new file restages the shared default metadata) needs no
+    // second write.
+    drained: HashSet<ObjectId, BuildHasherDefault<IdentityHasher>>,
+    drained_at: u64,
 }
 
 impl Index {
@@ -220,7 +230,38 @@ impl Index {
         self.spill_end = offset;
     }
 
-    /// Forgets one object the durable provider has acknowledged.
+    /// Forgets one object the durable provider has acknowledged, and
+    /// remembers it as drained.
+    fn acknowledge(&mut self, object_id: ObjectId) {
+        self.remove(object_id);
+        if self.drained.len() >= MAXIMUM_DRAINED_IDENTITIES {
+            self.drained.clear();
+        }
+        self.drained.insert(object_id);
+    }
+
+    /// Splits `targets` into the staged objects drained while the sweep
+    /// count was `sweeps`, which leave staging already durable, and the rest.
+    /// A sweep since forgets every drained identity.
+    fn take_drained(
+        &mut self,
+        targets: Vec<ObjectId>,
+        sweeps: u64,
+    ) -> (Vec<ObjectId>, Vec<ObjectId>) {
+        if self.drained_at != sweeps {
+            self.drained.clear();
+            self.drained_at = sweeps;
+        }
+        let (durable, targets): (Vec<_>, Vec<_>) = targets.into_iter().partition(|object_id| {
+            self.drained.contains(object_id) && self.objects.contains_key(object_id)
+        });
+        for &object_id in &durable {
+            self.remove(object_id);
+        }
+        (durable, targets)
+    }
+
+    /// Forgets one staged object.
     fn remove(&mut self, object_id: ObjectId) {
         match self.objects.remove(&object_id) {
             Some(Staged::Resident { bytes, order, .. }) => {
@@ -440,6 +481,11 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     /// staging only once the provider acknowledges it, so a failed drain
     /// keeps the remainder private and retryable. The spill file is reused
     /// once no staged object remains spilled.
+    ///
+    /// A target drained since the last sweep leaves staging unwritten: the
+    /// caller's `unswept` keeps any sweep from running until the record
+    /// naming it is written, and a running collection is told it is being
+    /// kept, exactly as if it were written again.
     async fn drain_locked(
         &self,
         unswept: &crate::collection::Unswept,
@@ -448,6 +494,10 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         let mut work = WorkCounters::default();
+        let (durable, targets) = self
+            .index_mut()
+            .take_drained(targets, self.collection.sweeps());
+        self.collection.writing(unswept, durable);
         let mut targets = targets.into_iter().peekable();
         loop {
             cancellation
@@ -525,7 +575,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 .map_err(|error| ObjectFailure::new(error.into(), work))?;
             let mut index = self.index_mut();
             for write in &writes {
-                index.remove(write.object_id);
+                index.acknowledge(write.object_id);
             }
         }
         let truncate = {
@@ -1248,6 +1298,77 @@ mod tests {
         for object_id in superseded {
             assert!(!reopen_contains(directory.path(), &[object_id]).await?);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn each_publication_writes_only_what_is_not_already_durable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        // Every new file restages the same default metadata; each
+        // publication must write only its new objects, so the work per
+        // publication stays constant however many came before.
+        let (shared, shared_bytes) = blob(Bytes::from_static(b"shared metadata"));
+        let publish = |index: usize| {
+            let store = &store;
+            let token = &token;
+            let shared_bytes = shared_bytes.clone();
+            async move {
+                let (fresh, fresh_bytes) = blob(Bytes::from(format!("file body {index:04}")));
+                store
+                    .put(shared, shared_bytes, WorkBudget::UNBOUNDED, token)
+                    .await?;
+                store
+                    .put(fresh, fresh_bytes, WorkBudget::UNBOUNDED, token)
+                    .await?;
+                let flushed = store
+                    .flush_before_publish(
+                        PublicationScope::Closure {
+                            objects: &[shared, fresh],
+                            proven_at: store.collection.sweeps(),
+                        },
+                        WorkBudget::UNBOUNDED,
+                        token,
+                    )
+                    .await?;
+                Ok::<_, Box<dyn std::error::Error>>((fresh, flushed.work))
+            }
+        };
+        let (_, first) = publish(0).await?;
+        assert_eq!(first.object_bytes_written, 15 + 14);
+        let mut published = Vec::new();
+        for index in 1..32 {
+            let (fresh, work) = publish(index).await?;
+            assert_eq!(work.backend_write_operations, 1);
+            assert_eq!(work.backend_read_operations, 0);
+            assert_eq!(work.object_bytes_written, 14);
+            assert!(store.index().objects.is_empty());
+            published.push(fresh);
+        }
+
+        // A sweep may have removed it, so the next publication writes it.
+        let collecting = store.collection.begin().await;
+        let (gate, _) = collecting.sweepable(vec![shared]).await;
+        collecting.sweeping(shared);
+        provider
+            .delete(acyclic_objects::v2::wire::DeleteObjectRequest {
+                bucket: Some(acyclic_objects::v2::wire::BucketRef {
+                    name: "staged-test".to_owned(),
+                }),
+                object_key: crate::distributed::object_key(shared),
+                ..Default::default()
+            })
+            .await?;
+        drop(gate);
+        drop(collecting);
+        let (fresh, work) = publish(32).await?;
+        assert_eq!(work.object_bytes_written, 15 + 14);
+        published.extend([shared, fresh]);
+        drop(store);
+        drop(provider);
+        assert!(reopen_contains(directory.path(), &published).await?);
         Ok(())
     }
 
