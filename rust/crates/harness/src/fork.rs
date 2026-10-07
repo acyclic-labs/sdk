@@ -727,7 +727,7 @@ impl ResourceRevision {
             {
                 volume.validate()?;
                 generation.validate()?;
-                if paths.len() > MAX_FORK_RESOURCES {
+                if paths.len() as u64 > MAX_FORK_RESOURCES as u64 {
                     return Err(Error::Invalid("too many scratch paths".into()));
                 }
                 for path in paths {

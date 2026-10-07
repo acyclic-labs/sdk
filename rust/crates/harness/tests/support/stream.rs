@@ -1,5 +1,8 @@
 //! Shared Stream fault fixture; all successful operations use the real provider.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared fault fixtures expose controls used by different test modules"
+)]
 use acyclic_stream::{AppendOutcome, MemoryStream, StreamError, StreamProvider};
 use bytes::Bytes;
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";

@@ -1,6 +1,9 @@
 //! Registered task checkpoint recovery through real durable-local providers.
 #![cfg(feature = "filesystem-local")]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "durable recovery scenarios retain setup, fault injection and reopen assertions together"
+)]
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::context::ContextPipeline;
@@ -353,7 +356,6 @@ async fn worker_pinned_policy_model_binding_survives_reopen() -> Result<()> {
     worker_restart(WorkerCommand::PolicyModel).await
 }
 
-#[allow(clippy::too_many_lines)]
 async fn resolve_worker_approval<P, A, O>(
     stream: &StreamClient<P>,
     filesystem: Arc<FilesystemHost<A, O>>,
