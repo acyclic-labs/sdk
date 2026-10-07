@@ -381,7 +381,7 @@ function isMissingGeneratedLoader(error: unknown): boolean {
   if (requested === undefined) return false;
   if (requested === "../generated/native/binding.cjs") {
     const importer = firstLine.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
-    return importer !== undefined && /[\\/]dist[\\/]client\.js$/i.test(importer);
+    return importer !== undefined && normalizeModulePath(importer) === normalizeModulePath(import.meta.url);
   }
   // Only the package's own generated loader is optional. Matching a path
   // suffix would incorrectly turn a broken transitive dependency into a
