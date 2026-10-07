@@ -728,8 +728,7 @@ async function build(options) {
   const source = await sourceSnapshot();
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
   const attestedInputs = await withDeterministicRustflags(root, targetDir, options.target, async () => {
-    let attestedInputs;
-    attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
+    const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
     const rootManifest = await rootPackageJson();
     const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
     if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
