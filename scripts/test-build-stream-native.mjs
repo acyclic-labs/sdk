@@ -45,6 +45,21 @@ test("native staging rejects stale package files", async () => {
   }
 });
 
+test("native staging rejects symlinked or non-regular artifacts", async () => {
+  const output = await mkdtemp(resolve(tmpdir(), "stream-native-symlink-output-"));
+  const target = await mkdtemp(resolve(tmpdir(), "stream-native-symlink-target-"));
+  const link = resolve(output, "binding.cjs");
+  try {
+    await writeFile(resolve(target, "binding.cjs"), "external\n");
+    await symlink(resolve(target, "binding.cjs"), link, "file");
+    await assert.rejects(assertExactInventory(output, new Set(["binding.cjs"])), /symlink or reparse point/);
+  } finally {
+    await rm(link, { recursive: true, force: true });
+    await rm(output, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
+});
+
 test("native publication refuses an unowned output without mutating either directory", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "stream-native-publication-"));
   const candidate = resolve(parent, "candidate");

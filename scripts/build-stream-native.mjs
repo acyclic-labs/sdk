@@ -701,6 +701,8 @@ export async function assertExactInventory(output, allowed) {
   const entries = await readdir(output, { withFileTypes: true });
   const extras = entries.map(entry => entry.name).filter(name => !allowed.has(name));
   if (extras.length > 0) throw new Error(`native bundle ${output} contains unstated files: ${extras.join(", ")}`);
+  const nonRegular = entries.filter(entry => allowed.has(entry.name) && (entry.isSymbolicLink() || !entry.isFile())).map(entry => entry.name);
+  if (nonRegular.length > 0) throw new Error(`native bundle ${output} contains a symlink or reparse point/non-regular artifact: ${nonRegular.join(", ")}`);
 }
 
 async function bundleArtifacts(output) {
