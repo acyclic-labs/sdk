@@ -7,8 +7,7 @@ use crate::{
     PolicyLayer, Result,
     conversation::{
         ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
-        ModelContextSelection, VolumeOperation, VolumeOwner, VolumeRef,
-        is_internal_path,
+        ModelContextSelection, VolumeOperation, VolumeOwner, VolumeRef, is_internal_path,
     },
     fork::{ForkSeed, InheritedConversationPrefix},
     interaction::{InteractionOutcome, InteractionResolution, InteractionTicket},

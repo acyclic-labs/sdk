@@ -350,7 +350,8 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        }).await?,
+        })
+        .await?,
         JoinOutcome::Conflicted { .. }
     ));
     root.write_text("/keep", "inherited").await?;
