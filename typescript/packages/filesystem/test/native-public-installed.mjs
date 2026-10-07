@@ -19,7 +19,6 @@ const engine = await native.openNativeFs({
   root: engineRoot,
   objectCache: {
     ...native.DEFAULT_OBJECT_CACHE_OPTIONS,
-    maximumBytes: Number(native.DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
   },
 });
 

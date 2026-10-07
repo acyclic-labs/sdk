@@ -192,18 +192,9 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
   if (options.root.length === 0) {
     throw new RangeError("native filesystem root must be non-empty");
   }
-  // The generated N-API binding admits the u32 cache limits through Rust's
-  // exact numeric converter. `maximumBytes` is the one public number that this
-  // adapter converts to bigint, so retain its lossless conversion guard here.
-  requirePositiveSafeInteger(options.objectCache.maximumBytes, "maximum cache bytes");
   const binding = await bindings();
   return adaptFs(
-    await binding.NativeFs.open(options.root, {
-      maximumEntries: options.objectCache.maximumEntries,
-      maximumBytes: BigInt(options.objectCache.maximumBytes),
-      maximumInFlight: options.objectCache.maximumInFlight,
-      maximumWaitersPerObject: options.objectCache.maximumWaitersPerObject,
-    }),
+    await binding.NativeFs.open(options.root, options.objectCache),
   );
 }
 
@@ -997,15 +988,6 @@ function parseWork(value: string): WorkCounters {
   }
   return result;
 }
-
-
-
-function requirePositiveSafeInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
-}
-
 function nativeMount(
   targetPlatform: string,
   available: boolean,

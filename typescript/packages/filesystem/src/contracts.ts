@@ -887,20 +887,12 @@ export interface NativeFsOptions {
 
 export interface ObjectCacheOptions {
   readonly maximumEntries: number;
-  readonly maximumBytes: number;
+  readonly maximumBytes: bigint;
   readonly maximumInFlight: number;
   readonly maximumWaitersPerObject: number;
 }
 
-const generatedCacheBytes = Number(GENERATED_OBJECT_CACHE_OPTIONS.maximumBytes);
-if (!Number.isSafeInteger(generatedCacheBytes)) {
-  throw new RangeError("Rust object cache default exceeds JavaScript's safe integer range");
-}
-
-export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = Object.freeze({
-  ...GENERATED_OBJECT_CACHE_OPTIONS,
-  maximumBytes: generatedCacheBytes,
-});
+export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = GENERATED_OBJECT_CACHE_OPTIONS;
 
 export interface ObjectCacheStats {
   readonly hits: bigint;
