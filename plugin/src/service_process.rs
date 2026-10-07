@@ -1,6 +1,7 @@
 //! Service identity, locking, lifecycle, doctor, and the control client.
 
 use super::*;
+use tracing::Instrument as _;
 
 pub(crate) fn default_data_directory() -> PathBuf {
     #[cfg(windows)]
@@ -625,6 +626,9 @@ pub(crate) fn doctor_report(
             )
         },
     ));
+    if let Some(filters) = obs::active_filters() {
+        checks.push(doctor_check("tracing", "pass", filters));
+    }
     let ok = checks
         .iter()
         .all(|check| check.get("status").and_then(Value::as_str) != Some("fail"));
@@ -1076,6 +1080,12 @@ pub(crate) async fn service_is_ready_for_identity(
     }
 }
 
+#[tracing::instrument(
+    target = "acyclic_plugin",
+    name = "acyclic.plugin.ensure_service",
+    level = "info",
+    skip_all
+)]
 pub(crate) async fn ensure_service(data: &Path) -> Result<(), String> {
     fs::create_dir_all(data).map_err(display)?;
     let identity = service_identity(data)?;
@@ -1221,7 +1231,13 @@ pub(crate) async fn run_rpc_proxy(
             continue;
         };
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        let response = match method {
+        let span = tracing::info_span!(
+            target: "acyclic_plugin",
+            "acyclic.plugin.rpc",
+            method = obs::rpc_method(method),
+            outcome = tracing::field::Empty,
+        );
+        let response = async { Ok::<_, String>(match method {
             "initialize" => {
                 json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic","version":env!("CARGO_PKG_VERSION")}}})
             }
@@ -1253,7 +1269,9 @@ pub(crate) async fn run_rpc_proxy(
                 } else {
                     return Err("this Acyclic MCP endpoint does not expose that tool".to_owned());
                 };
-                match send_control_request(data, &forwarded).await {
+                let result = send_control_request(data, &forwarded).await;
+                obs::record_outcome(&result);
+                match result {
                     Ok(result) => {
                         json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":serde_json::to_string(&result).map_err(display)?}]}})
                     }
@@ -1265,7 +1283,9 @@ pub(crate) async fn run_rpc_proxy(
             _ => {
                 json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}})
             }
-        };
+        })}
+        .instrument(span)
+        .await?;
         serde_json::to_writer(&mut writer, &response).map_err(display)?;
         writer.write_all(b"\n").map_err(display)?;
         writer.flush().map_err(display)?;

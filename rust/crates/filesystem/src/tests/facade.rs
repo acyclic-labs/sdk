@@ -241,6 +241,7 @@ async fn workspace_fork_reads_the_verified_source_root_once()
             inner: crate::memory::MemoryObjectStore::default(),
             tracked: Arc::clone(&tracked),
             reads: Arc::clone(&reads),
+            unreadable: Arc::default(),
         },
         EmbeddedCapabilities::MEMORY,
     );
@@ -270,6 +271,66 @@ async fn workspace_fork_reads_the_verified_source_root_once()
         1,
         "fork must read the source root to construct the child, but must not prove its closure twice"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tracked = Arc::new(std::sync::Mutex::new(None));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let unreadable = Arc::new(std::sync::Mutex::new(None));
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        CountingObjectStore {
+            inner: crate::memory::MemoryObjectStore::default(),
+            tracked: Arc::clone(&tracked),
+            reads: Arc::clone(&reads),
+            unreadable: Arc::clone(&unreadable),
+        },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs.create_workspace("retention-proof").await?;
+    workspace
+        .write("/payload", Bytes::from(vec![7_u8; 128 * 1_024]))
+        .await?;
+    let generation = workspace.head().await?;
+    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: generation.id().digest(),
+    });
+
+    reads.store(0, Ordering::Relaxed);
+    generation.pin("first").await?;
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        1,
+        "a new pin proves its closure"
+    );
+    generation.pin("first").await?;
+    generation.pin("second").await?;
+    assert_eq!(reads.load(Ordering::Relaxed), 2, "only the new pin proves");
+    generation.pin("first").await?;
+    generation.pin("second").await?;
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        2,
+        "an identical live retention is answered without another proof"
+    );
+
+    // Negative control: once every content chunk is unreadable, recorded
+    // retentions stay exact, but a retention not yet recorded still walks
+    // the whole closure and fails closed on the missing chunk, every time.
+    *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
+    generation.pin("first").await?;
+    for _ in 0..2 {
+        assert!(matches!(
+            generation.pin("third").await,
+            Err(crate::workspace::WorkspaceError::Engine(message))
+                if message.contains("object is missing")
+        ));
+    }
+    assert_eq!(reads.load(Ordering::Relaxed), 4);
     Ok(())
 }
 
@@ -402,10 +463,12 @@ struct CountingObjectStore {
     inner: crate::memory::MemoryObjectStore,
     tracked: Arc<std::sync::Mutex<Option<ObjectId>>>,
     reads: Arc<AtomicUsize>,
+    /// Every object of this kind reads as missing.
+    unreadable: Arc<std::sync::Mutex<Option<ObjectKind>>>,
 }
 
 impl CountingObjectStore {
-    fn record(&self, object_id: ObjectId) {
+    fn record(&self, object_id: ObjectId) -> Result<(), ObjectFailure> {
         if self
             .tracked
             .lock()
@@ -413,6 +476,14 @@ impl CountingObjectStore {
         {
             self.reads.fetch_add(1, Ordering::Relaxed);
         }
+        if self
+            .unreadable
+            .lock()
+            .is_ok_and(|kind| *kind == Some(object_id.kind))
+        {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Missing));
+        }
+        Ok(())
     }
 }
 
@@ -689,7 +760,7 @@ impl AsyncObjectStore for CountingObjectStore {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        self.record(object_id);
+        self.record(object_id)?;
         ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
     }
 
@@ -703,7 +774,7 @@ impl AsyncObjectStore for CountingObjectStore {
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         for request in requests {
-            self.record(request.object_id);
+            self.record(request.object_id)?;
         }
         ObjectStore::read_many(&self.inner, requests, budget)
     }

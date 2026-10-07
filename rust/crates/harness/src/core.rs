@@ -1672,22 +1672,39 @@ impl Reducer {
         reason = "public API of an already-published crate; taking a reference here would break \
                   existing external callers"
     )]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.reducer.apply",
+            level = "debug",
+            skip_all,
+            fields(rev = self.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub fn apply(&mut self, command: Command) -> Result<ApplyResult> {
-        match self.plan(&command)? {
-            ApplyResult::Replayed { event } => Ok(ApplyResult::Replayed { event }),
-            ApplyResult::Applied { event } => {
-                self.apply_committed(event.clone())?;
-                Ok(ApplyResult::Applied { event })
-            }
-        }
+        crate::obs::outcome(match self.plan(&command) {
+            Ok(ApplyResult::Applied { event }) => self
+                .apply_committed(event.clone())
+                .map(|_| ApplyResult::Applied { event }),
+            planned => planned,
+        })
     }
 
     /// Plans a command without advancing authoritative state.
     ///
     /// Hosts append the returned event to Stream and call [`Self::apply_committed`]
     /// only after the append is known to have committed.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.reducer.plan",
+            level = "debug",
+            skip_all,
+            fields(rev = self.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
-        self.plan_with_migration_boundary(command, Migration::Unverified)
+        crate::obs::outcome(self.plan_with_migration_boundary(command, Migration::Unverified))
     }
 
     /// Provider admission has verified residency and independently executed
@@ -1856,6 +1873,18 @@ impl Reducer {
     }
 
     /// Applies an event only after its canonical Stream append commits.
+    ///
+    /// Replay calls this once per event, so its span is `trace` and its
+    /// outcome is reported by the enclosing phase.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.reducer.apply_committed",
+            level = "trace",
+            skip_all,
+            fields(rev = event.revision)
+        )
+    )]
     pub fn apply_committed(&mut self, event: Event) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         if let Some((digest, existing)) = self.operation_intents.get(&event.operation_id) {

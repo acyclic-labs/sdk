@@ -3879,6 +3879,90 @@ async fn durable_hook_response_is_replayed_without_reexecution_after_restart() {
     );
 }
 
+#[test]
+fn tracing_is_opt_in_and_traces_requests_without_touching_standard_output() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let (layers, guard) = obs::layers(|_| None, false);
+    assert!(
+        layers.is_empty() && guard.is_none(),
+        "no variable installs nothing"
+    );
+    let serve = |name: &str| {
+        let data = temporary.path().join(name);
+        fs::create_dir(&data).expect("plugin data directory");
+        let dispatcher = Arc::new(ReplayCountingDispatcher {
+            executions: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let envelope = ControlEnvelope::new(ControlRequest {
+            version: 1,
+            command: ControlCommand::Ping,
+            cwd: temporary.path().to_path_buf(),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        });
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}
+{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}
+";
+        let mut output = Vec::new();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let ledger = Arc::new(ControlLedger::open(&data).expect("ledger"));
+                dispatch_control_envelope(&dispatcher, &ledger, envelope).await;
+                run_rpc_proxy(&data, &input[..], &mut output, false)
+                    .await
+                    .expect("rpc proxy");
+            });
+        output
+    };
+    let plain = serve("plain");
+
+    // With one live dispatcher, a callsite that a concurrent test reaches
+    // first caches only that thread's (absent) interest; a second one makes
+    // every callsite consult this test's subscriber too.
+    let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
+    let trace = temporary.path().join("trace-{pid}.json");
+    let (layers, guard) = obs::layers(
+        |name| (name == "ACYCLIC_TRACE_FILE").then(|| trace.display().to_string()),
+        false,
+    );
+    let traced = tracing::subscriber::with_default(
+        tracing_subscriber::Registry::default().with(layers),
+        || serve("traced"),
+    );
+    drop(guard);
+    assert_eq!(plain, traced, "tracing changed standard output");
+
+    let trace = temporary
+        .path()
+        .join(format!("trace-{}.json", std::process::id()));
+    let events: Vec<Value> =
+        serde_json::from_slice(&fs::read(trace).expect("trace file")).expect("trace JSON");
+    let named = |name: &str| {
+        events
+            .iter()
+            .filter(|event| event["name"] == name)
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        named("acyclic.plugin.request")
+            .iter()
+            .any(|event| event["ph"] == "e"
+                && event["args"]["command"] == "\"ping\""
+                && event["args"]["outcome"] == "\"ok\""),
+        "no request span in {events:?}"
+    );
+    assert_eq!(
+        named("acyclic.plugin.rpc").len(),
+        4,
+        "expected one begin and end per JSON-RPC request in {events:?}"
+    );
+}
+
 #[tokio::test]
 async fn unledgered_control_commands_still_require_exact_protocol_negotiation() {
     let temporary = tempfile::tempdir().expect("temporary directory");

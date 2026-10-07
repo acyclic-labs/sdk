@@ -3285,6 +3285,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(flushed.value)
     }
 
+    /// Durably retains one generation under a retention label. Repeating the
+    /// same label at the same generation is exact; binding it to another
+    /// generation fails closed.
     pub(crate) async fn retain_workspace_generation(
         &self,
         volume: &Volume<A, O>,
@@ -3292,72 +3295,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         kind: RetentionKind,
         label: String,
     ) -> Result<(), crate::workspace::WorkspaceError> {
+        use crate::workspace::WorkspaceError;
         let cancellation = CancellationToken::new();
-        let proven_at = self.inner.objects.collection_sweeps();
         let generation_root = ObjectId {
             kind: ObjectKind::GenerationRoot,
             digest: generation_id.digest(),
         };
-        let proof = prove_generation_closure_async(
-            &self.inner.objects,
-            generation_root,
-            closure_limits(volume.config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        if proof.root.volume_id != volume.id {
-            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
-        }
-        self.retain_verified_workspace_generation(
-            volume,
-            VerifiedForkSource {
-                generation_root,
-                closure: proof.objects,
-                proven_at,
-            },
-            kind,
-            label,
-            &cancellation,
-        )
-        .await
-    }
-
-    async fn retain_verified_workspace_generation(
-        &self,
-        volume: &Volume<A, O>,
-        source: VerifiedForkSource,
-        kind: RetentionKind,
-        label: String,
-        cancellation: &CancellationToken,
-    ) -> Result<(), crate::workspace::WorkspaceError> {
-        self.retain_verified_workspace_generation_measured(
-            volume,
-            source,
-            kind,
-            label,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn retain_verified_workspace_generation_measured(
-        &self,
-        volume: &Volume<A, O>,
-        source: VerifiedForkSource,
-        kind: RetentionKind,
-        label: String,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkCounters, crate::workspace::WorkspaceError> {
-        let VerifiedForkSource {
-            generation_root,
-            closure,
-            proven_at,
-        } = source;
         let authority_id = retention_authority_id(volume.id, kind, &label);
         let payload = encode_retention_created(&RetentionCreated {
             volume_id: volume.id,
@@ -3366,41 +3309,80 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             generation_root,
             config: volume.config,
         })
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        let operation_id = OperationId::from_bytes(authority_id.into_bytes());
-        let (commit, _) = creation_commit(operation_id, payload);
+        .map_err(WorkspaceError::engine)?;
+        let (commit, _) =
+            creation_commit(OperationId::from_bytes(authority_id.into_bytes()), payload);
+        // The record is written only after this generation's closure was
+        // proven, shown to belong to this volume, and made durable, and its
+        // fingerprint binds exactly that volume, label, and root. A live
+        // retention protects its closure from collection, which retires a
+        // retention before it stops marking it, so an identical first record
+        // on a live authority already is this retention; any other answer
+        // takes the proving path.
+        if self
+            .inner
+            .authority
+            .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .is_ok()
+            && let Ok(found) = self
+                .inner
+                .authority
+                .find_operation(
+                    authority_id,
+                    commit.operation_id,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+            && found.value.is_some_and(|record| {
+                record.sequence == Sequence::new(1) && record.fingerprint == commit.fingerprint
+            })
+        {
+            return Ok(());
+        }
+        let proven_at = self.inner.objects.collection_sweeps();
+        let proof = prove_generation_closure_async(
+            &self.inner.objects,
+            generation_root,
+            closure_limits(volume.config),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?;
+        if proof.root.volume_id != volume.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
         // The retained closure is durable before the record names it; other
         // staged objects stay private.
-        let drained = self
-            .inner
+        self.inner
             .objects
             .flush_before_publish(
                 crate::PublicationScope::Closure {
-                    objects: &closure,
+                    objects: &proof.objects,
                     proven_at,
                 },
-                budget,
-                cancellation,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
             )
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        let mut work = drained.work;
+            .map_err(WorkspaceError::engine)?;
         let created = self
             .inner
             .authority
             .create_authority_with_first_record(
                 authority_id,
                 commit,
-                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
-                cancellation,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
             )
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, created.work).map_err(crate::workspace::WorkspaceError::engine)?;
+            .map_err(WorkspaceError::engine)?;
         if created.value {
-            Ok(work)
+            Ok(())
         } else {
-            Err(crate::workspace::WorkspaceError::RetentionConflict)
+            Err(WorkspaceError::RetentionConflict)
         }
     }
 

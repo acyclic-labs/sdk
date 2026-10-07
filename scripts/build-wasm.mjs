@@ -143,9 +143,12 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ]);
   mkdirSync(output, { recursive: true });
+  // The function name section is about 45% of each module and only serves
+  // symbolicated stack traces; shipped packages trade those for size.
   run(wasmBindgen, [
     resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`),
     "--target", "web", "--out-dir", output, "--out-name", outName,
+    "--remove-name-section", "--remove-producers-section",
   ]);
   postprocess?.(output);
 }

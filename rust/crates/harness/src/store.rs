@@ -534,19 +534,39 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Opens and replays an aggregate, treating an absent path as empty.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.store.open",
+            level = "info",
+            skip_all,
+            fields(rev = crate::obs::Empty, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn open(
         client: &StreamClient<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
     ) -> Result<Self> {
-        Self::open_inner(client, authority, authority_verifier, schemas, None).await
+        crate::obs::outcome(
+            Self::open_inner(client, authority, authority_verifier, schemas, None).await,
+        )
     }
 
     /// Restores an integrity-checked snapshot, then replays its retained suffix.
     ///
     /// Snapshot storage belongs to the Filesystem integration; Stream remains
     /// the canonical event history and the snapshot is only an accelerator.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.store.restore",
+            level = "info",
+            skip_all,
+            fields(rev = crate::obs::Empty, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn open_from_snapshot(
         client: &StreamClient<P>,
         authority: Authority,
@@ -554,14 +574,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
         schemas: SchemaRegistry,
         snapshot: Snapshot,
     ) -> Result<Self> {
-        Self::open_inner(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            Some(snapshot),
+        crate::obs::outcome(
+            Self::open_inner(
+                client,
+                authority,
+                authority_verifier,
+                schemas,
+                Some(snapshot),
+            )
+            .await,
         )
-        .await
     }
 
     async fn open_inner(
@@ -584,7 +606,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         } else {
             Reducer::new(authority, authority_verifier, schemas)
         };
-        let mut replay = stream.replay(reducer.revision());
+        let start = reducer.revision();
+        let mut replay = stream.replay(start);
         while let Some(page) = replay.next_page().await? {
             for record in page {
                 let (event_authority, event) = decode_event(&record.value)?;
@@ -601,6 +624,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 reducer.apply_committed(event)?;
             }
         }
+        crate::obs::obs_record!(
+            "rev" = reducer.revision(),
+            "items" = reducer.revision().saturating_sub(start)
+        );
         Ok(Self {
             client: client.clone(),
             stream,
@@ -659,7 +686,20 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Plans, CAS-appends, and only then applies one command.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.store.execute",
+            level = "info",
+            skip_all,
+            fields(rev = command.expected_revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn execute(&mut self, command: Command) -> Result<ApplyResult> {
+        crate::obs::outcome(self.execute_untraced(command).await)
+    }
+
+    async fn execute_untraced(&mut self, command: Command) -> Result<ApplyResult> {
         let idempotency_key =
             stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
         let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
@@ -763,6 +803,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer.plan_verified_migration(command)
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.store.append",
+            level = "debug",
+            skip_all,
+            fields(rev = command.expected_revision, bytes = bytes.len() as u64)
+        )
+    )]
     async fn append_planned_command(
         &mut self,
         command: &Command,
@@ -1067,14 +1116,28 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ///
     /// `None` means the provider has no durable observation yet; callers must
     /// retain the original command and operation identity until it resolves.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.store.reconcile",
+            level = "info",
+            skip_all,
+            fields(rev = command.expected_revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn reconcile(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
-        let result = self.reconcile_inner(command).await?;
-        if result.is_some()
-            && let crate::core::Action::PublishFork { seed } = &command.action
-        {
-            self.release_replayed_fork_fence(seed).await?;
-        }
-        Ok(result)
+        crate::obs::outcome(
+            async {
+                let result = self.reconcile_inner(command).await?;
+                if result.is_some()
+                    && let crate::core::Action::PublishFork { seed } = &command.action
+                {
+                    self.release_replayed_fork_fence(seed).await?;
+                }
+                Ok(result)
+            }
+            .await,
+        )
     }
 
     async fn release_replayed_fork_fence(&self, seed: &crate::fork::ForkSeed) -> Result<()> {
@@ -1439,6 +1502,97 @@ mod tests {
                 ApplyResult::Applied { event } | ApplyResult::Replayed { event } => event,
             }]
         );
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn execute_and_reopen_emit_spans_without_content_fields() -> Result<()> {
+        use std::sync::Mutex;
+        use tracing::{
+            field::{Field, Visit},
+            span,
+        };
+        use tracing_subscriber::{
+            Layer,
+            layer::{Context, SubscriberExt as _},
+            registry::LookupSpan,
+        };
+
+        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+        struct Capture(Seen);
+        struct Fields<'a>(
+            &'static str,
+            &'a mut Vec<(&'static str, &'static str, String)>,
+        );
+        impl Visit for Fields<'_> {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.1.push((self.0, field.name(), value.to_owned()));
+            }
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.1.push((self.0, field.name(), format!("{value:?}")));
+            }
+        }
+        impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
+            fn on_new_span(&self, attrs: &span::Attributes<'_>, _: &span::Id, _: Context<'_, S>) {
+                let name = attrs.metadata().name();
+                let mut seen = self.0.lock().unwrap();
+                seen.extend(
+                    attrs
+                        .metadata()
+                        .fields()
+                        .iter()
+                        .map(|f| (name, f.name(), String::new())),
+                );
+                attrs.record(&mut Fields(name, &mut seen));
+            }
+            fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
+                let name = ctx.span(id).unwrap().name();
+                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
+            }
+        }
+
+        // With one live dispatcher, a callsite that a concurrent test reaches
+        // first caches only that thread's (absent) interest; a second one
+        // makes every callsite consult this test's subscriber too.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let seen = Seen::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+        );
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut unbound =
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+        assert!(unbound.execute(command(1)?).await.is_err());
+        with_content(unbound).execute(command(1)?).await?;
+        StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+
+        let seen = seen.lock().unwrap();
+        let has = |span: &str, field: &str, value: &str| {
+            seen.iter()
+                .any(|(s, f, v)| *s == span && *f == field && v == value)
+        };
+        assert!(has(
+            "acyclic.harness.store.execute",
+            "error.kind",
+            "ERROR_CODE_UNSUPPORTED"
+        ));
+        assert!(has("acyclic.harness.store.execute", "outcome", "ok"));
+        assert!(has("acyclic.harness.store.append", "rev", "0"));
+        assert!(has("acyclic.harness.reducer.plan", "outcome", "ok"));
+        assert!(has("acyclic.harness.reducer.apply_committed", "rev", "1"));
+        assert!(has("acyclic.harness.store.open", "items", "1"));
+        for (span, field, value) in seen.iter() {
+            assert!(span.starts_with("acyclic.harness."), "{span}");
+            assert!(
+                !["path", "token", "content", "body", "authorization"].contains(field),
+                "{span} records {field}"
+            );
+            assert!(
+                !value.contains("conversation-1") && !value.contains("hello"),
+                "{value}"
+            );
+        }
         Ok(())
     }
 

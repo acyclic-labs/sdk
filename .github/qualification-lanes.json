@@ -7,7 +7,7 @@
     "artifact_path": "coverage",
     "inputs": "rust",
     "source_bound": false,
-    "early_start": false
+    "scope": "both"
   },
   {
     "lane": "linux",
@@ -17,7 +17,7 @@
     "artifact_path": "packages",
     "inputs": "repository",
     "source_bound": true,
-    "early_start": false
+    "scope": "full"
   },
   {
     "lane": "web",
@@ -27,7 +27,17 @@
     "artifact_path": "",
     "inputs": "rust",
     "source_bound": false,
-    "early_start": false
+    "scope": "full"
+  },
+  {
+    "lane": "typescript",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "typescript",
+    "source_bound": false,
+    "scope": "core"
   },
   {
     "lane": "linux-arm64",
@@ -37,7 +47,7 @@
     "artifact_path": "packages",
     "inputs": "rust",
     "source_bound": false,
-    "early_start": false
+    "scope": "full"
   },
   {
     "lane": "linux-musl",
@@ -47,7 +57,7 @@
     "artifact_path": "",
     "inputs": "rust",
     "source_bound": false,
-    "early_start": false
+    "scope": "full"
   },
   {
     "lane": "linux-arm64-musl",
@@ -57,7 +67,7 @@
     "artifact_path": "",
     "inputs": "rust",
     "source_bound": false,
-    "early_start": false
+    "scope": "full"
   },
   {
     "lane": "windows",
@@ -67,7 +77,7 @@
     "artifact_path": "stream-native-bundle",
     "inputs": "product",
     "source_bound": true,
-    "early_start": true
+    "scope": "full"
   },
   {
     "lane": "macos",
@@ -77,7 +87,7 @@
     "artifact_path": "packages",
     "inputs": "rust",
     "source_bound": false,
-    "early_start": false
+    "scope": "full"
   },
   {
     "lane": "policy",
@@ -87,6 +97,6 @@
     "artifact_path": "",
     "inputs": "policy",
     "source_bound": false,
-    "early_start": false
+    "scope": "both"
   }
 ]
