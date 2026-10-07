@@ -87,13 +87,39 @@ pub(crate) fn validate_json_schema_value(
         .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")))
 }
 
-/// Compiles one JSON Schema; `label` names it in the error.
+/// Compiles one JSON Schema; `label` names it in the error. Schemas are
+/// immutable contracts re-checked on every tool, task, and state boundary, so
+/// validators are memoised by content digest instead of being rebuilt per
+/// value. The bounded cache is reset when full; failures are never cached.
 pub(crate) fn compile_json_schema(
     schema: &serde_json::Value,
     label: &str,
-) -> Result<jsonschema::Validator> {
-    jsonschema::validator_for(schema)
-        .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))
+) -> Result<std::sync::Arc<jsonschema::Validator>> {
+    use std::sync::{Arc, Mutex, PoisonError};
+    type Cache = std::collections::BTreeMap<[u8; 32], Arc<jsonschema::Validator>>;
+    static CACHE: Mutex<Cache> = Mutex::new(Cache::new());
+    let key = *blake3::hash(
+        &serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
+    )
+    .as_bytes();
+    let cached = CACHE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    if let Some(validator) = cached {
+        return Ok(validator);
+    }
+    let validator = Arc::new(
+        jsonschema::validator_for(schema)
+            .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?,
+    );
+    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    if cache.len() >= 256 {
+        cache.clear();
+    }
+    cache.insert(key, Arc::clone(&validator));
+    Ok(validator)
 }
 
 fn write_canonical_json(

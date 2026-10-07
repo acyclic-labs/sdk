@@ -817,7 +817,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 &output_schema,
                 Some(&admission.input),
             )?;
-            crate::contract::compile_json_schema(&output_schema, "output")?;
             admission.validate()?;
             let canonical = admission.canonical_value();
             let bytes = crate::contract::canonical_json_bytes(&canonical)?;
