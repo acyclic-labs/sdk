@@ -294,7 +294,7 @@ index 792138a..4804d9a 100644
      fn binary_write_sequence_string() {
          let ty = Type::Sequence {
 diff --git a/crates/ubdg_bindgen/src/dart/config.rs b/crates/ubdg_bindgen/src/dart/config.rs
-index 0b2823f..eaaa01b 100644
+index 0b2823f..0373a78 100644
 --- a/crates/ubdg_bindgen/src/dart/config.rs
 +++ b/crates/ubdg_bindgen/src/dart/config.rs
 @@ -17,6 +17,8 @@ pub struct DartBindingsConfig {
@@ -312,30 +312,12 @@ index 0b2823f..eaaa01b 100644
      pub lower: Option<String>,
 +    /// Generate a nominal Dart wrapper for this Rust UniFFI custom type.
 +    pub nominal: Option<bool>,
-+    /// Optional generated safety rule: `non-empty-string`, `non-zero-u64`, or
-+    /// `fixed-bytes-32`.
++    /// Optional Rust-owned semantic marker: `non-empty-string`, `non-zero-u64`, or
++    /// `fixed-bytes-32`. The generator does not duplicate Rust validation.
 +    pub safe_value: Option<String>,
  }
  
  impl CustomTypeConfig {
-@@ -170,6 +177,8 @@ type_name = "Uri"
- imports = ["dart:core"]
- lift = "Uri.parse({})"
- lower = "{}.toString()"
-+nominal = true
-+safe_value = "non-empty-string"
- 
- [bindings.dart.custom_types.Count]
- lower = "{}.toInt()"
-@@ -199,6 +208,8 @@ lift = "Count({})"
-         );
-         assert_eq!(url_cfg.lift_expr("raw"), "Uri.parse(raw)");
-         assert_eq!(url_cfg.lower_expr("value"), "value.toString()");
-+        assert_eq!(url_cfg.nominal, Some(true));
-+        assert_eq!(url_cfg.safe_value.as_deref(), Some("non-empty-string"));
- 
-         let count_cfg = cfg.custom_types.get("Count").expect("Count entry");
-         assert_eq!(count_cfg.type_name, None);
 diff --git a/crates/ubdg_bindgen/src/dart/ffi_buffer.rs b/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
 index 8e84591..dee1c25 100644
 --- a/crates/ubdg_bindgen/src/dart/ffi_buffer.rs

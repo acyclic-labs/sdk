@@ -94,7 +94,7 @@ struct SwiftPostPatchAll8Consumer {
         _ = try requireObservation((try await client.addSubscription(request: add, cancellation: nil)).actor, label: "add", actorID: options.actorId)
         let resume = ResumeSubscriptionRequest(actorId: actorID, subscriptionId: "swift-post-patch-subscription", idempotencyKey: "post-resume")
         _ = try requireObservation((try await client.resumeSubscription(request: resume, cancellation: nil)).actor, label: "resume", actorID: options.actorId)
-        let checkpoint = CheckpointActorRequest(actorId: actorID, idempotencyKey: "post-checkpoint")
+        let checkpoint = CheckpointActorRequest(actorId: actorID, idempotencyKey: "checkpoint-a")
         let checkpointObservation = try requireObservation((try await client.checkpointActor(request: checkpoint, cancellation: nil)).actor, label: "checkpoint", actorID: options.actorId)
         precondition(checkpointObservation.checkpointEpoch == 9, "checkpoint epoch")
         let invoke = InvokeActorRequest(actorId: actorID, method: "POST", url: "/result", body: Data("{}".utf8), headers: [Header(name: "content-type", value: "application/json")])

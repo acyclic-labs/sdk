@@ -218,3 +218,49 @@ finding defects that change admission decisions; it is not a status-only wait.
 Remote checkpoints verified at the start of this iteration were foundation
 8542364f7ee2983092b6196f92165cf3f0a39d39 and Actors language WIP
 5f8b7061465cd632d643e90d682c5d5195d9fe5b. No merge is claimed by this review.
+
+## Runtime review progress: 2026-10-07 connection cancellation
+
+This goal iteration made progress through source-bound runtime probes and
+qualification evidence. The goal remains incomplete; no additional merge occurred.
+
+Root exercised the actual current Actors TypeScript source with a stalled injected
+binding. The first probe reproduced shared cancellation: aborting caller one
+failed caller two despite its signal remaining active. After the owner's waiter
+accounting fix, the same bounded probe passed: caller two remained pending.
+A second probe then reproduced a distinct retry race. After the final waiter
+aborts, a new call still attaches to the aborted pending connection until its
+underlying cleanup rejects. The observed connection count was one rather than
+two, and the unaborted new caller received the old cleanup failure. Source hashes
+and terminal results are recorded in the current candidate's
+research/qualified-prototypes/actors-root-review-20261007. The owner is correcting
+cache eviction before underlying abort, with identity guards for old completions.
+These probes cover the production TypeScript connection state machine; they are
+not transport qualification receipts.
+
+Independent headless-browser tests now observe in-flight server cleanup
+(active zero, aborted one), finite connection abort, and pre-abort no-network.
+The native runtime transport getter and fallback identity need exact-source,
+rebuilt-package verification. The broad same-suffix loader regexp still accepts
+foreign dependency paths; the missing own module must be identified exactly.
+
+macOS Stream research assembly on ivar passed actual native loading and stalled
+TLS cancellation, with archive SHA
+b331e6e14c729f371a514efd16037d67a8d4e400e1afa6a41fe0ed5982b47862.
+Its tools were rustc 1.96.0 and Bun 1.3.14; repository pins are Rust 1.98.1 and
+Bun 1.4.2. This evidence is a working prototype, not final reproducible producer
+qualification. A fresh maintained-entrypoint build under pinned tools is assigned.
+The maintained Cargo RUSTC_WRAPPER mechanism was prototyped successfully to capture
+actual compiler/linker arguments without reimplementing Cargo config precedence;
+minimal integration is assigned.
+
+Filesystem numeric helper and crate-root source hashes exactly match the selected
+Kani source inventory. That proves helper-source identity; it does not certify the
+dirty full candidate or old package artifacts. Fresh c8 package assembly remains
+a gate. Separate isolated Linux/macOS qualification is assigned.
+
+Current Actors c8 review WIP was signed, pushed, and remote-verified as
+115e983f0305459e27540c41656c9cc85a85ad27 on
+codex/actors-c8-review-wip-checkpoint-20261007. Historical language cohorts are
+retained as evidence, and agents have been redirected to the actual main-based
+producer rather than relabeling old results.

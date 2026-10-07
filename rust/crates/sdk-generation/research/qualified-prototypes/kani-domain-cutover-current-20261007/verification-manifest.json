@@ -35,5 +35,11 @@
     "contract::generated::domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity"
   ],
   "prior_compile_blocked_receipt": "receipt.current-blocked.json",
-  "module_path_fix": "Added only #[path = \"domain/kani_proofs.rs\"] before the existing cfg(kani) module declaration"
+  "module_path_fix": "Added only #[path = \"domain/kani_proofs.rs\"] before the existing cfg(kani) module declaration",
+  "latest_receipt": "receipt.current-symbolic-head.json",
+  "latest_source_inventory": "audit/symbolic-head-source-inventory.json",
+  "current_symbolic_head_harnesses": [
+    "contract::generated::domain::kani_proofs::subscription_start_ingress_accepts_only_true_current_head_payload",
+    "contract::generated::domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity"
+  ]
 }

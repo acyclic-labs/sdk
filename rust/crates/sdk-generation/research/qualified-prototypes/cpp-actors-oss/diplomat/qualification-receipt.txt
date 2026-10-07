@@ -56,3 +56,13 @@ full_nested_subscription_result_audit:PASS (all nested cursors/retry/failure/opt
 
 
 
+
+linux_package_root:Q:\cpp-actors-diplomat-linux-package
+linux_native_diplomat_tool_sha256:5953e8afa47d5562fd96a38543f029fdb68f22666b036f4c295bba2e658d8fbd
+linux_static_library_sha256:080aa8d2c167fac181d3f840a7f553f43d5d0cd8663d2c5396e2a243da3118ab
+linux_cmake_find_package_compile_link:PASS (native Linux Diplomat tool, Clang 14, CMake Unix Makefiles, mold)
+linux_cmake_external_runtime:diplomat_cpp_all_six_typed_requests:PASS
+
+
+final_producer_package:PASS (cargo package --allow-dirty --no-verify --offline; 30 files; archive SHA-256 e88dd52904cb0d976ab018061b7493230104408e64c53ea856787fe3ae269a2b)
+

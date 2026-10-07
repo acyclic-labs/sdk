@@ -1,0 +1,116 @@
+{
+  "schema": "dart-production-nominal-qualification/v1",
+  "generated_at": "2026-10-07",
+  "status": "qualified",
+  "producer": {
+    "root": "Q:\\sdk\\work\\sdkgen-main-port-current",
+    "commit": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+    "dirty_metadata": "rust/crates/actors-uniffi/uniffi.nominal.toml",
+    "metadata": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors-uniffi\\uniffi.nominal.toml",
+      "sha256": "FD3B8A1A0485B3F85CFF48564115AECB21609AB0FB6AE6B0075B967DE8A784F2",
+      "bytes": 1266
+    }
+  },
+  "generator": {
+    "root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
+    "base_commit": "c2a2ee53cc2dc1ef2d6e8e8f41168d71e3098c6f",
+    "binary": {
+      "path": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source\\target-local2\\debug\\uniffi-bindgen-dart.exe",
+      "sha256": "DAE4A01A88D8A4B149856796A14301DDF14F16863E4ACBC979C45E9DE5D62FC4",
+      "bytes": 7879168
+    },
+    "source_patch": {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\generator-source-nominal-readonly-production-20261007.patch",
+      "sha256": "852F202936460F157B70D28C7D9822FF708AE4601F9DBA8A14D4D87DD356FF7F",
+      "bytes": 57824
+    },
+    "source_and_goldens_patch": {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\generator-source-and-goldens-nominal-production-20261007.patch",
+      "sha256": "2B5FC412F464605A38735ABB45B1F5F580AD0FFDE4E99D66FC6F2E5956EA5FC4",
+      "bytes": 169881
+    },
+    "tests": "225 unit + 21 golden passed"
+  },
+  "package": {
+    "staging": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007",
+    "pubspec": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\package\\pubspec.yaml",
+      "sha256": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
+      "bytes": 176
+    },
+    "lock": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\package\\pubspec.lock",
+      "sha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+      "bytes": 333
+    },
+    "domain": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\package\\generated\\acyclic_actors.dart",
+      "sha256": "C165B950E0E573E9F26B008EB64EC78F4159FD1525AE35C5A237FE5B79537BFE",
+      "bytes": 95066
+    },
+    "facade": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\package\\generated\\acyclic_actors_uniffi.dart",
+      "sha256": "75F2EC2D08B5BA82A9346365095A26CBDC2B374912AD736DC6D8506C73939159",
+      "bytes": 176530
+    },
+    "archive": {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\actors-uniffi-dart-production-nominal-20261007.zip",
+      "sha256": "7A419633678D10515BB2ACEBFD8BEA0F3CDBF74B6F73F74E7FBE23CF5B70B84E",
+      "bytes": 6223799
+    }
+  },
+  "native": [
+    {
+      "platform": "windows-x64",
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\native\\windows-x64\\acyclic_actors_uniffi.dll",
+      "sha256": "95C28ED95C6DB0DBD49B9FA3555C529D0A5BF29178E67A339212D5228EB6E588"
+    },
+    {
+      "platform": "linux-x64",
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\native\\linux-x64\\libacyclic_actors_uniffi.so",
+      "sha256": "996F55BAD62C6FCD318E1BFB09290748D8942841EA37581C44C1CFF7B4B9297E"
+    },
+    {
+      "platform": "macos-arm64",
+      "path": "/tmp/actors-uniffi-current-target-20261007/release/libacyclic_actors_uniffi.dylib",
+      "sha256": "8E641364C3144681A5E79A659F441DC419C61DAAB440B370690BD8B93B4D722D"
+    }
+  ],
+  "qualification": {
+    "windows": {
+      "sdk": "installed stable",
+      "all8": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-current-windows-all8.out",
+      "cancel": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-current-windows-cancel.out",
+      "static_negative": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-current-windows-static-negative.out"
+    },
+    "wsl": {
+      "sdk": "/tmp/dart-sdk-beta-20261007/dart-sdk/bin/dart",
+      "all8": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-current-wsl-all8.out",
+      "cancel": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-current-wsl-cancel.out",
+      "static_negative": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-current-wsl-static-negative.out"
+    },
+    "macos": {
+      "ssh_user": "ivar",
+      "sdk": "/tmp/dart-sdk-3.7.0-209.1.beta/dart-sdk/bin/dart",
+      "all8": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-nominal-macos-all8.out",
+      "cancel": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-nominal-macos-cancel.out",
+      "static_negative": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-nominal-macos-static-negative.out",
+      "marker": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\dart-production-nominal-macos-cancel-marker.out"
+    }
+  },
+  "semantics": {
+    "nominal_types": [
+      "ActorId",
+      "CodeSha256",
+      "PositiveU64"
+    ],
+    "public_uint64": "BigInt across 0..2^64-1",
+    "internal_ffi": "signed int bit pattern",
+    "readonly": "typed UnmodifiableListView/UnmodifiableMapView record collections",
+    "typed_errors": "all8 and cancellation",
+    "rust_validation": "safe_value metadata is Rust-owned; no duplicate Dart predicate"
+  }
+}
+
+

@@ -75,7 +75,7 @@ struct SwiftGeneratedCancellationProbe {
         let actorID = try ActorId(value: "pending-swift-generator")
         let task = Task {
             do {
-                _ = try await client.inspectActor(actorId: actorID, cancellation: nil)
+                _ = try await client.inspectActor(request: InspectActorRequest(actorId: actorID), cancellation: nil)
                 return "completed"
             } catch {
                 return "error=\(error)"

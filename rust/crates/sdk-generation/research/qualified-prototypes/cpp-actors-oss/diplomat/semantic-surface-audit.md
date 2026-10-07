@@ -41,6 +41,7 @@ The eight-operation consumer sends every caller-supplied field to an authenticat
 - C++ response objects expose const accessors. Builders are mutable only while constructing canonical Rust values (`BindingList`, `SubscriptionList`, and `Headers`); operation requests and responses are immutable opaque values thereafter.
 - `ActorsError` preserves canonical construction categories, display text, and numeric contract/unknown-enum detail. `AsyncError` preserves configuration, transport, service gRPC code/detail presence, contract, semantic, and cancellation categories plus message.
 - Nominal negative compile evidence rejects `ActorLimits` where `Binding` is required. The package also compiles all operation-specific response accessors from the clean external install.
+- Completed handles reject a mismatched `take_*` accessor with a typed transport `AsyncError`; the live all-eight consumer exercises this guard before consuming the correctly typed create result.
 
 ## Callback and cancellation contract
 

@@ -1,0 +1,57 @@
+{
+  "schema": "acyclic.kani-domain-cutover-receipt/v3",
+  "artifact": "kani-domain-cutover-current-20261007",
+  "status": "pass_current_production_oneof_and_validated_conversion",
+  "source_checkout": "Q:/sdk/work/sdkgen-main-port-current",
+  "source_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "source_dirty": "Kani-only module-path attribute plus Kani-only symbolic ingress harness; production semantic files unchanged",
+  "source_inventory": "audit/symbolic-head-source-inventory.json",
+  "production_module": "contract::generated::domain",
+  "production_harness_module": "contract::generated::domain::kani_proofs",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "offline": true,
+    "jobs": 1,
+    "target": "/tmp/kani-domain-cutover-current-0093-fixed-symbolic-head"
+  },
+  "runs": [
+    {
+      "harness": "contract::generated::domain::kani_proofs::subscription_start_ingress_accepts_only_true_current_head_payload",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 106 failed",
+      "verification_time": "0.20972008s",
+      "raw_log": "audit/subscription-start-current-symbolic-head-kani068.raw.txt",
+      "raw_log_sha256": "128F59956FAA7B953894F5983E8A601C3C350617CF7D13CF5D5866C241CCBFE5",
+      "theorem": "For every symbolic wire bool b, production TryFrom accepts CurrentHead(b) iff b is true; the successful semantic value has no cursor and current_head_value() == Some(true), while false returns InvalidSubscription."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 141 failed",
+      "verification_time": "0.29622886s",
+      "raw_log": "audit/subscription-start-current-oneof-symbolic-head-kani068.raw.txt",
+      "raw_log_sha256": "399838D3760DD1604F9B147CE64542EC9A55A3736FA38D2B112BE59B71761D01",
+      "theorem": "For every symbolic cursor u64 and the true CurrentHead oneof, direct production conversion and From round-trip preserve the oneof identity and cursor value."
+    }
+  ],
+  "exclusions": [
+    "semantic CurrentHead false unrepresentability: not proven while Rust API remains bool-valued",
+    "arbitrary strings",
+    "transport behavior",
+    "whole-message clone",
+    "historical 03bb source"
+  ],
+  "original_actors_solver": {
+    "pty": 17660,
+    "cbmc_pid": 1031718,
+    "action": "untouched",
+    "observation": "still running at last authoritative Linux ps snapshot",
+    "snapshot_time": "2026-10-07T15:53:57+01:00",
+    "linux_process": "PID 1031718 cbmc; state R+; elapsed 02:58:36; CPU 99.5%; RSS 2603844 KiB; PPID 1002448",
+    "terminal_output": "none; PTY poll after 60 seconds returned no output; raw log tail still ends in two SAT checks without terminal summary"
+  },
+  "marker_coordination": "audit/currenthead-marker-coordination.md"
+}

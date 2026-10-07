@@ -1,0 +1,126 @@
+--- a/src/bindings/python/pipeline/nodes.rs
++++ b/src/bindings/python/pipeline/nodes.rs
+@@ -65,6 +65,12 @@
+     pub lift: String,
+     pub from_custom: String, // b/w compat alias for lower
+     pub lower: String,
++    /// Generate a nominal frozen Python wrapper instead of a builtin alias.
++    #[serde(default)]
++    pub nominal: bool,
++    /// Fully-qualified Rust-backed validator callable used by the wrapper.
++    #[serde(default)]
++    pub validator: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone, Node)]
+--- a/src/bindings/python/pipeline/modules.rs
++++ b/src/bindings/python/pipeline/modules.rs
+@@ -32,6 +32,7 @@
+         let mut exported_names = vec!["InternalError".to_string()];
+         namespace.visit(|e: &Enum| exported_names.push(e.name.clone()));
+         namespace.visit(|r: &Record| exported_names.push(r.name.clone()));
++        namespace.visit(|c: &CustomType| exported_names.push(c.name.clone()));
+         namespace.visit(|f: &Function| exported_names.push(f.callable.name.clone()));
+         namespace.visit(|i: &Interface| {
+             exported_names.push(i.name.clone());
+--- a/src/bindings/python/templates/CustomType.py
++++ b/src/bindings/python/templates/CustomType.py
+@@ -28,35 +28,69 @@
+ 
+ {%- when Some(config) %}
+ 
++{%- if config.nominal %}
++@dataclass(frozen=True)
++class {{ custom.name }}:
++    value: {{ builtin.type_name }}
++
++    def __post_init__(self):
++        {% if let Some(validator) = config.validator %}
++        from . import acyclic_actors_uniffi
++        {{ validator }}(self.value)
++        {% endif %}
++
++    @classmethod
++    def from_value(cls, value: {{ builtin.type_name }}) -> "{{ custom.name }}":
++        return cls(value)
++{%- else %}
+ {%- if let Some(type_name) = config.type_name %}
+ {# Render a type alias from the custom type name to the concrete type name #}
+ {{ custom.name }} = {{ type_name }}
++{%- endif %}
+ {%- endif %}
+ 
+ {#- Custom type config supplied, use it to convert the builtin type #}
+ class {{ custom.self_type.ffi_converter_name }}:
+     @staticmethod
+     def write(value, buf):
+-        builtin_value = {{ config.lower("value") }}
++        builtin_value = {% if config.nominal %}value.value{% else %}{{ config.lower("value") }}{% endif %}
+         {{ builtin.ffi_converter_name }}.write(builtin_value, buf)
+ 
+     @staticmethod
+     def read(buf):
+         builtin_value = {{ builtin.ffi_converter_name }}.read(buf)
++        {% if config.nominal %}
++        return {{ custom.name }}(builtin_value)
++        {% else %}
+         return {{ config.lift("builtin_value") }}
++        {% endif %}
+ 
+     @staticmethod
+     def lift(value):
+         builtin_value = {{ builtin.ffi_converter_name }}.lift(value)
++        {% if config.nominal %}
++        return {{ custom.name }}(builtin_value)
++        {% else %}
+         return {{ config.lift("builtin_value") }}
++        {% endif %}
+ 
+     @staticmethod
+     def check_lower(value):
++        {% if config.nominal %}
++        if not isinstance(value, {{ custom.name }}):
++            raise TypeError("expected {{ custom.name }}")
++        builtin_value = value.value
++        {% else %}
+         builtin_value = {{ config.lower("value") }}
++        {% endif %}
+         return {{ builtin.ffi_converter_name }}.check_lower(builtin_value)
+ 
+     @staticmethod
+     def lower(value):
++        {% if config.nominal %}
++        builtin_value = value.value
++        {% else %}
+         builtin_value = {{ config.lower("value") }}
++        {% endif %}
+         return {{ builtin.ffi_converter_name }}.lower(builtin_value)
+ {%- endmatch %}
+--- a/src/bindings/python/templates/RecordTemplate.py
++++ b/src/bindings/python/templates/RecordTemplate.py
+@@ -1,4 +1,4 @@
+-@dataclass
++@dataclass(frozen=True)
+ class {{ rec.self_type.type_name }}:
+     {{ rec.docstring|docstring(4) -}}
+     {%- if !rec.fields.is_empty() -%}
+@@ -10,15 +10,15 @@
+         {%- for field in rec.fields %}
+         {%- match field.default %}
+         {%- when None %}
+-        self.{{ field.name }} = {{ field.name }}
++        object.__setattr__(self, "{{ field.name }}", {{ field.name }})
+         {%- when Some(default) %}
+         {%- if default.is_arg_literal %}
+-        self.{{ field.name }} = {{ field.name }}
++        object.__setattr__(self, "{{ field.name }}", {{ field.name }})
+         {%- else %}
+         if {{ field.name }} is {{ default.arg_literal }}:
+-            self.{{ field.name }} = {{ default.py_default }}
++            object.__setattr__(self, "{{ field.name }}", {{ default.py_default }})
+         else:
+-            self.{{ field.name }} = {{ field.name }}
++            object.__setattr__(self, "{{ field.name }}", {{ field.name }})
+         {%- endif %}
+         {%- endmatch %}
+         {%- endfor %}

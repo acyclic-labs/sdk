@@ -1,0 +1,46 @@
+{
+  "schema": "dart-nominal-source-manifest/v1",
+  "generator_root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
+  "base_commit": "c2a2ee53cc2dc1ef2d6e8e8f41168d71e3098c6f",
+  "generator_binary": {
+    "path": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source\\target-local2\\debug\\uniffi-bindgen-dart.exe",
+    "bytes": 7879168,
+    "sha256": "DAE4A01A88D8A4B149856796A14301DDF14F16863E4ACBC979C45E9DE5D62FC4"
+  },
+  "source_patch": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\generator-source-nominal-readonly-production-20261007.patch",
+    "bytes": 57824,
+    "sha256": "852F202936460F157B70D28C7D9822FF708AE4601F9DBA8A14D4D87DD356FF7F"
+  },
+  "source_goldens_patch": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\generator-source-and-goldens-nominal-production-20261007.patch",
+    "bytes": 169881,
+    "sha256": "2B5FC412F464605A38735ABB45B1F5F580AD0FFDE4E99D66FC6F2E5956EA5FC4"
+  },
+  "producer_commit": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "producer_metadata": {
+    "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors-uniffi\\uniffi.nominal.toml",
+    "bytes": 1266,
+    "sha256": "FD3B8A1A0485B3F85CFF48564115AECB21609AB0FB6AE6B0075B967DE8A784F2"
+  },
+  "generated_domain": {
+    "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\package\\generated\\acyclic_actors.dart",
+    "bytes": 95066,
+    "sha256": "C165B950E0E573E9F26B008EB64EC78F4159FD1525AE35C5A237FE5B79537BFE"
+  },
+  "generated_facade": {
+    "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-nominal-20261007\\package\\generated\\acyclic_actors_uniffi.dart",
+    "bytes": 176530,
+    "sha256": "75F2EC2D08B5BA82A9346365095A26CBDC2B374912AD736DC6D8506C73939159"
+  },
+  "archive": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer\\actors-uniffi-dart-production-nominal-20261007.zip",
+    "bytes": 6223799,
+    "sha256": "7A419633678D10515BB2ACEBFD8BEA0F3CDBF74B6F73F74E7FBE23CF5B70B84E"
+  },
+  "native_windows_sha256": "95C28ED95C6DB0DBD49B9FA3555C529D0A5BF29178E67A339212D5228EB6E588",
+  "native_linux_sha256": "996F55BAD62C6FCD318E1BFB09290748D8942841EA37581C44C1CFF7B4B9297E",
+  "native_macos_sha256": "8E641364C3144681A5E79A659F441DC419C61DAAB440B370690BD8B93B4D722D"
+}
+
+
