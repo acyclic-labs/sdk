@@ -427,14 +427,14 @@ async fn connect_native(
         async move {
             match ca_certificate_pem {
                 Some(ca_certificate_pem) => {
-                    StreamClient::<grpc::Client>::connect_with_ca_certificate(
+                    StreamClient::<grpc::Client>::connect_eager_with_ca_certificate(
                         &endpoint,
                         &token,
                         &ca_certificate_pem,
                     )
                     .await
                 }
-                None => StreamClient::<grpc::Client>::connect(&endpoint, &token).await,
+                None => StreamClient::<grpc::Client>::connect_eager(&endpoint, &token).await,
             }
             .map_err(|error| connect_error(&error))
         },

@@ -138,6 +138,27 @@ impl Client {
         .await
     }
 
+    /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel
+    /// for later operations. Native callers use this path when cancellation
+    /// must cover connection establishment itself; [`Self::connect`] remains
+    /// lazy for the ordinary managed client.
+    pub async fn connect_eager(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, ConnectError> {
+        Self::connect_eager_endpoints([endpoint], bearer_token, None).await
+    }
+
+    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
+    pub async fn connect_eager_with_ca_certificate(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, ConnectError> {
+        Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
+            .await
+    }
+
     /// Connects to independently reachable endpoints using one caller-pinned private CA.
     pub async fn connect_endpoints_with_ca_certificate<I, S>(
         endpoints: I,
@@ -169,6 +190,28 @@ impl Client {
         Self::from_channels(channels, bearer_token)
     }
 
+    async fn connect_eager_endpoints<I, S>(
+        endpoints: I,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
+        let endpoints = Self::endpoints_with_tls(
+            endpoints,
+            certificate_pem,
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+        )?;
+        let mut channels = Vec::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            channels.push(endpoint.connect().await?);
+        }
+        Self::from_channels(channels.into(), bearer_token)
+    }
+
     fn channels_with_tls<I, S>(
         endpoints: I,
         certificate_pem: Option<&[u8]>,
@@ -178,9 +221,27 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut channels = Vec::new();
+        Ok(
+            Self::endpoints_with_tls(endpoints, certificate_pem, connect_timeout)?
+                .into_iter()
+                .map(|endpoint| endpoint.connect_lazy())
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+
+    fn endpoints_with_tls<I, S>(
+        endpoints: I,
+        certificate_pem: Option<&[u8]>,
+        connect_timeout: std::time::Duration,
+    ) -> Result<Vec<Endpoint>, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut configured = Vec::new();
         for endpoint in endpoints.into_iter().take(MAX_ENDPOINTS + 1) {
-            if channels.len() == MAX_ENDPOINTS {
+            if configured.len() == MAX_ENDPOINTS {
                 return Err(ConnectError::EndpointLimit);
             }
             let endpoint = endpoint.as_ref();
@@ -200,12 +261,12 @@ impl Client {
                         .ca_certificate(Certificate::from_pem(certificate_pem)),
                 )?;
             }
-            channels.push(endpoint.connect_lazy());
+            configured.push(endpoint);
         }
-        if channels.is_empty() {
+        if configured.is_empty() {
             return Err(ConnectError::NoEndpoints);
         }
-        Ok(channels.into())
+        Ok(configured)
     }
 
     fn from_channels(
