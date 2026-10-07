@@ -1534,7 +1534,6 @@ pub struct NativeWorkspacePublication<'a> {
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
-#[allow(clippy::too_many_lines)]
 /// Executes or resumes one bounded, journaled physical-root publication.
 pub async fn publish_native_workspace_generation<A, O>(
     workspace: &crate::Workspace<A, O>,
@@ -1560,7 +1559,10 @@ where
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one transition plans, journals, and applies every host change between two generations"
+)]
 pub async fn publish_native_generation_transition<A, O>(
     from_generation: &crate::Generation<A, O>,
     to_generation: &crate::Generation<A, O>,
@@ -1942,7 +1944,6 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
 pub struct MemoryMaterializationJournalStoreError;
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::Digest;

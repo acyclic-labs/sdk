@@ -64,7 +64,7 @@ pub fn probe_native_storage_capabilities(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "reads volume information through Win32 calls")]
 fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorageCapabilityError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::{
@@ -163,7 +163,10 @@ fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorag
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "reads root storage information through Win32 calls"
+)]
 fn probe_root_storage(
     root: &Path,
 ) -> Result<windows::Win32::Storage::FileSystem::FILE_STORAGE_INFO, NativeStorageCapabilityError> {

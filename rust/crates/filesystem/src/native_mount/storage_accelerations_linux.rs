@@ -103,7 +103,7 @@ fn sparse_probe(
     })
 }
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "probes reflink cloning with the FICLONE ioctl")]
 fn block_clone_probe(
     directory: &Path,
     clone_bytes: u64,

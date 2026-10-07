@@ -85,7 +85,10 @@ impl PlatformWatch {
     /// Reports that anything may have changed, or, once the root's path no
     /// longer names the held root, makes the watch inexact: see the module
     /// docs.
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "keeps the fallible fence signature the other watch sources share"
+    )]
     pub(super) fn fence(&self) -> io::Result<()> {
         let shared = &self.shared;
         let named = std::fs::symlink_metadata(&shared.root)
