@@ -298,6 +298,9 @@ describe("Machines simulation", () => {
   test("managed transport rejects insecure configuration and malformed contracts", async () => {
     expect(() => new HttpMachinesProvider({ endpoint: "http://example.test", token: "x" })).toThrow(TypeError);
     expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 0 })).toThrow(RangeError);
+    for (const maximumResponseBytes of [1.5, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes })).toThrow(RangeError);
+    }
     const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ id: "machine", state: "imaginary" })) });
     await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
     const invalidUtf8 = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([0xff])) });
