@@ -530,6 +530,12 @@ export class WasmReducer {
      */
     constructor(authority: any, issuer_id: string, issuer_key: Uint8Array, schemas: any);
     /**
+     * Composes the native immutable prefix after authenticating every exact
+     * reference against this owner's signed scope. The host captures resident
+     * bytes before entry; supplied bytes and capability strings grant nothing.
+     */
+    prepareInheritedModelRequest(scope: any, request: any, prefix: any, files: any, limits: any): Promise<Uint8Array>;
+    /**
      * Returns the exact wire identity used by this compiled core.
      */
     protocolIdentity(): any;
@@ -676,6 +682,11 @@ export function encodeAttachmentManifest(items: any): Uint8Array;
 export function encodeCanonicalJson(value: any): Uint8Array;
 
 /**
+ * Creates a direct-parent segment from the exact admitted request bytes.
+ */
+export function encodeModelPrefix(request: Uint8Array, parent: any, parent_request: Uint8Array | null | undefined, limits: any): Uint8Array;
+
+/**
  * Stages a descriptor with Rust-owned SHA-256, media-type, and safe
  * byte-length rules, projecting its bounded length as a JS Number.
  */
@@ -693,6 +704,11 @@ export function forkSeedFromReport(report: any): any;
  * reads and model dispatch after this plan is committed.
  */
 export function prepareConversationTurn(conversation: any, operation_id: string, content: any, attachments: any, limits: any, existing_selection: any, has_completed_output: boolean, can_reconcile: boolean): WasmTurnPreparation;
+
+/**
+ * Constructs the same canonical request bytes used by native providers.
+ */
+export function prepareModelRequest(request: any, limits: any): Uint8Array;
 
 /**
  * Runs the canonical Rust conversation projection over bytes captured by the
@@ -873,9 +889,11 @@ export interface InitOutput {
     readonly digestCanonicalJson: (a: any) => [number, number, number, number];
     readonly encodeAttachmentManifest: (a: any) => [number, number, number, number];
     readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
+    readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
+    readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
@@ -929,6 +947,7 @@ export interface InitOutput {
     readonly wasmreducer_issueScopeWithPolicies: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly wasmreducer_issueScopeWithPoliciesForAgent: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
     readonly wasmreducer_new: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
+    readonly wasmreducer_prepareInheritedModelRequest: (a: number, b: any, c: any, d: any, e: any, f: any) => any;
     readonly wasmreducer_protocolIdentity: (a: number) => [number, number, number];
     readonly wasmreducer_restore: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
     readonly wasmreducer_snapshot: (a: number) => [number, number, number];
@@ -948,8 +967,8 @@ export interface InitOutput {
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
-    readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

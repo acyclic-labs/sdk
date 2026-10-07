@@ -84,7 +84,7 @@ export type ModelAttempt<Event extends ModelEvent = ModelEvent> =
     requestDigest: Uint8Array;
     observed: readonly Event[];
   }>;
-export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> { generate(request: Request): AsyncIterable<Event>; reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined> }
+export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> { generate(request: Request & { readonly serializedInput: Uint8Array }): AsyncIterable<Event>; reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined> }
 
 export interface ToolInvocation<Input = unknown> {
   /** Runtime-owned reconciliation identity; provider call IDs can recur across turns. */

@@ -97,6 +97,8 @@ pub enum ExecutionEvent {
         step: u32,
         /// Digest of the exact model request.
         request_digest: [u8; 32],
+        /// Pinned private artifact containing the exact provider-neutral request bytes.
+        request: FileRef,
     },
     /// One model stream item was observed.
     Model {
@@ -283,6 +285,10 @@ pub struct StockExecutor {
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_identity: Option<ComponentIdentity>,
+    inherited_prefix: Option<(
+        FileRef,
+        Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    )>,
 }
 
 impl StockExecutor {
@@ -303,6 +309,7 @@ impl StockExecutor {
             tool_scope: RuntimeScope::default(),
             policy: None,
             policy_identity: None,
+            inherited_prefix: None,
         }
     }
 
@@ -311,6 +318,126 @@ impl StockExecutor {
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// Binds a child to an immutable parent model prefix. The supplied reader
+    /// must authenticate the child's exact generation-pinned read grants.
+    /// Context stages assemble local input before this prefix is prepended.
+    pub fn with_inherited_prefix(
+        mut self,
+        prefix: FileRef,
+        verifier: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    ) -> Result<Self> {
+        prefix.validate()?;
+        if prefix.descriptor().media_type() != crate::model::ModelPrefix::MEDIA_TYPE {
+            return Err(Error::Invalid(
+                "inherited model prefix has the wrong media type".into(),
+            ));
+        }
+        self.inherited_prefix = Some((prefix, verifier));
+        Ok(self)
+    }
+
+    /// Freezes the exact retained model input through a completed tool exchange.
+    /// Fork composition may publish this prefix before activating children. This
+    /// only reads the existing execution journal; incomplete calls fail closed.
+    pub async fn completed_tool_prefix(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        call_id: &str,
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let records = journal.replay(input.operation_id).await?;
+        let identity = self.request_digest(input)?;
+        if records.iter().enumerate().any(|(index, record)| {
+            record.operation_id != input.operation_id || record.sequence != index as u64 + 1
+        }) || !matches!(records.first().map(|record| &record.event),
+            Some(ExecutionEvent::Started { request_digest }) if request_digest == &identity)
+        {
+            return Err(Error::Conflict(
+                "tool prefix has another execution identity".into(),
+            ));
+        }
+        let (digest, file) = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    step: recorded,
+                    request_digest,
+                    request,
+                } if *recorded == step => Some((*request_digest, request)),
+                _ => None,
+            })
+            .ok_or(Error::Indeterminate(input.operation_id))?;
+        let request = load_json::<ModelRequest>(journal, file).await?;
+        let prepared = crate::model::PreparedModelRequest::prepare(request, self.limits)?;
+        if prepared.manifest().request_digest != digest {
+            return Err(Error::Conflict("tool prefix request digest differs".into()));
+        }
+        let mut request = prepared.request().clone();
+        let mut admission = ModelEventAdmission::default();
+        let mut calls = Vec::new();
+        for record in &records {
+            if let ExecutionEvent::Model {
+                step: recorded,
+                event,
+            } = &record.event
+                && *recorded == step
+            {
+                let event = load_json::<ModelEvent>(journal, event).await?;
+                admission.observe(&event, self.limits)?;
+                if let ModelEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } = event
+                {
+                    calls.push(ToolInvocation::for_model_call(
+                        input.operation_id,
+                        step,
+                        call_id,
+                        name,
+                        arguments,
+                    ));
+                }
+            }
+        }
+        if !admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        for invocation in calls {
+            let projection =
+                completed_tool_projection(journal, &records, step, &invocation, &request.tools)
+                    .await?;
+            request.messages.extend([
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall {
+                        call_id: invocation.call_id.clone(),
+                        name: invocation.name.clone(),
+                        arguments: invocation.arguments,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: invocation.call_id.clone(),
+                        name: invocation.name,
+                        value: projection,
+                    }),
+                },
+            ]);
+            if invocation.call_id == call_id {
+                break;
+            }
+        }
+        for message in &request.messages {
+            for file in message.content.file_refs() {
+                journal.verify_input_file(file).await?;
+            }
+        }
+        crate::model::PreparedModelRequest::prepare(request, self.limits)
     }
 
     /// Enforces the same explicit tool grants and policy in the stock model loop.
@@ -330,7 +457,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v2",
+            "executor": "acyclic.stock.v3",
             "input": input,
             "model": self.model,
             "context": self.context.contracts(),
@@ -338,6 +465,7 @@ impl StockExecutor {
             "limits": self.limits,
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
             "policy": self.policy_identity.as_ref(),
+            "inherited_prefix": self.inherited_prefix.as_ref().map(|(reference, _)| reference),
         }))
     }
 
@@ -405,11 +533,10 @@ impl StockExecutor {
                 prior_messages: prior_messages.to_vec(),
             })
             .await?;
-        if context.messages.len() > self.limits.context_messages {
-            return Err(Error::Invalid("model context exceeds message limit".into()));
-        }
         for message in &context.messages {
-            message.content.validate_limits(self.limits)?;
+            for reference in message.content.file_refs() {
+                journal.verify_input_file(reference).await?;
+            }
         }
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
@@ -438,13 +565,25 @@ impl StockExecutor {
                         .contains(&format!("tool:call:{}", tool.name))
                 })
                 .collect(),
-            max_output_tokens: None,
+            max_output_tokens: Some(4_096),
         };
-        let request_digest = model_request_digest(&request)?;
+        let request = if let Some((prefix, verifier)) = &self.inherited_prefix {
+            crate::model::PreparedModelRequest::inherit(
+                request,
+                prefix,
+                verifier.as_ref(),
+                self.limits,
+            )
+            .await?
+        } else {
+            crate::model::PreparedModelRequest::prepare(request, self.limits)?
+        };
+        let request_digest = request.manifest().request_digest;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ModelStarted {
                 step: event_step,
                 request_digest,
+                ..
             } if *event_step == step => Some(*request_digest),
             _ => None,
         });
@@ -457,6 +596,22 @@ impl StockExecutor {
             return Err(Error::Conflict(
                 "model attempt identity is bound to another request".into(),
             ));
+        }
+        if let Some(reference) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ModelStarted {
+                step: event_step,
+                request,
+                ..
+            } if *event_step == step => Some(request),
+            _ => None,
+        }) {
+            let recorded = load_json::<ModelRequest>(journal, reference).await?;
+            let recorded = crate::model::PreparedModelRequest::prepare(recorded, self.limits)?;
+            if recorded.bytes() != request.bytes() {
+                return Err(Error::Conflict(
+                    "recorded model request differs from dispatch".into(),
+                ));
+            }
         }
         let replay_completed = admission.completed;
         let model_events = if replay_completed {
@@ -498,6 +653,7 @@ impl StockExecutor {
                 ExecutionEvent::ModelStarted {
                     step: event_step,
                     request_digest,
+                    ..
                 } if *event_step == step => Some(*request_digest),
                 _ => None,
             }) {
@@ -508,6 +664,13 @@ impl StockExecutor {
                 }
                 return Err(Error::Indeterminate(input.operation_id));
             }
+            let request_ref = stage_bytes(
+                journal,
+                input.operation_id,
+                &format!("model:{step}:request"),
+                request.bytes().to_vec(),
+            )
+            .await?;
             let claimed = journal
                 .append_if_tail(
                     input.operation_id,
@@ -516,6 +679,7 @@ impl StockExecutor {
                     ExecutionEvent::ModelStarted {
                         step,
                         request_digest,
+                        request: request_ref,
                     },
                 )
                 .await;
@@ -622,33 +786,11 @@ impl StockExecutor {
         }
         tool.executor
             .authorize(Some(&self.tool_scope), &invocation)?;
-        // Malformed arguments are the model's mistake to correct, not a reason to end the turn:
-        // hand the validation message back as this call's own result so the next step can fix
-        // them. Ending the turn instead makes the most recoverable failure in the loop fatal, and
-        // the replacement agent — fresh context, same model, same schema — repeats it exactly.
-        //
-        // Nothing is journaled. The call was never admitted: no `ToolStarted`, no executor
-        // dispatch, no side effect to reconcile. Rejection is a pure function of the pinned schema
-        // and the arguments, both already recorded by the model step that produced the call, so a
-        // replay re-derives the identical message. `ToolFailureKind` is deliberately not used —
-        // every one of its variants describes an *admitted* call that then failed.
-        if let Err(error) = validate_value(
+        validate_value(
             &tool.definition.input_schema,
             &invocation.arguments,
             "tool input",
-        ) {
-            let message = ModelMessage {
-                role: ModelRole::Tool,
-                content: ModelContent::Part(ModelContentPart::ToolResult {
-                    call_id: invocation.call_id.clone(),
-                    name: invocation.name.clone(),
-                    value: json!({"error": error.to_string()}),
-                }),
-            };
-            message.content.validate_limits(self.limits)?;
-            prior_messages.push(message);
-            return Ok(());
-        }
+        )?;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolStarted {
                 step: event_step,
@@ -856,6 +998,7 @@ impl StockExecutor {
                 .projection
                 .project(&invocation, &result)
                 .and_then(|value| {
+                    validate_value(&tool.definition.output_schema, &value, "tool projection")?;
                     if crate::contract::canonical_json_bytes(&value)?.len() as u64
                         > self.limits.render_bytes
                     {
@@ -966,6 +1109,11 @@ impl StockExecutor {
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
+        validate_value(
+            &tool.definition.output_schema,
+            &projection,
+            "tool projection",
+        )?;
         let message = ModelMessage {
             role: ModelRole::Tool,
             content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -1101,8 +1249,50 @@ impl Executor for StockExecutor {
     }
 }
 
-fn model_request_digest(request: &ModelRequest) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(request)
+async fn completed_tool_projection(
+    journal: &dyn ExecutionJournal,
+    records: &[ExecutionRecord],
+    step: u32,
+    expected: &ToolInvocation,
+    tools: &[crate::tool::ToolDefinition],
+) -> Result<Value> {
+    let invocation = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted {
+                step: recorded,
+                call_id,
+                invocation,
+            } if *recorded == step && call_id == &expected.call_id => Some(invocation),
+            _ => None,
+        })
+        .ok_or(Error::Indeterminate(expected.operation_id))?;
+    if load_json::<ToolInvocation>(journal, invocation).await? != *expected {
+        return Err(Error::Conflict(
+            "completed tool prefix invocation differs".into(),
+        ));
+    }
+    let (result, projection) = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ToolCompleted {
+                step: recorded,
+                call_id,
+                result,
+                projection,
+            } if *recorded == step && call_id == &expected.call_id => Some((result, projection)),
+            _ => None,
+        })
+        .ok_or(Error::Indeterminate(expected.operation_id))?;
+    let definition = tools
+        .iter()
+        .find(|tool| tool.name == expected.name)
+        .ok_or_else(|| Error::Invalid("completed tool prefix has no pinned schema".into()))?;
+    let result = load_json::<ToolResult>(journal, result).await?;
+    let projection = load_json::<Value>(journal, projection).await?;
+    validate_value(&definition.output_schema, &result.value, "tool output")?;
+    validate_value(&definition.output_schema, &projection, "tool projection")?;
+    Ok(projection)
 }
 
 pub(crate) async fn stage_json<T: Serialize>(
@@ -1111,9 +1301,24 @@ pub(crate) async fn stage_json<T: Serialize>(
     key: &str,
     value: &T,
 ) -> Result<FileRef> {
-    let bytes = crate::contract::canonical_json_bytes(value)?;
+    stage_bytes(
+        journal,
+        operation_id,
+        key,
+        crate::contract::canonical_json_bytes(value)?,
+    )
+    .await
+}
+
+async fn stage_bytes(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    key: &str,
+    bytes: Vec<u8>,
+) -> Result<FileRef> {
+    let expected = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json")?;
     let reference = journal
-        .stage(operation_id, key.into(), bytes.clone(), "application/json")
+        .stage(operation_id, key.into(), bytes, "application/json")
         .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
@@ -1122,7 +1327,11 @@ pub(crate) async fn stage_json<T: Serialize>(
             "execution journal returned a non-private JSON reference".into(),
         ));
     }
-    reference.descriptor().verify(&bytes)?;
+    if reference.descriptor() != &expected {
+        return Err(Error::Storage(
+            "execution journal staged different JSON bytes".into(),
+        ));
+    }
     Ok(reference)
 }
 
@@ -1268,8 +1477,9 @@ mod tests {
     impl ModelProvider for SlippingModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            request: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let request = request.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -1323,8 +1533,17 @@ mod tests {
     impl ModelProvider for FakeModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            request: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            assert_eq!(
+                request.bytes(),
+                crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
+            );
+            assert_eq!(
+                request.manifest().request_digest,
+                *blake3::hash(request.bytes()).as_bytes()
+            );
+            let request = request.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -1369,7 +1588,7 @@ mod tests {
     impl ModelProvider for RecoverableModel {
         fn generate<'a>(
             &'a self,
-            _: ModelRequest,
+            _: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(vec![
@@ -1609,6 +1828,109 @@ mod tests {
         }
     }
 
+    struct PrefixJournalReader(Arc<Journal>);
+    impl crate::conversation::ContentResidencyVerifier for PrefixJournalReader {
+        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                let bytes = self.0.load(file).await?;
+                file.descriptor().verify(&bytes)
+            })
+        }
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            self.0.load(file)
+        }
+    }
+
+    #[derive(Default)]
+    struct PrefixBoundaryModel(Mutex<Vec<Vec<u8>>>);
+    impl ModelProvider for PrefixBoundaryModel {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.bytes().to_vec());
+            Box::pin(stream::iter([Ok(ModelEvent::Completed {
+                metadata: Value::Null,
+            })]))
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
+        let model = Model::new("example", "model", "1", Value::Null)?;
+        let root = crate::model::PreparedModelRequest::prepare(
+            ModelRequest {
+                model: model.clone(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("parent é\0🦀".into()),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: Some(4096),
+            },
+            Limits::default(),
+        )?;
+        let journal = Arc::new(Journal::default());
+        let root_file = journal
+            .stage(
+                OperationId::from_bytes([66; 16]),
+                "root".into(),
+                crate::model::ModelPrefix::select(&root, None)?.canonical_bytes()?,
+                crate::model::ModelPrefix::MEDIA_TYPE,
+            )
+            .await?;
+        let reader = Arc::new(PrefixJournalReader(journal.clone()));
+        let provider = Arc::new(PrefixBoundaryModel::default());
+        let executor = StockExecutor::new(
+            model,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_inherited_prefix(root_file, reader)?;
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([67; 16]),
+            input: ModelContent::Text("child task; fresh scratch".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor.execute(input.clone(), journal.as_ref()).await?;
+        executor.execute(input.clone(), journal.as_ref()).await?;
+        let mut expected = root.request().clone();
+        expected.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: input.input.clone(),
+        });
+        let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default())?;
+        assert_eq!(
+            *provider
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![expected.bytes().to_vec()]
+        );
+        let unbound = StockExecutor::new(
+            root.request().model.clone(),
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        );
+        assert!(matches!(
+            unbound.execute(input, journal.as_ref()).await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         let model = Arc::new(FakeModel {
@@ -1710,7 +2032,35 @@ mod tests {
             selected_context: None,
             max_steps: 4,
         };
+        assert!(
+            executor
+                .completed_tool_prefix(&journal, &input, 0, "call-1")
+                .await
+                .is_err()
+        );
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let first = executor.execute(input.clone(), &journal).await?;
+        let completed_prefix = executor
+            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .await?;
+        let dispatched = model
+            .requests
+            .lock()
+            .map_err(|_| Error::Storage("model lock poisoned".into()))?
+            .get(1)
+            .cloned()
+            .ok_or_else(|| Error::NotFound("second model input".into()))?;
+        assert_eq!(
+            completed_prefix.bytes(),
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+        );
+        assert!(matches!(
+            executor
+                .completed_tool_prefix(&journal, &input, 0, "missing-call")
+                .await,
+            Err(Error::Indeterminate(_))
+        ));
+
         let mut replay_context = Vec::new();
         let changed_call = ToolInvocation::for_model_call(
             input.operation_id,
@@ -1732,8 +2082,97 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert!(replay_context.is_empty());
-        let replayed = executor.execute(input, &journal).await?;
+        let replayed = executor.execute(input.clone(), &journal).await?;
         assert_eq!(first, replayed);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        let reopened = Journal(
+            Mutex::new(
+                journal
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+            Mutex::new(
+                journal
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+        );
+        assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
+        let incomplete = Journal(
+            Mutex::new(
+                reopened
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .iter()
+                    .take_while(|record| {
+                        !matches!(record.event, ExecutionEvent::ToolCompleted { .. })
+                    })
+                    .cloned()
+                    .collect(),
+            ),
+            Mutex::new(
+                reopened
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+        );
+        assert!(matches!(
+            executor
+                .completed_tool_prefix(&incomplete, &input, 0, "call-1")
+                .await,
+            Err(Error::Indeterminate(_))
+        ));
+        let gapped = Journal(
+            Mutex::new(
+                incomplete
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .iter()
+                    .filter(|record| record.sequence != 2)
+                    .cloned()
+                    .collect(),
+            ),
+            Mutex::new(
+                incomplete
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+        );
+        assert!(matches!(
+            executor
+                .completed_tool_prefix(&gapped, &input, 0, "call-1")
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let request_key = format!("{}:model:0:request", input.operation_id);
+        reopened
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .get_mut(&request_key)
+            .ok_or_else(|| Error::NotFound("recorded request".into()))?
+            .1 = b"{}".to_vec();
+        assert!(executor.execute(input.clone(), &reopened).await.is_err());
+        reopened
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .remove(&request_key);
+        assert!(matches!(
+            executor.execute(input, &reopened).await,
+            Err(Error::NotFound(_))
+        ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         let durable = serde_json::to_string(
@@ -1826,8 +2265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_tool_arguments_return_to_the_model_instead_of_ending_the_turn() -> Result<()>
-    {
+    async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
         let model = Arc::new(SlippingModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
@@ -1870,39 +2308,12 @@ mod tests {
             max_steps: 4,
         };
 
-        // The turn survives the rejected call and finishes on the corrected one.
-        let output = executor.execute(input, &journal).await?;
-        assert_eq!(output.text, "done");
-
-        // The rejected call was never admitted, so only the corrected one reached the executor.
-        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
-
-        // The model was told what was wrong, as that call's own tool result.
-        let requests = model
-            .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock poisoned".into()))?;
-        let rejection = requests.get(1).and_then(|request| {
-            request
-                .messages
-                .iter()
-                .find_map(|message| match (&message.role, &message.content) {
-                    (
-                        ModelRole::Tool,
-                        ModelContent::Part(ModelContentPart::ToolResult { call_id, value, .. }),
-                    ) if call_id == "call-1" => Some(value.clone()),
-                    _ => None,
-                })
-        });
-        let rejection = rejection.ok_or_else(|| Error::Storage("no rejection message".into()))?;
-        let text = rejection
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        assert!(
-            text.contains("tool input failed validation"),
-            "expected the validation message, got {text:?}"
-        );
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 

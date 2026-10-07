@@ -5462,7 +5462,14 @@ mod tests {
         );
         assert_eq!(std::fs::read(&mounted)?, b"other");
         assert!(requests(&session).contains(&"open"));
+        // After invalidation this read may use READ instead of stored pages,
+        // which makes Linux invalidate atime even under noatime. Refresh that
+        // attribute once before checking that unchanged stats stay cached.
         assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
+        requests(&session);
+        for _ in 0..3 {
+            assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
+        }
         assert_eq!(requests(&session), Vec::<&str>::new());
 
         // A change through the mount reaches every later open and stat.

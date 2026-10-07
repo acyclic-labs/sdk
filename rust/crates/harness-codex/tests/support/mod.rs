@@ -343,12 +343,41 @@ exit {exit}
             exit = self.exit,
         );
         let path = dir.join("codex");
-        std::fs::write(&path, script).expect("write fake codex");
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            use std::io::Write as _;
+            use std::process::{Command, Stdio};
+            // Keep the executable's writable descriptor out of the test
+            // process. A concurrent fork can inherit another fixture's writer
+            // until exec closes it, causing ETXTBSY on that fixture's launch.
+            // The installer child owns the writer; parallel fixture launches
+            // inherit only the parent's pipe, never the executable descriptor.
+            let mut installer = Command::new("sh")
+                .args([
+                    "-c",
+                    "cat > \"$1\" && chmod 755 \"$1\"",
+                    "install-fake-codex",
+                ])
+                .arg(&path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("start fake codex installer");
+            installer
+                .stdin
+                .take()
+                .expect("installer stdin")
+                .write_all(script.as_bytes())
+                .expect("write fake codex");
+            assert!(
+                installer
+                    .wait()
+                    .expect("finish fake codex installer")
+                    .success()
+            );
         }
+        #[cfg(not(unix))]
+        std::fs::write(&path, script).expect("write fake codex");
         path
     }
 

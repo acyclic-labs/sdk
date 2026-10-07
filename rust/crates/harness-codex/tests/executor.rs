@@ -436,6 +436,15 @@ async fn a_resumed_turn_only_gets_the_steps_that_are_left() {
         .await
         .expect_err("killed mid-turn");
     // The crashed run had already spent every step of the turn.
+    let request = journal
+        .stage(
+            operation,
+            "test:request".into(),
+            b"{}".to_vec(),
+            "application/json",
+        )
+        .await
+        .expect("stage");
     journal
         .append(
             operation,
@@ -443,6 +452,7 @@ async fn a_resumed_turn_only_gets_the_steps_that_are_left() {
             ExecutionEvent::ModelStarted {
                 step: 8,
                 request_digest: [0; 32],
+                request,
             },
         )
         .await
