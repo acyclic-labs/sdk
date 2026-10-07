@@ -62,3 +62,10 @@ The older `all8-qualification-receipt.json` and
 `cross-platform-qualification-receipt.json` are historical context. Their
 claims are not substituted for the measured patched-generator closure.
 
+The source-bound installed receipts are retained under `installed-receipts/`.
+Windows, Linux/WSL, and macOS/ivar each report the same eight operations and
+the checks `remote`, `service_error`, `pre-cancelled`,
+`in-flight-task-cancellation`, and `server-abort-cleanup`. Each receipt binds
+the measured wheel identity to the same producer manifest and is emitted only
+after the wheel hash is unchanged before and after execution.
+

@@ -1,0 +1,86 @@
+﻿{
+    "schema":  "acyclic.kotlin.jvm.final-producer-source-receipt.v1",
+    "source_root":  "Q:\\sdk\\work\\sdkgen-main-actual03bb",
+    "source_commit":  "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+    "source_worktree_dirty":  true,
+    "source_files_sha256":  {
+                                "Cargo.toml":  "EFEE03BA4D746D7AF09460235425DD8556B0355116E2D2A5E46158778ABF9121",
+                                "Cargo.lock":  "F4F0E48273E0D9AA5232339D8B7F4A8162B1F242ED651580B293712A30DDC8A2",
+                                "rust/crates/actors/Cargo.toml":  "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
+                                "rust/crates/actors/src/lib.rs":  "D9609E96206C2D3915D55B0BF00FA8BE7E5C49747749725CE75EFFBE3CE374C9",
+                                "rust/crates/actors/src/domain.rs":  "1390DB39B264AD3CEBF6E9EC07AA903421B6982E9902FC60557E0CA6A8FDF902",
+                                "rust/crates/actors/src/client.rs":  "750EA049379898E7A1BBADCA06F6FEF65CFD6068A570E7E74F66411F5443131B",
+                                "rust/crates/actors/src/codegen.rs":  "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6",
+                                "rust/crates/actors/src/contract.rs":  "70CB496E3695FE725AFF1AB124AE400F090333575F57E2029B4C122647E8AE08",
+                                "rust/crates/actors/src/contract_definitions.rs":  "FD080D2936908BA4ED0F27AD6E956C466D59FD8EFBB7DDCD8BBE8E3BFA8D1778",
+                                "rust/crates/actors/build.rs":  "E5D9B1E5C3777B48EA1F1D5730CC20E76FB941FACAF241E33DC8C553538A3718"
+                            },
+    "final_semantic_producer":  {
+                                    "domain_module":  "rust/crates/actors/src/domain.rs",
+                                    "semantic_export_roots":  [
+                                                                  "PositiveU64",
+                                                                  "ErrorCode",
+                                                                  "ServiceError",
+                                                                  "CreateActorRequest",
+                                                                  "UpdateActorRequest",
+                                                                  "InspectActorRequest",
+                                                                  "AddSubscriptionRequest",
+                                                                  "RemoveSubscriptionRequest",
+                                                                  "ResumeSubscriptionRequest",
+                                                                  "CheckpointActorRequest",
+                                                                  "InvokeActorRequest",
+                                                                  "CreateActorResponse",
+                                                                  "UpdateActorResponse",
+                                                                  "InspectActorResponse",
+                                                                  "AddSubscriptionResponse",
+                                                                  "RemoveSubscriptionResponse",
+                                                                  "ResumeSubscriptionResponse",
+                                                                  "CheckpointActorResponse",
+                                                                  "InvokeActorResponse"
+                                                              ],
+                                    "operation_methods":  [
+                                                              "create_actor",
+                                                              "update_actor",
+                                                              "inspect_actor",
+                                                              "add_subscription",
+                                                              "remove_subscription",
+                                                              "resume_subscription",
+                                                              "checkpoint_actor",
+                                                              "invoke_actor"
+                                                          ],
+                                    "http_routes":  {
+                                                        "createActor":  "v1/actors/create",
+                                                        "updateActor":  "v1/actors/update",
+                                                        "inspectActor":  "v1/actors/inspect",
+                                                        "addSubscription":  "v1/actors/subscriptions/add",
+                                                        "removeSubscription":  "v1/actors/subscriptions/remove",
+                                                        "resumeSubscription":  "v1/actors/subscriptions/resume",
+                                                        "checkpointActor":  "v1/actors/checkpoint",
+                                                        "invokeActor":  "v1/actors/invoke"
+                                                    },
+                                    "extraction":  [
+                                                       "domain.rs: export_roots! macro used by export_typescript",
+                                                       "client.rs: operation! macro declarations",
+                                                       "lib.rs: HTTP_ROUTES"
+                                                   ]
+                                },
+    "current_cutover_gap":  {
+                                "actors_uniffi_present":  false,
+                                "required_integration":  [
+                                                             "add a maintained UniFFI facade that depends on acyclic-actors by path",
+                                                             "replace duplicate Kotlin type and operation tables with producer metadata extraction",
+                                                             "hash the producer closure and Cargo lock at generation time",
+                                                             "derive Maven version from Cargo metadata and retain standard JNA resource roots"
+                                                         ]
+                            },
+    "exact_jar":  {
+                      "path":  "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\kotlin-current-lock-20261007\\consumer\\target\\acyclic-actors-uniffi-kotlin-0.2.0.jar",
+                      "sha256":  "9877BE2BB3FF38964F05044A1EBA1101B0F70595D3956BCE84F6866E43DB7AE3",
+                      "standard_jna_resource_prefixes":  {
+                                                             "linux-x86-64/":  true,
+                                                             "win32-x86-64/":  true,
+                                                             "darwin-aarch64/":  true
+                                                         },
+                      "no_custom_loader_claim":  true
+                  }
+}

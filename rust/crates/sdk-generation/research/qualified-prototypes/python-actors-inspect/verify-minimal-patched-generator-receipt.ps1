@@ -34,6 +34,10 @@ Assert-File (Join-Path $PSScriptRoot '..\..\..\..\actors-uniffi\src\lib.rs') `
 Assert-File (Join-Path $PSScriptRoot 'installed-all8-remote-conformance.py') `
     $receipt.qualification.consumer_source.sha256 `
     $receipt.qualification.consumer_source.bytes
+foreach ($entry in $receipt.qualification.installed_receipts.PSObject.Properties) {
+    Assert-File (Join-Path $PSScriptRoot (Join-Path 'installed-receipts' (Split-Path $entry.Value.path -Leaf))) `
+        $entry.Value.sha256 $entry.Value.bytes
+}
 
 $python = $receipt.generated_outputs.python_module
 Assert-File $python.windows_path $python.sha256 $python.bytes

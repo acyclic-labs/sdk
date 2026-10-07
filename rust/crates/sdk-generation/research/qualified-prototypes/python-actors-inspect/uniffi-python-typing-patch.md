@@ -34,11 +34,15 @@ Static typing qualification used mypy 1.17.1 and Pyright 1.1.404. Both positive 
 
 - Wheel: `Q:\sdk\work\actors-uniffi-python-generator-patched-wheel-20261007\dist-patched\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl`
 - SHA-256 `76BA00E4561C4425424562385962F9AD37EBDE724473BB28E5B1512A1E7D553B`
-- The fresh static output is source-bound to the patch; a new wheel is required before claiming an installed runtime result for this exact generated module.
+- The fresh static output is source-bound to the patch. Fresh installed wheels
+  were then run on Windows, Linux/WSL, and macOS/ivar against the task-owned
+  TLS fixture; each producer receipt records all eight operations plus typed
+  service errors, pre-cancelled calls, in-flight task cancellation, and server
+  stream cleanup.
 
 Static qualification covered the generated data-carrying enum alias in this Actors module (`SubscriptionStartValue`), both variant constructors, and its `SubscriptionSpec.start` field. The negative cursor-string fixture produced the expected type error in both checkers. Runtime assertions confirmed both nested constructors still satisfy `isinstance(value, SubscriptionStart)` and that the alias remains a `typing.Union` of those nested classes. The retained cross-platform receipt records fresh Linux/WSL and macOS/ivar install and relay runs, but no producer log is retained beside those patched wheels.
 
-The maintained remote consumer is `installed-all8-remote-conformance.py`. It records each operation only after its response assertions pass, and records `remote`, `service_error`, and `pre-cancelled` only after their respective checks pass. Its optional pending-fixture path records `in-flight-task-cancellation` and `server-abort-cleanup` only after a real pending `asyncio.Task.cancel()` and observed server stream close. Receipt mode requires a producer manifest, records `artifacts.wheel`, and verifies the wheel identity before and after the run. An install check must be emitted by the install harness that actually installs the wheel.
+The maintained remote consumer is `installed-all8-remote-conformance.py`. It records each operation only after its response assertions pass, and records `remote`, `service_error`, and `pre-cancelled` only after their respective checks pass. Its optional pending-fixture path records `in-flight-task-cancellation` and `server-abort-cleanup` only after a real pending `asyncio.Task.cancel()` and observed server stream close. Receipt mode requires a producer manifest, records `artifacts.wheel`, and verifies the wheel identity before and after the run. The exact Windows, Linux/WSL, and macOS/ivar receipts are retained under `installed-receipts/`.
 
 The maintained source runner is `run-uniffi-python-typing-patch.sh`. It fetched and verified the pinned crates.io archive, applied the patch, rebuilt the generator, and reproduced the exact generated-module SHA `20B3EEDB5FAD183ACED6DB4660B28B9738D16344B4DC652D37A3E90B47C0849A`. The qualification does not claim a production dependency update.
 

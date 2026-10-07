@@ -30,24 +30,6 @@ mod ffi {
         error: ErrorKind,
     }
 
-    /// One typed result per operation. The Rust domain object remains opaque;
-    /// these are validated projections, not a second request/response model.
-    struct ActorOperationResult {
-        ok: bool,
-        error: ErrorKind,
-        message: String,
-        actor_id: String,
-        home_region: String,
-        active: bool,
-        subscriptions_empty: bool,
-        configuration_revision: u64,
-        checkpoint_epoch: u64,
-        has_checkpoint: bool,
-        checkpoint: u64,
-        status: u32,
-        has_location_header: bool,
-    }
-
     struct RemoteConformanceResult {
         ok: bool,
         operations_completed: u32,
@@ -62,6 +44,7 @@ mod ffi {
         type ActorObservationView;
         type PositiveU64View;
         type ActorsOperation;
+        type ActorOperationResult;
 
         fn actors_client_new() -> Box<ActorsClient>;
         fn actors_client_connect(
@@ -73,18 +56,31 @@ mod ffi {
         fn actors_client_error_kind(client: &ActorsClient) -> ErrorKind;
         fn actors_client_error_message(client: &ActorsClient) -> String;
         fn actors_client_connect_probe(endpoint: &str, token: &str) -> ClientConnectResult;
-        fn actors_create_actor(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_update_actor(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_inspect_actor(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_add_subscription(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_remove_subscription(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_resume_subscription(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_checkpoint_actor(client: &ActorsClient) -> ActorOperationResult;
-        fn actors_invoke_actor(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_create_actor(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_update_actor(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_inspect_actor(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_add_subscription(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_remove_subscription(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_resume_subscription(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_checkpoint_actor(client: &ActorsClient) -> Box<ActorOperationResult>;
+        fn actors_invoke_actor(client: &ActorsClient) -> Box<ActorOperationResult>;
         fn actors_inspect_actor_with_cancel(
             client: &ActorsClient,
             operation: &ActorsOperation,
-        ) -> ActorOperationResult;
+        ) -> Box<ActorOperationResult>;
+        fn actor_operation_result_empty() -> Box<ActorOperationResult>;
+        fn actor_operation_ok(result: &ActorOperationResult) -> bool;
+        fn actor_operation_error(result: &ActorOperationResult) -> ErrorKind;
+        fn actor_operation_message(result: &ActorOperationResult) -> String;
+        fn actor_operation_actor_id(result: &ActorOperationResult) -> String;
+        fn actor_operation_home_region(result: &ActorOperationResult) -> String;
+        fn actor_operation_active(result: &ActorOperationResult) -> bool;
+        fn actor_operation_subscriptions_empty(result: &ActorOperationResult) -> bool;
+        fn actor_operation_configuration_revision(result: &ActorOperationResult) -> u64;
+        fn actor_operation_checkpoint_epoch(result: &ActorOperationResult) -> u64;
+        fn actor_operation_has_checkpoint(result: &ActorOperationResult) -> bool;
+        fn actor_operation_status(result: &ActorOperationResult) -> u32;
+        fn actor_operation_has_location_header(result: &ActorOperationResult) -> bool;
         fn actors_live_conformance_probe(
             endpoint: &str,
             token: &str,
@@ -125,6 +121,21 @@ pub struct ActorObservationView(domain::ActorObservation);
 pub struct PositiveU64View(domain::PositiveU64);
 pub struct ActorsOperation {
     cancellation: CancellationToken,
+}
+pub struct ActorOperationResult {
+    ok: bool,
+    error: ffi::ErrorKind,
+    message: String,
+    actor_id: String,
+    home_region: String,
+    active: bool,
+    subscriptions_empty: bool,
+    configuration_revision: u64,
+    checkpoint_epoch: u64,
+    has_checkpoint: bool,
+    checkpoint: u64,
+    status: u32,
+    has_location_header: bool,
 }
 
 fn actors_client_new() -> Box<ActorsClient> {
@@ -228,8 +239,8 @@ impl ProbeFailure {
     }
 }
 
-fn empty_operation_result() -> ffi::ActorOperationResult {
-    ffi::ActorOperationResult {
+fn empty_operation_result() -> Box<ActorOperationResult> {
+    Box::new(ActorOperationResult {
         ok: false,
         error: ffi::ErrorKind::NoError,
         message: String::new(),
@@ -243,10 +254,10 @@ fn empty_operation_result() -> ffi::ActorOperationResult {
         checkpoint: 0,
         status: 0,
         has_location_header: false,
-    }
+    })
 }
 
-fn operation_error(error: client::Error) -> ffi::ActorOperationResult {
+fn operation_error(error: client::Error) -> Box<ActorOperationResult> {
     let error = ActorsError::from_client(error);
     let mut result = empty_operation_result();
     result.error = error.kind;
@@ -254,7 +265,7 @@ fn operation_error(error: client::Error) -> ffi::ActorOperationResult {
     result
 }
 
-fn operation_semantic(message: impl Into<String>) -> ffi::ActorOperationResult {
+fn operation_semantic(message: impl Into<String>) -> Box<ActorOperationResult> {
     let mut result = empty_operation_result();
     result.error = ffi::ErrorKind::Semantic;
     result.message = message.into();
@@ -263,7 +274,7 @@ fn operation_semantic(message: impl Into<String>) -> ffi::ActorOperationResult {
 
 fn observation_operation_result(
     observation: Option<&domain::ActorObservation>,
-) -> ffi::ActorOperationResult {
+) -> Box<ActorOperationResult> {
     let Some(observation) = observation else {
         return operation_semantic("remote response omitted actor");
     };
@@ -281,7 +292,7 @@ fn observation_operation_result(
     result
 }
 
-fn invoke_operation_result(response: &domain::InvokeActorResponse) -> ffi::ActorOperationResult {
+fn invoke_operation_result(response: &domain::InvokeActorResponse) -> Box<ActorOperationResult> {
     let mut result = empty_operation_result();
     result.ok = response.status() == 201
         && response
@@ -338,7 +349,7 @@ fn canonical_subscription() -> Result<domain::SubscriptionSpec, String> {
     .map_err(|error| error.to_string())
 }
 
-fn actors_create_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_create_actor(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return facade
             .last_error
@@ -375,7 +386,7 @@ fn actors_create_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
     }
 }
 
-fn actors_update_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_update_actor(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -406,7 +417,7 @@ fn actors_update_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
     }
 }
 
-fn actors_inspect_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_inspect_actor(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -420,7 +431,7 @@ fn actors_inspect_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
     }
 }
 
-fn actors_add_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_add_subscription(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -445,7 +456,7 @@ fn actors_add_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
     }
 }
 
-fn actors_remove_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_remove_subscription(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -463,7 +474,7 @@ fn actors_remove_subscription(facade: &ActorsClient) -> ffi::ActorOperationResul
     }
 }
 
-fn actors_resume_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_resume_subscription(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -481,7 +492,7 @@ fn actors_resume_subscription(facade: &ActorsClient) -> ffi::ActorOperationResul
     }
 }
 
-fn actors_checkpoint_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_checkpoint_actor(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -495,7 +506,7 @@ fn actors_checkpoint_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
     }
 }
 
-fn actors_invoke_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+fn actors_invoke_actor(facade: &ActorsClient) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -521,7 +532,7 @@ fn actors_invoke_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
 fn actors_inspect_actor_with_cancel(
     facade: &ActorsClient,
     operation: &ActorsOperation,
-) -> ffi::ActorOperationResult {
+) -> Box<ActorOperationResult> {
     let Some(client) = facade.inner.as_ref() else {
         return operation_semantic("client is not connected");
     };
@@ -536,6 +547,61 @@ fn actors_inspect_actor_with_cancel(
         Ok(response) => observation_operation_result(response.actor()),
         Err(error) => operation_error(error),
     }
+}
+
+// Keep the operation result opaque across CXX. These accessors expose only the
+// assertions needed by the qualification consumer; the Rust result remains
+// the sole owner of response fields and their projection rules.
+fn actor_operation_result_empty() -> Box<ActorOperationResult> {
+    empty_operation_result()
+}
+
+fn actor_operation_ok(result: &ActorOperationResult) -> bool {
+    result.ok
+}
+
+fn actor_operation_error(result: &ActorOperationResult) -> ffi::ErrorKind {
+    result.error
+}
+
+fn actor_operation_message(result: &ActorOperationResult) -> String {
+    result.message.clone()
+}
+
+fn actor_operation_actor_id(result: &ActorOperationResult) -> String {
+    result.actor_id.clone()
+}
+
+fn actor_operation_home_region(result: &ActorOperationResult) -> String {
+    result.home_region.clone()
+}
+
+fn actor_operation_active(result: &ActorOperationResult) -> bool {
+    result.active
+}
+
+fn actor_operation_subscriptions_empty(result: &ActorOperationResult) -> bool {
+    result.subscriptions_empty
+}
+
+fn actor_operation_configuration_revision(result: &ActorOperationResult) -> u64 {
+    result.configuration_revision
+}
+
+fn actor_operation_checkpoint_epoch(result: &ActorOperationResult) -> u64 {
+    result.checkpoint_epoch
+}
+
+fn actor_operation_has_checkpoint(result: &ActorOperationResult) -> bool {
+    result.has_checkpoint
+}
+
+fn actor_operation_status(result: &ActorOperationResult) -> u32 {
+    result.status
+}
+
+fn actor_operation_has_location_header(result: &ActorOperationResult) -> bool {
+    result.has_location_header
 }
 
 fn assert_remote_observation(

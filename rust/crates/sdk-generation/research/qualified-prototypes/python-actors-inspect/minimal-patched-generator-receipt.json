@@ -85,9 +85,9 @@
       "bytes": 2302612
     },
     "macos_wheel": {
-      "path": "Q:\\sdk\\work\\actors-uniffi-python-mac-wheel-current-20261007\\acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
-      "sha256": "F83C3D76CA2E8A8C26AF13A29403B4C294879F84574003BC4BBCE5D110BCD15B",
-      "bytes": 1936911
+      "path": "ivar:/Users/var/python-actors-mac-wheel-rerun2-20261007/dist-rerun2/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
+      "sha256": "EE4EBA05AF31E8503A749F830AA0E8D896F58A829D3DE54E5C46C92DB5E548A9",
+      "bytes": 1937058
     }
   },
   "qualification": {
@@ -142,14 +142,51 @@
       }
     },
     "installed": {
-      "windows": "RECORDED_EXTERNAL_RECEIPT: all-eight consumer, typed service error, and pre-cancelled operation; producer log is for the unpatched all8 wheel and is not bound to this patched output",
-      "linux_wsl": "RECORDED_EXTERNAL_RECEIPT: fresh install and relay run reported by cross-platform receipt; no producer log retained beside the patched wheel",
-      "macos_ivar": "RECORDED_EXTERNAL_RECEIPT: fresh install and SSH-tunnel run reported by cross-platform receipt; no producer log retained beside the patched wheel"
+      "windows": {
+        "status": "PASS",
+        "receipt_path": "Q:\\sdk\\work\\python-actors-win-receipt-20261007-rerun5.json",
+        "receipt_sha256": "7324E1312548546DF7E74D4608F50EFE9B65744384ABB314E5829E2F41C27672",
+        "receipt_bytes": 1270
+      },
+      "linux_wsl": {
+        "status": "PASS",
+        "receipt_path": "Q:\\sdk\\work\\python-actors-linux-receipt-20261007-rerun6.json",
+        "receipt_sha256": "1E41408122738B068E61CE07D4AD1A652657DFA652C90C75328567D4F3754A0A",
+        "receipt_bytes": 1232
+      },
+      "macos_ivar": {
+        "status": "PASS",
+        "receipt_path": "ivar:/Users/var/python-actors-mac-receipt-20261007.json",
+        "receipt_sha256": "3C95984E07DB497A7208AC8AC281BA887D0ABA811E029A49E226147B1855FE4F",
+        "receipt_bytes": 1215
+      }
+    },
+    "installed_receipts": {
+      "windows": {
+        "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/windows-20261007.json",
+        "sha256": "7324E1312548546DF7E74D4608F50EFE9B65744384ABB314E5829E2F41C27672",
+        "bytes": 1270
+      },
+      "linux_wsl": {
+        "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/linux-wsl-20261007.json",
+        "sha256": "1E41408122738B068E61CE07D4AD1A652657DFA652C90C75328567D4F3754A0A",
+        "bytes": 1232
+      },
+      "macos_ivar": {
+        "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/macos-ivar-20261007.json",
+        "sha256": "3C95984E07DB497A7208AC8AC281BA887D0ABA811E029A49E226147B1855FE4F",
+        "bytes": 1215
+      },
+      "producer_manifest": {
+        "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/producer-manifest-20261007.json",
+        "sha256": "2CDA446831978A03E436A0482383F4C00C546B3CA5CD94A52E705DE4EB708CF3",
+        "bytes": 14108
+      }
     },
     "consumer_source": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",
-      "sha256": "31D5DB668709E984FA02362E968AB60A9225101E4C87A19FF3315B92BE15D49A",
-      "bytes": 8742
+      "sha256": "41519F1353381D417AE8EAE680235B34B98C18C4DD9A8CC5E76C2118A9964289",
+      "bytes": 8980
     },
     "fixture": {
       "windows_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",

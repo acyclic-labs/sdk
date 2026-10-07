@@ -1,0 +1,36 @@
+{
+  "schema": "acyclic.language-package.qualification/v1",
+  "status": "PASS",
+  "operations": [
+    "create_actor",
+    "update_actor",
+    "inspect_actor_request",
+    "add_subscription",
+    "remove_subscription",
+    "resume_subscription",
+    "checkpoint_actor",
+    "invoke"
+  ],
+  "checks": [
+    "remote",
+    "service_error",
+    "pre-cancelled",
+    "in-flight-task-cancellation",
+    "server-abort-cleanup"
+  ],
+  "fixture_options_sha256": "62acaff54ab35af90f99bbae47ef520a5574b06f6f65f3b594e4cac4831a00e5",
+  "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "source_inventory_sha256": "8a6a377c8652a796d783072dd430c4a4d163a1a79773f81791f86be606803011",
+  "toolchain": {
+    "uniffi_bindgen": "0.31.0",
+    "uniffi_source_sha256": "E373C20E5BC88636118840F4AA19ADDAE14AD85B75FE6A4D0CDC48B57AF7D642",
+    "python_patch_sha256": "E373C20E5BC88636118840F4AA19ADDAE14AD85B75FE6A4D0CDC48B57AF7D642"
+  },
+  "artifacts": {
+    "wheel": {
+      "path": "/mnt/q/sdk/work/actors-uniffi-python-linux-patched-wheel-rerun2-20261007/dist-rerun2/acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
+      "sha256": "4fcbb057a56d24558f6c37af31ffef1d9b6beac04ea897dfbcbdb66327c16526",
+      "bytes": 2302612
+    }
+  }
+}

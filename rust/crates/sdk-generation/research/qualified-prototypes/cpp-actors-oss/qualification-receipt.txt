@@ -20,6 +20,10 @@ Installed package run (Linux/WSL, final package refresh):
   Fixture receipt: {"inspectStarted":true,"inspectAborted":true}
   QUALIFICATION records external_all8_runtime_tls_auth:PASS and
   external_inflight_cancel_server_abort:PASS.
+  Actors archive SHA-256: 539528f67d7d0a7539902a8e9f4e3b55bb94812324fe3171f5f4f7b7f5e07753
+  CXX archive SHA-256: de844a3c20d4d6843d5c4f917bc1220e237fc070efb733ce51b3759922526163
+  SOURCE-INVENTORY SHA-256: 9ae96b9e023fb8dc0a4590bce44f267c398df8f1d181e718b5fce90574798030
+  Linux/WSL native library SHA-256: 4beb9f00a70d3b5f689d35301ad6f481853714c640b0bbb111c62ca5c3195202
 
 Windows MSVC cohort:
   cargo 1.98.1 / rustc 1.98.1, target x86_64-pc-windows-msvc: PASS.
@@ -34,6 +38,7 @@ macOS SSH/ivar cohort:
   cargo 1.98.1 / rustc 1.98.1, CXX 1.0.202: staticlib build PASS.
   clang++ positive header compile and static-library link/runtime PASS;
   uint64_t and nominal opaque-type expected negatives PASS.
+  macOS/ivar native library SHA-256: 1f05614e63087a459b51650591013697c878330d3958ea9ed9abc75192b373fd
   macOS output hashes and the remote commands are recorded in
   package-qualification.md. The macOS run used the exact two archives from the
   installed Linux package and did not claim a native macOS live TLS fixture.

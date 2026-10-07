@@ -26,3 +26,11 @@ The maintained-runtime cancellation reproduction consists of `consumer/ActorsCan
 
 `KOTLIN-PORTABLE-PACKAGE.md` records the installed-JAR, WSL constructor, and live eight-operation receipts for JNA's standard classpath-native resource layout and the remaining platform scope.
 
+`KOTLIN-FINAL-PRODUCER-INTEGRATION.md` records the integration boundary for
+the single-domain Rust cutover. `qualify-final-producer.ps1` is a local,
+source-only audit: it extracts the producer-owned semantic roots, eight
+operations, and routes from the active checkout, hashes the source closure,
+and checks an exact task-local JAR's standard JNA resource roots. It writes
+JSON and raw terminal receipts under `audit/` and performs no publication or
+global installation.
+

@@ -174,3 +174,11 @@ Current-lock platform parity rebuild (2026-10-07):
 - raw receipts: audit/kotlin-current-lock-linux-all8.raw.txt; audit/kotlin-current-lock-linux-pending.raw.txt; audit/kotlin-current-lock-native-provenance.raw.txt
 - current JAR external Maven negative compile: raw ActorId(UniffiWithHandle, 1L) and ActorId(NoHandle) rejected as internal; SubscriptionStart.Cursor(true) rejected as ULong mismatch; raw receipt audit/kotlin-current-lock-external-negative.raw.txt
 - every platform native resource was rebuilt from the current Rust source and the same generated lock; no older macOS or Windows bytes were assigned the current lock identity
+
+Final semantic producer cutover audit (2026-10-07):
+- inspected checkout: Q:\sdk\work\sdkgen-main-actual03bb, revision 03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1; worktree dirty during the active single-domain migration
+- producer extraction points: rust/crates/actors/src/domain.rs export_roots! (19 semantic roots), client.rs operation! (8 operations), lib.rs HTTP_ROUTES (8 routes)
+- source receipt: audit/kotlin-final-producer-source.receipt.json; raw receipt: audit/kotlin-final-producer-source.raw.txt
+- active production checkout has no rust/crates/actors-uniffi facade yet; exact task-local JAR remains the prior qualified facade artifact and is not claimed as a production cutover output
+- maintained integration design: KOTLIN-FINAL-PRODUCER-INTEGRATION.md; local audit script: qualify-final-producer.ps1
+- required integration changes are producer-owned root/operation descriptors, source-closure hash extraction, and generated cancellation-adapter metadata; no handwritten semantic duplicate is admitted

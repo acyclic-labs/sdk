@@ -1,6 +1,6 @@
 # Rust source-of-truth goal completion ledger
 
-Snapshot: current main 0324cb1fb55a2e902e42eebd853bf092f2fd148f (2026-10-07).
+Snapshot: current main 89cb2ec2e1c3b7a48c6555c0c3f9c7dcd77bdf3f (2026-10-07).
 Review rule: evidence is labeled by its actual source. Main-tree facts,
 C-worktree research, and external qualification receipts are not interchangeable.
 

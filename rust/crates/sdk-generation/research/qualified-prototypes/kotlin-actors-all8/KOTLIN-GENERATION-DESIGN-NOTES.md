@@ -97,3 +97,16 @@ the generated Kotlin file is excluded.
 This plan keeps package identity and release version in Rust-owned generation
 data while preserving the current maintained UniFFI/JNA behavior and its
 observed platform receipts.
+
+## Final-producer cutover
+
+The active single-domain checkout is audited separately in
+`KOTLIN-FINAL-PRODUCER-INTEGRATION.md`. Its `acyclic-actors::domain` module is
+the semantic producer; its `export_roots!` list, `client.rs` operation macro,
+and `HTTP_ROUTES` table are the source facts from which Kotlin integration must
+be regenerated. The local `qualify-final-producer.ps1` script records those
+facts and hashes the source closure against the exact task-local JAR without
+publishing or installing anything globally. Once the facade is added to that
+checkout, the required follow-up is to replace these parsed lists with
+producer-owned descriptors and derive `kotlin_generation_metadata` from the
+same closure.
