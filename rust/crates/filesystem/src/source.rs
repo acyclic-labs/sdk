@@ -17,6 +17,7 @@ use crate::{
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -57,8 +58,21 @@ impl Default for SourceOptions {
 }
 
 /// Durable semantic source state exposed to callers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(SourceStateStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum SourceState {
+    /// No source is attached; this is a boundary-only sentinel.
+    None,
     /// Workspace and attached directory agree at the acknowledged cursor.
     Clean,
     /// A bounded host interval is being authenticated and captured.
@@ -1358,8 +1372,9 @@ const fn durable_mode(mode: SourceMode) -> DurableSourceMode {
     }
 }
 
-const fn durable_state(state: SourceState) -> DurableSourceState {
+fn durable_state(state: SourceState) -> DurableSourceState {
     match state {
+        SourceState::None => unreachable!("no-source sentinel cannot be persisted"),
         SourceState::Clean => DurableSourceState::Clean,
         SourceState::PendingCapture => DurableSourceState::PendingCapture,
         SourceState::NeedsRescan(reason) => DurableSourceState::NeedsRescan(match reason {

@@ -1780,7 +1780,18 @@ pub struct GenerationDiff {
 }
 
 /// Terminal result of preparing an unpublished two-parent merge generation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(MergePreparationStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum MergePreparation {
     /// The checkout now holds this candidate and may commit or discard it.
     Prepared {

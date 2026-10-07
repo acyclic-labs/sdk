@@ -90,11 +90,38 @@ export declare const enum LiveMutationStatus {
 }
 
 /** Auto-generated discriminant enum variants */
+export declare const enum MergePreparationStatus {
+  /** The checkout now holds this candidate and may commit or discard it. */
+  Prepared = 'prepared',
+  /** No checkout state changed; exact conflicts are bounded by the caller. */
+  Conflicted = 'conflicted',
+}
+
+/** Auto-generated discriminant enum variants */
 export declare const enum RebaseDecisionStatus {
   /** Candidate generation can become the new base without replay ambiguity. */
   Safe = 'safe',
   /** Candidate changed one or more exact dependencies. */
   Conflicted = 'conflicted',
+}
+
+/** Auto-generated discriminant enum variants */
+export declare const enum SourceStateStatus {
+  /** No source is attached; this is a boundary-only sentinel. */
+  None = 'none',
+  /** Workspace and attached directory agree at the acknowledged cursor. */
+  Clean = 'clean',
+  /** A bounded host interval is being authenticated and captured. */
+  PendingCapture = 'pending-capture',
+  /** Native continuity was lost; automatic advancement is stopped. */
+  NeedsRescan = 'needs-rescan',
+  /**
+   * Source changes overlap independent workspace publication; reattachment
+   * is required to establish a new acknowledged base.
+   */
+  Conflict = 'conflict',
+  /** The returned generation is independent of this source. */
+  Sealed = 'sealed',
 }
 
 /** Auto-generated discriminant enum variants */
@@ -120,6 +147,14 @@ export declare const enum TransactionRebaseStatus {
   Rebased = 'rebased',
   /** One or more exact observed or mutated regions changed upstream. */
   Conflicted = 'conflicted',
+}
+
+/** Auto-generated discriminant enum variants */
+export declare const enum WatchBatchStatus {
+  /** A contiguous process-local interval of change hints. */
+  Changes = 'changes',
+  /** All hints from this epoch must be discarded and a baseline rescanned. */
+  RescanRequired = 'rescan-required',
 }
 
 /** Auto-generated discriminant enum variants */
@@ -1977,7 +2012,7 @@ export interface NativeMergeConflict {
 /** Terminal merge preparation result. */
 export interface NativeMergePreparation {
   /** `prepared` or `conflicted`. */
-  status: string
+  status: MergePreparationStatus
   /** Prepared two-parent generation identity on success. */
   generationId?: Buffer
   /** Bounded exact conflicts when preparation cannot proceed. */
@@ -2305,7 +2340,7 @@ export interface NativeSourceOptions {
 /** Current or terminal source reconciliation state. */
 export interface NativeSourceResult {
   /** `none`, `clean`, `pending-capture`, `needs-rescan`, `conflict`, or `sealed`. */
-  status: string
+  status: SourceStateStatus
   /** Exact invalidation reason for `needs-rescan`. */
   reason?: string
   /** Exact immutable generation selected by a clean terminal operation. */
@@ -2498,7 +2533,7 @@ export interface NativeVolumeOptions {
 /** One contiguous or invalidated watcher interval. */
 export interface NativeWatchBatch {
   /** `changes` or `rescan-required`. */
-  status: string
+  status: WatchBatchStatus
   /** Process-local watcher epoch. */
   epoch: bigint
   /** First sequence for a changes batch. */

@@ -188,8 +188,9 @@ pub use facade::{
     DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange,
     Fs, FsError, FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome,
     JoinCommitWitness, LiveMutationOutcome, MergeConflict, MergePreparation,
-    NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
-    ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
+    MergePreparationStatus, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
+    StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
@@ -345,7 +346,10 @@ pub use simulation::{
     SimulationError, SimulationFault, SimulationOperation, SimulationOptions, SimulationTrace,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
+pub use source::{
+    ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState,
+    SourceStateStatus,
+};
 pub use speculation::{
     ObjectResidency, PromotionAdmission, PromotionCandidate, PromotionDestination,
     PromotionExecutor, PromotionMetrics, PromotionPlan, PromotionRejection, PromotionSpeculator,
@@ -371,7 +375,7 @@ pub use streams_record::{
 #[cfg(feature = "native-watch")]
 pub use watch::{
     NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
-    WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence,
+    WatchBatch, WatchBatchStatus, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence,
     native_watch_capabilities,
 };
 #[cfg(all(feature = "native-watch", target_os = "windows"))]

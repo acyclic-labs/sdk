@@ -669,14 +669,14 @@ function adaptWatcher(raw: NativeRawWatcher): NativeWatcher {
 function nativeWatchBatch(value: NativeRawWatchBatch): NativeWatchBatch {
   const work = parseWork(value.workJson);
   if (value.status === "changes" && value.firstSequence !== undefined && value.nextSequence !== undefined && value.reason === undefined) {
-    return { status: "changes", epoch: value.epoch, firstSequence: value.firstSequence, nextSequence: value.nextSequence, changes: value.changes.map(change => {
+    return { status: value.status, epoch: value.epoch, firstSequence: value.firstSequence, nextSequence: value.nextSequence, changes: value.changes.map(change => {
       if ((change.kind === "created" || change.kind === "modified" || change.kind === "arrived" || change.kind === "metadata" || change.kind === "removed") && change.path !== undefined && change.from === undefined && change.to === undefined) return { kind: change.kind, path: copyNamespacePath(nativeBoundary<NativeNamespacePath>(change.path)) };
       if (change.kind === "renamed" && change.path === undefined && change.from !== undefined && change.to !== undefined) return { kind: "renamed", from: copyNamespacePath(nativeBoundary<NativeNamespacePath>(change.from)), to: copyNamespacePath(nativeBoundary<NativeNamespacePath>(change.to)) };
       throw new TypeError("native binding returned a malformed watch change");
     }), work };
   }
   if (value.status === "rescan-required" && value.firstSequence === undefined && value.nextSequence === undefined && value.changes.length === 0 && isRescanReason(value.reason)) {
-    return { status: "rescan-required", epoch: value.epoch, reason: value.reason, work };
+    return { status: value.status, epoch: value.epoch, reason: value.reason, work };
   }
   throw new TypeError("native binding returned a malformed watch batch");
 }

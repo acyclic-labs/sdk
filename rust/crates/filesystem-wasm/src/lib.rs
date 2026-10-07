@@ -40,12 +40,12 @@ mod bindings {
         GitCommand, GitCompatRepository, IdempotencyKey, JoinHistory, JoinOutcome,
         JoinOutcomeStatus, JoinPlan, LiveMutationOutcome, LiveMutationStatus, LogicalObjectStore,
         MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict, MergePreparation,
-        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency,
-        OperationId, PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions,
-        RebaseDecisionStatus, ResidencyAdmission, ResidencyHint, ResidencyReason,
-        ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
-        StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
-        TransactionCommitStatus, TransactionConflict, TransactionConflictRegion,
+        MergePreparationStatus, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId,
+        ObjectReadRequest, ObjectResidency, OperationId, PromotionAdmission, PromotionDestination,
+        PromotionSpeculatorOptions, RebaseDecisionStatus, ResidencyAdmission, ResidencyHint,
+        ResidencyReason, ResidencySpeculatorOptions, ResolvedFile, SpeculationController,
+        SpeculationOptions, StorageLocationId, StorageTier, StreamAuthorityStore, Transaction,
+        TransactionCommit, TransactionCommitStatus, TransactionConflict, TransactionConflictRegion,
         TransactionDependencyUse, TransactionRebase, TransactionRebaseStatus,
         TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceContextId,
         WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDeleteStatus, WorkspaceDirectoryPage,
@@ -3051,8 +3051,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserMergePreparationResult {
-        #[tsify(type = "\"prepared\" | \"conflicted\"")]
-        status: &'static str,
+        status: MergePreparationStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<MergeConflictResult>,
@@ -7352,7 +7351,7 @@ mod bindings {
     ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
         let result = match preparation {
             MergePreparation::Prepared { generation_id } => MergePreparationResult {
-                status: "prepared",
+                status: MergePreparationStatus::Prepared,
                 generation_id: Some(generation_id.digest().into_bytes().to_vec().into()),
                 conflicts: Vec::new(),
                 truncated: false,
@@ -7362,7 +7361,7 @@ mod bindings {
                 conflicts,
                 truncated,
             } => MergePreparationResult {
-                status: "conflicted",
+                status: MergePreparationStatus::Conflicted,
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
                 truncated,

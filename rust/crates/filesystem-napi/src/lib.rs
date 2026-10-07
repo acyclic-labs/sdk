@@ -20,20 +20,21 @@ use acyclic_fs::{
     GitFilesystemResult, GitTransitionId, GitTreeRef, IdempotencyKey, JoinHistory, JoinOutcome,
     JoinOutcomeStatus, JoinPlan, LiveMutationOutcome, LiveMutationStatus, LocalAuthorityBackend,
     LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOperationWindowStore, LocalOptions,
-    LocalVolume, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    LocalVolume, MergeConflict, MergePreparation, MergePreparationStatus, NamedAttributeWriteMode,
     NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions, ObjectId,
     ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId, OperationReconcileLimits,
     OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease, OperationWindowPhase,
     PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions, RebaseDecisionStatus,
     ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
-    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
-    TransactionCommit, TransactionCommitStatus, TransactionConflict, TransactionConflictRegion,
-    TransactionDependencyUse, TransactionRebase, TransactionRebaseStatus, TransactionSparseSeek,
-    VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDeleteStatus,
-    WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
-    WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase,
-    WorkspaceRebaseStatus, WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
+    SourceStateStatus, SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
+    Transaction, TransactionCommit, TransactionCommitStatus, TransactionConflict,
+    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
+    TransactionRebaseStatus, TransactionSparseSeek, VolumeId, WatchBatch, WatchBatchStatus,
+    WatchChange, WatchInvalidationReason, WorkBudget, Workspace, WorkspaceContextId,
+    WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDeleteStatus, WorkspaceDirectoryPage,
+    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
+    WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRebaseStatus,
+    WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
     canonicalize_git_pending_transition_json, decode_generation_export_manifest,
     encode_generation_export_manifest, native_watch_capabilities as sdk_native_watch_capabilities,
     parse_git_public_command,
@@ -1066,7 +1067,7 @@ pub struct NativeMergeSelection {
 #[napi(object)]
 pub struct NativeMergePreparation {
     /// `prepared` or `conflicted`.
-    pub status: String,
+    pub status: MergePreparationStatus,
     /// Prepared two-parent generation identity on success.
     pub generation_id: Option<Buffer>,
     /// Bounded exact conflicts when preparation cannot proceed.
@@ -1110,7 +1111,7 @@ pub struct NativeWatchChange {
 #[napi(object)]
 pub struct NativeWatchBatch {
     /// `changes` or `rescan-required`.
-    pub status: String,
+    pub status: WatchBatchStatus,
     /// Process-local watcher epoch.
     pub epoch: BigInt,
     /// First sequence for a changes batch.
@@ -1835,7 +1836,7 @@ pub struct NativeSourceOptions {
 #[napi(object)]
 pub struct NativeSourceResult {
     /// `none`, `clean`, `pending-capture`, `needs-rescan`, `conflict`, or `sealed`.
-    pub status: String,
+    pub status: SourceStateStatus,
     /// Exact invalidation reason for `needs-rescan`.
     pub reason: Option<String>,
     /// Exact immutable generation selected by a clean terminal operation.
@@ -2123,7 +2124,7 @@ impl NativeWorkspace {
         match self.inner.source().cloned() {
             Some(source) => native_source_state(source.state().await),
             None => NativeSourceResult {
-                status: "none".to_owned(),
+                status: SourceStateStatus::None,
                 reason: None,
                 generation_id: None,
             },
@@ -2756,15 +2757,16 @@ fn native_idempotency_key(value: Option<Buffer>) -> Result<IdempotencyKey> {
 }
 
 fn native_source_state(state: SourceState) -> NativeSourceResult {
-    let (status, reason) = match state {
-        SourceState::Clean => ("clean", None),
-        SourceState::PendingCapture => ("pending-capture", None),
-        SourceState::NeedsRescan(reason) => ("needs-rescan", Some(watch_reason(reason).to_owned())),
-        SourceState::Conflict => ("conflict", None),
-        SourceState::Sealed => ("sealed", None),
+    let reason = match state {
+        SourceState::NeedsRescan(reason) => Some(watch_reason(reason).to_owned()),
+        SourceState::None
+        | SourceState::Clean
+        | SourceState::PendingCapture
+        | SourceState::Conflict
+        | SourceState::Sealed => None,
     };
     NativeSourceResult {
-        status: status.to_owned(),
+        status: SourceStateStatus::from(&state),
         reason,
         generation_id: None,
     }
@@ -2905,17 +2907,17 @@ fn native_reconcile_outcome(
 ) -> NativeSourceResult {
     match outcome {
         ReconcileOutcome::Clean(generation) => NativeSourceResult {
-            status: "clean".to_owned(),
+            status: SourceStateStatus::Clean,
             reason: None,
             generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
         },
         ReconcileOutcome::NeedsRescan(reason) => NativeSourceResult {
-            status: "needs-rescan".to_owned(),
+            status: SourceStateStatus::NeedsRescan,
             reason: Some(watch_reason(reason).to_owned()),
             generation_id: None,
         },
         ReconcileOutcome::Conflict => NativeSourceResult {
-            status: "conflict".to_owned(),
+            status: SourceStateStatus::Conflict,
             reason: None,
             generation_id: None,
         },
@@ -7180,7 +7182,7 @@ fn encode_merge_preparation(
     let work_json = work_json(&work)?;
     Ok(match preparation {
         MergePreparation::Prepared { generation_id } => NativeMergePreparation {
-            status: "prepared".to_owned(),
+            status: MergePreparationStatus::Prepared,
             generation_id: Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
             conflicts: Vec::new(),
             truncated: false,
@@ -7190,7 +7192,7 @@ fn encode_merge_preparation(
             conflicts,
             truncated,
         } => NativeMergePreparation {
-            status: "conflicted".to_owned(),
+            status: MergePreparationStatus::Conflicted,
             generation_id: None,
             conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
             truncated,
@@ -7444,7 +7446,7 @@ fn encode_watch_batch(
             next_sequence,
             changes,
         } => Ok(NativeWatchBatch {
-            status: "changes".to_owned(),
+            status: WatchBatchStatus::Changes,
             epoch: bigint(epoch.get()),
             first_sequence: Some(bigint(first_sequence.get())),
             next_sequence: Some(bigint(next_sequence.get())),
@@ -7453,7 +7455,7 @@ fn encode_watch_batch(
             work_json: work_json(&work)?,
         }),
         WatchBatch::RescanRequired { epoch, reason } => Ok(NativeWatchBatch {
-            status: "rescan-required".to_owned(),
+            status: WatchBatchStatus::RescanRequired,
             epoch: bigint(epoch.get()),
             first_sequence: None,
             next_sequence: None,

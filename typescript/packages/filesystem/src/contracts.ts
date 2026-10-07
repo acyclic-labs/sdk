@@ -564,7 +564,7 @@ export type NativeWatchChange =
 
 export type NativeWatchBatch =
   | {
-      readonly status: "changes";
+      readonly status: Extract<NativeBinding.NativeWatchBatch["status"], "changes">;
       readonly epoch: bigint;
       readonly firstSequence: bigint;
       readonly nextSequence: bigint;
@@ -572,7 +572,7 @@ export type NativeWatchBatch =
       readonly work: WorkCounters;
     }
   | {
-      readonly status: "rescan-required";
+      readonly status: Extract<NativeBinding.NativeWatchBatch["status"], "rescan-required">;
       readonly epoch: bigint;
       readonly reason:
         | "initial-snapshot-required"
@@ -642,14 +642,14 @@ export type MergeConflictSelection = MergeConflict & {
 
 export type MergePreparationResult =
   | {
-      readonly status: "prepared";
+      readonly status: Extract<WasmBinding.BrowserMergePreparationResult["status"], "prepared">;
       readonly generationId: Uint8Array;
       readonly conflicts: readonly [];
       readonly truncated: false;
       readonly work: WorkCounters;
     }
   | {
-      readonly status: "conflicted";
+      readonly status: Extract<WasmBinding.BrowserMergePreparationResult["status"], "conflicted">;
       readonly generationId: undefined;
       readonly conflicts: readonly MergeConflict[];
       readonly truncated: boolean;
@@ -956,13 +956,7 @@ export interface NativeSourceOptions {
   readonly excludedPaths?: readonly string[];
 }
 
-export type SourceStatus =
-  | "none"
-  | "clean"
-  | "pending-capture"
-  | "needs-rescan"
-  | "conflict"
-  | "sealed";
+export type SourceStatus = NativeBinding.SourceStateStatus;
 
 export type SourceInvalidationReason =
   | "initial-snapshot-required"
