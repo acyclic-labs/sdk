@@ -274,7 +274,7 @@ const rustc = args.shift();
 if (!rustc) process.exit(1);
 writeFileSync(join(${JSON.stringify(captureDirectory)}, \`${"${process.pid}"}-${randomUUID()}.json\`), JSON.stringify({ rustc, args }));
 const environment = { ...process.env };
-${delegate === null ? "delete environment.RUSTC_WRAPPER;" : `environment.RUSTC_WRAPPER = ${JSON.stringify(delegate)};`}
+${delegate === null ? "delete environment.RUSTC_WORKSPACE_WRAPPER;" : `environment.RUSTC_WORKSPACE_WRAPPER = ${JSON.stringify(delegate)};`}
 const command = ${delegate === null ? "rustc" : JSON.stringify(delegate)};
 const commandArgs = ${delegate === null ? "args" : "[rustc, ...args]"};
 const batch = process.platform === "win32" && /\\.(?:cmd|bat)$/iu.test(command);
@@ -295,7 +295,7 @@ export async function createRustcInvocationCapture() {
   const directory = await mkdtemp(resolve(tmpdir(), "acyclic-stream-rustc-capture-"));
   const invocations = resolve(directory, "invocations");
   await mkdir(invocations);
-  const delegate = envValue("RUSTC_WRAPPER");
+  const delegate = envValue("RUSTC_WORKSPACE_WRAPPER");
   const source = resolve(directory, process.platform === "win32" ? "capture.mjs" : "capture");
   await writeFile(source, captureWrapperSource(delegate, invocations), { mode: 0o700 });
   let wrapper = source;
@@ -306,7 +306,7 @@ export async function createRustcInvocationCapture() {
     await writeFile(source, `#!/usr/bin/env node\n${captureWrapperSource(delegate, invocations)}`, { mode: 0o700 });
     await chmod(source, 0o700);
   }
-  process.env.RUSTC_WRAPPER = wrapper;
+  process.env.RUSTC_WORKSPACE_WRAPPER = wrapper;
   return {
     wrapper,
     async read(target) {
@@ -331,8 +331,8 @@ export async function createRustcInvocationCapture() {
       };
     },
     async close() {
-      if (delegate === null) delete process.env.RUSTC_WRAPPER;
-      else process.env.RUSTC_WRAPPER = delegate;
+      if (delegate === null) delete process.env.RUSTC_WORKSPACE_WRAPPER;
+      else process.env.RUSTC_WORKSPACE_WRAPPER = delegate;
       await rm(directory, { recursive: true, force: true });
     },
   };
