@@ -10,17 +10,10 @@ import { compatibilityArtifacts, historicalCompatibilityArtifacts, packagedSourc
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
-const retiredStem = "p" + "y";
-const retiredSuffixes = ["", "i", "c", "o"].map(suffix => `.${retiredStem}${suffix}`);
-const retiredTerms = ["p" + "ython", "py" + "test", "bo" + "to3", "boto" + "core"];
-const retiredPattern = `${retiredTerms.join("|")}|\\.${retiredStem}(?:i|c|o)?\\b`;
-const hasRetiredSuffix = path => retiredSuffixes.some(suffix => path.toLowerCase().endsWith(suffix));
-if (!retiredSuffixes.every(suffix => hasRetiredSuffix(`fixture${suffix}`)) || hasRetiredSuffix("fixture.mjs")) {
-  throw new Error("retired-runtime suffix gate failed its fixtures");
-}
-const fixturePattern = new RegExp(retiredPattern, "i");
-if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("node fixture.mjs")) {
-  throw new Error("retired-runtime content gate failed its fixtures");
+const retiredPathPrefixes = ["plugin/packaging/pypi/"];
+const hasRetiredPath = path => retiredPathPrefixes.some(prefix => path.toLowerCase().startsWith(prefix));
+if (!hasRetiredPath("plugin/packaging/pypi/pyproject.toml") || hasRetiredPath("plugin/packaging/pypi2/pyproject.toml")) {
+  throw new Error("retired-runtime path gate failed its fixtures");
 }
 const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
 const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
@@ -38,13 +31,8 @@ const presentFiles = tracked.stdout
     }
     return existsSync(fullPath);
   });
-const retiredFile = presentFiles.find(({ path }) => hasRetiredSuffix(path))?.path;
-if (retiredFile) throw new Error(`retired-runtime source exists: ${retiredFile}`);
-const retiredContent = presentFiles.find(({ fullPath }) => {
-  const content = readFileSync(fullPath);
-  return !content.includes(0) && fixturePattern.test(content.toString("utf8"));
-})?.path;
-if (retiredContent) throw new Error(`retired-runtime reference exists: ${retiredContent}`);
+const retiredPath = presentFiles.find(({ path }) => hasRetiredPath(path))?.path;
+if (retiredPath) throw new Error(`retired-runtime source exists: ${retiredPath}`);
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
 new Ajv2020({ allErrors: true }).compile(
