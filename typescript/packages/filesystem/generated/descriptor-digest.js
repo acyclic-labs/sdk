@@ -1,2 +1,2 @@
 // Generated from the canonical Rust filesystem descriptor; do not edit.
-export const FILESYSTEM_DESCRIPTOR_DIGEST = "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60";
+export const FILESYSTEM_DESCRIPTOR_DIGEST = "0d2f20e6a20ea342c256973888ebc40798aa73e39f259410179c72392aee5fcc";

@@ -228,7 +228,7 @@ fn encode_checkpoint(
         root_file_id: base.root_file_id,
         file_table: request.file_table,
         parents,
-        required_features: base.required_features,
+        required_features: base.continuation_features(),
     };
     let encoded =
         encode_generation_root(&root).map_err(|error| OperationFailure::new(error.into(), work))?;

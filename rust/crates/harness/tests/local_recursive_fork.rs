@@ -321,19 +321,44 @@ fn scope(
     private: &VolumeRef,
     project: &VolumeRef,
 ) -> Result<acyclic_harness::core::Scope> {
+    let next = project
+        .id()
+        .rsplit('-')
+        .next()
+        .and_then(|id| id.parse::<u32>().ok())
+        .unwrap_or(0)
+        + 1;
+    let selected = VolumeRef::new(
+        project.provider().clone(),
+        format!(
+            "{}-{next}",
+            if project.id().starts_with("deep-") {
+                "deep-project"
+            } else {
+                "project"
+            }
+        ),
+        VolumeClass::Project,
+        project.owner().clone(),
+    )?;
+    let source_reads = [selected.capability(VolumeOperation::Read)?];
     Ok(issuer.root_for_agent(
         agent,
         format!("agent-{agent:?}"),
-        Capabilities::new([
-            "conversation:bind".to_owned(),
-            "conversation:append".to_owned(),
-            "fork:publish".to_owned(),
-            "project:merge".to_owned(),
-            project.capability(VolumeOperation::Read)?,
-            project.capability(VolumeOperation::Write)?,
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]),
+        Capabilities::new(
+            [
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                "fork:publish".to_owned(),
+                "project:merge".to_owned(),
+                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Write)?,
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+            ]
+            .into_iter()
+            .chain(source_reads),
+        ),
     ))
 }
 
@@ -423,7 +448,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     )?;
     let root_scope = scope(&root_issuer, root_agent, &root_private, &root_project)?;
     let mut project = root_project.clone();
-    let private = root_private.clone();
+    let mut private = root_private.clone();
     let mut authority = root_authority.clone();
     let mut issuer = root_issuer.clone();
     let mut grant_scope = root_scope.clone();
@@ -597,6 +622,17 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             selections: vec![
                 ForkSelection {
                     required: true,
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: private.clone(),
+                        generation: host
+                            .resolve(&workspace_ref(provider.clone(), &private.storage_name()?)?)
+                            .await?
+                            .generation,
+                        paths: Vec::new(),
+                    },
+                },
+                ForkSelection {
+                    required: true,
                     revision: history.clone(),
                 },
                 ForkSelection {
@@ -719,7 +755,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             sibling_request.preparation.child_project_volume = sibling_project.clone();
             sibling_request
                 .selections
-                .first_mut()
+                .iter_mut()
+                .find(|selection| matches!(selection.revision, ResourceRevision::History(_)))
                 .ok_or_else(|| Error::Invalid("missing history selection".into()))?
                 .revision = ResourceRevision::History(StreamRef::new(
                 stream_provider.clone(),
@@ -987,11 +1024,18 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 extensions: Default::default(),
             };
             let plan = parent_workspaces
-                .prepare_project_merge(
+                .prepare_project_import(
                     &grant_scope,
                     aggregate.reducer(),
                     &child_authority,
                     &child_project,
+                    &host
+                        .resolve(&workspace_ref(
+                            provider.clone(),
+                            &(child_project).storage_name()?,
+                        )?)
+                        .await?
+                        .generation,
                 )
                 .await?;
             let (ProjectJoinOutcome::Applied(receipt)
@@ -1037,6 +1081,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         final_child_issuer = Some(child_issuer.clone());
         final_child_scope = Some(child_scope.clone());
         final_child_private = Some(child_private.clone());
+        private = child_private.clone();
         final_child_file = Some(child_file);
         previous_attachment = child_attachment.clone();
         final_child_attachment = Some(child_attachment);
@@ -1357,6 +1402,17 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 maximum_inherited_references: 4,
             },
             selections: vec![
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: private.clone(),
+                        generation: host
+                            .resolve(&workspace_ref(provider.clone(), &private.storage_name()?)?)
+                            .await?
+                            .generation,
+                        paths: Vec::new(),
+                    },
+                },
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::History(StreamRef::new(

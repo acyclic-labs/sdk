@@ -1468,6 +1468,15 @@ pub struct NativeJoinPlan {
     inner: NativeLocalJoinPlan,
 }
 
+/// Explicit immutable inheritance and stable retry identity.
+#[napi(object)]
+pub struct NativeForkOptions {
+    /// Absent inherits all; empty inherits no paths while preserving lineage.
+    pub paths: Option<Vec<String>>,
+    /// Exact caller-owned stable creation key.
+    pub idempotency_key: Option<Buffer>,
+}
+
 /// Exact bounded join planning options.
 #[napi(object)]
 pub struct NativeJoinOptions {
@@ -1479,6 +1488,10 @@ pub struct NativeJoinOptions {
     pub maximum_changes: u32,
     /// Maximum exact conflicts returned by application.
     pub maximum_conflicts: u32,
+    /// Optional caller-pinned source generation.
+    pub source_generation: Option<Buffer>,
+    /// Optional exact target CAS precondition.
+    pub target_generation: Option<Buffer>,
 }
 
 /// Terminal result of applying one immutable join plan.
@@ -1966,12 +1979,16 @@ impl NativeWorkspace {
         &self,
         destination: String,
         generation: &NativeGeneration,
+        options: NativeForkOptions,
     ) -> Result<NativeWorkspace> {
+        let key = native_idempotency_key(options.idempotency_key)?;
+        let fork = ForkOptions::from_generation(generation.inner.clone(), key);
+        let fork = match options.paths {
+            Some(paths) => fork.inherit_paths(paths),
+            None => fork,
+        };
         self.inner
-            .fork(
-                destination,
-                ForkOptions::from_generation(generation.inner.clone(), IdempotencyKey::new()),
-            )
+            .fork(destination, fork)
             .await
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
@@ -2057,7 +2074,30 @@ impl NativeWorkspace {
                 options.maximum_changes,
                 options.maximum_conflicts,
             )
-            .plan()
+            .plan_pinned(
+                match options.source_generation {
+                    Some(id) => {
+                        self.inner
+                            .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                fixed_32(&id, "source generation")?,
+                            )))
+                            .await
+                            .map_err(napi_error)?
+                    }
+                    None => self.inner.head().await.map_err(napi_error)?,
+                },
+                match options.target_generation {
+                    Some(id) => target
+                        .inner
+                        .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                            &id,
+                            "target generation",
+                        )?)))
+                        .await
+                        .map_err(napi_error)?,
+                    None => target.inner.head().await.map_err(napi_error)?,
+                },
+            )
             .await
             .map(|inner| NativeJoinPlan { inner })
             .map_err(napi_error)
@@ -8101,7 +8141,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        let exact_fork = workspace.fork_at("exact-agent".to_owned(), &exact).await?;
+        let exact_fork = workspace
+            .fork_at(
+                "exact-agent".to_owned(),
+                &exact,
+                NativeForkOptions {
+                    paths: None,
+                    idempotency_key: None,
+                },
+            )
+            .await?;
         assert!(
             exact_fork
                 .read("/output/status".to_owned(), bigint(5))
@@ -8235,6 +8284,8 @@ mod tests {
             .join_into(
                 &main,
                 NativeJoinOptions {
+                    source_generation: None,
+                    target_generation: None,
                     history: "merge".to_owned(),
                     maximum_generations: 64,
                     maximum_changes: 64,

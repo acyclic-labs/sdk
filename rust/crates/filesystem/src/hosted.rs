@@ -1121,6 +1121,7 @@ impl HostedGeneration {
         &self,
         destination_name: impl Into<String>,
         idempotency_key: IdempotencyKey,
+        paths: Option<Vec<String>>,
     ) -> Result<HostedWorkspace, HostedFsError> {
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
@@ -1131,6 +1132,7 @@ impl HostedGeneration {
                         source: Some(self.reference.clone()),
                         destination_name: destination_name.into(),
                         operation: Some(operation(idempotency_key)),
+                        selection: paths.map(|paths| wire::ForkPathSelection { paths }),
                     }),
             )
             .await?
@@ -1662,13 +1664,13 @@ mod tests {
         let head = workspace.head().await?;
         assert_eq!(head.read("/value", 1_024).await?.len(), 1_024);
         let child = head
-            .fork("child", IdempotencyKey::from_bytes([3; 16]))
+            .fork("child", IdempotencyKey::from_bytes([3; 16]), None)
             .await?;
         let sibling = head
-            .fork("sibling", IdempotencyKey::from_bytes([6; 16]))
+            .fork("sibling", IdempotencyKey::from_bytes([6; 16]), None)
             .await?;
         let stale_target = head
-            .fork("stale-target", IdempotencyKey::from_bytes([14; 16]))
+            .fork("stale-target", IdempotencyKey::from_bytes([14; 16]), None)
             .await?;
         assert_eq!(
             child.head().await?.read("/value", 1_024).await?.len(),

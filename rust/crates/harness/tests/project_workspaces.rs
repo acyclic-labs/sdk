@@ -2,10 +2,11 @@
 #![cfg(feature = "filesystem")]
 
 use acyclic_fs::Fs;
+use acyclic_harness::filesystem::workspace_ref;
 use acyclic_harness::filesystem::{FilesystemHost, FilesystemProjectWorkspaces};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, OperationId, Result,
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
     fork::{CapturedResource, ForkSeed, ResourceRevision},
     merge::ProjectWorkspaceProvider,
@@ -51,6 +52,12 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
     )?;
+    let parent_private = VolumeRef::new(
+        provider.clone(),
+        "parent-private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(parent_agent),
+    )?;
     let issuer = AuthorityIssuer::new("project-workspaces", [7; 32], parent.clone());
     let scope = issuer.root_for_agent(
         parent_agent,
@@ -61,11 +68,39 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
             "project:merge".to_owned(),
             project.capability(VolumeOperation::Read)?,
             project.capability(VolumeOperation::Write)?,
+            child_project.capability(VolumeOperation::Read)?,
+            parent_private.capability(VolumeOperation::Read)?,
         ]),
     );
 
     let parent_head = host.create_volume(&project).await?;
-    let child_private_head = host.create_volume(&child_private).await?;
+    let parent_private_head = host.create_volume(&parent_private).await?;
+    let child_scope = issuer.root_for_agent(
+        child_agent,
+        "child",
+        Capabilities::new([child_private.capability(VolumeOperation::Write)?]),
+    );
+    let child_private_head = host
+        .fork_volume(
+            &parent_private,
+            &ContentGrant::verify(
+                &issuer.verifier(),
+                &scope,
+                &parent_private,
+                VolumeOperation::Read,
+            )?,
+            &parent_private_head.generation,
+            &child_private,
+            &ContentGrant::verify(
+                &issuer.verifier(),
+                &child_scope,
+                &child_private,
+                VolumeOperation::Write,
+            )?,
+            Some(Vec::new()),
+            &IdempotencyKey::new("fork-private")?,
+        )
+        .await?;
     let mut reducer = Reducer::new(parent.clone(), issuer.verifier(), SchemaRegistry::new());
     reducer.apply(Command {
         operation_id: OperationId::from_bytes([1; 16]),
@@ -111,6 +146,18 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         attached_agents: Vec::new(),
         resources: vec![
             CapturedResource {
+                source: ResourceRevision::PrivateVolume {
+                    volume: parent_private,
+                    generation: parent_private_head.generation,
+                    paths: Vec::new(),
+                },
+                revision: ResourceRevision::PrivateVolume {
+                    volume: child_private.clone(),
+                    generation: child_private_head.generation.clone(),
+                    paths: Vec::new(),
+                },
+            },
+            CapturedResource {
                 source: ResourceRevision::History(history.clone()),
                 revision: ResourceRevision::History(history),
             },
@@ -121,7 +168,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 },
                 revision: ResourceRevision::Project {
                     volume: child_project.clone(),
-                    generation: child_head,
+                    generation: child_head.clone(),
                 },
             },
         ],
@@ -149,15 +196,39 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
 
     assert!(
         workspaces
-            .prepare_project_merge(&scope, &reducer, &child, &child_project)
+            .prepare_project_import(
+                &scope,
+                &reducer,
+                &child,
+                &child_project,
+                &host
+                    .resolve(&workspace_ref(
+                        provider.clone(),
+                        &(child_project).storage_name()?
+                    )?)
+                    .await?
+                    .generation
+            )
             .await
             .is_ok()
     );
     assert!(
         workspaces
-            .prepare_project_merge(&scope, &reducer, &unrelated, &child_project)
+            .prepare_project_import(
+                &scope,
+                &reducer,
+                &unrelated,
+                &child_project,
+                &host
+                    .resolve(&workspace_ref(
+                        provider.clone(),
+                        &(child_project).storage_name()?
+                    )?)
+                    .await?
+                    .generation
+            )
             .await
-            .is_err()
+            .is_ok()
     );
     Ok(())
 }

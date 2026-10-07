@@ -424,6 +424,11 @@ message ForkWorkspaceRequest {
   GenerationRef source = 1;
   string destination_name = 2;
   OperationOptions operation = 3;
+  // Absence inherits all. An empty selection keeps lineage with an empty view.
+  ForkPathSelection selection = 4;
+}
+message ForkPathSelection {
+  repeated string paths = 1;
 }
 message DiffRequest {
   GenerationRef from = 1;

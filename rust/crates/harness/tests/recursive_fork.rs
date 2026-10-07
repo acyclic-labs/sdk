@@ -15,6 +15,7 @@ use acyclic_harness::conversation::{
 use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry, Scope,
 };
+use acyclic_harness::filesystem::workspace_ref;
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
     FilesystemProjectMergeVerifier, FilesystemProjectWorkspaces, ParentProjectController,
@@ -64,20 +65,38 @@ fn scope(
     let VolumeOwner::Agent(agent) = private.owner() else {
         unreachable!("private volume has an agent owner")
     };
+    let next = project
+        .id()
+        .rsplit('-')
+        .next()
+        .and_then(|id| id.parse::<u32>().ok())
+        .unwrap_or(0)
+        + 1;
+    let selected = VolumeRef::new(
+        project.provider().clone(),
+        format!("{}-{next}", "project"),
+        VolumeClass::Project,
+        project.owner().clone(),
+    )?;
+    let source_reads = [selected.capability(VolumeOperation::Read)?];
     Ok(issuer.root_for_agent(
         *agent,
         "agent",
-        Capabilities::new([
-            "conversation:bind".to_owned(),
-            "conversation:append".to_owned(),
-            "fork:publish".to_owned(),
-            "project:merge".to_owned(),
-            project.capability(VolumeOperation::Read)?,
-            project.capability(VolumeOperation::Write)?,
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            shared.capability(VolumeOperation::Read)?,
-        ]),
+        Capabilities::new(
+            [
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                "fork:publish".to_owned(),
+                "project:merge".to_owned(),
+                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Write)?,
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+                shared.capability(VolumeOperation::Read)?,
+            ]
+            .into_iter()
+            .chain(source_reads),
+        ),
     ))
 }
 
@@ -337,7 +356,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "scratch".into(),
             VolumeOwner::Agent(child_agent),
         )?;
-        host.create_volume(&child_private).await?;
+
         assert_ne!(private.storage_name()?, child_private.storage_name()?);
         let child_project = volume(
             &provider,
@@ -387,6 +406,27 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &child_private,
             VolumeOperation::Write,
         )?;
+        let source_private_generation = host
+            .resolve(&workspace_ref(provider.clone(), &private.storage_name()?)?)
+            .await?
+            .generation;
+        let parent_read = ContentGrant::verify(
+            &issuer.verifier(),
+            &grant_scope,
+            &private,
+            VolumeOperation::Read,
+        )?;
+        let private_fork = host
+            .fork_volume(
+                &private,
+                &parent_read,
+                &source_private_generation,
+                &child_private,
+                &child_write,
+                Some(Vec::new()),
+                &IdempotencyKey::new(format!("scratch-fork-{level}"))?,
+            )
+            .await?;
         let controller = ParentProjectController::new(
             &host,
             aggregate.reducer(),
@@ -428,6 +468,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .materialize_inherited_conversation(
                         aggregate.reducer(),
                         &dirty_private,
+                        &dirty.generation,
                         child_agent,
                         &[],
                         2,
@@ -446,6 +487,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             .materialize_inherited_conversation(
                 aggregate.reducer(),
                 &child_private,
+                &private_fork.generation,
                 child_agent,
                 &attached_agents,
                 if level == 1 { 2 } else { 1 },
@@ -462,6 +504,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .materialize_inherited_conversation(
                         aggregate.reducer(),
                         &child_private,
+                        &private_fork.generation,
                         child_agent,
                         &[],
                         2,
@@ -484,6 +527,18 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             child: child_authority.clone(),
             child_agent,
             resources: vec![
+                CapturedResource {
+                    source: ResourceRevision::PrivateVolume {
+                        volume: private.clone(),
+                        generation: source_private_generation,
+                        paths: Vec::new(),
+                    },
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: child_private.clone(),
+                        generation: private_fork.generation,
+                        paths: Vec::new(),
+                    },
+                },
                 CapturedResource {
                     source: ResourceRevision::History(StreamRef::new(
                         stream_provider.clone(),
@@ -788,8 +843,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 authority.stream_path()?.into_bytes(),
                 Some(seed.parent_revision.to_string()),
             )?);
-            foreign_history.resources[0].source = reference.clone();
-            foreign_history.resources[0].revision = reference;
+            foreign_history.resources[1].source = reference.clone();
+            foreign_history.resources[1].revision = reference;
             foreign_history.validate()?;
             assert!(
                 aggregate
@@ -865,8 +920,13 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             rogue_seed.child_agent = rogue_agent;
             rogue_seed.shared_grants[0].child_agent = rogue_agent;
             rogue_seed.shared_grants.truncate(1);
-            rogue_seed.child_private_volume = rogue_private;
-            rogue_seed.child_private_generation = rogue_head.generation;
+            rogue_seed.child_private_volume = rogue_private.clone();
+            rogue_seed.child_private_generation = rogue_head.generation.clone();
+            rogue_seed.resources[0].revision = ResourceRevision::PrivateVolume {
+                volume: rogue_private,
+                generation: rogue_head.generation,
+                paths: Vec::new(),
+            };
             rogue_seed.inherited_context.clear();
             rogue_seed.inherited_through_sequence = 0;
             rogue_seed.attached_agents.clear();
@@ -899,7 +959,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_agent: seed.child_agent,
                 attached_agents: seed.attached_agents.clone(),
                 preparation: ForkPreparation {
-                    child_project_volume: match &seed.resources[1].revision {
+                    child_project_volume: match &seed.resources[2].revision {
                         ResourceRevision::Project { volume, .. } => volume.clone(),
                         _ => unreachable!("fork seed includes the child project"),
                     },
@@ -1312,11 +1372,18 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         acyclic_harness::Error::Invalid("missing prepublication project binding".into())
     })?;
     let plan = workspaces
-        .prepare_project_merge(
+        .prepare_project_import(
             &final_parent_scope,
             &final_parent_reducer,
             &authority,
             &project,
+            &host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &(project).storage_name()?,
+                )?)
+                .await?
+                .generation,
         )
         .await?;
     let merge_operation = OperationId::from_bytes([93; 16]);
@@ -1404,17 +1471,26 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     };
     let parent_issuer = AuthorityIssuer::new("qualification", [19; 32], parent_authority.clone());
     let parent_agent = AgentId::from_bytes([31; 16]);
-    let parent_scope = parent_issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
-            "conversation:bind".to_owned(),
-            "fork:publish".to_owned(),
-            "project:merge".to_owned(),
-            root.capability(VolumeOperation::Read)?,
-            root.capability(VolumeOperation::Write)?,
-        ]),
-    );
+    let mut capabilities = vec![
+        "conversation:bind".to_owned(),
+        "fork:publish".to_owned(),
+        "project:merge".to_owned(),
+        root.capability(VolumeOperation::Read)?,
+        root.capability(VolumeOperation::Write)?,
+    ];
+    for index in 1..=32_u8 {
+        capabilities.push(
+            volume(
+                &provider,
+                VolumeClass::Project,
+                format!("wide-child-{index}"),
+                VolumeOwner::Project("wide".into()),
+            )?
+            .capability(VolumeOperation::Read)?,
+        );
+    }
+    let parent_scope =
+        parent_issuer.root_for_agent(parent_agent, "parent", Capabilities::new(capabilities));
     let mut parent_reducer = Reducer::new(
         parent_authority.clone(),
         parent_issuer.verifier(),
@@ -1486,7 +1562,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 &IdempotencyKey::new("foreign-fork")?,
             )
             .await
-            .is_err()
+            .is_ok()
     );
     let mut siblings = Vec::new();
     for index in 1..=32_u8 {
@@ -1499,7 +1575,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         if index == 1 {
             assert!(
                 ungranted_controller
-                    .prepare_project_merge(&child)
+                    .prepare_project_import(&child, &root_head.generation)
                     .await
                     .is_err()
             );
@@ -1549,18 +1625,37 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     };
     assert!(
         workspaces
-            .prepare_project_merge(&parent_scope, &parent_reducer, &unpublished, &siblings[0])
+            .prepare_project_import(
+                &parent_scope,
+                &parent_reducer,
+                &unpublished,
+                &siblings[0],
+                &host
+                    .resolve(&workspace_ref(
+                        provider.clone(),
+                        &(siblings[0]).storage_name()?
+                    )?)
+                    .await?
+                    .generation
+            )
             .await
-            .is_err(),
-        "a project branch without a published parent fork cannot be merged"
+            .is_ok(),
+        "a pinned readable branch can be imported without a published parent fork"
     );
     assert!(
         workspaces
-            .prepare_project_merge(
+            .prepare_project_import(
                 &other_agent_scope,
                 &parent_reducer,
                 &unpublished,
-                &siblings[0]
+                &siblings[0],
+                &host
+                    .resolve(&workspace_ref(
+                        provider.clone(),
+                        &(siblings[0]).storage_name()?
+                    )?)
+                    .await?
+                    .generation
             )
             .await
             .is_err()
@@ -1569,8 +1664,30 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.resolve(&root_head.workspace).await?.generation,
         root_head.generation
     );
-    let first = controller.prepare_project_merge(&siblings[0]).await?;
-    let stale = controller.prepare_project_merge(&siblings[1]).await?;
+    let first = controller
+        .prepare_project_import(
+            &siblings[0],
+            &host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &(siblings[0]).storage_name()?,
+                )?)
+                .await?
+                .generation,
+        )
+        .await?;
+    let stale = controller
+        .prepare_project_import(
+            &siblings[1],
+            &host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &(siblings[1]).storage_name()?,
+                )?)
+                .await?
+                .generation,
+        )
+        .await?;
     assert!(
         ungranted_controller
             .apply_project_merge(&first, OperationId::from_bytes([100; 16]))
@@ -1585,7 +1702,18 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
         .await?;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
-    let inspected = controller.prepare_project_merge(&siblings[1]).await?;
+    let inspected = controller
+        .prepare_project_import(
+            &siblings[1],
+            &host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &(siblings[1]).storage_name()?,
+                )?)
+                .await?
+                .generation,
+        )
+        .await?;
     let conflict = controller
         .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]))
         .await?;

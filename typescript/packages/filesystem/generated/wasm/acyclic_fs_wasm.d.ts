@@ -118,6 +118,11 @@ export interface BrowserFileRecordResult {
     deviceMinor: number | undefined;
 }
 
+export interface BrowserForkOptions {
+    paths?: string[];
+    idempotencyKey?: Uint8Array;
+}
+
 export interface BrowserGenerationDiffResult {
     files: BrowserFileRecordChangeResult[];
     bindings: BrowserBindingChangeResult[];
@@ -130,6 +135,8 @@ export interface BrowserJoinOptions {
     maximumGenerations: number;
     maximumChanges: number;
     maximumConflicts: number;
+    sourceGeneration?: Uint8Array;
+    targetGeneration?: Uint8Array;
 }
 
 export interface BrowserJoinResult {
@@ -1442,7 +1449,7 @@ export class BrowserWorkspace {
     /**
      * Creates an independent workspace at one caller-selected exact generation.
      */
-    forkAt(destination: string, generation: BrowserGeneration, idempotency_key?: Uint8Array | null): Promise<BrowserWorkspace>;
+    forkAt(destination: string, generation: BrowserGeneration, options: BrowserForkOptions): Promise<BrowserWorkspace>;
     /**
      * Current immutable generation identity.
      */
@@ -1753,7 +1760,7 @@ export interface InitOutput {
     readonly browserworkspace_delete: (a: number, b: number, c: number) => any;
     readonly browserworkspace_diff: (a: number, b: number, c: number, d: number) => any;
     readonly browserworkspace_fork: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browserworkspace_forkAt: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+    readonly browserworkspace_forkAt: (a: number, b: number, c: number, d: number, e: any) => any;
     readonly browserworkspace_head: (a: number) => any;
     readonly browserworkspace_id: (a: number) => [number, number];
     readonly browserworkspace_joinInto: (a: number, b: number, c: any) => any;

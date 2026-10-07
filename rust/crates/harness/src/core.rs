@@ -1826,6 +1826,22 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
+                for resource in &seed.resources {
+                    if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
+                        &resource.source
+                    {
+                        if volume.owner()
+                            != &VolumeOwner::Agent(agent.ok_or_else(|| {
+                                Error::Unauthorized("scratch fork has no parent agent".into())
+                            })?)
+                        {
+                            return Err(Error::Unauthorized(
+                                "scratch is not owned by the direct parent".into(),
+                            ));
+                        }
+                        require(&volume.capability(VolumeOperation::Read)?)?;
+                    }
+                }
                 Ok(())
             }
             Subject::Merge(receipt) => {
@@ -1834,6 +1850,9 @@ impl Reducer {
                         "merge receipt is not bound to the parent agent and operation".into(),
                     ));
                 }
+                receipt.target_project.require_writer(agent)?;
+                require(&receipt.target_project.capability(VolumeOperation::Write)?)?;
+                require(&receipt.source_project.capability(VolumeOperation::Read)?)?;
                 Ok(())
             }
         }
@@ -2416,11 +2435,7 @@ impl Reducer {
             Action::PublishProjectMerge { receipt } => {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
-                let seed = self
-                    .forks
-                    .get(&receipt.child)
-                    .ok_or_else(|| Error::NotFound("merge child was not published".into()))?;
-                receipt.validate(seed)?;
+                receipt.validate_shape()?;
                 let key = (
                     receipt.target_project.storage_name()?,
                     receipt.provider_operation_id.clone(),
@@ -2730,11 +2745,7 @@ impl Reducer {
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
-                let seed = self
-                    .forks
-                    .get(&receipt.child)
-                    .ok_or_else(|| Error::NotFound("merge child was not published".into()))?;
-                receipt.validate(seed)?;
+                receipt.validate_shape()?;
                 let key = (
                     receipt.target_project.storage_name()?,
                     receipt.provider_operation_id.clone(),
@@ -3760,6 +3771,21 @@ resolve_interaction interaction_resolved interaction:resolve";
             "conversation:append",
             "conversation:select_context",
         ]);
+        let mut capabilities: Vec<String> = capabilities.iter().map(str::to_owned).collect();
+        if let Action::PublishFork { seed } = &action {
+            for resource in &seed.resources {
+                if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
+                    &resource.source
+                {
+                    capabilities.push(
+                        volume
+                            .capability(crate::conversation::VolumeOperation::Read)
+                            .expect("valid scratch reference"),
+                    );
+                }
+            }
+        }
+        let capabilities = Capabilities::new(capabilities);
         let scope = if matches!(&action, Action::PublishFork { .. }) {
             issuer().root_for_agent(crate::AgentId::from_bytes([1; 16]), "root", capabilities)
         } else {
@@ -4578,6 +4604,28 @@ resolve_interaction interaction_resolved interaction:resolve";
             child_agent,
             resources: vec![
                 CapturedResource {
+                    source: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem_provider.clone(),
+                            "parent-private",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
+                        )?,
+                        generation: GenerationRef::new(filesystem_provider.clone(), [4; 32], None)?,
+                        paths: Vec::new(),
+                    },
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem_provider.clone(),
+                            "child-private",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(child_agent),
+                        )?,
+                        generation: GenerationRef::new(filesystem_provider.clone(), [3; 32], None)?,
+                        paths: Vec::new(),
+                    },
+                },
+                CapturedResource {
                     source: ResourceRevision::History(StreamRef::new(
                         stream_provider,
                         parent.stream_path()?.into_bytes(),
@@ -4680,7 +4728,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             );
         }
         let mut reset_seed = extension_seed.clone();
-        if let ResourceRevision::Extension { reference, .. } = &mut reset_seed.resources[2].revision
+        if let ResourceRevision::Extension { reference, .. } = &mut reset_seed.resources[3].revision
         {
             *reference = ResourceRef::new(
                 ResourceKind::Artifact,
@@ -4726,11 +4774,11 @@ resolve_interaction interaction_resolved interaction:resolve";
         if let ResourceRevision::Extension {
             implementation_digest,
             ..
-        } = &mut mismatched.resources[2].revision
+        } = &mut mismatched.resources[3].revision
         {
             *implementation_digest = [8; 32];
         }
-        mismatched.resources[2].source = mismatched.resources[2].revision.clone();
+        mismatched.resources[3].source = mismatched.resources[3].revision.clone();
         let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), schemas());
         candidate.apply(command(
             operation(1),
@@ -4821,8 +4869,8 @@ resolve_interaction interaction_resolved interaction:resolve";
             parent.stream_path()?.into_bytes(),
             Some("2".into()),
         )?);
-        reused_private.resources[0].source = next_history.clone();
-        reused_private.resources[0].revision = next_history;
+        reused_private.resources[1].source = next_history.clone();
+        reused_private.resources[1].revision = next_history;
         reused_private.validate()?;
         let duplicate = reducer.plan(&command(
             operation(9),

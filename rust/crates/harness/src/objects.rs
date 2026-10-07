@@ -814,6 +814,19 @@ mod tests {
             selections: vec![
                 ForkSelection {
                     required: true,
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "parent-scratch",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                        )?,
+                        generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                        paths: Vec::new(),
+                    },
+                },
+                ForkSelection {
+                    required: true,
                     revision: ResourceRevision::History(StreamRef::new(
                         ProviderRef::new("local", "stream", "2")?,
                         parent.stream_path()?.into_bytes(),
@@ -840,8 +853,12 @@ mod tests {
             boundary: None,
         };
         request.validate()?;
-        let [history_selection, project_selection, artifact_selection] =
-            request.selections.as_slice()
+        let [
+            _scratch_selection,
+            history_selection,
+            project_selection,
+            artifact_selection,
+        ] = request.selections.as_slice()
         else {
             return Err(Error::Invalid(
                 "fork request selections changed after validation".into(),
@@ -862,6 +879,18 @@ mod tests {
             child_agent: request.child_agent,
             attached_agents: Vec::new(),
             resources: vec![
+                CapturedResource {
+                    source: _scratch_selection.revision.clone(),
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: request.preparation.child_private_volume.clone(),
+                        generation: GenerationRef::new(
+                            request.preparation.child_private_volume.provider().clone(),
+                            [18; 32],
+                            Some("1".into()),
+                        )?,
+                        paths: Vec::new(),
+                    },
+                },
                 CapturedResource {
                     source: history_selection.revision.clone(),
                     revision: history_selection.revision.clone(),

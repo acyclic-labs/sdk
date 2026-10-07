@@ -1253,10 +1253,7 @@ where
             .workspace
             .fork(
                 destination,
-                ForkOptions {
-                    generation,
-                    idempotency_key,
-                },
+                ForkOptions::from_generation(generation, idempotency_key),
             )
             .await
             .map_err(workspace_error)?;
@@ -1351,10 +1348,7 @@ where
             .workspace
             .fork_measured(
                 destination,
-                ForkOptions {
-                    generation: generation.value,
-                    idempotency_key,
-                },
+                ForkOptions::from_generation(generation.value, idempotency_key),
                 remaining_work(work, budget)?,
                 cancellation,
             )
