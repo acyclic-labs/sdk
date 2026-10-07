@@ -21,7 +21,7 @@ if (process.platform === "win32") flags.push("-C", "link-arg=/Brepro");
 // Configured flags join the repository's own target flags in
 // .cargo/config.toml, which RUSTFLAGS would replace.
 const cargoArguments = [
-  "build", "--locked", "--release", "-p", "acyclic-plugin",
+  "build", "--locked", "--profile", "dist", "-p", "acyclic-plugin",
   "--config", `target.'cfg(all())'.rustflags = ${JSON.stringify(flags)}`,
 ];
 if (process.env.CARGO_BUILD_TARGET) cargoArguments.push("--target", process.env.CARGO_BUILD_TARGET);

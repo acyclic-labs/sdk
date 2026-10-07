@@ -105,7 +105,7 @@ finish() {
 release_plugin() {
   CARGO_TARGET_DIR="$target_dir-release" node scripts/build-product.mjs
   node plugin/scripts/package.mjs \
-    --binary "$target_dir-release/release/acyclic" \
+    --binary "$target_dir-release/dist/acyclic" \
     --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
   node plugin/scripts/validate-package.mjs "$SDK_ARTIFACT_DIR/acyclic-plugin"
 }
@@ -340,7 +340,7 @@ case "$lane" in
     cargo test -p acyclic-fs --features native-mount --locked \
       --target "$target" --lib native_capture::
     finish release
-    binary="$target_dir-release/$target/release/acyclic"
+    binary="$target_dir-release/$target/dist/acyclic"
     node scripts/verify-release-binary.mjs "$release_target" "$binary"
     expected="$(cargo metadata --locked --no-deps --format-version 1 |
       jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')"

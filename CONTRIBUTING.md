@@ -16,6 +16,12 @@ bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --workspace --all-features --locked
 ```
 
+The `dev` and `test` profiles build at `opt-level = 1`, which keeps backtraces
+usable while the heavy fork tests run several times faster. `--release` stays a
+fast incremental build for development; the shipped `acyclic` executable comes
+from `node scripts/build-product.mjs`, which uses the `dist` profile (fat LTO,
+one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.
+
 ## Commit messages
 
 - Summary line: imperative mood ("Add", "Fix", "Rename", not "Added"/"Fixes"), no
