@@ -3,7 +3,7 @@
 
 use super::DecodeLimits;
 use super::persistent_batch::Error;
-use super::persistent_btree::{Child, Format, Page};
+use super::persistent_btree::{Format, Page, children_within, leaf_within};
 use super::persistent_io;
 use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
 use crate::cancellation::CancellationToken;
@@ -94,8 +94,9 @@ where
         };
         match &*decoded {
             Page::Leaf(values) => {
-                validate_leaf::<F>(values, lower.as_ref(), upper.as_ref())
-                    .map_err(|error| OperationFailure::new(error, work))?;
+                if !leaf_within::<F>(values, lower.as_ref(), upper.as_ref()) {
+                    return Err(OperationFailure::new(Error::ChildBoundsMismatch, work));
+                }
                 let value = values
                     .binary_search_by(|value| F::key(value).cmp(key))
                     .ok()
@@ -103,8 +104,9 @@ where
                 return Ok(Receipt { value, work });
             }
             Page::Internal(children) => {
-                validate_children::<F>(children, lower.as_ref(), upper.as_ref())
-                    .map_err(|error| OperationFailure::new(error, work))?;
+                if !children_within(children, lower.as_ref(), upper.as_ref()) {
+                    return Err(OperationFailure::new(Error::ChildBoundsMismatch, work));
+                }
                 let selected = children
                     .partition_point(|child| child.first <= *key)
                     .saturating_sub(1);
@@ -179,41 +181,6 @@ where
         .downcast::<Page<F>>()
         .map_err(|_| storage(ObjectStoreError::Corrupt, work))?;
     Ok((decoded, work))
-}
-
-/// Rejects a leaf whose first key differs from its parent's routing key or
-/// whose last key reaches the next sibling's.
-pub(crate) fn validate_leaf<F: Format>(
-    values: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && values.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && values.last().is_some_and(|value| F::key(value) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-/// Rejects an internal page whose routing keys disagree with its parent's.
-pub(crate) fn validate_children<F: Format>(
-    children: &[Child<F::Key>],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| child.first >= *upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
 }
 
 #[cfg(all(test, feature = "memory"))]

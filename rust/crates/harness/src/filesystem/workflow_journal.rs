@@ -687,7 +687,7 @@ where
             {
                 Ok(AppendOutcome::Committed(receipt))
                     if receipt.start == expected_revision
-                        && receipt.end == expected_revision + 1 =>
+                        && Some(receipt.end) == expected_revision.checked_add(1) =>
                 {
                     self.advance_cached(&admission, &record);
                     Ok(WorkflowCommitOutcome::Applied(record))

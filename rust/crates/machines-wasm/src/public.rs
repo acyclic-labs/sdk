@@ -25,8 +25,6 @@ use std::{collections::BTreeSet, num::NonZeroU32};
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-const MAX_SAFE: u64 = 9_007_199_254_740_991;
-
 /// A public JavaScript number accepted only when it is an exact safe integer.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct SafeInput(u64);
@@ -39,7 +37,7 @@ impl<'de> Deserialize<'de> for SafeInput {
                 formatter.write_str("a non-negative JavaScript safe integer")
             }
             fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                if value <= MAX_SAFE {
+                if value <= crate::MAX_SAFE_INTEGER {
                     Ok(SafeInput(value))
                 } else {
                     Err(E::custom("number exceeds JavaScript safe integer range"))
@@ -60,13 +58,13 @@ impl<'de> Deserialize<'de> for SafeInput {
                 clippy::cast_precision_loss,
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
-                reason = "finite integral values bounded by MAX_SAFE convert exactly"
+                reason = "finite integral values bounded by crate::MAX_SAFE_INTEGER convert exactly"
             )]
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
                 if value.is_finite()
                     && value >= 0.0
                     && value.fract() == 0.0
-                    && value <= MAX_SAFE as f64
+                    && value <= crate::MAX_SAFE_INTEGER as f64
                 {
                     Ok(SafeInput(value as u64))
                 } else {
@@ -82,7 +80,7 @@ impl<'de> Deserialize<'de> for SafeInput {
 pub struct SafeNumber(u64);
 impl Serialize for SafeNumber {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.0 > MAX_SAFE {
+        if self.0 > crate::MAX_SAFE_INTEGER {
             return Err(serde::ser::Error::custom(
                 "value exceeds JavaScript safe integer range",
             ));
@@ -98,7 +96,7 @@ impl Serialize for SafeNumber {
 }
 
 fn err(message: impl Into<String>) -> JsValue {
-    JsValue::from_str(&message.into())
+    crate::js_error("invalid", message.into())
 }
 fn invalid(message: impl Into<String>) -> Result<JsValue, JsValue> {
     Err(err(message))
@@ -123,10 +121,22 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     value.serialize(&serializer).map_err(|e| err(e.to_string()))
 }
 fn provider_error(error: ProviderError) -> JsValue {
-    match error {
-        ProviderError::NotFound(message) => err(format!("resource not found: {message}")),
-        other => err(other.to_string()),
-    }
+    let code = match &error {
+        ProviderError::NotFound(message) => {
+            return crate::js_error("not-found", format!("resource not found: {message}"));
+        }
+        ProviderError::Conflict(_) => "conflict",
+        ProviderError::Unsupported(_) => "unsupported",
+        ProviderError::Invalid(_) => "invalid",
+        ProviderError::Rejected(_) => "rejected",
+        ProviderError::Unavailable => "unavailable",
+        ProviderError::Indeterminate(_) | ProviderError::OperationIndeterminate(_) => {
+            "indeterminate"
+        }
+        ProviderError::Failed => "failed",
+        ProviderError::Cancelled => "cancelled",
+    };
+    crate::js_error(code, error.to_string())
 }
 fn id(kind: &str, value: String) -> Result<String, JsValue> {
     super::normalize_identity(kind.to_owned(), value)

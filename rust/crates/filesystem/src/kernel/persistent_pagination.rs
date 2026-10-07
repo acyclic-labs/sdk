@@ -1,11 +1,13 @@
 //! Shared bounded cursor pagination for authenticated persistent B+trees.
 
 use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
-use super::persistent_btree::{Child, Format, Page};
+use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io::{self, OwnedPage};
+use super::search::counted_partition_point;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectReadRequest, ObjectStoreError};
 use std::marker::PhantomData;
@@ -233,18 +235,14 @@ impl<'a, F: Format> Machine<'a, F> {
             .and_then(|value| value.checked_mul(usize::from(limits.maximum_page_height)))
             .ok_or_else(|| OperationFailure::before_work(Error::LimitOverflow))?
             .min(configured_maximum);
-        let maximum_nested = u64::try_from(target)
-            .ok()
-            .and_then(|count| count.checked_mul(u64::from(limits.maximum_name_bytes)))
+        let maximum_nested = usize_to_u64(target)
+            .checked_mul(u64::from(limits.maximum_name_bytes))
             .ok_or_else(|| OperationFailure::before_work(Error::LimitOverflow))?;
-        let maximum_container = u64::try_from(target)
-            .ok()
-            .and_then(|count| {
-                count.checked_mul(u64::try_from(size_of::<F::Value>()).unwrap_or(u64::MAX))
-            })
+        let maximum_container = usize_to_u64(target)
+            .checked_mul(usize_to_u64(size_of::<F::Value>()))
             .ok_or_else(|| OperationFailure::before_work(Error::LimitOverflow))?;
         WorkCounters {
-            items_returned: u64::try_from(maximum_values).unwrap_or(u64::MAX),
+            items_returned: usize_to_u64(maximum_values),
             peak_allocation_bytes: maximum_container.saturating_add(maximum_nested),
             ..WorkCounters::default()
         }
@@ -379,8 +377,9 @@ impl<'a, F: Format> Machine<'a, F> {
         values: &[F::Value],
         pending: &Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_values::<F>(values, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !leaf_within::<F>(values, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self.after.map_or((0, 0), |cursor| {
             bound_values::<F>(values, cursor, self.inclusive)
         });
@@ -413,8 +412,9 @@ impl<'a, F: Format> Machine<'a, F> {
         children: &[Child<F::Key>],
         pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_children::<F>(children, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !children_within(children, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self
             .after
             .map_or((0, 0), |cursor| upper_bound_children(children, cursor));
@@ -496,8 +496,9 @@ impl<'a, F: Format> Machine<'a, F> {
         decoded_bytes: u64,
         pending: &Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_values::<F>(&values, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !leaf_within::<F>(&values, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self.after.map_or((0, 0), |cursor| {
             bound_values::<F>(&values, cursor, self.inclusive)
         });
@@ -532,8 +533,9 @@ impl<'a, F: Format> Machine<'a, F> {
         decoded_bytes: u64,
         pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_children::<F>(&children, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !children_within(&children, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self
             .after
             .map_or((0, 0), |cursor| upper_bound_children(&children, cursor));
@@ -654,7 +656,7 @@ impl<'a, F: Format> Machine<'a, F> {
                 .release(bytes)
                 .map_err(|error| failed(map_allocation(error), self.work))?;
         }
-        self.work.items_returned = u64::try_from(self.values.len()).unwrap_or(u64::MAX);
+        self.work.items_returned = usize_to_u64(self.values.len());
         self.work
             .verify(self.budget)
             .map_err(|error| failed(error.into(), self.work))?;
@@ -684,99 +686,25 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 }
 
-fn validate_values<F: Format>(
-    values: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && values.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && values.last().is_some_and(|value| F::key(value) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children<F: Format>(
-    children: &[Child<F::Key>],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| child.first >= *upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 fn upper_bound_values<F: Format>(values: &[F::Value], cursor: &F::Key) -> (usize, u64) {
     bound_values::<F>(values, cursor, false)
 }
 
 fn bound_values<F: Format>(values: &[F::Value], cursor: &F::Key, inclusive: bool) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = values.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        // Standard binary search invariant: the loop guard `left < right`
-        // holds here, and `right <= values.len()` is established at
-        // initialization and only ever shrinks, so `middle` (strictly
-        // between `left` and `right`) is always `< values.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary search invariant: left < middle_bound <= right <= values.len()"
-        )]
-        if F::key(&values[middle]) < cursor || (!inclusive && F::key(&values[middle]) == cursor) {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left, comparisons)
+    counted_partition_point(values, |value| {
+        let key = F::key(value);
+        key < cursor || (!inclusive && key == cursor)
+    })
 }
 
 fn upper_bound_children<K: Ord>(children: &[Child<K>], cursor: &K) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = children.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        // Standard binary search invariant: the loop guard `left < right`
-        // holds here, and `right <= children.len()` is established at
-        // initialization and only ever shrinks, so `middle` (strictly
-        // between `left` and `right`) is always `< children.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary search invariant: left < middle_bound <= right <= children.len()"
-        )]
-        if children[middle].first <= *cursor {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left.saturating_sub(1), comparisons)
+    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *cursor);
+    (after.saturating_sub(1), comparisons)
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), Failure> {
-    *work = work
-        .checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), *work))?;
-    work.verify(budget)
+    work.charge_items(count, &budget)
         .map_err(|error| failed(error.into(), *work))
 }
 

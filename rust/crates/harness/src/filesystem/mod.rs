@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::too_many_lines, clippy::indexing_slicing))]
 #![doc = include_str!("../../docs/filesystem.md")]
 
+use crate::contract::capability;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
     conversation::{
@@ -1154,7 +1155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         resolver: &dyn ContentResidencyVerifier,
         idempotency_key: &IdempotencyKey,
     ) -> Result<InheritedContextCapture> {
-        self.require("fork:publish", VolumeOperation::Read)?;
+        self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         if parent.authority() != &self.parent
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
             || child_private.provider() != &self.host.provider
@@ -1368,7 +1369,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         child: &VolumeRef,
         idempotency_key: &IdempotencyKey,
     ) -> Result<WorkspaceObservation> {
-        self.require("fork:publish", VolumeOperation::Read)?;
+        self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         self.host
             .fork_project(&self.project, source_generation, child, idempotency_key)
             .await
@@ -1376,7 +1377,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
 
     /// Inspects a child's changes for an explicit parent-authorized promotion.
     pub async fn prepare_project_merge(&self, child: &VolumeRef) -> Result<ParentMergePlan<A, O>> {
-        self.require("project:merge", VolumeOperation::Write)?;
+        self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
         Ok(ParentMergePlan {
             plan: self
                 .host
@@ -1498,7 +1499,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     }
 
     fn require_merge_plan(&self, plan: &ParentMergePlan<A, O>) -> Result<()> {
-        self.require("project:merge", VolumeOperation::Write)?;
+        self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
         if plan.parent_project != self.project || plan.parent_scope != self.scope {
             return Err(Error::Unauthorized(
                 "merge plan belongs to another parent controller".into(),

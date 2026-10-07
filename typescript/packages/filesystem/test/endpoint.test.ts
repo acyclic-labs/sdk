@@ -23,4 +23,17 @@ describe("hosted filesystem endpoint policy", () => {
     ]) expect(() => parse(endpoint)).toThrow(RangeError);
     await expect(openHostedFs({ endpoint: "http://filesystem.example", bearerToken: "token" })).rejects.toBeInstanceOf(RangeError);
   });
+
+  test("rejects header-unsafe or oversized bearer tokens and never follows redirects", async () => {
+    for (const bearerToken of ["", " ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+      await expect(openHostedFs({ endpoint: "https://filesystem.example", bearerToken })).rejects.toBeInstanceOf(RangeError);
+    }
+    let redirect: RequestRedirect | undefined;
+    const fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      redirect = init?.redirect;
+      throw new TypeError("offline");
+    }) as typeof globalThis.fetch;
+    await expect(openHostedFs({ endpoint: "https://filesystem.example", bearerToken: "token", fetch })).rejects.toThrow();
+    expect(redirect).toBe("error");
+  });
 });

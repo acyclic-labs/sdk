@@ -1,5 +1,6 @@
 //! Pinned, journaled tool calls for resumable tasks.
 
+use crate::contract::capability;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::Limits,
@@ -106,7 +107,7 @@ impl ResumableTool {
         // the scope's representation (and so the host and WASM facades keep
         // the same boundary).
         let scope = context.task().scope();
-        let required = format!("tool:call:{}", self.definition.name);
+        let required = capability::tool_call(&self.definition.name);
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
@@ -262,7 +263,7 @@ impl DurableToolRunner {
             ));
         }
         let scope = context.task().scope();
-        let required = format!("tool:call:{}", definition.name);
+        let required = capability::tool_call(&definition.name);
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }

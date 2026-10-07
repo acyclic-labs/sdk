@@ -10,6 +10,7 @@ use super::{
 };
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::model::{FilesystemProfile, VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -64,9 +65,8 @@ impl<'a, S> OperationReadCache<'a, S> {
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
-        let table = u64::try_from(slot_count)
-            .unwrap_or(u64::MAX)
-            .checked_mul(u64::try_from(size_of::<Option<CachedObject>>()).unwrap_or(u64::MAX))
+        let table = usize_to_u64(slot_count)
+            .checked_mul(usize_to_u64(size_of::<Option<CachedObject>>()))
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
@@ -269,18 +269,13 @@ fn budget_after_resident(
 
 fn merge_backend_peak(
     prior: WorkCounters,
-    mut backend: WorkCounters,
+    backend: WorkCounters,
     resident: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, ObjectFailure> {
-    let simultaneous_peak = resident
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), prior))?;
-    backend.peak_allocation_bytes = 0;
-    let mut work = prior
-        .checked_add(backend)
+    let work = prior
+        .with_backend(backend, resident)
         .map_err(|error| ObjectFailure::new(error.into(), prior))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous_peak);
     work.verify(budget)
         .map_err(|error| ObjectFailure::new(error.into(), work))?;
     Ok(work)
@@ -288,19 +283,14 @@ fn merge_backend_peak(
 
 fn merge_backend_failure(
     prior: WorkCounters,
-    mut backend: WorkCounters,
+    backend: WorkCounters,
     resident: u64,
     error: ObjectStoreError,
 ) -> ObjectFailure {
-    let Some(simultaneous_peak) = resident.checked_add(backend.peak_allocation_bytes) else {
-        return ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), prior);
-    };
-    backend.peak_allocation_bytes = 0;
-    let Ok(mut work) = prior.checked_add(backend) else {
-        return ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), prior);
-    };
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous_peak);
-    ObjectFailure::new(error, work)
+    match prior.with_backend(backend, resident) {
+        Ok(work) => ObjectFailure::new(error, work),
+        Err(overflow) => ObjectFailure::new(overflow.into(), prior),
+    }
 }
 
 impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
@@ -356,7 +346,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             ..WorkCounters::default()
         };
         if let Some(value) = hit {
-            let observed = u64::try_from(value.bytes.len()).unwrap_or(u64::MAX);
+            let observed = usize_to_u64(value.bytes.len());
             if observed > maximum_bytes {
                 return Err(ObjectFailure::new(
                     ObjectStoreError::TooLarge {
@@ -656,7 +646,7 @@ pub async fn lookup_path_async<S: AsyncObjectStore>(
             OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
         })?;
         validate_path(path, config)?;
-        let limits = decode_limits(config);
+        let limits = DecodeLimits::for_volume(config);
         let maximum_cache_entries = maximum_cache_entries(path, config)?;
         let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
         let root = lookup_file_record_async(
@@ -796,7 +786,7 @@ async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
         })?;
         validate_path(path, config)?;
 
-        let limits = decode_limits(config);
+        let limits = DecodeLimits::for_volume(config);
         let maximum_cache_entries = maximum_cache_entries(path, config)?;
         let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
         let mut allocations = AllocationLedger::default();
@@ -1241,7 +1231,7 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     );
     current.resize(count, None);
     done.resize(count, 0);
-    let limits = decode_limits(config);
+    let limits = DecodeLimits::for_volume(config);
     let root = lookup_file_record_async(
         &cache,
         generation.file_table,
@@ -1507,9 +1497,8 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     if done.contains(&0) {
         return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
     }
-    let retained_allocation_bytes = u64::try_from(entries.capacity())
-        .unwrap_or(u64::MAX)
-        .checked_mul(u64::try_from(size_of::<PathBatchEntry>()).unwrap_or(u64::MAX))
+    let retained_allocation_bytes = usize_to_u64(entries.capacity())
+        .checked_mul(usize_to_u64(size_of::<PathBatchEntry>()))
         .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
     Ok(ObservedPathBatch {
         lookup: PathBatchLookup {
@@ -1577,18 +1566,6 @@ fn validate_path(path: &NamespacePath, config: VolumeConfig) -> Result<(), PathL
     Ok(())
 }
 
-fn decode_limits(config: VolumeConfig) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: config.limits.maximum_object_bytes,
-        maximum_name_bytes: config.limits.maximum_component_bytes,
-        maximum_page_items: config.limits.maximum_directory_page_entries,
-        maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-        maximum_page_height: config.limits.maximum_page_height,
-        maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-            .unwrap_or(u32::MAX),
-    }
-}
-
 fn reserve_fixed<T>(
     count: usize,
     allocations: &mut AllocationLedger,
@@ -1618,7 +1595,7 @@ fn copy_batch_name(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(LogicalName, u64), PathLookupFailure> {
-    let bytes = crate::foundation::usize_to_u64(source.as_bytes().len());
+    let bytes = usize_to_u64(source.as_bytes().len());
     let attempted = work
         .checked_add(WorkCounters {
             allocation_operations: 1,
@@ -1667,7 +1644,7 @@ fn copy_observation_name<S>(
     work: WorkCounters,
     budget: WorkBudget,
 ) -> Result<CopiedObservationName, PathLookupFailure> {
-    let bytes = crate::foundation::usize_to_u64(source.as_bytes().len());
+    let bytes = usize_to_u64(source.as_bytes().len());
     let next_external = external_resident_bytes
         .checked_add(bytes)
         .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
@@ -1724,17 +1701,7 @@ fn copy_observation_name<S>(
 }
 
 fn allocation_failure(error: AllocationError, work: WorkCounters) -> PathLookupFailure {
-    match error {
-        AllocationError::Work(error) => OperationFailure::new(error.into(), work),
-        AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-            OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work)
-        }
-        AllocationError::InvalidCapacity
-        | AllocationError::CapacityExceeded
-        | AllocationError::AllocationFailed => {
-            OperationFailure::new(PathLookupError::AllocationFailed, work)
-        }
-    }
+    OperationFailure::new(error.into_work_or(PathLookupError::AllocationFailed), work)
 }
 
 fn map_cache_error(error: ObjectStoreError) -> PathLookupError {
@@ -1778,18 +1745,13 @@ fn batch_sub_budget(
 
 fn merge_batch_work(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     orchestration_live: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, PathLookupFailure> {
-    let simultaneous_peak = orchestration_live
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), prior))?;
-    nested.peak_allocation_bytes = 0;
-    let mut merged = prior
-        .checked_add(nested)
+    let merged = prior
+        .with_backend(nested, orchestration_live)
         .map_err(|error| OperationFailure::new(error.into(), prior))?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
     merged
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), merged))?;
@@ -1798,20 +1760,14 @@ fn merge_batch_work(
 
 fn merge_batch_failure(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     orchestration_live: u64,
     error: PathLookupError,
 ) -> PathLookupFailure {
-    let Some(simultaneous_peak) = orchestration_live.checked_add(nested.peak_allocation_bytes)
-    else {
-        return OperationFailure::new(PathLookupError::Work(WorkError::Overflow), prior);
-    };
-    nested.peak_allocation_bytes = 0;
-    let Ok(mut merged) = prior.checked_add(nested) else {
-        return OperationFailure::new(PathLookupError::Work(WorkError::Overflow), prior);
-    };
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    OperationFailure::new(error, merged)
+    match prior.with_backend(nested, orchestration_live) {
+        Ok(merged) => OperationFailure::new(error, merged),
+        Err(overflow) => OperationFailure::new(overflow.into(), prior),
+    }
 }
 
 fn maximum_cache_entries(

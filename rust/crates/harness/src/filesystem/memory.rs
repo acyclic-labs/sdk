@@ -1,5 +1,6 @@
 //! Infrastructure-free Harness storage with the same Stream/Filesystem contracts.
 
+use crate::contract::capability;
 use crate::filesystem::{FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost};
 use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
@@ -140,7 +141,7 @@ impl LocalHarness {
         let mut builder = storage
             .builder()
             .model(model, provider)
-            .grant("model:generate")
+            .grant(capability::MODEL_GENERATE)
             .tools(tools)
             .limits(limits);
         for capability in capabilities {
@@ -652,10 +653,10 @@ impl MemoryHarnessStorage {
             agent,
             "owner",
             Capabilities::new([
-                "conversation:bind".to_owned(),
-                "conversation:append".to_owned(),
-                "conversation:select_context".to_owned(),
-                "interaction:open".to_owned(),
+                capability::CONVERSATION_BIND.to_owned(),
+                capability::CONVERSATION_APPEND.to_owned(),
+                capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
+                capability::INTERACTION_OPEN.to_owned(),
                 read_capability.clone(),
                 write_capability.clone(),
             ]),
@@ -1329,8 +1330,8 @@ impl MemoryHarnessStorage {
         let responder = self.issuer.root(
             format!("local-responder:{id}"),
             Capabilities::new([
-                "interaction:resolve".to_owned(),
-                format!("interaction:respond:{id}"),
+                capability::INTERACTION_RESOLVE.to_owned(),
+                capability::interaction_respond(id),
             ]),
         );
         self.journal

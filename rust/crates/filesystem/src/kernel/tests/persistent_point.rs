@@ -2,6 +2,7 @@ use super::*;
 use crate::cache::{CachedObjectStore, ObjectCacheOptions};
 use crate::foundation::{Digest, FileId};
 use crate::kernel::file_table_mutation::FileTableFormat;
+use crate::kernel::persistent_btree::Child;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
     FileKind, FilePayload, FileRecord, FileTableChild, FileTablePage, LogicalName, NameEncoding,
@@ -49,45 +50,39 @@ fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
 #[test]
 fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std::error::Error>> {
     let (first, second) = (record(1), record(2));
-    assert!(
-        validate_leaf::<FileTableFormat>(&[first], Some(&first.file_id), Some(&second.file_id))
-            .is_ok()
-    );
-    assert!(matches!(
-        validate_leaf::<FileTableFormat>(&[first], Some(&second.file_id), None),
-        Err(Error::ChildBoundsMismatch)
+    assert!(leaf_within::<FileTableFormat>(
+        &[first],
+        Some(&first.file_id),
+        Some(&second.file_id)
     ));
-    assert!(matches!(
-        validate_leaf::<FileTableFormat>(&[first], Some(&first.file_id), Some(&first.file_id)),
-        Err(Error::ChildBoundsMismatch)
+    assert!(!leaf_within::<FileTableFormat>(
+        &[first],
+        Some(&second.file_id),
+        None
+    ));
+    assert!(!leaf_within::<FileTableFormat>(
+        &[first],
+        Some(&first.file_id),
+        Some(&first.file_id)
     ));
     let child = Child {
         first: first.file_id,
         page: first.metadata,
     };
-    assert!(
-        validate_children::<FileTableFormat>(
-            std::slice::from_ref(&child),
-            Some(&first.file_id),
-            Some(&second.file_id)
-        )
-        .is_ok()
-    );
-    assert!(matches!(
-        validate_children::<FileTableFormat>(
-            std::slice::from_ref(&child),
-            Some(&second.file_id),
-            None
-        ),
-        Err(Error::ChildBoundsMismatch)
+    assert!(children_within(
+        std::slice::from_ref(&child),
+        Some(&first.file_id),
+        Some(&second.file_id)
     ));
-    assert!(matches!(
-        validate_children::<FileTableFormat>(
-            std::slice::from_ref(&child),
-            None,
-            Some(&first.file_id)
-        ),
-        Err(Error::ChildBoundsMismatch)
+    assert!(!children_within(
+        std::slice::from_ref(&child),
+        Some(&second.file_id),
+        None
+    ));
+    assert!(!children_within(
+        std::slice::from_ref(&child),
+        None,
+        Some(&first.file_id)
     ));
     let entries = [
         TreeEntry {
@@ -101,10 +96,15 @@ fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std:
             kind: FileKind::Regular,
         },
     ];
-    assert!(validate_leaf::<TreeFormat>(&entries, Some(&name("b")?), Some(&name("d")?)).is_ok());
-    assert!(matches!(
-        validate_leaf::<TreeFormat>(&entries, None, Some(&name("c")?)),
-        Err(Error::ChildBoundsMismatch)
+    assert!(leaf_within::<TreeFormat>(
+        &entries,
+        Some(&name("b")?),
+        Some(&name("d")?)
+    ));
+    assert!(!leaf_within::<TreeFormat>(
+        &entries,
+        None,
+        Some(&name("c")?)
     ));
     Ok(())
 }

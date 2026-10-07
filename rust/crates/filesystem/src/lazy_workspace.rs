@@ -14,6 +14,7 @@ use crate::kernel::{
 };
 use crate::model::VolumeConfig;
 use crate::path::PortablePath;
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, stored_revision};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
@@ -36,7 +37,6 @@ type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 const LAZY_STATE_SCHEMA: u32 = 7;
-const MAXIMUM_STATE_RETRIES: usize = 32;
 
 const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
 
@@ -444,11 +444,7 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let actual = state
-            .workspaces
-            .get(&workspace_id)
-            .map_or(0, |current| current.revision);
-        if actual != expected_revision {
+        if stored_revision(&state.workspaces, &workspace_id) != expected_revision {
             return Ok(false);
         }
         state.workspaces.insert(workspace_id, replacement);
@@ -1421,7 +1417,7 @@ where
     /// state and tombstones remain shared.
     pub async fn rebind_source(&self) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
         let source = self.source.reference();
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id())
@@ -2584,7 +2580,7 @@ where
         let work = account_nested_with_live_memory(work, applied, *retained_bytes, budget)?;
         *retained_bytes = retained_bytes
             .checked_sub(*pending_bytes)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+            .ok_or_else(counter_overflow)?;
         *pending_bytes = 0;
         Ok(work)
     }
@@ -2649,8 +2645,7 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<TransactionCommit<A, O>>, LazyWorkspaceError> {
-        work.verify(budget)
-            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+        work.verify(budget)?;
         let transaction = self
             .workspace
             .begin_transaction_measured(
@@ -3201,8 +3196,7 @@ where
                                 LazyWorkspaceError::Work("counter overflow".to_owned())
                             })?;
                         work.peak_allocation_bytes = work.peak_allocation_bytes.max(live_bytes);
-                        work.verify(budget)
-                            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+                        work.verify(budget)?;
                         let mut source_paths = Vec::new();
                         let mut slots = Vec::new();
                         source_paths.try_reserve_exact(count).map_err(|_| {
@@ -3701,9 +3695,8 @@ where
                     work.items_examined = work
                         .items_examined
                         .checked_add(1)
-                        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-                    work.verify(budget)
-                        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+                        .ok_or_else(counter_overflow)?;
+                    work.verify(budget)?;
                     if entry.kind == SourceNodeKind::Directory {
                         reserve_exactify_path_slot(
                             &mut directories,
@@ -3731,12 +3724,12 @@ where
             }
             retained_bytes = retained_bytes
                 .checked_sub(u64::try_from(directory.capacity()).unwrap_or(u64::MAX))
-                .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                .ok_or_else(counter_overflow)?;
         }
         let directory_vector_bytes = exactify_path_vector_bytes(&directories)?;
         retained_bytes = retained_bytes
             .checked_sub(directory_vector_bytes)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+            .ok_or_else(counter_overflow)?;
         drop(directories);
         let path_vector_bytes = exactify_path_vector_bytes(&paths)?;
         paths.sort_unstable_by(|left, right| exactify_path_order(left, right));
@@ -3757,15 +3750,14 @@ where
             seen_sources
                 .capacity()
                 .checked_mul(std::mem::size_of::<(FileId, String)>())
-                .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+                .ok_or_else(counter_overflow)?,
         )
-        .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .map_err(|_| counter_overflow())?;
         retained_bytes = retained_bytes
             .checked_add(seen_vector_bytes)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+            .ok_or_else(counter_overflow)?;
         work.peak_allocation_bytes = work.peak_allocation_bytes.max(retained_bytes);
-        work.verify(budget)
-            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+        work.verify(budget)?;
         let mut transaction = None;
         let mut batch_paths = 0_usize;
         let mut batch_dirty = false;
@@ -3810,13 +3802,11 @@ where
                 transaction = None;
                 batch_dirty = false;
                 batch_paths = 0;
-                batch_index = batch_index
-                    .checked_add(1)
-                    .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                batch_index = batch_index.checked_add(1).ok_or_else(counter_overflow)?;
                 for (_, retained) in seen_sources.drain(..) {
                     retained_bytes = retained_bytes
                         .checked_sub(u64::try_from(retained.capacity()).unwrap_or(u64::MAX))
-                        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                        .ok_or_else(counter_overflow)?;
                 }
             }
             if batch_paths == 0 {
@@ -3865,9 +3855,8 @@ where
                 work.materializations = work
                     .materializations
                     .checked_add(1)
-                    .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-                work.verify(budget)
-                    .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+                    .ok_or_else(counter_overflow)?;
+                work.verify(budget)?;
             }
             if transaction.is_none() {
                 let begun = self
@@ -3929,7 +3918,7 @@ where
                 batch_dirty = true;
                 retained_bytes = retained_bytes
                     .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                    .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                    .ok_or_else(counter_overflow)?;
             } else if let LazyLookup::Source(node) = &lookup.lookup
                 && node.kind == SourceNodeKind::RegularFile
             {
@@ -3968,7 +3957,7 @@ where
                 } else {
                     retained_bytes = retained_bytes
                         .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                        .ok_or_else(counter_overflow)?;
                 }
             } else if let LazyLookup::Source(node) = &lookup.lookup
                 && node.kind == SourceNodeKind::Directory
@@ -3987,7 +3976,7 @@ where
                 batch_dirty = true;
                 retained_bytes = retained_bytes
                     .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                    .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                    .ok_or_else(counter_overflow)?;
             } else {
                 work = self
                     .flush_exactify_source_batch(
@@ -4018,7 +4007,7 @@ where
                 } else {
                     retained_bytes = retained_bytes
                         .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                        .ok_or_else(counter_overflow)?;
                 }
             }
             batch_paths += 1;
@@ -4045,15 +4034,15 @@ where
         for (_, retained) in seen_sources.drain(..) {
             retained_bytes = retained_bytes
                 .checked_sub(u64::try_from(retained.capacity()).unwrap_or(u64::MAX))
-                .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+                .ok_or_else(counter_overflow)?;
         }
         retained_bytes = retained_bytes
             .checked_sub(seen_vector_bytes)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+            .ok_or_else(counter_overflow)?;
         drop(seen_sources);
         retained_bytes = retained_bytes
             .checked_sub(path_vector_bytes)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+            .ok_or_else(counter_overflow)?;
         debug_assert_eq!(retained_bytes, 0);
         let head = self
             .workspace
@@ -4135,7 +4124,7 @@ where
         if paths.is_empty() && identity_records.is_empty() {
             return Ok(());
         }
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state().await?;
             let mut overlay = state.overlay;
             let mut shadows = state.shadows;
@@ -4378,7 +4367,7 @@ where
             PendingLazyRemoveKind::SourceOnly
         };
         let mut prepared = None;
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state().await?;
             let shadows = if let LazyLookup::Authored { stat, .. } = &resolved {
                 let record = self
@@ -4544,7 +4533,7 @@ where
     }
 
     async fn recover_pending_remove(&self) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id())
@@ -4652,7 +4641,7 @@ where
         path: String,
         change: LazyOverlayChange,
     ) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state().await?;
             let overlay_id = self
                 .insert_overlay(state.overlay, path.clone(), change.clone())
@@ -4755,8 +4744,7 @@ where
             bytes_copied: bytes.saturating_mul(2),
             ..WorkCounters::default()
         };
-        work.verify(budget)
-            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+        work.verify(budget)?;
         let directory = self.canonical_path(directory)?;
         let prefix = if directory.ends_with('/') {
             directory
@@ -4872,36 +4860,28 @@ where
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
         let path = self.canonical_path(path)?;
-        let path_bytes = u64::try_from(path.capacity())
-            .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        let path_bytes = u64::try_from(path.capacity()).map_err(|_| counter_overflow())?;
         let mut work = WorkCounters {
-            bytes_copied: u64::try_from(path.len())
-                .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+            bytes_copied: u64::try_from(path.len()).map_err(|_| counter_overflow())?,
             allocation_operations: u64::from(path_bytes != 0),
             peak_allocation_bytes: path_bytes,
             ..WorkCounters::default()
         };
-        work.verify(budget)
-            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+        work.verify(budget)?;
         let ancestor_request = path.len();
         if ancestor_request != 0 {
-            let requested = u64::try_from(ancestor_request)
-                .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-            let mut attempted = work
-                .checked_add(WorkCounters {
-                    bytes_copied: requested,
-                    allocation_operations: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+            let requested = u64::try_from(ancestor_request).map_err(|_| counter_overflow())?;
+            let mut attempted = work.checked_add(WorkCounters {
+                bytes_copied: requested,
+                allocation_operations: 1,
+                ..WorkCounters::default()
+            })?;
             attempted.peak_allocation_bytes = attempted.peak_allocation_bytes.max(
                 path_bytes
                     .checked_add(requested)
-                    .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+                    .ok_or_else(counter_overflow)?,
             );
-            attempted
-                .verify(budget)
-                .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+            attempted.verify(budget)?;
             work = attempted;
         }
         let root = self
@@ -5006,6 +4986,16 @@ fn measured_lazy_store_write(
     lazy_store_write_work()
         .verify(budget)
         .map_err(|error| LazyWorkspaceError::Work(error.to_string()))
+}
+
+impl From<crate::WorkError> for LazyWorkspaceError {
+    fn from(error: crate::WorkError) -> Self {
+        Self::Work(error.to_string())
+    }
+}
+
+fn counter_overflow() -> LazyWorkspaceError {
+    LazyWorkspaceError::Work("counter overflow".to_owned())
 }
 
 fn workspace_error(error: WorkspaceError) -> LazyWorkspaceError {
@@ -5133,12 +5123,8 @@ fn account_work(
     additional: WorkCounters,
     budget: WorkBudget,
 ) -> Result<WorkCounters, LazyWorkspaceError> {
-    let combined = current
-        .checked_add(additional)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
-    combined
-        .verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    let combined = current.checked_add(additional)?;
+    combined.verify(budget)?;
     Ok(combined)
 }
 
@@ -5150,15 +5136,11 @@ fn account_nested_with_live_memory(
 ) -> Result<WorkCounters, LazyWorkspaceError> {
     let simultaneous_peak = live_bytes
         .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     nested.peak_allocation_bytes = 0;
-    let mut combined = current
-        .checked_add(nested)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    let mut combined = current.checked_add(nested)?;
     combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous_peak);
-    combined
-        .verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    combined.verify(budget)?;
     Ok(combined)
 }
 
@@ -5185,19 +5167,18 @@ fn queue_exactify_mutation(
             count.checked_mul(u64::try_from(std::mem::size_of::<LogicalName>()).ok()?)
         })
         .and_then(|bytes| bytes.checked_add(name_bytes?))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-    let item_bytes = u64::try_from(std::mem::size_of::<AuthoredMutation>())
-        .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
+    let item_bytes =
+        u64::try_from(std::mem::size_of::<AuthoredMutation>()).map_err(|_| counter_overflow())?;
     let growth = u64::from(pending.len() == pending.capacity())
         .checked_mul(item_bytes)
         .and_then(|bytes| bytes.checked_add(path_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     let prospective = retained_bytes
         .checked_add(growth)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     work.peak_allocation_bytes = work.peak_allocation_bytes.max(prospective);
-    work.verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    work.verify(budget)?;
     let old_capacity = pending.capacity();
     pending
         .try_reserve_exact(1)
@@ -5207,16 +5188,15 @@ fn queue_exactify_mutation(
         .ok()
         .and_then(|items| items.checked_mul(item_bytes))
         .and_then(|bytes| bytes.checked_add(path_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     *pending_bytes = pending_bytes
         .checked_add(actual_growth)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     *retained_bytes = retained_bytes
         .checked_add(actual_growth)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     work.peak_allocation_bytes = work.peak_allocation_bytes.max(*retained_bytes);
-    work.verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    work.verify(budget)?;
     pending.push(mutation);
     Ok(())
 }
@@ -5230,54 +5210,45 @@ fn reserve_exactify_path_slot(
     if paths.len() < paths.capacity() {
         return Ok(());
     }
-    let item_bytes = u64::try_from(std::mem::size_of::<String>())
-        .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+    let item_bytes =
+        u64::try_from(std::mem::size_of::<String>()).map_err(|_| counter_overflow())?;
     let old_bytes = u64::try_from(paths.capacity())
         .ok()
         .and_then(|count| count.checked_mul(item_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-    let target = paths
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
+    let target = paths.len().checked_add(1).ok_or_else(counter_overflow)?;
     let requested_bytes = u64::try_from(target)
         .ok()
         .and_then(|count| count.checked_mul(item_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     let copied = u64::try_from(paths.len())
         .ok()
         .and_then(|count| count.checked_mul(item_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-    let mut attempted = work
-        .checked_add(WorkCounters {
-            bytes_copied: copied,
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+        .ok_or_else(counter_overflow)?;
+    let mut attempted = work.checked_add(WorkCounters {
+        bytes_copied: copied,
+        allocation_operations: 1,
+        ..WorkCounters::default()
+    })?;
     attempted.peak_allocation_bytes = attempted.peak_allocation_bytes.max(
         retained_bytes
             .checked_add(requested_bytes)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+            .ok_or_else(counter_overflow)?,
     );
-    attempted
-        .verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    attempted.verify(budget)?;
     paths
         .try_reserve_exact(1)
         .map_err(|_| LazyWorkspaceError::Work("exactify path allocation failed".to_owned()))?;
     let new_bytes = u64::try_from(paths.capacity())
         .ok()
         .and_then(|count| count.checked_mul(item_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     *retained_bytes = retained_bytes
         .checked_sub(old_bytes)
         .and_then(|value| value.checked_add(new_bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     attempted.peak_allocation_bytes = attempted.peak_allocation_bytes.max(*retained_bytes);
-    attempted
-        .verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    attempted.verify(budget)?;
     *work = attempted;
     Ok(())
 }
@@ -5288,18 +5259,14 @@ fn account_transient_string(
     live_bytes: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, LazyWorkspaceError> {
-    let bytes = u64::try_from(value.capacity())
-        .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-    let copied = u64::try_from(value.len())
-        .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+    let bytes = u64::try_from(value.capacity()).map_err(|_| counter_overflow())?;
+    let copied = u64::try_from(value.len()).map_err(|_| counter_overflow())?;
     let mut delta = WorkCounters {
         bytes_copied: copied,
         allocation_operations: u64::from(bytes != 0),
         ..WorkCounters::default()
     };
-    delta.peak_allocation_bytes = live_bytes
-        .checked_add(bytes)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+    delta.peak_allocation_bytes = live_bytes.checked_add(bytes).ok_or_else(counter_overflow)?;
     account_work(work, delta, budget)
 }
 
@@ -5310,16 +5277,12 @@ fn retained_directory_page_bytes(
 ) -> Result<u64, LazyWorkspaceError> {
     let slots = capacity
         .checked_mul(entry_bytes)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     let names = names
         .try_fold(0_usize, |total, bytes| total.checked_add(bytes))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-    u64::try_from(
-        slots
-            .checked_add(names)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
-    )
-    .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))
+        .ok_or_else(counter_overflow)?;
+    u64::try_from(slots.checked_add(names).ok_or_else(counter_overflow)?)
+        .map_err(|_| counter_overflow())
 }
 
 fn reserve_lazy_directory_page(
@@ -5332,21 +5295,17 @@ fn reserve_lazy_directory_page(
     let requested = count
         .checked_mul(std::mem::size_of::<LazyDirectoryEntry>())
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-    let mut attempted = work
-        .checked_add(WorkCounters {
-            allocation_operations: u64::from(count != 0),
-            ..WorkCounters::default()
-        })
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+        .ok_or_else(counter_overflow)?;
+    let mut attempted = work.checked_add(WorkCounters {
+        allocation_operations: u64::from(count != 0),
+        ..WorkCounters::default()
+    })?;
     attempted.peak_allocation_bytes = attempted.peak_allocation_bytes.max(
         temporary_bytes
             .checked_add(requested)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+            .ok_or_else(counter_overflow)?,
     );
-    attempted
-        .verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    attempted.verify(budget)?;
     entries
         .try_reserve_exact(count)
         .map_err(|_| LazyWorkspaceError::Work("directory page allocation failed".to_owned()))?;
@@ -5354,26 +5313,24 @@ fn reserve_lazy_directory_page(
         .capacity()
         .checked_mul(std::mem::size_of::<LazyDirectoryEntry>())
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     attempted.peak_allocation_bytes = attempted.peak_allocation_bytes.max(
         temporary_bytes
             .checked_add(allocated)
-            .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+            .ok_or_else(counter_overflow)?,
     );
-    attempted
-        .verify(budget)
-        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+    attempted.verify(budget)?;
     *work = attempted;
     temporary_bytes
         .checked_add(allocated)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))
+        .ok_or_else(counter_overflow)
 }
 
 fn exactify_path_vector_bytes(paths: &Vec<String>) -> Result<u64, LazyWorkspaceError> {
     u64::try_from(paths.capacity())
         .ok()
         .and_then(|count| count.checked_mul(u64::try_from(std::mem::size_of::<String>()).ok()?))
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))
+        .ok_or_else(counter_overflow)
 }
 
 fn retain_exactify_string(
@@ -5382,17 +5339,15 @@ fn retain_exactify_string(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(), LazyWorkspaceError> {
-    let capacity = u64::try_from(value.capacity())
-        .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+    let capacity = u64::try_from(value.capacity()).map_err(|_| counter_overflow())?;
     let mut delta = WorkCounters {
-        bytes_copied: u64::try_from(value.len())
-            .map_err(|_| LazyWorkspaceError::Work("counter overflow".to_owned()))?,
+        bytes_copied: u64::try_from(value.len()).map_err(|_| counter_overflow())?,
         allocation_operations: u64::from(capacity != 0),
         ..WorkCounters::default()
     };
     *retained_bytes = retained_bytes
         .checked_add(capacity)
-        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
+        .ok_or_else(counter_overflow)?;
     delta.peak_allocation_bytes = *retained_bytes;
     *work = account_work(*work, delta, budget)?;
     Ok(())

@@ -28,11 +28,9 @@ import type {
   TimedOut as WireTimedOut,
   UsageOut as WireUsageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
-import { ensureMachinesWasm, normalizeIdentity } from "./wasm-runtime.js";
-
-// The root package is self-initializing so synchronous identity constructors
+// Importing the runtime initializes WASM, so synchronous identity constructors
 // are ready after an ordinary package import in browsers as well as Node/Bun.
-await ensureMachinesWasm();
+import { normalizeIdentity } from "./wasm-runtime.js";
 
 /** Preserve the Rust generated field set while making public DTOs immutable. */
 type ReadonlyGenerated<Value> = Value extends unknown

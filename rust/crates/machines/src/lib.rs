@@ -72,6 +72,17 @@ macro_rules! uuid_identity {
                 Ok(Self(value))
             }
 
+            /// Derives a deterministic, never-nil identity from a domain-separated
+            /// SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
+            #[must_use]
+            pub fn from_digest(digest: [u8; 32]) -> Self {
+                let mut bytes = [0_u8; 16];
+                for (byte, value) in bytes.iter_mut().zip(digest) {
+                    *byte = value;
+                }
+                Self(uuid::Builder::from_sha1_bytes(bytes).into_uuid())
+            }
+
             /// Returns the canonical 16-byte UUID representation.
             #[must_use]
             pub fn as_bytes(self) -> [u8; 16] {
@@ -1033,13 +1044,13 @@ impl SimulatedMachines {
         Sha256::digest(b"acyclic-machines-memory-v1").into()
     }
     fn operation(key: IdempotencyKey) -> OperationId {
-        OperationId(derived_uuid(b"operation", &key.as_bytes(), 0))
+        OperationId::from_digest(derived_digest(b"operation", key, 0))
     }
     fn machine(key: IdempotencyKey, index: u32) -> MachineId {
-        MachineId(derived_uuid(b"machine", &key.as_bytes(), index))
+        MachineId::from_digest(derived_digest(b"machine", key, index))
     }
     fn checkpoint_id(key: IdempotencyKey) -> CheckpointId {
-        CheckpointId(derived_uuid(b"checkpoint", &key.as_bytes(), 0))
+        CheckpointId::from_digest(derived_digest(b"checkpoint", key, 0))
     }
     fn contract(request: &CreateMachine, capabilities: BTreeSet<Capability>) -> MachineContract {
         MachineContract {
@@ -1063,9 +1074,7 @@ impl SimulatedMachines {
     where
         F: FnOnce(&mut MemoryState) -> Result<MutationOutcome, ProviderError>,
     {
-        let encoded = serde_json::to_vec(&intent)
-            .map_err(|_| ProviderError::Invalid("intent cannot be encoded".into()))?;
-        let digest: [u8; 32] = Sha256::digest(encoded).into();
+        let digest = intent_digest(&intent)?;
         let mut state = self.state.lock().await;
         if let Some(replay) = state.replays.get(&key) {
             return if replay.digest == digest {
@@ -1101,21 +1110,22 @@ impl SimulatedMachines {
     }
 }
 
-#[allow(
-    clippy::indexing_slicing,
-    reason = "`digest` is a Sha256::finalize() output, always exactly 32 bytes, so slicing the first 16 is always in bounds"
-)]
-fn derived_uuid(domain: &[u8], key: &[u8; 16], index: u32) -> Uuid {
+fn derived_digest(domain: &[u8], key: IdempotencyKey, index: u32) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(domain);
-    hash.update(key);
+    hash.update(key.as_bytes());
     hash.update(index.to_be_bytes());
-    let digest = hash.finalize();
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Uuid::from_bytes(bytes)
+    hash.finalize().into()
+}
+
+/// Canonical digest of a mutation intent, binding an idempotency key to it.
+///
+/// # Errors
+/// Returns [`ProviderError::Invalid`] when the intent cannot be encoded.
+pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError> {
+    let encoded = serde_json::to_vec(intent)
+        .map_err(|error| ProviderError::Invalid(format!("intent cannot be encoded: {error}")))?;
+    Ok(Sha256::digest(encoded).into())
 }
 
 fn tick(state: &mut MemoryState) -> Result<u64, ProviderError> {
@@ -2010,6 +2020,18 @@ mod tests {
             machines.operation_for(unknown_key).await,
             Err(ProviderError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn derived_identities_are_version_five_and_never_nil() {
+        assert_eq!(
+            OperationId::from_digest([0; 32]).to_string(),
+            "00000000-0000-5000-8000-000000000000"
+        );
+        assert_eq!(
+            MachineId::from_digest([0xff; 32]).to_string(),
+            "ffffffff-ffff-5fff-bfff-ffffffffffff"
+        );
     }
 
     #[test]

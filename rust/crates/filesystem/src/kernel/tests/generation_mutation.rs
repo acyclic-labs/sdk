@@ -1225,7 +1225,7 @@ fn rename_replace_drops_the_destination_identity_atomically()
             &store,
             receipt.root.file_table,
             replaced_id,
-            decode_limits(config()),
+            DecodeLimits::for_volume(config()),
             WorkBudget::UNBOUNDED,
         )?
         .record
@@ -1599,7 +1599,7 @@ fn ordered_path_and_identity_regular_mutations_share_one_candidate()
         &store,
         receipt.root.file_table,
         file_id,
-        decode_limits(config()),
+        DecodeLimits::for_volume(config()),
         WorkBudget::UNBOUNDED,
     )?
     .record

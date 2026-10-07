@@ -6,18 +6,17 @@
 //! and storage-neutral so distributed authority backends can persist it with
 //! the same compare-and-swap discipline as workspace heads.
 
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ForkOptions, GenerationId, IdempotencyKey, Workspace,
     WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::Future;
-use std::sync::Mutex;
 use thiserror::Error;
 
 const LINEAGE_VERSION: u32 = 1;
-const MAXIMUM_LINEAGE_CAS_ATTEMPTS: usize = 16;
 
 /// Durable identity and direct parent of one SDK workspace.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -392,7 +391,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         if !ready.ready || !lineage_shape_is_valid(&ready) {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
-        for _ in 0..MAXIMUM_LINEAGE_CAS_ATTEMPTS {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let existing = self
                 .store
                 .load(ready.workspace_id)
@@ -436,7 +435,7 @@ fn same_lineage(left: &WorkspaceLineageRecord, right: &WorkspaceLineageRecord) -
 /// Process-local lineage adapter for tests and embedded callers.
 #[derive(Default)]
 pub struct MemoryWorkspaceLineageStore {
-    records: Mutex<BTreeMap<WorkspaceId, WorkspaceLineageRecord>>,
+    records: MemoryRecords<WorkspaceId, WorkspaceLineageRecord>,
 }
 
 impl MemoryWorkspaceLineageStore {
@@ -460,9 +459,8 @@ impl WorkspaceLineageStore for MemoryWorkspaceLineageStore {
         workspace_id: WorkspaceId,
     ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
         self.records
-            .lock()
+            .load(&workspace_id)
             .map_err(|_| MemoryWorkspaceLineageStoreError)
-            .map(|records| records.get(&workspace_id).cloned())
     }
 
     async fn compare_and_swap(
@@ -471,18 +469,9 @@ impl WorkspaceLineageStore for MemoryWorkspaceLineageStore {
         expected_revision: u64,
         replacement: WorkspaceLineageRecord,
     ) -> Result<bool, Self::Error> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| MemoryWorkspaceLineageStoreError)?;
-        let revision = records
-            .get(&workspace_id)
-            .map_or(0, |record| record.revision);
-        if revision != expected_revision {
-            return Ok(false);
-        }
-        records.insert(workspace_id, replacement);
-        Ok(true)
+        self.records
+            .compare_and_swap(workspace_id, expected_revision, replacement)
+            .map_err(|_| MemoryWorkspaceLineageStoreError)
     }
 }
 

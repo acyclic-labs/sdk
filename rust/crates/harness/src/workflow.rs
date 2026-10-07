@@ -1,6 +1,7 @@
 //! Explicit versioned resumable state machines for durable authoring.
 
 use crate::IdempotencyKey;
+use crate::contract::next_revision;
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -124,8 +125,7 @@ impl MachineRegistry {
     pub fn register(&mut self, machine: Arc<dyn ResumableMachine>) -> Result<()> {
         let identity = machine.identity();
         identity.validate()?;
-        jsonschema::validator_for(machine.state_schema())
-            .map_err(|error| Error::Invalid(format!("invalid machine state schema: {error}")))?;
+        crate::contract::compile_json_schema(machine.state_schema(), "machine state")?;
         let key = (
             identity.name.clone(),
             identity.version.clone(),
@@ -165,10 +165,7 @@ impl MachineRegistry {
         validate_commands(&transition.commands)?;
         let next = MachineCheckpoint {
             machine: checkpoint.machine.clone(),
-            revision: checkpoint
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("machine revision exhausted".into()))?,
+            revision: next_revision(checkpoint.revision)?,
             state: transition.state.clone(),
         };
         Ok((next, transition))
@@ -219,12 +216,7 @@ impl WorkflowRecord {
         IdempotencyKey::new(self.idempotency_key.0.clone())?;
         if self.input_digest != input_digest(&self.input)?
             || self.prior.machine != self.next.machine
-            || self.next.revision
-                != self
-                    .prior
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("workflow revision exhausted".into()))?
+            || self.next.revision != next_revision(self.prior.revision)?
             || self.next.state != self.transition.state
         {
             return Err(Error::Conflict(
@@ -789,10 +781,7 @@ fn input_digest(input: &Value) -> Result<[u8; 32]> {
 }
 
 fn validate_state(schema: &Value, state: &Value) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map_err(|error| Error::Invalid(format!("invalid machine state schema: {error}")))?
-        .validate(state)
-        .map_err(|error| Error::Invalid(format!("machine state failed validation: {error}")))
+    crate::contract::validate_json_schema_value(schema, state, "machine state")
 }
 
 #[cfg(test)]

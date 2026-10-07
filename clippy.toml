@@ -4,3 +4,7 @@ cognitive-complexity-threshold = 30
 # Product and vendor names doc_markdown would otherwise want in backticks.
 # `..` keeps clippy's built-in list (GitHub, macOS, JavaScript, ...).
 doc-valid-idents = ["OpenAI", "ChatGPT", "MoonshotAI", ".."]
+# Tests may unwrap, expect and panic; the workspace denies them elsewhere.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

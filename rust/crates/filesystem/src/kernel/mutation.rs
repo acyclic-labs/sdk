@@ -1,7 +1,7 @@
 //! Bounded atomic mutation contracts and shared-prefix execution plans.
 
 use super::{FileRecord, MetadataField, NamespacePath};
-use crate::foundation::FileId;
+use crate::foundation::{FileId, usize_to_u64};
 use crate::model::VolumeLimits;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind};
@@ -378,7 +378,7 @@ impl MutationPlan {
             .ok_or_else(|| OperationFailure::new(MutationPlanError::IndexOverflow, work))?;
         let allocation_bytes = maximum_uses
             .checked_mul(size_of::<PathUse>())
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or_else(|| OperationFailure::new(MutationPlanError::IndexOverflow, work))?;
         let mut ordered_paths = Vec::new();
         if maximum_uses != 0 {
@@ -432,11 +432,11 @@ impl MutationPlan {
         for path_use in &ordered_paths {
             let path = path_for(&operations, *path_use);
             component_visits = component_visits
-                .checked_add(u64::try_from(path.depth()).unwrap_or(u64::MAX))
+                .checked_add(usize_to_u64(path.depth()))
                 .ok_or_else(|| OperationFailure::new(MutationPlanError::IndexOverflow, work))?;
             let shared = prior.map_or(0, |previous| shared_prefix(previous, path));
             path_nodes = path_nodes
-                .checked_add(u64::try_from(path.depth() - shared).unwrap_or(u64::MAX))
+                .checked_add(usize_to_u64(path.depth() - shared))
                 .ok_or_else(|| OperationFailure::new(MutationPlanError::IndexOverflow, work))?;
             prior = Some(path);
         }

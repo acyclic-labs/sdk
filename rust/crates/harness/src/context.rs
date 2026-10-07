@@ -1,5 +1,6 @@
 //! Ordered function-based context assembly.
 
+use crate::contract::next_revision;
 use crate::{
     Result,
     conversation::{ContentResidencyVerifier, FileRef},
@@ -92,9 +93,7 @@ impl DurableContextProvider {
         idempotency_key: impl Into<Bytes>,
     ) -> Result<ContextRevision> {
         validate_context_refs(&context, self.content_verifier.as_ref()).await?;
-        let revision = expected_revision
-            .checked_add(1)
-            .ok_or_else(|| crate::Error::Invalid("context revision exhausted".into()))?;
+        let revision = next_revision(expected_revision)?;
         if revision > u64::from(self.maximum_revisions) {
             return Err(crate::Error::Invalid(
                 "durable context revision bound exceeded".into(),
@@ -187,7 +186,7 @@ impl DurableContextProvider {
                     "durable context revision is not canonical JSON".into(),
                 ));
             }
-            let expected = record.sequence + 1;
+            let expected = next_revision(record.sequence)?;
             if revision.format_version != 2
                 || revision.revision != expected
                 || revision.source != self.source
@@ -311,7 +310,10 @@ async fn validate_context_refs(
         }
     }
     for (name, file) in &context.metadata {
-        if !name.contains('.') || name.len() > 255 || name.chars().any(char::is_control) {
+        if !name.contains('.')
+            || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
+            || name.chars().any(char::is_control)
+        {
             return Err(crate::Error::Invalid(
                 "durable context metadata key is invalid".into(),
             ));

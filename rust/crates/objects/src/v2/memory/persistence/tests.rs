@@ -489,3 +489,215 @@ async fn compaction_packs_inline_bodies_under_one_directory_synchronization()
     assert_eq!(std::fs::read_dir(root.path().join("segments"))?.count(), 1);
     Ok(())
 }
+
+#[derive(Clone, Debug)]
+enum Step {
+    CreateBucket(u8),
+    DeleteBucket(u8),
+    Put(u8, u8, usize),
+    Delete(u8, u8),
+}
+
+fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+    use proptest::prelude::*;
+    // Mostly inline bodies; occasionally one large enough for a segment file.
+    // Objects mostly target the bucket every case starts with.
+    let bucket = prop_oneof![3 => Just(0_u8), 1 => Just(1_u8)];
+    let size = prop_oneof![8 => 0..16_usize, 1 => Just(inline::LIMIT + 1)];
+    prop_oneof![
+        2 => (0..2_u8).prop_map(Step::CreateBucket),
+        1 => (0..2_u8).prop_map(Step::DeleteBucket),
+        4 => (bucket.clone(), 0..2_u8, size).prop_map(|(b, k, n)| Step::Put(b, k, n)),
+        2 => (bucket, 0..2_u8).prop_map(|(b, k)| Step::Delete(b, k)),
+    ]
+}
+
+type View = (
+    u64,
+    Vec<(
+        String,
+        wire::Bucket,
+        Vec<(String, wire::ObjectInfo, Vec<BodyRecord>)>,
+    )>,
+    Vec<(String, [u8; 32], Vec<u8>, u32)>,
+);
+
+fn view(state: &State) -> Result<View, Error> {
+    let mut buckets = Vec::new();
+    for (name, bucket) in &state.buckets {
+        let mut objects = Vec::new();
+        for (key, value) in &bucket.objects {
+            objects.push((key.clone(), value.info.clone(), bodies(&value.body)?));
+        }
+        buckets.push((name.clone(), bucket.info.clone(), objects));
+    }
+    let receipts = state
+        .receipts
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                value.digest,
+                value.response.clone(),
+                value.kind,
+            )
+        })
+        .collect();
+    Ok((state.sequence, buckets, receipts))
+}
+
+/// Full-scan reference for the bucket and object part of `difference`.
+fn naive_changes(
+    before: &State,
+    next: &State,
+) -> Result<(Vec<BucketChange>, Vec<ObjectChange>), Error> {
+    let (mut buckets, mut objects, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+    for (name, bucket) in &next.buckets {
+        let old = before.buckets.get(name);
+        if old.is_none_or(|old| old.info != bucket.info) {
+            buckets.push(BucketChange {
+                name: name.clone(),
+                info: Some(bucket.info.clone()),
+            });
+        }
+        for (key, value) in &bucket.objects {
+            let refs = bodies(&value.body)?;
+            let unchanged = match old.and_then(|old| old.objects.get(key)) {
+                Some(prior) => prior.info == value.info && bodies(&prior.body)? == refs,
+                None => false,
+            };
+            if !unchanged {
+                objects.push(ObjectChange {
+                    bucket: name.clone(),
+                    key: key.clone(),
+                    info: Some(value.info.clone()),
+                    bodies: refs,
+                });
+            }
+        }
+        for key in old.iter().flat_map(|old| old.objects.keys()) {
+            if !bucket.objects.contains_key(key) {
+                removed.push(ObjectChange {
+                    bucket: name.clone(),
+                    key: key.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    objects.extend(removed);
+    for name in before
+        .buckets
+        .keys()
+        .filter(|name| !next.buckets.contains_key(*name))
+    {
+        buckets.push(BucketChange {
+            name: name.clone(),
+            info: None,
+        });
+    }
+    Ok((buckets, objects))
+}
+
+async fn run(core: &MemoryObjects, index: usize, step: &Step) {
+    let bucket = |b: &u8| {
+        Some(wire::BucketRef {
+            name: format!("bucket-{b}"),
+        })
+    };
+    let mutation = Some(wire::MutationIdentity {
+        idempotency_key: format!("step-{index}"),
+    });
+    // Rejections (absent bucket, non-empty bucket, ...) leave the state unchanged.
+    let _ = match step {
+        Step::CreateBucket(b) => core
+            .create_bucket(wire::CreateBucketRequest {
+                name: format!("bucket-{b}"),
+                mutation,
+            })
+            .await
+            .map(drop),
+        Step::DeleteBucket(b) => core
+            .delete_bucket(wire::DeleteBucketRequest {
+                bucket: bucket(b),
+                mutation,
+            })
+            .await
+            .map(drop),
+        Step::Put(b, k, size) => core
+            .put(
+                wire::PutObjectHeader {
+                    bucket: bucket(b),
+                    object_key: format!("key-{k}"),
+                    mutation,
+                    ..Default::default()
+                },
+                Bytes::from(vec![u8::try_from(index % 251).unwrap_or_default(); *size]),
+            )
+            .await
+            .map(drop),
+        Step::Delete(b, k) => core
+            .delete(wire::DeleteObjectRequest {
+                bucket: bucket(b),
+                object_key: format!("key-{k}"),
+                mutation,
+                ..Default::default()
+            })
+            .await
+            .map(drop),
+    };
+}
+
+fn snapshot(core: &MemoryObjects) -> Result<State, proptest::test_runner::TestCaseError> {
+    core.state
+        .lock()
+        .map(|state| state.clone())
+        .map_err(|_| proptest::test_runner::TestCaseError::fail("poisoned state"))
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: proptest::test_runner::RngSeed::Fixed(246),
+        failure_persistence: None,
+        ..proptest::prelude::ProptestConfig::with_cases(16)
+    })]
+
+    /// Every committed delta equals a full-scan diff, replays onto its
+    /// predecessor to the exact successor, and truncating the journal at any
+    /// frame boundary recovers exactly the state after that many steps.
+    #[test]
+    fn journal_deltas_replay_and_recover_prefix_states(
+        steps in proptest::collection::vec(step(), 1..8),
+    ) {
+        // Most interesting histories need a bucket, so every case starts with one.
+        let steps: Vec<_> = std::iter::once(Step::CreateBucket(0)).chain(steps).collect();
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let root = tempfile::tempdir()?;
+        let journal = root.path().join("mutations.log");
+        let core = reopen(root.path())?;
+        let mut states = vec![snapshot(&core)?];
+        let mut lengths = vec![fs::metadata(&journal)?.len()];
+        for (index, step) in steps.iter().enumerate() {
+            runtime.block_on(run(&core, index, step));
+            let next = snapshot(&core)?;
+            let before = states.last().ok_or(Error::from(Unavailable))?;
+            let delta = difference(before, &next, 1)?;
+            proptest::prop_assert_eq!(
+                (delta.buckets.clone(), delta.objects.clone()),
+                naive_changes(before, &next)?
+            );
+            let mut replayed = before.clone();
+            apply(&mut replayed, delta, root.path(), core.options, LocalObjectsLimits::default())?;
+            proptest::prop_assert_eq!(view(&replayed)?, view(&next)?);
+            states.push(next);
+            lengths.push(fs::metadata(&journal)?.len());
+        }
+        drop(core);
+        for (state, length) in states.iter().zip(&lengths).rev() {
+            OpenOptions::new().write(true).open(&journal)?.set_len(*length)?;
+            let recovered = reopen(root.path())?;
+            proptest::prop_assert_eq!(view(&snapshot(&recovered)?)?, view(state)?);
+            proptest::prop_assert_eq!(fs::metadata(&journal)?.len(), *length);
+        }
+    }
+}

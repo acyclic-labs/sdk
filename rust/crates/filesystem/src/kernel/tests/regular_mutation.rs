@@ -124,7 +124,7 @@ fn flatten_extents(
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
     Ok(
-        match decode_extent_page(&encoded, decode_limits(config()))? {
+        match decode_extent_page(&encoded, DecodeLimits::for_volume(config()))? {
             ExtentPage::Leaf(extents) => extents,
             ExtentPage::Internal(children) => {
                 let mut extents = Vec::new();
@@ -197,7 +197,7 @@ fn payload_bytes(
                 length: logical_bytes,
             },
             maximum_spans: 1_024,
-            limits: decode_limits(config()),
+            limits: DecodeLimits::for_volume(config()),
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
@@ -351,7 +351,9 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("promoted extent root was not a leaf".into());
     };
     assert_eq!(values.len(), 2);
@@ -432,7 +434,9 @@ fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("empty growth extent root was not a leaf".into());
     };
     assert_eq!(values.len(), 1);
@@ -465,7 +469,9 @@ fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dy
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("grown extent root was not a leaf".into());
     };
     assert_eq!(values.len(), 2);
@@ -582,7 +588,9 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(extents) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(extents) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("clone destination root was not a leaf".into());
     };
     assert!(extents.iter().any(|extent| {
@@ -608,7 +616,9 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(extents) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(extents) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("identity clone destination root was not a leaf".into());
     };
     assert!(extents.iter().any(|extent| {
@@ -901,7 +911,8 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
             WorkBudget::UNBOUNDED,
         )?
         .value;
-        let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))?
+        let ExtentPage::Leaf(values) =
+            decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
         else {
             return Err("promoted extent root was not a leaf".into());
         };
@@ -1006,7 +1017,9 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("preallocated extent root was not a leaf".into());
     };
     assert_eq!(values.len(), 3);
@@ -1041,7 +1054,9 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("extended extent root was not a leaf".into());
     };
     assert!(values.iter().any(|extent| {
@@ -1107,7 +1122,9 @@ fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("allocated extent root was not a leaf".into());
     };
     assert_eq!(values.len(), 2);
@@ -1385,7 +1402,9 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("sparse write root was not a leaf".into());
     };
     assert_eq!(values.len(), 3);
@@ -1433,7 +1452,9 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("sparse clone root was not a leaf".into());
     };
     assert_eq!(values.len(), 3);
@@ -1663,7 +1684,9 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("preallocation root was not a leaf".into());
     };
     assert!(matches!(
@@ -1766,7 +1789,9 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
         WorkBudget::UNBOUNDED,
     )?
     .value;
-    let ExtentPage::Leaf(values) = decode_extent_page(&encoded, decode_limits(config()))? else {
+    let ExtentPage::Leaf(values) =
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+    else {
         return Err("multi-region preallocation root was not a leaf".into());
     };
     assert_eq!(values.len(), 4);

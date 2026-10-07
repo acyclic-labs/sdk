@@ -3,11 +3,13 @@
 use super::allocation::{AllocationError, AllocationLedger, VisitedObjectSet};
 use super::codec::DecodedPageKind;
 use super::extent::{extent_page_decode_shape, extent_page_encoded_length};
+use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
     decode_extent_page, encode_extent_page,
 };
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
@@ -418,7 +420,7 @@ fn reserve_compile_scratch(
 fn bytes_for<T>(count: usize, work: WorkCounters) -> Result<u64, ExtentMutationFailure> {
     count
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| OperationFailure::new(ExtentMutationError::RangeOverflow, work))
 }
 
@@ -514,18 +516,10 @@ fn normalize_raw_patches(
     deduplicate_coordinates(&mut coordinates, work, budget)?;
     let interval_count = coordinates.len().saturating_sub(1);
     let mut assignments = allocate_vec::<Option<usize>>(interval_count, work, budget, live_bytes)?;
-    charge_items(
-        work,
-        budget,
-        u64::try_from(interval_count).unwrap_or(u64::MAX),
-    )?;
+    charge_items(work, budget, usize_to_u64(interval_count))?;
     assignments.resize(interval_count, None);
     let mut parents = allocate_vec::<usize>(interval_count + 1, work, budget, live_bytes)?;
-    charge_items(
-        work,
-        budget,
-        u64::try_from(interval_count + 1).unwrap_or(u64::MAX),
-    )?;
+    charge_items(work, budget, usize_to_u64(interval_count + 1))?;
     parents.extend(0..=interval_count);
     for (patch_index, patch) in raw.iter().enumerate().rev() {
         charge_items(work, budget, 1)?;
@@ -597,13 +591,7 @@ fn radix_sort(
 ) -> Result<(), ExtentMutationFailure> {
     scratch.resize(values.len(), 0);
     for byte in 0..8_u32 {
-        charge_items(
-            work,
-            budget,
-            u64::try_from(values.len())
-                .unwrap_or(u64::MAX)
-                .saturating_mul(2),
-        )?;
+        charge_items(work, budget, usize_to_u64(values.len()).saturating_mul(2))?;
         charge_copied_bytes(work, budget, bytes_for::<u64>(values.len(), *work)?)?;
         let shift = byte * 8;
         let mut counts = [0_usize; 256];
@@ -645,11 +633,7 @@ fn deduplicate_coordinates(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(), ExtentMutationFailure> {
-    charge_items(
-        work,
-        budget,
-        u64::try_from(values.len()).unwrap_or(u64::MAX),
-    )?;
+    charge_items(work, budget, usize_to_u64(values.len()))?;
     let mut write = 1_usize;
     #[allow(
         clippy::indexing_slicing,
@@ -674,29 +658,12 @@ fn coordinate_index(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<usize, ExtentMutationFailure> {
-    let mut left = 0_usize;
-    let mut right = values.len();
-    while left < right {
+    let (found, probes) = counted_binary_search(values, |value| value.cmp(&target));
+    // One item per probe, as a failed charge reports the probes before it.
+    for _ in 0..probes {
         charge_items(work, budget, 1)?;
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to values.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < values.len()` always holds here"
-        )]
-        let ordering = values[middle].cmp(&target);
-        match ordering {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return Ok(middle),
-        }
     }
-    Err(OperationFailure::new(
-        ExtentMutationError::PatchInvariant,
-        *work,
-    ))
+    found.map_err(|_| OperationFailure::new(ExtentMutationError::PatchInvariant, *work))
 }
 
 #[allow(
@@ -1173,11 +1140,11 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             Ok(receipt) => receipt,
             Err(failure) => {
                 self.work =
-                    merge_backend_work(prospective, *failure.work, self.allocations.live_bytes())?;
+                    prospective.with_backend(*failure.work, self.allocations.live_bytes())?;
                 return Err(ExtentMutationError::Storage(failure.error));
             }
         };
-        self.work = merge_backend_work(prospective, receipt.work, self.allocations.live_bytes())?;
+        self.work = prospective.with_backend(receipt.work, self.allocations.live_bytes())?;
         self.work.verify(self.budget)?;
         let retained_bytes = match receipt.value.retention {
             ObjectReadRetention::Shared => 0,
@@ -1186,7 +1153,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         self.allocations
             .claim_bytes(retained_bytes, 0, &mut self.work, self.budget)?;
         let shape = extent_page_decode_shape(&receipt.value, self.limits)?;
-        self.charge_items(u64::try_from(shape.items).unwrap_or(u64::MAX))?;
+        self.charge_items(usize_to_u64(shape.items))?;
         let item_bytes = match shape.kind {
             DecodedPageKind::Leaf => size_of::<Extent>(),
             DecodedPageKind::Internal => size_of::<ExtentChild>(),
@@ -1194,7 +1161,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         let logical_bytes = shape
             .items
             .checked_mul(item_bytes)
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or(ExtentMutationError::AllocationFailed)?;
         self.allocations.claim_bytes(
             logical_bytes,
@@ -1222,7 +1189,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
 
     async fn write_page(&mut self, page: &ExtentPage) -> Result<ObjectId, ExtentMutationError> {
         let encoded_length = extent_page_encoded_length(page, self.limits.maximum_page_items)?;
-        let encoded_bytes = crate::foundation::usize_to_u64(encoded_length);
+        let encoded_bytes = usize_to_u64(encoded_length);
         let maximum_page_bytes = self.limits.maximum_page_object_bytes();
         if encoded_bytes > maximum_page_bytes {
             return Err(ExtentMutationError::Decode(
@@ -1245,7 +1212,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             self.budget,
         )?;
         let encoded = encode_extent_page(page, self.limits.maximum_page_items)?;
-        if u64::try_from(encoded.capacity()).unwrap_or(u64::MAX) != encoded_bytes {
+        if usize_to_u64(encoded.capacity()) != encoded_bytes {
             return Err(ExtentMutationError::AllocationFailed);
         }
         self.work = self.work.checked_add(WorkCounters {
@@ -1280,7 +1247,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             Err(failure) => {
                 self.allocations.release(encoded_bytes)?;
                 self.work =
-                    merge_backend_work(prospective, *failure.work, self.allocations.live_bytes())?;
+                    prospective.with_backend(*failure.work, self.allocations.live_bytes())?;
                 return Err(ExtentMutationError::Storage(failure.error));
             }
         };
@@ -1289,20 +1256,6 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         self.allocations.release(encoded_bytes)?;
         Ok(object)
     }
-}
-
-fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 fn clip_and_grow(
@@ -1503,27 +1456,7 @@ fn has_overlapping_patch(patches: &[Patch], start: u64, end: u64) -> (bool, u64)
 }
 
 fn lower_bound(patches: &[Patch], before: impl Fn(&Patch) -> bool) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = patches.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to patches.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < patches.len()` always holds here"
-        )]
-        let below = before(&patches[middle]);
-        if below {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left, comparisons)
+    counted_partition_point(patches, before)
 }
 
 fn extent_end(extent: &Extent) -> Result<u64, ExtentMutationError> {
@@ -1591,15 +1524,7 @@ pub enum ExtentMutationError {
 
 impl From<AllocationError> for ExtentMutationError {
     fn from(error: AllocationError) -> Self {
-        match error {
-            AllocationError::Work(error) => Self::Work(error),
-            AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-                Self::Work(WorkError::Overflow)
-            }
-            AllocationError::InvalidCapacity
-            | AllocationError::CapacityExceeded
-            | AllocationError::AllocationFailed => Self::AllocationFailed,
-        }
+        error.into_work_or(Self::AllocationFailed)
     }
 }
 

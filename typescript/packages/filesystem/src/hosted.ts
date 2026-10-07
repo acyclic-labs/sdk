@@ -91,8 +91,15 @@ import { secureServiceEndpoint } from "./endpoint.js";
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
 
+/** Local client failures plus the gRPC status names a hosted service can report. */
+export type HostedFsErrorCode =
+  | "closed" | "invalid_response" | "limit" | "protocol" | "response_too_large" | "unsupported"
+  | "cancelled" | "invalid_argument" | "deadline_exceeded" | "not_found" | "already_exists"
+  | "permission_denied" | "resource_exhausted" | "failed_precondition" | "aborted" | "out_of_range"
+  | "internal" | "unavailable" | "data_loss" | "unauthenticated" | "unknown";
+
 export class HostedFsError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: HostedFsErrorCode, message: string) {
     super(message);
     this.name = "HostedFsError";
   }
@@ -110,7 +117,9 @@ interface HostedClient {
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
+  if (!options.bearerToken.trim() || new TextEncoder().encode(options.bearerToken).byteLength > 8192 || /[\r\n\0]/.test(options.bearerToken)) {
+    throw new RangeError("bearer token must be non-empty, at most 8 KiB, and free of CR, LF, or NUL");
+  }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
   if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {
@@ -1083,7 +1092,7 @@ async function call<T>(request: Promise<T>): Promise<T> {
   catch (error) {
     if (error instanceof HostedFsError) throw error;
     if (error instanceof ConnectError) {
-      const codes: Record<Code, string | undefined> = {
+      const codes: Record<Code, HostedFsErrorCode | undefined> = {
         [Code.Canceled]: "cancelled",
         [Code.Unknown]: undefined,
         [Code.InvalidArgument]: "invalid_argument",
@@ -1109,7 +1118,9 @@ async function call<T>(request: Promise<T>): Promise<T> {
 
 function boundedFetch(send: typeof globalThis.fetch, maximumBytes: number): typeof globalThis.fetch {
   return async (input, init) => {
-    const response = await send(input, init);
+    // Never forward the bearer token to a redirect target.
+    const response = await send(input, { ...init, redirect: "error" });
+
     const declared = response.headers.get("content-length");
     if (declared !== null && /^\d+$/.test(declared) && BigInt(declared) > BigInt(maximumBytes)) {
       await response.body?.cancel();

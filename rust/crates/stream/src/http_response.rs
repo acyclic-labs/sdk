@@ -1,12 +1,62 @@
 //! Canonical hosted Stream response projection shared by native servers and WASM.
-use crate::{
-    http_codec::{json_bytes, json_object, json_string, json_u64},
-    http_validation::validate,
-    wire,
-};
+use crate::{http_validation::validate, wire};
 use prost::Message;
 use serde_json::Value;
 type Result<T> = std::result::Result<T, &'static str>;
+
+pub(crate) fn json_object(entries: Vec<(&str, Value)>) -> Value {
+    Value::Object(
+        entries
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    )
+}
+
+pub(crate) fn json_string(value: impl Into<String>) -> Value {
+    Value::String(value.into())
+}
+
+pub(crate) fn json_u64(value: u64) -> Value {
+    json_string(value.to_string())
+}
+
+pub(crate) fn json_bytes(value: &[u8]) -> Value {
+    json_string(encode_base64(value))
+}
+
+fn encode_base64(value: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let table_char = |index: u8| TABLE.get(index as usize).copied().unwrap_or_default() as char;
+    let mut output = String::with_capacity(value.len().div_ceil(3) * 4);
+    for chunk in value.chunks(3) {
+        let Some(&first) = chunk.first() else {
+            continue;
+        };
+        output.push(table_char(first >> 2));
+        if chunk.len() == 1 {
+            output.push(table_char((first & 0x03) << 4));
+            output.push_str("==");
+            continue;
+        }
+        let Some(&second) = chunk.get(1) else {
+            continue;
+        };
+        output.push(table_char(((first & 0x03) << 4) | (second >> 4)));
+        if chunk.len() == 2 {
+            output.push(table_char((second & 0x0f) << 2));
+            output.push('=');
+            continue;
+        }
+        let Some(&third) = chunk.get(2) else {
+            continue;
+        };
+        output.push(table_char(((second & 0x0f) << 2) | (third >> 6)));
+        output.push(table_char(third & 0x3f));
+    }
+    output
+}
+
 /// Encode a generated response for one canonical HTTP route.
 /// Successful Commit includes its complete immutable envelope atomically.
 /// This projects already admitted outcomes; it does not authorize or publish them.

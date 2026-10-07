@@ -37,11 +37,13 @@ const normalizeTree = directory => {
 };
 normalizeTree(generatedRust);
 
+// Buf's TypeScript output is an intermediate: packages own the only copies.
+const generatedTypeScript = join(root, "generated/typescript");
 const packageRoot = resolve(root, "typescript/packages");
 for (const [stem] of packagedTypeScriptBindings) {
   for (const extension of [".js", ".d.ts"]) {
     const file = `${stem}${extension}`;
-    if (!existsSync(join(root, "generated/typescript", file))) {
+    if (!existsSync(join(generatedTypeScript, file))) {
       throw new Error(`TypeScript generation path is missing: ${file}`);
     }
   }
@@ -56,9 +58,7 @@ for (const name of new Set(packagedTypeScriptBindings.flatMap(([, packages]) => 
 for (const [stem, packages] of packagedTypeScriptBindings) {
   for (const extension of [".js", ".d.ts"]) {
     const file = `${stem}${extension}`;
-    const source = join(root, "generated/typescript", file);
-    const normalized = normalizeGeneratedTypeScript(readFileSync(source, "utf8"));
-    writeFileSync(source, normalized);
+    const normalized = normalizeGeneratedTypeScript(readFileSync(join(generatedTypeScript, file), "utf8"));
     for (const name of packages) {
       const destination = join(root, "typescript/packages", name, "generated/proto", file);
       mkdirSync(dirname(destination), { recursive: true });
@@ -66,6 +66,7 @@ for (const [stem, packages] of packagedTypeScriptBindings) {
     }
   }
 }
+rmSync(generatedTypeScript, { recursive: true, force: true });
 
 const digest = path =>
   `sha256:${createHash("sha256").update(readFileSync(join(root, path))).digest("hex")}`;

@@ -1,11 +1,13 @@
 //! Shared-frontier batch lookup for authenticated persistent B+trees.
 
 use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
-use super::persistent_btree::{Child, Format, Page};
+use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io;
+use super::search::{counted_binary_search, counted_partition_point};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use std::marker::PhantomData;
@@ -364,8 +366,9 @@ impl<'a, F: Format> Machine<'a, F> {
         mut entries: Vec<F::Value>,
         decoded_bytes: u64,
     ) -> Result<(), Failure> {
-        validate_values::<F>(&entries, request.lower.as_ref(), request.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !leaf_within::<F>(&entries, request.lower.as_ref(), request.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         self.matches.clear();
         let mut query = request.queries.start;
         while query < request.queries.end {
@@ -453,8 +456,9 @@ impl<'a, F: Format> Machine<'a, F> {
         children: &[Child<F::Key>],
         decoded_bytes: u64,
     ) -> Result<(), Failure> {
-        validate_children::<F>(children, request.lower.as_ref(), request.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !children_within(children, request.lower.as_ref(), request.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let next_height = request
             .height
             .checked_add(1)
@@ -546,7 +550,7 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 
     fn finish(mut self) -> Result<Receipt<F::Value>, Failure> {
-        self.work.items_returned = u64::try_from(self.values.len()).unwrap_or(u64::MAX);
+        self.work.items_returned = usize_to_u64(self.values.len());
         self.work
             .verify(self.budget)
             .map_err(|error| failed(error.into(), self.work))?;
@@ -580,7 +584,7 @@ fn sort_indexed<K: Ord>(
     if count < 2 {
         return Ok(());
     }
-    let scan_bound = crate::foundation::usize_to_u64(count - 1);
+    let scan_bound = usize_to_u64(count - 1);
     work.checked_add(WorkCounters {
         items_examined: scan_bound,
         ..WorkCounters::default()
@@ -642,9 +646,8 @@ fn next_index(index: usize) -> Result<usize, Error> {
 
 fn sort_admission_bound(count: usize) -> Result<u64, Error> {
     let levels = usize::BITS - count.leading_zeros();
-    u64::try_from(count)
-        .ok()
-        .and_then(|value| value.checked_mul(u64::from(levels)))
+    usize_to_u64(count)
+        .checked_mul(u64::from(levels))
         .and_then(|value| value.checked_mul(3))
         .ok_or(Error::Work(WorkError::Overflow))
 }
@@ -734,19 +737,7 @@ fn equal_group<K: Eq>(values: &[IndexedKey<'_, K>], start: usize, end: usize) ->
               values.len()`"
 )]
 fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    let mut left = 0;
-    let mut right = values.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        match F::key(&values[middle]).cmp(key) {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
-        }
-    }
-    (Err(left), comparisons)
+    counted_binary_search(values, |value| F::key(value).cmp(key))
 }
 
 #[allow(
@@ -757,51 +748,8 @@ fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>
               children.len()`"
 )]
 fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = children.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        if children[middle].first <= *key {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left.saturating_sub(1), comparisons)
-}
-
-fn validate_values<F: Format>(
-    values: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && values.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && values.last().is_some_and(|value| F::key(value) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children<F: Format>(
-    children: &[Child<F::Key>],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| child.first >= *upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
+    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *key);
+    (after.saturating_sub(1), comparisons)
 }
 
 fn map_allocation(error: AllocationError) -> Error {

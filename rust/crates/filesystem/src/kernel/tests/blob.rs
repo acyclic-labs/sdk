@@ -1616,11 +1616,11 @@ fn allocation_and_backend_work_error_translation_is_total() {
         ));
     }
 
-    let overflow = merge_blob_backend_work(
-        WorkCounters {
-            object_probes: u64::MAX,
-            ..WorkCounters::default()
-        },
+    let overflow = WorkCounters {
+        object_probes: u64::MAX,
+        ..WorkCounters::default()
+    }
+    .with_backend(
         WorkCounters {
             object_probes: 1,
             ..WorkCounters::default()
@@ -1629,17 +1629,17 @@ fn allocation_and_backend_work_error_translation_is_total() {
     );
     assert_eq!(overflow, Err(WorkError::Overflow));
     assert_eq!(
-        merge_blob_backend_work(
-            WorkCounters {
-                peak_allocation_bytes: 7,
-                ..WorkCounters::default()
-            },
+        WorkCounters {
+            peak_allocation_bytes: 7,
+            ..WorkCounters::default()
+        }
+        .with_backend(
             WorkCounters {
                 backend_read_operations: 1,
                 peak_allocation_bytes: 5,
                 ..WorkCounters::default()
             },
-            11,
+            11
         ),
         Ok(WorkCounters {
             backend_read_operations: 1,

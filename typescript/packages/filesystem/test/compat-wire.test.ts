@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import fc from "fast-check";
 import {
   adaptCompatibilityWire,
+  decodeFixedBytes,
   type CompatibilityWireKind,
   type RawCompatibilityWire,
 } from "../src/compat.js";
@@ -51,5 +53,27 @@ describe("compatibility wire adapter", () => {
     const wire = adaptCompatibilityWire(rawWire());
     const envelope = wire.encode("merge-plan", { conflicts: [] });
     expect(() => wire.decode("publication", envelope)).toThrow("invalid envelope");
+  });
+});
+
+describe("compatibility wire properties", () => {
+  test("finite JSON payloads round-trip through every envelope kind", () => {
+    const wire = adaptCompatibilityWire(rawWire());
+    const kinds = fc.constantFrom("merge-plan", "merge-candidate", "multi-root-plan", "multi-root-candidate", "publication" as const);
+    fc.assert(fc.property(kinds, fc.jsonValue(), (kind, value) => {
+      const expected: unknown = JSON.parse(JSON.stringify(value));
+      expect(wire.decode(kind, wire.encode(kind, value))).toEqual(expected);
+    }), { numRuns: 100 });
+  });
+
+  test("fixed byte identities accept exactly length-matched octet arrays", () => {
+    fc.assert(fc.property(fc.array(fc.integer({ min: 0, max: 255 }), { maxLength: 40 }), fc.nat(40), (bytes, length) => {
+      if (bytes.length === length) expect(Array.from(decodeFixedBytes(bytes, length, "id"))).toEqual(bytes);
+      else expect(() => decodeFixedBytes(bytes, length, "id")).toThrow(TypeError);
+    }), { numRuns: 100 });
+    const invalid = fc.oneof(fc.integer({ max: -1 }), fc.integer({ min: 256 }), fc.double({ noInteger: true }), fc.string());
+    fc.assert(fc.property(fc.array(fc.integer({ min: 0, max: 255 }), { maxLength: 31 }), invalid, (prefix, byte) => {
+      expect(() => decodeFixedBytes([...prefix, byte], prefix.length + 1, "id")).toThrow(TypeError);
+    }), { numRuns: 100 });
   });
 });
