@@ -1,0 +1,58 @@
+{
+  "schema": "uniffi-bindgen-go.reduced-maintained/v1",
+  "captured_at": "2026-10-07",
+  "classification": "external-reduced-udl-generator-proof",
+  "source_repo": "Q:/sdk/work/uniffi-go-oss-prototype",
+  "source_revision": "0b7fb4ceef12021bd7f790cc516fa9133e001813",
+  "source_tag": "v0.7.1+v0.31.0",
+  "build": {
+    "generator_binary_sha256": "0ba70e7b998d83af9ab4b3bd7fd3aef78a28260d4954e18c87a2e3e183216e9d",
+    "elapsed": "25m18s",
+    "binary_retention": "not copied into Q receipt; hash only",
+    "toolchain": "rustc 1.98.1 (WSL Ubuntu)",
+    "command": "wsl.exe bash -lc \"CARGO_TARGET_DIR=/tmp/uniffi-go-reduced-20261007/target CARGO_INCREMENTAL=0 cargo build --manifest-path bindgen/Cargo.toml --bin uniffi-bindgen-go --release\""
+  },
+  "cases": {
+    "withforeign": {
+      "go_sha256": "d66d31f37380e7e4b04fec19b8e46769d252e53dbc10feddc37f5852bf8105d3",
+      "header_sha256": "e0ad2ac27b6f71eb057c4d468cf4b0890b5c856f757770a400c4176c6007f108",
+      "generated_header": "receipt/withforeign/probe.h",
+      "udl": "receipt/withforeign/probe.udl",
+      "udl_sha256": "45c8607ef2562a3f243f45d107fda13422bea3ae07e0cb359b9dd0208f24930d",
+      "result": "PASS: generated Go callback trait, handleMap, vtable registration, and foreign callback dispatcher",
+      "generated_go": "receipt/withforeign/probe.go"
+    },
+    "async": {
+      "go_sha256": "386543cb278744845288b877f734e9bf456332fe827d5641046b17f8a7e01fe2",
+      "header_sha256": "e3200abf44e9d5df96f9f4b2ef501f6a0508efbf17ebcf6dfbf26c4878748960",
+      "generated_header": "receipt/async/probe.h",
+      "udl": "receipt/async/probe.udl",
+      "udl_sha256": "180b758f000186a8c9e5a5eb240a6a0eb9361e7977f8f7b50ddfa2293b3d0376",
+      "result": "PASS: generated Go and C header; output contains generic uniffiRustCallAsync and future poll/complete/free",
+      "generated_go": "receipt/async/probe.go"
+    },
+    "combined": {
+      "go_sha256": "31c3a7b619e5cb4db96259601d7aadbd18946104530a920ece39f3b16b82cd91",
+      "header_sha256": "b496cd991ddcca26341828af7f5b843fde35fb4ae2ea5c71a34f1dedf97cfc2c",
+      "generated_header": "receipt/combined/probe.h",
+      "udl": "receipt/combined/probe.udl",
+      "udl_sha256": "ec864b05d0a2dcd7294957a34c24a57338493937198e243cf86a14f77a5d64fd",
+      "result": "PASS: combined [Trait, WithForeign] interface with [Async] method; output contains async foreign-future callback/vtable glue",
+      "generated_go": "receipt/combined/probe.go"
+    },
+    "withforeign_without_trait": {
+      "udl": "receipt/withforeign-invalid/probe.udl",
+      "stderr": "receipt/withforeign-invalid/stderr.txt",
+      "udl_sha256": "e9031b335086635b635da01e920d62e8abb957ae1ef638792eda2fd0b4696326",
+      "stderr_sha256": "dcbb06b84f138d664459da25d3080263e664d1f94313f3cd3b9554ec6134d12e",
+      "result": "EXPECTED REJECTION: Error: WithForeign can't be specified without Trait",
+      "interpretation": "Semantic shape guard, not missing backend support"
+    }
+  },
+  "interpretation": {
+    "current_scope": "Pinned maintained generator accepts reduced Async, Trait+WithForeign, and combined Async+Trait+WithForeign metadata; WithForeign without Trait is rejected as an invalid UniFFI shape",
+    "issue_reassessment": "GitHub issue #53 is not evidence that this current release excludes Async/WithForeign wholesale; supported reduced forms generated successfully, while the invalid WithForeign-without-Trait form is rejected semantically",
+    "next_gap": "Qualify generated output against Rust implementation/current Actors metadata and compile/run consumer; no generator source patch justified by these reduced cases",
+    "boundary": "This proves generation shape only, not full Actors semantic SDK or all-8 runtime behavior"
+  }
+}

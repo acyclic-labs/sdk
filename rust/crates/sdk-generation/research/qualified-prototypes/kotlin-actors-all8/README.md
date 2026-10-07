@@ -24,3 +24,5 @@ Generate the Kotlin binding from the pinned Rust cdylib with the pinned 0.31.0 b
 The external receipt records a successful installed consumer run against the shared TLS fixture. The live fixture endpoint and certificate are intentionally not checked into this source-only directory.
 The maintained-runtime cancellation reproduction consists of `consumer/ActorsCancellationAdapter.kt`, `consumer/NativePendingCancellationProbe.kt`, and the test-only `consumer/NativePendingContinuationMapProbe.kt`. The adapter is emitted from Rust-owned metadata and only passes `null` to generated methods. The pending probe observes a real native abort; the same-package map probe observes continuation-map size 0→1→0 across three cancellations. Both compile alongside regenerated Kotlin source; no generated file is edited.
 
+`KOTLIN-PORTABLE-PACKAGE.md` records the installed-JAR, WSL constructor, and live eight-operation receipts for JNA's standard classpath-native resource layout and the remaining platform scope.
+

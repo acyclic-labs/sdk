@@ -1,0 +1,1 @@
+Error: WithForeign can't be specified without Trait

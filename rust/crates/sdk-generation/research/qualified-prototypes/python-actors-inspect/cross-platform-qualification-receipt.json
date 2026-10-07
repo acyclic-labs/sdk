@@ -34,17 +34,27 @@
   "macos": {
     "host": "ivar",
     "platform": "Darwin 24.6.0 arm64",
-    "rustup_toolchain": "1.98.1-aarch64-apple-darwin installed",
-    "native_artifact": "UNAVAILABLE: no current Actors checkout or dylib on host",
-    "qualification": "PENDING"
+    "rustup_toolchain": "1.98.1-aarch64-apple-darwin",
+    "qualification": "PASS: native macOS arm64 dylib built with pinned Rust 1.98.1 and fresh wheel installed with constructor/runtime probe",
+    "native_artifact": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-mac-wheel-current-20261007\\libacyclic_actors_uniffi.dylib",
+      "sha256": "28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719",
+      "bytes": 5122144
+    },
+    "wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-mac-wheel-current-20261007\\acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
+      "sha256": "F83C3D76CA2E8A8C26AF13A29403B4C294879F84574003BC4BBCE5D110BCD15B",
+      "qualification": "PASS: fresh macOS arm64 wheel installed and nominal constructor/runtime probe passed"
+    },
+    "remote_conformance": "NOT RUN: live Windows fixture is not reachable from ivar"
   },
   "typing": {
     "mypy": "1.17.1",
     "pyright": "1.1.404",
     "negative_cases": "PASS: both checkers reject all six deliberate errors",
-    "positive_cases": "FAIL: generated non-flat enum variant subclass relationship is dynamic and not recognized by either checker",
-    "upstream_assessment": "UniFFI 0.32.2 template has the same behavior"
+    "positive_cases": "PASS: patched maintained generator output accepts nested CURSOR via generated SubscriptionStartValue alias in mypy and Pyright",
+    "upstream_assessment": "UniFFI 0.32.2 template has the same behavior",
+    "patch": "isolated UniFFI 0.31.0 source qualification; production dependency pin unchanged"
   },
   "scope": "Platform packaging and typing evidence; all-eight remote behavior remains qualified by the Windows wheel receipt"
 }
-

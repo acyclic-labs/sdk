@@ -4,8 +4,9 @@
 
 WSL Ubuntu uses Rust 1.98.1, Python 3.10.12, mypy 1.17.1, and Pyright 1.1.404.
 Both checkers reject all six deliberate negative typing cases. The positive
-fixture exposes the non-flat enum relationship documented in
-`uniffi-032-enum-typing.md`.
+fixture passes both checkers with the isolated maintained-generator correction
+documented in `uniffi-python-typing-patch.md`; the generated public
+`SubscriptionStartValue` union preserves the nested `CURSOR` payload type.
 
 ## Linux package
 
@@ -31,11 +32,15 @@ cancellation checks.
 
 ## macOS toolchain
 
-SSH host `ivar` is Darwin 24.6.0 arm64 with Python 3.14.3 and default Rust
-1.96.0. The explicit pinned `1.98.1-aarch64-apple-darwin` toolchain is already
-installed and runs Rust 1.98.1 and Cargo 1.98.1. There is no macOS Actors
-checkout or native artifact on the host yet, so macOS package qualification is
-pending.
+SSH host `ivar` is Darwin 24.6.0 arm64 with Python 3.14.3. The explicit pinned
+`1.98.1-aarch64-apple-darwin` toolchain built the current Actors UniFFI native
+facade. The fresh arm64 wheel installed and passed the nominal constructor and
+runtime probe:
+
+- `libacyclic_actors_uniffi.dylib`, SHA-256 `28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719`, 5,122,144 bytes
+- `acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl`, SHA-256 `F83C3D76CA2E8A8C26AF13A29403B4C294879F84574003BC4BBCE5D110BCD15B`
+
+The live remote fixture is Windows-local and was not run from ivar.
 
 No binary artifacts were copied into the repository, and no merge or
 publication was performed.

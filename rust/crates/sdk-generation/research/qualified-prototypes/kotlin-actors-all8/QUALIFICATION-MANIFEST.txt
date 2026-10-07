@@ -108,3 +108,20 @@ Portability and installability matrix (2026-10-07):
 - WSL installed wheel probe: LINUX_WHEEL_INSTALLED_NOMINAL_TYPES_PASS; transport fixture was unavailable for this bounded rerun
 - Python typing evidence: valid `SubscriptionStart.CURSOR(1)` rejected by both mypy and pyright; nominal negative cases rejected correctly
 - external Ruby cohort: UniFFI/bindgen 0.32.2 installed-gem all-eight receipt remains at Q:\sdk\work\actors-uniffi-ruby-0322-all8-current-20261007\receipt.json, gem SHA BE90127FFA88D1A647930B4492B1A7C026ED9B23EE90AC3D71B2B466068E70FA
+
+Classpath-native Kotlin/JVM package receipt (2026-10-07):
+- package design: KOTLIN-PORTABLE-PACKAGE.md
+- JNA maintained `Native.extractFromResourcePath` resolves the generated basename from standard root prefixes `linux-x86-64/` and `win32-x86-64/`; no source loader, system property, java.library.path, or native-path setting
+- generated Kotlin remained unchanged, SHA-256 6E73BC8CA0D0C47DA51C362E98D06AFBC2B29E6F0A7F12385401B59521623A3B
+- Linux x86_64 resource SHA-256 AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
+- Windows x86_64 resource SHA-256 A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241
+- installed JAR: Q:\sdk\work\actors-uniffi-kotlin-portable-20261007\consumer\target\actors-uniffi-kotlin-portable-0.0.0-qualification.jar
+- installed JAR SHA-256: 01C1765F1260DC8644C3D965963561D040EE842AC56619FE61B35EC2CD10BE30
+- pinned package dependencies: Kotlin 1.9.21; kotlinx-coroutines 1.8.0; JNA 5.15.0; JDK target 17
+- offline Maven package: PASS
+- WSL Java installed-JAR constructor probe: KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS
+- WSL Java generated-null pending cancellation probe: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS; started +1, aborted +1, active returned to 0
+- WSL pending fixture: https://localhost:33385; control http://127.0.0.1:44583; CA Q:\sdk\work\kotlin-wsl-pending-fixture-ca.pem; fixture launched with Windows Cargo 1.98.1 shim selected through the WSL PATH
+- Windows Java installed-JAR constructor and live fixture all-eight probe: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; endpoint https://localhost:59663; methods inspect/create/update/add/remove/resume/checkpoint/invoke; typed service error and cancellation observed
+- WSL fixture attempt was blocked by WSL Cargo 1.75.0 rejecting repository edition-2024; Windows fixture used Cargo 1.98.1
+- platform scope: Linux x86_64 and Windows x86_64 only; macOS/other architectures require separate native assets and receipts

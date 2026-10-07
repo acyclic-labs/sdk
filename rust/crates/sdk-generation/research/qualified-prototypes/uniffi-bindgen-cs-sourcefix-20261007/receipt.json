@@ -1,0 +1,60 @@
+{
+  "schema": "acyclic.actors.uniffi.csharp.sourcefix.v1",
+  "generated_at": "2026-10-07",
+  "backend": {
+    "repository": "https://github.com/NordSecurity/uniffi-bindgen-cs",
+    "tag": "v0.11.0+v0.31.0",
+    "commit": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "license": "MPL-2.0",
+    "uniffi_target": "0.31.0",
+    "generator_build": "cargo install --path bindgen --locked --root <external-install> --force; exit 0"
+  },
+  "template": {
+    "path": "bindgen/templates/ObjectTemplate.cs",
+    "base_sha256": "9d34a8d10d8b5925d2c303eb5c32be57240c687fcb7357bae0411c1c32e383d9",
+    "patched_sha256": "0856cc5c0030e517359ea567cc82b2ccbaba8621073833178f67378298b963d0",
+    "patch_sha256": "583dddcc268675d038e161afe80abcac1186871016785733afeed0687b4d9308",
+    "change": "make raw Rust-handle constructor internal and disambiguate it with bool marker; update all backend-owned lift/factory calls"
+  },
+  "rust_artifact": {
+    "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "adapter_path": "rust/crates/actors-uniffi/src/lib.rs",
+    "adapter_sha256": "0AB7C322373075A4DD60113A7C768F15B15CC5BE5EEAEACCC44277049292F3B5",
+    "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "cdylib_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241"
+  },
+  "generation": {
+    "config": "generated/uniffi.toml",
+    "source_sha256": "847a42c13cd1270409d95f100eed39798ce85b7c6c1893d5bda6fd47164f2386",
+    "output": "generated/acyclic_actors_uniffi.cs",
+    "public_access_modifier": true
+  },
+  "managed_probe": {
+    "target_framework": "net8.0",
+    "compile": "PASS; 0 warnings, 0 errors (source-fixed generated output)",
+    "runtime": "PASS",
+    "checks": [
+      "all eight Actors RPC operations",
+      "default calls pass null CancellationHandle",
+      "pre-cancelled CancellationToken maps to BindingException.Cancelled",
+      "wrong-token typed service error grpcCode=16 and absent service code",
+      "PositiveU64 zero rejection",
+      "PositiveU64 ulong.MaxValue round-trip"
+    ],
+    "fixture": "isolated canonical conformance fixture; checkpoint idempotency assertion adapted from checkpoint-a to csharp-checkpoint-a to match managed probe input",
+    "executable_artifact": "external runtime-only copy; no DLL or target output persisted here"
+  },
+  "provenance": {
+    "primary_files": [
+      "ObjectTemplate.cs",
+      "ObjectTemplate.cs.patch",
+      "generated/acyclic_actors_uniffi.cs",
+      "generated/uniffi.toml",
+      "managed/Program.cs",
+      "managed/Consumer.csproj",
+      "receipt.json"
+    ],
+    "source_only": true,
+    "production_abi_changed": false
+  }
+}

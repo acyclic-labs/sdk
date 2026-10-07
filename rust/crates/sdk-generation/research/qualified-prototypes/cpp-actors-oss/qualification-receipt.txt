@@ -1,0 +1,37 @@
+C++ Actors binding qualification receipt
+Captured: 2026-10-07 (WSL linked refresh)
+Authoritative source checkout: C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk
+Source git at initial capture: 371bb4170e16aca973176b6756a261ee5add7297
+Bridge generator: cxx/cxx-build 1.0.202 (Cargo.lock)
+
+Generated header:
+  generated/lib.rs.h
+  SHA256 E7561CEA8FBA89310CF1BC07D4356C477B6B956A20350ED79C2F5E6C5E526F46
+
+Rust producer (WSL Ubuntu):
+  RUSTC_WRAPPER= cargo build --locked --target-dir /tmp/cpp-actors-oss-target
+  PASS; staticlib /tmp/cpp-actors-oss-target/debug/libcpp_actors_oss_qualification.a
+
+Linked consumer (WSL Ubuntu g++):
+  g++ -std=c++11 -I generated -I <cxxbridge/include> -c consumer/positive.cc
+  g++ positive.o libcpp_actors_oss_qualification.a -ldl -lpthread -lm -o /tmp/cpp-actors-positive
+  /tmp/cpp-actors-positive
+  PASS (exit 0)
+
+Expected-negative consumers:
+  consumer/negative.cc: PASS as a negative (std::string cannot convert to uint64_t)
+  consumer/negative-nominal.cc: PASS as a negative (ActorsClient cannot bind ActorsOperation&)
+
+The linked positive probe calls the real acyclic_actors::client::connect through
+Rust with an invalid non-HTTPS endpoint and verifies the typed Configuration error;
+its observation uses the real domain::ActorObservation::try_from and PositiveU64.
+The cancellation operation uses the real tokio_util CancellationToken.
+
+Windows MSVC:
+  Previous canonical Cargo build remained unqualified because the local driver
+  reported the emitted lib.rs.cc path missing during compilation. WSL clang/g++
+  is the successful linked producer qualification; this is a toolchain gap only.
+
+Scope:
+  source-only qualification evidence plus temporary WSL build output under /tmp;
+  no Q checkout, public package, generated protobuf, or frozen ownership changed.

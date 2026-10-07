@@ -1,0 +1,53 @@
+{
+  "schema": "acyclic.actors.uniffi.csharp.pending-cancellation.v1",
+  "fixture": {
+    "options": "Q:/sdk/work/root-pending-actors-fixture-options.json",
+    "endpoint": "https://localhost:60389",
+    "control_endpoint": "http://127.0.0.1:60391",
+    "actor_prefix": "pending-csharp-"
+  },
+  "backend": {
+    "source_fix": "uniffi-bindgen-cs v0.11.0+v0.31.0, commit e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "generated_source_sha256": "847a42c13cd1270409d95f100eed39798ce85b7c6c1893d5bda6fd47164f2386",
+    "runtime_source_only": true,
+    "custom_registry": false
+  },
+  "compile": {
+    "generated_declarations": "PASS",
+    "managed_probe": "PASS",
+    "external_raw_handle_forgery": {
+      "status": "REJECTED",
+      "diagnostic": "CS1729: PositiveU64 does not contain a constructor that takes 2 arguments",
+      "source": "RawHandleNegative.cs"
+    }
+  },
+  "cancellation": {
+    "status": "PASS_WITH_THIN_MANAGED_TOKEN_ADAPTER",
+    "iterations": 3,
+    "continuation_map": {
+      "baseline": 0,
+      "pending": 1,
+      "after_each": 0
+    },
+    "fixture_state": {
+      "started": "1..3",
+      "aborted": "1..3",
+      "active_after_each": 0
+    },
+    "managed_result": "BindingException.Cancelled",
+    "adapter": "WithCancellation creates generated CancellationHandle only for cancellable tokens, registers token cancellation, and disposes it after completion",
+    "direct_null_handle": "unsupported_for_native_token_abort_by_pinned_CSharp_backend; generated methods expose CancellationHandle? rather than CancellationToken"
+  },
+  "source_only_files": [
+    "Program.cs",
+    "RawHandleNegative.cs",
+    "README.md",
+    "receipt.json"
+  ],
+  "artifacts_not_persisted": [
+    "AcyclicActors.Generated.dll",
+    "PendingProbe.dll",
+    "acyclic_actors_uniffi.dll",
+    "target/obj/bin"
+  ]
+}

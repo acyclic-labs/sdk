@@ -1,0 +1,96 @@
+{
+  "schema": "go-uniffi-oss-current-actors-prototype/v1",
+  "scope": "External maintained-generator qualification only; no production ABI or custom semantic registry",
+  "sourceAuthority": {
+    "sdkRoot": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk",
+    "rustRevision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "actorsCrate": "rust/crates/actors-uniffi",
+    "actorsDomainHash": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "workingTree": {
+      "actorsUniffiLibSha256": "BF538948EBB787EE3D69DA0F8110526E901724D88AAD57B65CF5E8F84EFB5743",
+      "actorsUniffiCargoSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377",
+      "actorsDomainSha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+      "actorsProtoContractSha256": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA",
+      "workingTree": "dirty; these hashes are the exact source inputs used; baseline commit alone is insufficient"
+    },
+    "cancellationSourceSha256": "BF538948EBB787EE3D69DA0F8110526E901724D88AAD57B65CF5E8F84EFB5743"
+  },
+  "maintainedGenerator": {
+    "repository": "Q:/sdk/work/uniffi-go-oss-prototype",
+    "revision": "0b7fb4ceef12021bd7f790cc516fa9133e001813",
+    "release": "uniffi-bindgen 0.7.1+v0.31.0",
+    "binarySha256": "0ba70e7b998d83af9ab4b3bd7fd3aef78a28260d4954e18c87a2e3e183216e9d",
+    "command": "uniffi-bindgen-go /tmp/actors-uniffi-go-current-20261007/target/release/libacyclic_actors_uniffi.so --library -o generated",
+    "asyncTemplateSha256": "386EF2738C3E26E3F86BB7705B11E6E87FA10EAB283721D0DBDCA4FAFD589DB0",
+    "contextApiSearch": "No context.Context or WithCancel emitted; template exposes generic future polling plus user-declared CancellationHandle arguments."
+  },
+  "rustArtifact": {
+    "platform": "windows-native",
+    "dll": "acyclic_actors_uniffi.dll",
+    "sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "sourceBuildFeatures": "bindgen"
+  },
+  "generated": {
+    "goSha256": "A9F7542D1E81EB3EC769D62ECA98C9CA2A83EE9C371649DEEC92F96C39BB78BF",
+    "headerSha256": "33318F4142D8168B09725D9636632589CB6D36957CCDC12BF4283DD2D0140A37",
+    "probeSha256": "A822DC2423ACFC1350A7948F561AB323961B046CA878F6B7CBFFF60468D75F1E",
+    "goBytes": 129279,
+    "headerBytes": 58241,
+    "cancelProbeSha256": "AD3A20FE9A4F1F36524E39356FBE4FCE3734BD3FDFBA2968BEFD51DF9CC6083D",
+    "cancelProbeBytes": 1742,
+    "goProbeSha256": "C082B6CBA397977CC0741C02DCB183027FD609C8BF54A1ACE9A8E50775CFA790"
+  },
+  "toolchain": {
+    "go": "go1.27.1 windows/amd64",
+    "cCompiler": "C:/Strawberry/c/bin/gcc.exe",
+    "uniffiRustToolchain": "WSL rustc 1.98.1",
+    "fixture": "typescript/packages/actors/test/grpc-conformance-fixture.mjs"
+  },
+  "fixture": {
+    "endpoint": "https://localhost:62993",
+    "token": "conformance",
+    "caSha256": "DBB7E7924F0CA2427430369D7517B79BA2A2424A973E8CDEA0E7824A6E8A04EF",
+    "launch": "node.exe typescript/packages/actors/test/grpc-conformance-fixture-server.mjs",
+    "lifecycle": "canonical shared TLS/Connect fixture, ephemeral endpoint"
+  },
+  "outcome": {
+    "status": "PASS",
+    "marker": "GO_CURRENT_ACTORS_PASS",
+    "operations": [
+      "InspectActor",
+      "CreateActor",
+      "UpdateActor",
+      "AddSubscription",
+      "RemoveSubscription",
+      "ResumeSubscription",
+      "CheckpointActor",
+      "InvokeActor"
+    ],
+    "nominals": [
+      "ActorId exact actor-a",
+      "CodeSha256 32-byte exact roundtrip",
+      "SubscriptionStart Cursor=9007199254740993",
+      "SubscriptionStart CurrentHead presence",
+      "PositiveU64 MaxUint64 exact roundtrip"
+    ],
+    "typedErrors": [
+      "empty ActorId => errors.Is ErrBindingErrorSemantic",
+      "31-byte CodeSha256 => BindingError",
+      "zero PositiveU64 => BindingError"
+    ],
+    "cancellation": "NewCancellationHandle Cancel IsCancelled true",
+    "observation": "All seven actor observation operations returned actor-a/checkpointEpoch=9/configurationRevision=0; InvokeActor returned 201 with location=/result",
+    "stateNote": "Go FFI enum reports ActorState value 2 (Active), while fixture expectedObservation JSON carries protobuf state number 1; this is the Rust domain-to-wire projection boundary and was not used as a pass assertion.",
+    "inFlightCancellation": "PASS: pending InspectActor cancelled through generated CancellationHandle; errors.Is(err, ErrBindingErrorCancelled) true; fixture released and closed",
+    "pendingFixtureSha256": "248E71524F460E787E146732E7C0D58DC0C53AA2A6EC02457B7D33D29421B449",
+    "stateMapping": "Rust domain ActorState::Active converts to UniFFI enum Active; generated Go ordinals are 1-based (Unspecified=1, Active=2), while protobuf ActorState::Active is wire number 1. Observed Go value 2 therefore equals fixture wire state 1 semantically.",
+    "mappingAssertion": "All seven observation responses asserted obs.State == actors.ActorStateActive (generated Go value 2), proving semantic equivalence to fixture protobuf Active wire number 1."
+  },
+  "limitations": [
+    "External qualification artifact, not full SDK support claim",
+    "Windows consumer run uses current A094 DLL and maintained generated Go package; no bespoke C ABI registry",
+    "Fixture process must remain alive; endpoint is ephemeral",
+    "Generated API exposes explicit CancellationHandle (**CancellationHandle), not context.Context; in-flight cancellation was proven with this maintained API."
+  ],
+  "artifacts": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/go-uniffi-oss"
+}
