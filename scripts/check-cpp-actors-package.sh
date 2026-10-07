@@ -98,6 +98,21 @@ fi
 
 mkdir -p "$output"
 install -m 0644 "$actors_archive" "$cxx_archive" "$output/"
-(cd "$output" && sha256sum "$(basename "$actors_archive")" "$(basename "$cxx_archive")" > SHA256SUMS)
-printf '%s\n' "$(git rev-parse --verify HEAD)" > "$output/SOURCE_COMMIT"
+# Preserve the exact generated bridge header and Cargo-produced native artifact
+# used by the external install check alongside both source archives. These are
+# the bytes whose hashes identify the installed producer/consumer boundary.
+install -m 0644 "$install_root/include/lib.rs.h" "$output/lib.rs.h"
+install -m 0644 "$native_library" "$output/libcpp_actors_oss_qualification.a"
+(cd "$output" && sha256sum \
+  "$(basename "$actors_archive")" "$(basename "$cxx_archive")" \
+  lib.rs.h libcpp_actors_oss_qualification.a > SHA256SUMS)
+printf 'actors_archive_sha256=%s\n' "$(sha256sum "$actors_archive" | cut -d' ' -f1)" > "$output/SOURCE-IDENTITY"
+printf 'cxx_archive_sha256=%s\n' "$(sha256sum "$cxx_archive" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'generated_header_sha256=%s\n' "$(sha256sum "$output/lib.rs.h" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'native_library_sha256=%s\n' "$(sha256sum "$output/libcpp_actors_oss_qualification.a" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+if source_commit="$(git rev-parse --verify HEAD 2>/dev/null)"; then
+  printf '%s\n' "$source_commit" > "$output/SOURCE_COMMIT"
+else
+  printf 'unavailable (checkout does not expose a resolvable Git worktree)\n' > "$output/SOURCE_COMMIT"
+fi
 printf 'find_package:PASS\nexternal_positive:PASS\nexternal_all8_link:PASS\nnegative_u64:PASS\nnegative_nominal:PASS\n' > "$output/QUALIFICATION"

@@ -1,51 +1,52 @@
-# Python Actors all-eight qualification
+# Python Actors maintained UniFFI qualification prototype
 
-This record tracks the Rust-owned `actors-uniffi` facade and its installed
-Windows x64 Python wheel. The checked-in consumer and receipt are the source
-record for the external qualification run.
+This directory retains the minimal maintained UniFFI 0.31 Python source patch,
+its external producer closure, and the consumer used for remote qualification.
+The full vendor copy used during diagnosis is intentionally absent. No binary
+artifact is checked into this research directory.
 
-The source revision is `371bb4170e16aca973176b6756a261ee5add7297`. The adapter
-`rust/crates/actors-uniffi/src/lib.rs` has SHA-256
-`0AB7C322373075A4DD60113A7C768F15B15CC5BE5EEAEACCC44277049292F3B5`.
-The generated Python facade has SHA-256
-`AC3E8CD8FD86ECFDB7515D3D9195DFD79B021CECE1BEA279C420BDAA09456FB8`, and the
-rebuilt native DLL has SHA-256
-`A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241`.
+The primary closure is `minimal-patched-generator-receipt.json`. It records the
+pinned crates.io archive and embedded source files, the three patched generator
+source hashes, the generated Python module, native libraries, wheels, checker
+output hashes, and the current Rust facade checkout hashes. The external
+outputs are retained qualification evidence; the receipt marks them
+`source_binding: UNBOUND` because a release claim requires rerunning the
+producer against the recorded current source snapshot. Run
+`verify-minimal-patched-generator-receipt.ps1` to recompute the recorded
+external hashes and byte counts.
 
-The installed wheel is
-`acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl`, SHA-256
-`151B60F7644E1EEE98969FDF0F0DB11CE5A6FDE967E604DB6DEEA9F62C807919`.
-The package contains generated annotations and the source-owned `py.typed`
-marker. The wheel was installed into an isolated environment without network
-resolution.
+The maintained patch is `uniffi-python-typing.patch`, reproduced by
+`run-uniffi-python-typing-patch.sh` from the pinned `uniffi_bindgen` 0.31.0
+archive. It adds the generated public enum value union while preserving the
+runtime nested constructors and dynamic reparenting. Source revision, archive,
+license, and changed-file provenance are in
+`uniffi-python-typing-patch-provenance.md`.
 
-The installed consumer exercises all eight canonical operations: create,
-update, inspect, add subscription, remove subscription, resume subscription,
-checkpoint, and invoke. It also verifies the typed service error for an
-unauthorized call and a pre-cancelled operation. The run passed against the
-Rust-backed fixture. The full source and result are retained in
-`installed-all8-remote-conformance.py` and `all8-qualification-receipt.json`.
+The retained checker outputs show mypy 1.17.1 passing the positive fixture and
+both mypy and Pyright rejecting the six deliberate negative cases. The retained
+Pyright positive output contains two `CURRENT_HEAD` constructor diagnostics;
+this prototype therefore does not claim a zero-diagnostic Pyright positive
+run. The runtime and cross-platform install results remain recorded as
+external receipts, with no producer log retained beside the patched Linux and
+macOS wheels.
 
-`typing/positive.py` and `typing/negative.py` are maintained-checker fixtures.
-Mypy 1.17.1 and Pyright 1.1.404 both reject all six deliberate negative cases.
-The source-only patch in `uniffi-python-typing.patch` corrects the generated
-enum union metadata, so `SubscriptionStart.CURSOR(1)` is accepted as the
-`SubscriptionStartValue` parameter type while retaining the nested runtime
-class. `run-uniffi-python-typing-patch.sh` reproduces the generated module
-from the pinned UniFFI 0.31.0 archive and verifies its hash. The full vendor
-copy used during diagnosis has been removed; provenance and license evidence
-remain in `uniffi-python-typing-patch-provenance.md`.
+`installed-all8-remote-conformance.py` is the actual remote receipt producer.
+It appends each operation only after its response assertions pass and appends
+`remote`, `service_error`, and `cancellation` only after their checks pass.
+When `ACYCLIC_QUALIFICATION_RECEIPT` is set, it writes the minimal producer
+schema consumed by the language-package model:
 
-The generated Kotlin and Swift artifact hashes and the shared fixture identity
-are recorded in `all8-qualification-receipt.json`. No binary artifacts are
-checked into this research directory.
+```json
+{"schema":"acyclic.language-package.qualification/v1","status":"PASS",
+ "operations":["..."],"checks":["..."],"fixture_options_sha256":"..."}
+```
 
+The arrays and status are produced by the executed run; the script does not
+accept caller-supplied success or scope claims. The install check belongs to
+the harness that actually installs the wheel and must be emitted there before
+the root source-bound model consumes the receipt.
 
-Cross-platform package and host evidence is recorded in cross-platform.md and cross-platform-qualification-receipt.json.
-
-The exact source, generated-module, native-library, and wheel closure is in
-`minimal-patched-generator-receipt.json`. Run
-`verify-minimal-patched-generator-receipt.ps1` to recompute every recorded
-producer hash and byte count from the external qualification paths. The
-verification fails on substituted outputs or a changed source snapshot.
+The older `all8-qualification-receipt.json` and
+`cross-platform-qualification-receipt.json` are historical context. Their
+claims are not substituted for the measured patched-generator closure.
 

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   appendFile,
   mkdir,
@@ -10,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,14 +63,16 @@ const withManifest = async (manifestPath, mutate, callback) => {
   }
 };
 
-const makeFixture = async ({ mode = "normal", archiveJs = undefined } = {}) => {
+const makeFixture = async ({ mode = "normal", archiveJs = undefined, nativeName = "acyclic-fs-test.js", archiveNative = undefined } = {}) => {
   const fixture = await mkdtemp(join(tmpdir(), "acyclic-fs-admission-test-"));
   const packageRoot = join(fixture, "package");
   const wasmRoot = join(packageRoot, "generated", "wasm");
   const nativeRoot = join(fixture, "native");
+  const nativeArchiveRoot = join(fixture, "native-archive");
   const archiveRoot = join(fixture, "archive", "package");
   await mkdir(wasmRoot, { recursive: true });
   await mkdir(nativeRoot, { recursive: true });
+  await mkdir(nativeArchiveRoot, { recursive: true });
   await mkdir(join(archiveRoot, "generated", "wasm"), { recursive: true });
   await writeFile(join(packageRoot, "package.json"), '{"type":"module"}\n');
 
@@ -107,7 +108,7 @@ export function openMemoryFs() {
   await writeFile(wasmJs, wasmSource);
   await writeFile(wasmBinary, "wasm-fixture");
 
-  const nativeBinding = join(nativeRoot, "acyclic-fs-test.js");
+  const nativeBinding = join(nativeRoot, nativeName);
   const nativeSource = `
 const admission = "expected a finite integer in the u32 range";
 const mode = ${JSON.stringify(mode)};
@@ -124,12 +125,13 @@ function workspace() {
 module.exports = { NativeFs: { async open() { return { async createWorkspace() { return workspace(); }, cancel() {} }; } } };
 `;
   await writeFile(nativeBinding, nativeSource);
+  await writeFile(join(nativeArchiveRoot, nativeName), archiveNative ?? nativeSource);
   await writeFile(join(archiveRoot, "generated", "wasm", "acyclic_fs_wasm.js"), archiveJs ?? wasmSource);
   await writeFile(join(archiveRoot, "generated", "wasm", "acyclic_fs_wasm_bg.wasm"), "wasm-fixture");
   const packageArchive = join(fixture, "package.tgz");
   const nativeArchive = join(fixture, "native.tgz");
   execFileSync("tar", ["-czf", packageArchive, "-C", join(fixture, "archive"), "package"]);
-  execFileSync("tar", ["-czf", nativeArchive, "-C", nativeRoot, "acyclic-fs-test.js"]);
+  execFileSync("tar", ["-czf", nativeArchive, "-C", nativeArchiveRoot, nativeName]);
   return {
     fixture,
     packageRoot,
@@ -209,6 +211,15 @@ const selectedSourceLabel = "Cargo.toml";
       assert.match(result.output, /package WASM JavaScript differs from archive entry/);
     } finally {
       await rm(archiveMismatch.fixture, { recursive: true, force: true });
+    }
+
+    const nativeArchiveMismatch = await makeFixture({ nativeName: "acyclic-fs-test.node", archiveNative: "native-archive-A" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, nativeArchiveMismatch));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /installed native binding differs from native archive entry/);
+    } finally {
+      await rm(nativeArchiveMismatch.fixture, { recursive: true, force: true });
     }
 
     progress("unknown fixture");

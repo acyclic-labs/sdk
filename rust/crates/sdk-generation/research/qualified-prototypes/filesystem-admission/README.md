@@ -12,7 +12,7 @@ state; it refuses a caller-supplied commit and never permits relabeling an
 older manifest:
 
 ```text
-node research/qualified-prototypes/filesystem-admission/run.mjs \
+node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/run.mjs \
   --write-source-manifest \
   --source-root <frozen-source-root> \
   --source-manifest <frozen-source-root>/target/qualification/source-attestation.json
@@ -25,7 +25,7 @@ runtime qualification only after package assembly has extracted the archive
 and after the native companion has been installed:
 
 ```text
-node research/qualified-prototypes/filesystem-admission/run.mjs \
+node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/run.mjs \
   --package-root <extracted-@acyclic-labs-fs> \
   --native-binding <installed-@acyclic-labs-fs-platform>/acyclic-fs-<version>-<target>.node \
   --native-archive <packed-@acyclic-labs-fs-platform.tgz> \
@@ -98,7 +98,7 @@ Before the expensive runtime qualification, the same runner can validate only
 the source inventory:
 
 ```text
-node research/qualified-prototypes/filesystem-admission/run.mjs \
+node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/run.mjs \
   --attestation-only \
   --source-root <frozen-source-root> \
   --source-manifest <frozen-source-root>/source-attestation.json \

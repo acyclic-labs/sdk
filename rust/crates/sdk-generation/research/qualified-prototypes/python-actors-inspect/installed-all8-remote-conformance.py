@@ -1,7 +1,6 @@
 import asyncio, json, os
 import hashlib
 from pathlib import Path
-import acyclic_actors_uniffi as m
 
 FIXTURE = Path(os.environ.get("ACYCLIC_FIXTURE_OPTIONS", r"Q:\sdk\work\go-remote-primitive-current\fixture-options.json"))
 
@@ -16,6 +15,12 @@ def check_actor(value, expected):
 
 async def main():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    receipt_path = os.environ.get("ACYCLIC_QUALIFICATION_RECEIPT")
+    if receipt_path:
+        # Do not leave a prior PASS receipt behind when this run fails.
+        Path(receipt_path).unlink(missing_ok=True)
+    import acyclic_actors_uniffi as m
+
     operations = []
     checks = []
     client = await m.connect_actors_with_ca(
@@ -82,7 +87,6 @@ async def main():
     else:
         raise AssertionError("pre-cancelled operation completed")
     checks.append("cancellation")
-    receipt_path = os.environ.get("ACYCLIC_QUALIFICATION_RECEIPT")
     if receipt_path:
         receipt = {
             "schema": "acyclic.language-package.qualification/v1",

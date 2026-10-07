@@ -9,6 +9,7 @@ description = "Deterministic Rust-owned versioned SDK documentation data"
 [workspace]
 
 [dependencies]
+cargo_metadata = "=0.23.1"
 public-api = "=0.52.2"
 rustdoc-types = "=0.60.0"
 schemars = "=1.2.2"

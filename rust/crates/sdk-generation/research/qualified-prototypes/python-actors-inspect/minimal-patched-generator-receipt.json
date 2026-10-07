@@ -90,6 +90,16 @@
   },
   "qualification": {
     "source_binding": "UNBOUND: the external producer outputs are retained qualification evidence, while the current checkout snapshot is recorded separately; a release claim requires a rerun whose producer input hash equals the observed checkout hash.",
+    "producer_receipt_schema": "acyclic.language-package.qualification/v1",
+    "producer_receipt_fields": [
+      "status",
+      "operations",
+      "checks",
+      "fixture_options_sha256",
+      "artifact.path",
+      "artifact.sha256",
+      "artifact.bytes"
+    ],
     "typing": {
       "mypy": "1.17.1",
       "pyright": "1.1.404",
@@ -131,8 +141,8 @@
     },
     "consumer_source": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",
-      "sha256": "EC64FA73AE12A916A0F331D19A532365D16AC6E6E8362B204684851944ED983F",
-      "bytes": 4685
+      "sha256": "9CA06E9E9247DD16C4776F9FFB2D970A149E275A03896D26C83B9ECBC0FD2707",
+      "bytes": 4838
     },
     "fixture": {
       "windows_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",
