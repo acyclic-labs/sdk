@@ -897,20 +897,7 @@ export type ObjectCacheOptions = Readonly<NativeBinding.NativeObjectCacheOptions
 
 export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = GENERATED_OBJECT_CACHE_OPTIONS;
 
-export interface ObjectCacheStats {
-  readonly hits: bigint;
-  readonly decodedHits: bigint;
-  readonly misses: bigint;
-  readonly coalescedReads: bigint;
-  readonly evictions: bigint;
-  readonly residentEntries: bigint;
-  readonly residentBytes: bigint;
-  readonly residentCanonicalObjects: bigint;
-  readonly residentCanonicalBytes: bigint;
-  readonly residentDecodedPages: bigint;
-  readonly residentDecodedBytes: bigint;
-  readonly inFlight: bigint;
-}
+export type ObjectCacheStats = ReadonlyDeep<NativeBinding.NativeObjectCacheStats>;
 
 export interface NativeFsEngine extends FsVolumeEngine {
   createWorkspace(name: string): Promise<NativeFsWorkspace>;
