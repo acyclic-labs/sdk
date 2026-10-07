@@ -1,0 +1,29 @@
+[package]
+name = "actors-stream-uniffi-kotlin-prototype"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+license = "Apache-2.0"
+description = "Research-only UniFFI Stream cursor bridge"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+bindgen = ["uniffi/cli"]
+qualification = []
+
+[[bin]]
+name = "actors-stream-uniffi-bindgen"
+path = "src/bin.rs"
+required-features = ["bindgen"]
+
+[dependencies]
+acyclic-stream = { path = "../sdkgen-actors-c8-minimal/rust/crates/stream", features = ["grpc"] }
+futures = "0.3.31"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
+uniffi = { version = "=0.31.0", features = ["tokio", "scaffolding-ffi-buffer-fns"] }
