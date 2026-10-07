@@ -80,6 +80,32 @@ if ((& $wasmBindgenBin --version) -ne "wasm-bindgen $wasmBindgenVersion") {
     throw "The WASM build requires wasm-bindgen $wasmBindgenVersion."
 }
 $env:PATH = "$(Split-Path -Parent $wasmBindgenBin);$env:PATH"
+# web-sys's large feature set exceeds sccache's Windows rustc spawn path.
+# Keep native build caching, but invoke the WASM check directly through rustc.
+$rustcWrapper = $env:RUSTC_WRAPPER
+Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+try {
+    bun run check
+} finally {
+    if ($null -eq $rustcWrapper) {
+        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    } else {
+        $env:RUSTC_WRAPPER = $rustcWrapper
+    }
+}
+# The Windows x64 Stream artifact is the currently qualified native target.
+# Build it into the lane artifact directory, then stage only the attested
+# bundle into the package before TypeScript archives are assembled. The native
+# builder rejects dirty source closure and records the exact source/bundle
+# hashes; other host targets remain separate qualification work.
+$StreamNativeBundle = Join-Path $env:SDK_ARTIFACT_DIR 'stream-native-bundle'
+$StreamNativeTargetDir = "$CargoTargetDir-stream-native"
+node scripts/build-stream-native.mjs build `
+    --target x86_64-pc-windows-msvc `
+    --output $StreamNativeBundle `
+    --target-dir $StreamNativeTargetDir
+node scripts/build-stream-native.mjs stage --bundle $StreamNativeBundle
+node scripts/build-stream-native.mjs check
 $release = Start-Background release @"
 `$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
 node scripts/build-product.mjs
@@ -96,22 +122,6 @@ $clippy = Start-Background clippy @"
 cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
 node scripts/clippy-feature-sets.mjs
 "@
-
-# The independent builds above start before this check so they use the cores
-# its mostly single-threaded WASM optimization and linking leave idle.
-# web-sys's large feature set exceeds sccache's Windows rustc spawn path.
-# Keep native build caching, but invoke the WASM check directly through rustc.
-$rustcWrapper = $env:RUSTC_WRAPPER
-Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-try {
-    bun run check
-} finally {
-    if ($null -eq $rustcWrapper) {
-        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-    } else {
-        $env:RUSTC_WRAPPER = $rustcWrapper
-    }
-}
 
 # The test build links dozens of test executables; LLVM's linker links them far
 # faster than link.exe. Release and binding builds above keep the default

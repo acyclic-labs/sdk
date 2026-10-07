@@ -30,7 +30,8 @@ mod local;
 mod memory;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
-mod wire_codec;
+/// Conversion helpers between the canonical Rust domain types and generated wire messages.
+pub mod wire_codec;
 
 /// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;

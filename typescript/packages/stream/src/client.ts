@@ -1,4 +1,4 @@
-import { HttpStreamProvider } from "./http.js";
+import { DefaultStreamProvider } from "./default.js";
 import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import type {
@@ -46,7 +46,7 @@ export class StreamClient {
   constructor(readonly provider: StreamProvider) {
     this.tokens = { create: async request => {
       if (provider.createToken === undefined) throw new StreamError("unsupported", "provider does not support token creation");
-      return provider.createToken(request);
+      return provider.createToken(structuredClone(request));
     } };
   }
   json(path: string): Stream<JsonValue>;
@@ -55,7 +55,9 @@ export class StreamClient {
     return new Stream(this.provider, path, parse === undefined ? jsonCodec() : jsonCodec(parse));
   }
   bytes(path: string): Stream<Uint8Array> { return new Stream(this.provider, path, bytesCodec); }
-  inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { return this.provider.inspectIdempotency(key); }
+  inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
+    return this.provider.inspectIdempotency(key.slice() as IdempotencyKey);
+  }
   children(parent: string | undefined, options: { readonly limit: number } | number): AsyncIterable<{ readonly path: string }> {
     const limit = typeof options === "number" ? options : options.limit;
     if (parent !== undefined) pathValue(parent);
@@ -64,31 +66,47 @@ export class StreamClient {
     return this.childrenAll(parent, limit);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    if (request.parent !== undefined) pathValue(request.parent);
-    if (request.after !== undefined) {
-      pathValue(request.after);
-      if (request.hierarchyVersion === undefined || directParent(request.after) !== (request.parent ?? "")) {
+    let authored: ChildrenPageRequest;
+    if (request.after === undefined) {
+      authored = request.hierarchyVersion === undefined
+        ? { ...(request.parent === undefined ? {} : { parent: request.parent }), limit: request.limit }
+        : { ...(request.parent === undefined ? {} : { parent: request.parent }), hierarchyVersion: request.hierarchyVersion.slice() as CommitId, limit: request.limit };
+    } else {
+      if (request.hierarchyVersion === undefined) {
+        throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
+      }
+      authored = {
+        ...(request.parent === undefined ? {} : { parent: request.parent }),
+        after: request.after,
+        hierarchyVersion: request.hierarchyVersion.slice() as CommitId,
+        limit: request.limit,
+      };
+    }
+    if (authored.parent !== undefined) pathValue(authored.parent);
+    if (authored.after !== undefined) {
+      pathValue(authored.after);
+      if (authored.hierarchyVersion === undefined || directParent(authored.after) !== (authored.parent ?? "")) {
         throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
       }
     }
-    if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
+    if (authored.hierarchyVersion !== undefined && authored.hierarchyVersion.byteLength !== 32) {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
-    positiveInteger(request.limit, "limit");
-    const page = await this.provider.childrenPage(request);
+    positiveInteger(authored.limit, "limit");
+    const page = await this.provider.childrenPage(authored);
     if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
-    const expectedVersion = request.hierarchyVersion;
+    const expectedVersion = authored.hierarchyVersion;
     if (expectedVersion !== undefined &&
         page.hierarchyVersion.some((byte, index) => byte !== expectedVersion[index])) {
       throw new StreamError("hierarchy_changed", "provider changed hierarchy version during pagination");
     }
-    if (page.children.length > request.limit || (page.nextAfter !== undefined && page.nextAfter !== page.children.at(-1)?.path)) {
+    if (page.children.length > authored.limit || (page.nextAfter !== undefined && page.nextAfter !== page.children.at(-1)?.path)) {
       throw new StreamError("invalid_page", "provider returned an invalid child continuation");
     }
-    let previous = request.after;
+    let previous = authored.after;
     for (const child of page.children) {
       pathValue(child.path);
-      if (directParent(child.path) !== (request.parent ?? "") ||
+      if (directParent(child.path) !== (authored.parent ?? "") ||
           (previous !== undefined && compareStreamPaths(previous, child.path) >= 0)) {
         throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
       }
@@ -111,13 +129,14 @@ export class StreamClient {
     }
   }
   async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
+    const authoredOptions = structuredClone(options);
     const conditions = request.conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
         return { path: condition.stream.path, ifTail: sequence(condition.ifTail) };
       }
       pathValue(condition.path);
-      return condition;
+      return { path: condition.path, ifAbsent: true as const };
     });
     const mutations = request.mutations.map(mutation => {
       if ("append" in mutation) {
@@ -132,17 +151,18 @@ export class StreamClient {
       }
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
-    return this.provider.commit(await normalizeWireCommit({ conditions, mutations }, options), options);
+    return this.provider.commit(await normalizeWireCommit({ conditions, mutations }, authoredOptions), authoredOptions);
   }
-  readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId); }
+  readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId.slice() as CommitId); }
 }
 
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
   static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
-    return new StreamClient(new HttpStreamProvider({
+    return new StreamClient(new DefaultStreamProvider({
       endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
       token: environment?.token ?? environmentValue("ACYCLIC_API_KEY"),
+      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
     }));
   }
   constructor(readonly provider: StreamProvider, readonly path: string, readonly codec: Codec<Value>) {
@@ -156,20 +176,33 @@ export class Stream<Value = Uint8Array> {
       return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
     }
     if (options?.ifTail !== undefined) sequence(options.ifTail);
-    return this.provider.append(this.path, values.map(value => this.codec.encode(value)), options);
+    const authored = options === undefined ? undefined : structuredClone(options);
+    return this.provider.append(this.path, values.map(value => this.codec.encode(value).slice()), authored);
   }
   async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
     pathValue(destination);
     if (options?.atTail !== undefined) sequence(options.atTail);
-    const value = await this.provider.fork(this.path, destination, options);
+    const authored = options === undefined ? undefined : structuredClone(options);
+    const value = await this.provider.fork(this.path, destination, authored);
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
   }
-  async *read(options: ReadOptions): AsyncIterable<Record<Value>> {
+  read(options: ReadOptions): AsyncIterable<Record<Value>> {
+    const authored = { from: options.from, limit: options.limit };
+    return this.readAfterCapture(authored);
+  }
+  private async *readAfterCapture(options: ReadOptions): AsyncIterable<Record<Value>> {
     sequence(options.from);
     positiveInteger(options.limit, "limit");
     for await (const item of this.provider.read(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
-  async *follow(options: FollowOptions): AsyncIterable<Record<Value>> {
+  follow(options: FollowOptions): AsyncIterable<Record<Value>> {
+    const authored = {
+      from: options.from,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    };
+    return this.followAfterCapture(authored);
+  }
+  private async *followAfterCapture(options: FollowOptions): AsyncIterable<Record<Value>> {
     sequence(options.from);
     for await (const item of this.provider.follow(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }

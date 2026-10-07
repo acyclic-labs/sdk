@@ -19,6 +19,7 @@ members = [
   "rust/crates/objects-wasm",
   "rust/crates/proto-codegen",
   "rust/crates/stream",
+  "rust/crates/stream-napi",
   "rust/crates/workers",
   "plugin",
 ]
@@ -162,3 +163,6 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
+
+
+

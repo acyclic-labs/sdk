@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: acyclic-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -475,6 +479,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/acyclic-v')
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          make_latest: legacy
           files: |
             release/SHA256SUMS
             release/acyclic.spdx.json
