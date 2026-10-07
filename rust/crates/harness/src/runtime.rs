@@ -1050,7 +1050,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
                 if let Some(outcome) = self.outcome(task_id).await? {
                     return Ok(outcome);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                crate::platform::sleep(std::time::Duration::from_millis(delay_ms)).await?;
                 delay_ms = delay_ms.saturating_mul(2).min(1_000);
             }
         })
@@ -1179,7 +1179,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
                 if let Some(outcome) = self.outcome(task_id).await? {
                     return Ok(outcome);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                crate::platform::sleep(std::time::Duration::from_millis(delay_ms)).await?;
                 delay_ms = delay_ms.saturating_mul(2).min(1_000);
             }
         })
@@ -1605,17 +1605,11 @@ impl TaskRunLimits {
         let Some(deadline) = self.deadline_epoch_ms else {
             return Ok(None);
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| Error::Invalid("system time precedes Unix epoch".into()))?
-            .as_millis();
-        if u128::from(deadline) <= now {
+        let now = crate::platform::now_unix_millis();
+        if deadline <= now {
             return Err(Error::Invalid("task deadline has expired".into()));
         }
-        Ok(Some(std::time::Duration::from_millis(
-            u64::try_from(u128::from(deadline) - now)
-                .map_err(|_| Error::Invalid("task deadline is not representable".into()))?,
-        )))
+        Ok(Some(std::time::Duration::from_millis(deadline - now)))
     }
 
     fn allows(&self, child: &Self) -> Result<()> {
@@ -1816,7 +1810,7 @@ impl<O> RuntimeTask<O> {
 }
 
 /// Observes every admitted task in input order without cancelling siblings.
-pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
+pub async fn join_runtime<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> Vec<Result<Outcome<O>>> {
     let concurrency = tasks.len().clamp(1, 64);
@@ -1830,7 +1824,7 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
 /// Streams typed task outcomes in completion order with their admitted IDs.
 /// Dropping the stream does not cancel tasks; keep a group handle when the
 /// caller needs explicit descendant cancellation.
-pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
+pub fn completion_stream_runtime<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
     let concurrency = tasks.len().clamp(1, 64);
@@ -1845,7 +1839,11 @@ pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
 }
 
 /// Folds observed outcomes in admission order, regardless of completion order.
-pub async fn ordered_reduce_runtime<O: DeserializeOwned + Send + 'static, A, F>(
+pub async fn ordered_reduce_runtime<
+    O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
+    A,
+    F,
+>(
     tasks: Vec<RuntimeTask<O>>,
     initial: A,
     reducer: F,
@@ -1857,14 +1855,14 @@ where
 }
 
 /// Observes whichever task terminates first. Other tasks remain admitted.
-pub async fn race_runtime<O: DeserializeOwned + Send + 'static>(
+pub async fn race_runtime<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> Option<(String, Result<Outcome<O>>)> {
     completion_stream_runtime(tasks).next().await
 }
 
 /// Returns the first success or every observed non-successful outcome.
-pub async fn first_success_runtime<O: DeserializeOwned + Send + 'static>(
+pub async fn first_success_runtime<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> std::result::Result<O, Vec<(String, Result<Outcome<O>>)>> {
     let mut completions = completion_stream_runtime(tasks);
@@ -1889,7 +1887,7 @@ pub struct QuorumFailure<O> {
 }
 
 /// Returns the first required successes or every observed partial outcome.
-pub async fn quorum_runtime<O: DeserializeOwned + Send + 'static>(
+pub async fn quorum_runtime<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
     tasks: Vec<RuntimeTask<O>>,
     required: usize,
 ) -> std::result::Result<Vec<O>, QuorumFailure<O>> {
@@ -2561,8 +2559,8 @@ impl AgentHarness {
         spawner: &Arc<dyn TaskSpawner>,
     ) -> Result<Option<Admission<RuntimeTask<O>>>>
     where
-        I: Serialize + Send + 'static,
-        O: DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         let retained_admission = match spawner.reconcile_admission(operation_id).await {
             Ok(retained) => retained,
@@ -3224,6 +3222,15 @@ impl AgentHarness {
         self.tasks.get(name)
     }
 
+    /// Resolves one exact registered revision without selecting a newer binding.
+    pub fn task_version<I: 'static, O: 'static>(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Arc<TaskDefinition<I, O>>> {
+        self.tasks.get_version(name, version)
+    }
+
     /// Resolves one model-visible tool definition by exact registered name.
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.tools
@@ -3262,8 +3269,8 @@ impl AgentHarness {
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: Serialize + DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         self.spawn_in_group(
             &self.live,
@@ -3284,8 +3291,8 @@ impl AgentHarness {
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: Serialize + DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         if self.execution.is_some() {
             return Err(Error::Unsupported(
@@ -3337,9 +3344,7 @@ impl AgentHarness {
                     input,
                 );
                 let output = match remaining {
-                    Some(duration) => tokio::time::timeout(duration, run)
-                        .await
-                        .map_err(|_| Error::Invalid("task deadline has expired".into()))??,
+                    Some(duration) => crate::platform::timeout(duration, run).await??,
                     None => run.await?,
                 };
                 drop(extension_leases);
@@ -3372,8 +3377,8 @@ impl AgentHarness {
         parent: Option<TaskId>,
     ) -> Result<Admission<RuntimeTask<O>>>
     where
-        I: Serialize + Send + 'static,
-        O: DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         self.admit_scoped(operation_id, definition, input, parent, self.scope.clone())
             .await
@@ -3429,7 +3434,10 @@ impl AgentHarness {
 
     /// Reattaches only to an admission pinned to this registered resumable
     /// definition. The caller cannot choose an output type by assertion.
-    pub async fn attach<I: 'static, O: DeserializeOwned + Send + 'static>(
+    pub async fn attach<
+        I: 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
+    >(
         &self,
         task_id: TaskId,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -3562,8 +3570,8 @@ impl AgentHarness {
         scope: RuntimeScope,
     ) -> Result<Admission<RuntimeTask<O>>>
     where
-        I: Serialize + Send + 'static,
-        O: DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         self.assert_durable_policy_bindings()?;
         let registered = self
@@ -3944,11 +3952,7 @@ impl TaskContext {
                 "task scope lacks model:generate".into(),
             ));
         }
-        let deadline = self
-            .scope
-            .run_limits()
-            .remaining()?
-            .map(|remaining| tokio::time::Instant::now() + remaining);
+        self.scope.run_limits().remaining()?;
         let binding = self
             .harness
             .model
@@ -3995,10 +3999,8 @@ impl TaskContext {
         let mut bytes = 0_u64;
         let mut stream = binding.provider.generate(request);
         loop {
-            let next = match deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
-                    .await
-                    .map_err(|_| Error::Invalid("task deadline has expired".into()))?,
+            let next = match self.scope.run_limits().remaining()? {
+                Some(remaining) => crate::platform::timeout(remaining, stream.next()).await?,
                 None => stream.next().await,
             };
             let Some(event) = next else { break };
@@ -4556,8 +4558,8 @@ impl TaskContext {
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: Serialize + DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         if self.durable_task.is_some() {
             return Err(Error::Unsupported(
@@ -4612,8 +4614,8 @@ impl TaskContext {
         input: I,
     ) -> Result<Admission<RuntimeTask<O>>>
     where
-        I: Serialize + Send + 'static,
-        O: DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         let parent = self.durable_task.ok_or_else(|| {
             Error::Unsupported("a live task cannot claim durable descendant ownership".into())
@@ -4738,14 +4740,8 @@ impl TaskContext {
                 .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
             host.wait_until(task, operation_id, deadline_unix_ms).await
         } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .as_millis();
-            let remaining = u128::from(deadline_unix_ms).saturating_sub(now);
-            let remaining = u64::try_from(remaining).unwrap_or(u64::MAX);
-            tokio::time::sleep(std::time::Duration::from_millis(remaining)).await;
-            Ok(())
+            let remaining = deadline_unix_ms.saturating_sub(crate::platform::now_unix_millis());
+            crate::platform::sleep(std::time::Duration::from_millis(remaining)).await
         }
     }
 
@@ -5218,7 +5214,7 @@ pub struct BatchCancellationReport {
     pub entries: Vec<(InputKey, BatchCancellationStatus)>,
 }
 
-async fn observe_batch_entry<O: DeserializeOwned + Send + 'static>(
+async fn observe_batch_entry<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
     entry: BatchEntry<RuntimeTask<O>>,
 ) -> BatchEntry<Result<Outcome<O>>> {
     let admission = match entry.admission {
@@ -5295,7 +5291,7 @@ fn batch_is_complete<O>(
     })
 }
 
-impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
+impl<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static> AdmissionBatch<O> {
     /// Observes accepted members concurrently while preserving every original
     /// input slot, including rejected and unresolved admissions. Dropping the
     /// wait never cancels accepted children.
@@ -5765,7 +5761,7 @@ impl RuntimeGroup {
     ) -> Result<Option<BatchCancellationReport>>
     where
         I: 'static,
-        O: DeserializeOwned + Send + 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         let Some(admitted) = self.reconcile_batch_id(definition, batch_id).await? else {
             return Ok(None);
@@ -5801,8 +5797,8 @@ impl RuntimeGroup {
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: Serialize + DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         if self.durable_parent.is_some() {
             return Err(Error::Unsupported(
@@ -5830,8 +5826,8 @@ impl RuntimeGroup {
         inputs: impl IntoIterator<Item = I>,
     ) -> Vec<Result<RuntimeTask<O>>>
     where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: Serialize + DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         let mut admissions = Vec::new();
         for input in inputs {
@@ -5849,8 +5845,8 @@ impl RuntimeGroup {
         inputs: impl IntoIterator<Item = I>,
     ) -> RuntimeMap<O>
     where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
+        I: Serialize + acyclic_stream::ProviderTask + 'static,
+        O: Serialize + DeserializeOwned + acyclic_stream::ProviderTask + 'static,
     {
         let admissions = self.spawn_many(definition, inputs).await;
         let mut outcomes = Vec::with_capacity(admissions.len());
@@ -5895,7 +5891,7 @@ impl RuntimeGroup {
 
     /// Observes admitted members in input order. Observation does not cancel
     /// other members or convert uncertainty into success.
-    pub async fn join<O: DeserializeOwned + Send + 'static>(
+    pub async fn join<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
     ) -> Vec<Result<Outcome<O>>> {
@@ -5911,7 +5907,7 @@ impl RuntimeGroup {
         reducer: F,
     ) -> A
     where
-        O: DeserializeOwned + Send + 'static,
+        O: DeserializeOwned + acyclic_stream::ProviderTask + 'static,
         F: FnMut(A, Result<Outcome<O>>) -> A,
     {
         ordered_reduce_runtime(tasks, initial, reducer).await
@@ -5919,7 +5915,7 @@ impl RuntimeGroup {
 
     /// Streams admitted outcomes as they complete, retaining each task ID.
     /// Dropping this stream does not cancel unfinished members.
-    pub fn as_completed<O: DeserializeOwned + Send + 'static>(
+    pub fn as_completed<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
     ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
@@ -5927,7 +5923,7 @@ impl RuntimeGroup {
     }
 
     /// Returns the first terminal outcome; group cancellation remains explicit.
-    pub async fn race<O: DeserializeOwned + Send + 'static>(
+    pub async fn race<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
     ) -> Option<(String, Result<Outcome<O>>)> {
@@ -5935,7 +5931,7 @@ impl RuntimeGroup {
     }
 
     /// Returns the first success, or every non-success once all members settle.
-    pub async fn first_success<O: DeserializeOwned + Send + 'static>(
+    pub async fn first_success<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
     ) -> std::result::Result<O, Vec<(String, Result<Outcome<O>>)>> {
@@ -5943,7 +5939,7 @@ impl RuntimeGroup {
     }
 
     /// Collects the first `required` successes, or reports all non-successes.
-    pub async fn quorum<O: DeserializeOwned + Send + 'static>(
+    pub async fn quorum<O: DeserializeOwned + acyclic_stream::ProviderTask + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
         required: usize,

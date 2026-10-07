@@ -43,8 +43,17 @@ use tokio::sync::Mutex;
 #[serde(deny_unknown_fields)]
 struct MailEvent {
     sender: TaskId,
+    recipient: TaskId,
     message_id: OperationId,
+    schema_revision: u32,
+    route_revision: u32,
     payload: FileRef,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailReceipt {
+    sequence: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -571,23 +580,33 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             self.mail_bytes(sender, recipient, message_id, payload)
                 .await?,
         );
-        let path = acyclic_stream::StreamPath::new(format!("harness/v2/mail/{recipient}"))?;
-        let key = Self::event_key("mail", recipient, message_id)?;
+        let intent = self.mail_intent(message_id)?;
+        let intent_key = Self::event_key("mail-intent", sender, message_id)?;
         loop {
             self.verify_owner(sender, &fence, false).await?;
-            let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
-            if found {
-                self.verify_owner(sender, &fence, false).await?;
-                return Ok(());
+            if self.mail_intent_retained(&intent, &bytes).await? {
+                break;
             }
             if owner
                 .append(
-                    path.clone(),
-                    tail,
-                    &key,
+                    intent.path().clone(),
+                    0,
+                    &intent_key,
                     bytes.clone(),
                     crate::distributed::JournalWrite::Fresh,
                 )
+                .await?
+            {
+                break;
+            }
+        }
+        loop {
+            self.verify_owner(sender, &fence, false).await?;
+            let condition = owner
+                .condition(crate::distributed::JournalWrite::Fresh)
+                .await?;
+            if self
+                .publish_mail(&intent, recipient, message_id, &bytes, Some(condition))
                 .await?
             {
                 self.verify_owner(sender, &fence, false).await?;
@@ -1463,6 +1482,38 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
+    fn mail_intent(&self, message_id: OperationId) -> Result<acyclic_stream::Stream<P>> {
+        self.stream
+            .stream(format!("harness/v2/mail-intents/{message_id}"))
+            .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
+    async fn mail_intent_retained(
+        &self,
+        stream: &acyclic_stream::Stream<P>,
+        bytes: &[u8],
+    ) -> Result<bool> {
+        let bounds = match stream.bounds().await {
+            Ok(bounds) => bounds,
+            Err(StreamError::NotFound) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if bounds.tail == 0 {
+            return Ok(false);
+        }
+        if bounds.tail > 2 {
+            return Err(Error::Storage("mail intent is not exactly retained".into()));
+        }
+        let records = stream.read(0, 1).await?.try_collect::<Vec<_>>().await?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage("mail intent record is missing".into()));
+        };
+        if record.sequence != 0 || record.value.as_ref() != bytes {
+            return Err(Error::Conflict("mail intent identity was reused".into()));
+        }
+        Ok(true)
+    }
+
     fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
         self.stream
             .stream(format!("harness/v2/batches/{batch_id}"))
@@ -1674,55 +1725,151 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.reader.verify(&payload).await?;
         let event = MailEvent {
             sender,
+            recipient,
             message_id,
+            schema_revision: 1,
+            route_revision: 1,
             payload,
         };
         crate::contract::canonical_json_bytes(&event)
     }
 
-    async fn mail_state(
+    async fn mail_acknowledged(
         &self,
+        intent: &acyclic_stream::Stream<P>,
         recipient: TaskId,
-        message_id: OperationId,
         bytes: &[u8],
-    ) -> Result<(u64, bool)> {
+    ) -> Result<bool> {
         let mailbox = self.mailbox(recipient)?;
-        let tail = match mailbox.bounds().await {
-            Ok(bounds) => bounds.tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(error.into()),
-        };
-        let mut after = 0;
-        let mut found = false;
-        while after < tail {
-            let page = mailbox
-                .read(after, (tail - after).min(64) as u32)
+        let retained = intent.bounds().await?;
+        if retained.tail == 2 {
+            let records = intent.read(1, 1).await?.try_collect::<Vec<_>>().await?;
+            let [record] = records.as_slice() else {
+                return Err(Error::Storage("mail acknowledgment is missing".into()));
+            };
+            let receipt: MailReceipt = crate::contract::json_from_slice(&record.value)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if record.sequence != 1
+                || crate::contract::canonical_json_bytes(&receipt)? != record.value.as_ref()
+            {
+                return Err(Error::Storage(
+                    "mail acknowledgment is not canonical".into(),
+                ));
+            }
+            let records = mailbox
+                .read(receipt.sequence, 1)
                 .await?
                 .try_collect::<Vec<_>>()
                 .await?;
-            if page.is_empty() || page.len() > 64 {
-                return Err(Error::Storage("invalid mail replay page".into()));
+            let [record] = records.as_slice() else {
+                return Err(Error::Storage(
+                    "acknowledged receiver record is missing".into(),
+                ));
+            };
+            if record.sequence != receipt.sequence || record.value.as_ref() != bytes {
+                return Err(Error::Conflict(
+                    "acknowledged receiver record differs".into(),
+                ));
             }
-            for record in page {
-                if record.sequence != after || after >= tail {
-                    return Err(Error::Storage("mail replay sequence differs".into()));
+            return Ok(true);
+        }
+        if retained.tail != 1 {
+            return Err(Error::Storage(
+                "mail intent must precede receiver publication".into(),
+            ));
+        }
+        Ok(false)
+    }
+
+    async fn publish_mail(
+        &self,
+        intent: &acyclic_stream::Stream<P>,
+        recipient: TaskId,
+        message_id: OperationId,
+        bytes: &[u8],
+        owner: Option<acyclic_stream::CommitCondition>,
+    ) -> Result<bool> {
+        use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome};
+        if self.mail_acknowledged(intent, recipient, bytes).await? {
+            return Ok(true);
+        }
+        let mailbox = self.mailbox(recipient)?;
+        let (tail, target) = match mailbox.bounds().await {
+            Ok(bounds) => (
+                bounds.tail,
+                CommitCondition::Tail {
+                    path: mailbox.path().clone(),
+                    expected: bounds.tail,
+                },
+            ),
+            Err(StreamError::NotFound) => (
+                0,
+                CommitCondition::Absent {
+                    path: mailbox.path().clone(),
+                },
+            ),
+            Err(error) => return Err(error.into()),
+        };
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"harness/v2/mail-publication\0");
+        hash.update(Self::event_key("mail", recipient, message_id)?.as_bytes());
+        hash.update(blake3::hash(bytes).as_bytes());
+        hash.update(&tail.to_le_bytes());
+        hash.update(&[u8::from(matches!(target, CommitCondition::Absent { .. }))]);
+        let mut conditions = vec![
+            target,
+            CommitCondition::Tail {
+                path: intent.path().clone(),
+                expected: 1,
+            },
+        ];
+        if let Some(owner) = owner {
+            let CommitCondition::Tail { path, expected } = &owner else {
+                return Err(Error::Invalid(
+                    "mail owner must bind the coordinator revision".into(),
+                ));
+            };
+            hash.update(path.as_str().as_bytes());
+            hash.update(&expected.to_le_bytes());
+            conditions.push(owner);
+        }
+        let receipt = Bytes::from(crate::contract::canonical_json_bytes(&MailReceipt {
+            sequence: tail,
+        })?);
+        let outcome = crate::distributed::commit_keyed(
+            &self.stream,
+            acyclic_stream::CommitRequest {
+                conditions,
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: mailbox.path().clone(),
+                        records: vec![Bytes::copy_from_slice(bytes)],
+                    },
+                    CommitMutation::Append {
+                        path: intent.path().clone(),
+                        records: vec![receipt],
+                    },
+                ],
+                idempotency_key: StreamKey::new(Bytes::copy_from_slice(
+                    hash.finalize().as_bytes(),
+                ))?,
+            },
+            message_id,
+        )
+        .await?;
+        match outcome {
+            CommitOutcome::Conflict(_) => Ok(false),
+            // Verify the exact receiver record through the retained pointer;
+            // neither the envelope nor a transport observation is consumption.
+            CommitOutcome::Committed(_) => {
+                if !self.mail_acknowledged(intent, recipient, bytes).await? {
+                    return Err(Error::Storage(
+                        "committed mail acknowledgment is absent".into(),
+                    ));
                 }
-                let event: MailEvent = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                event.payload.validate()?;
-                if crate::contract::canonical_json_bytes(&event)? != record.value.as_ref() {
-                    return Err(Error::Storage("mail event is not canonical JSON".into()));
-                }
-                if event.message_id == message_id {
-                    if found || record.value.as_ref() != bytes {
-                        return Err(Error::Conflict("mail identity reused".into()));
-                    }
-                    found = true;
-                }
-                after += 1;
+                Ok(true)
             }
         }
-        Ok((tail, found))
     }
 
     async fn timer_state(
@@ -2279,14 +2426,25 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let bytes = self
                 .mail_bytes(sender, recipient, message_id, payload)
                 .await?;
-            let mailbox = self.mailbox(recipient)?;
+            // Pin the exact sender-owned intent before receiver publication.
+            // Stream keyed append rejects changed recipients/content/revisions.
+            let intent = self.mail_intent(message_id)?;
             loop {
-                let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
-                if found {
-                    return Ok(());
+                if self.mail_intent_retained(&intent, &bytes).await? {
+                    break;
                 }
                 if self
-                    .publish_control_at(&mailbox, "mail", recipient, message_id, &bytes, Some(tail))
+                    .publish_control_at(&intent, "mail-intent", sender, message_id, &bytes, Some(0))
+                    .await?
+                {
+                    break;
+                }
+            }
+            // Success is the receiver's verified durable record, not transport
+            // observation or evidence that a model consumed the message.
+            loop {
+                if self
+                    .publish_mail(&intent, recipient, message_id, &bytes, None)
                     .await?
                 {
                     return Ok(());
@@ -2349,6 +2507,14 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 }
                 let event: MailEvent = serde_json::from_value(value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
+                if event.recipient != task_id
+                    || event.schema_revision != 1
+                    || event.route_revision != 1
+                {
+                    return Err(Error::Storage(
+                        "mail route or schema revision differs".into(),
+                    ));
+                }
                 event.payload.validate()?;
                 recipient_admission.limits.validate_file(&event.payload)?;
                 if !read_granted(&recipient_admission.grants, &event.payload)? {
@@ -2421,10 +2587,10 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 if now >= deadline_unix_ms {
                     return Ok(());
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(
+                crate::platform::sleep(std::time::Duration::from_millis(
                     deadline_unix_ms.saturating_sub(now).min(60_000),
                 ))
-                .await;
+                .await?;
             }
         })
     }

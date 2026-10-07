@@ -63,6 +63,10 @@ rustix = { workspace = true, features = ["fs"] }
 cc = "1.2.56"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+indexed_db_futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
@@ -104,6 +108,7 @@ windows = { version = "0.62.2", features = [
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2", "dep:tempfile"]
 memory = ["distributed"]
+browser = ["distributed", "dep:indexed_db_futures", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 native-watch = ["dep:notify"]
 native-mount = ["native-watch", "dep:fs2", "dep:fuser"]
 s3-http = ["distributed", "dep:base64", "dep:crc-fast", "dep:s3s", "dep:serde_urlencoded", "dep:subtle", "dep:sync_wrapper", "dep:time", "dep:urlencoding"]
@@ -113,6 +118,9 @@ napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true

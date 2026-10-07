@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Ordinary Harness task runtime on IndexedDB</title>
+<body data-result="pending">
+<script type="module">
+import init, { WasmReducer, WasmTaskRegistry, WasmTaskRuntime } from "../generated/wasm/acyclic_harness_wasm.js";
+try {
+  await init();
+  const id = crypto.randomUUID();
+  const owner = new WasmReducer({ kind: "task", id }, "browser-task", new Uint8Array(32).fill(23), []);
+  const agent = "15151515-1515-1515-1515-151515151515";
+  const provider = { namespace: "browser-task", family: "filesystem", version: "2" };
+  const volume = { provider, id: "private", class: "agent_private", owner: { kind: "agent", id: agent } };
+  const scope = owner.issueScopeForAgent(agent, "owner", [
+    "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
+    "timer:wait", "task:spawn:test.browser@1",
+    owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
+  ]);
+  const registry = new WasmTaskRegistry();
+  registry.registerMachine({ name: "test.browser", version: "1", digest: new Array(32).fill(41),
+    state_schema: { type: "object" }, input_schema: { type: "object" }, output_schema: { type: "integer" }, requirements: [] },
+    input => input,
+    (state, input) => input === null
+      ? { state, commands: [{ operation_id: state.operation, kind: "acyclic.timer.v1", payload: state.file }], status: { kind: "suspended" } }
+      : { state, commands: [], status: { kind: "completed", value: 7 } });
+  const options = {
+    filesystem_database: `harness-task-fs-${id}`, stream_database: `harness-task-stream-${id}`,
+    maximum_object_bytes: 1048576n, maximum_payload_bytes: 65536n,
+    filesystem_provider: provider, volume,
+    stream_limits: { commands: 10000n, journal_bytes: 16777216n, paths: 1000, path_bytes: 262144,
+      records: 10000, payload_bytes: 16777216, commits: 10000, idempotency_results: 10000 },
+    limits: { file_bytes: 1048576n, path_bytes: 4096n, attachments: 32n, render_bytes: 1048576n,
+      model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
+    run_limits: { concurrency: 1n, max_steps: 16n, deadline_epoch_ms: null },
+    session_limits: { active_tasks: 1n, total_tasks: 4n, depth: 1, model_steps: 16n }, concurrency: 1,
+  };
+  let runtime = await WasmTaskRuntime.open(options, owner, registry, scope);
+  await runtime.initializeVolume();
+  const timerOperation = crypto.randomUUID();
+  const file = await runtime.stage(timerOperation, "timer", new TextEncoder().encode(JSON.stringify({ deadline_unix_ms: Date.now() + 2000 })));
+  const operation = crypto.randomUUID();
+  const admission = await runtime.admit(operation, "test.browser", "1", { file, operation: timerOperation });
+  if (admission.kind !== "accepted") throw new Error(`admission: ${JSON.stringify(admission)}`);
+  const worker = { id: "browser-actor-a", available: {}, labels: {} };
+  const first = await runtime.workerTick(worker, null, 1, 2);
+  if (first.work?.kind !== "suspended") throw new Error(`initial tick: ${JSON.stringify(first)}`);
+  runtime.free();
+  runtime = await WasmTaskRuntime.open(options, owner, registry, scope);
+  if (await runtime.outcome(admission.task_id) != null) throw new Error("timer completed before durable wake");
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  let cursor = null;
+  let completed = false;
+  for (let page = 0; page < 100 && !completed; page++) {
+    const tick = await runtime.workerTick({ ...worker, id: "browser-actor-b" }, cursor, 1, 2);
+    cursor = tick.wake.cursor;
+    completed = tick.work?.kind === "completed";
+    if (tick.work?.kind === "unresolved") throw new Error(JSON.stringify(tick.work));
+    if (!cursor && !completed) throw new Error("durable timer was not woken");
+  }
+  if (!completed) throw new Error("replacement worker did not complete");
+  const outcome = await runtime.outcome(admission.task_id);
+  if (outcome?.Succeeded !== 7n) throw new Error("completed outcome differs");
+  runtime.free(); registry.free(); owner.free();
+  document.body.dataset.result = "passed";
+} catch (error) {
+  document.body.dataset.result = `failed: ${error.message ?? error}`;
+}
+</script>
+</body>
+</html>

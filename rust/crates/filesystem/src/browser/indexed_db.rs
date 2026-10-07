@@ -1,13 +1,13 @@
 //! `IndexedDB` authority and immutable-object persistence.
 
-use crate::authority_codec::{
+use super::authority_codec::{
     COMMIT_PREFIX_BYTES, GATE_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord,
     PublicationGateRecord, authority_key, commit_key, decode_commit_owned, decode_head,
     decode_operation, decode_publication_gate, encode_commit, encode_head, encode_operation,
     encode_publication_gate, free_publication_gate, operation_key,
 };
-use acyclic_fs::storage::{FenceOutcome, ObjectWrite};
-use acyclic_fs::{
+use crate::storage::{FenceOutcome, ObjectWrite};
+use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityFailure, AuthorityId,
     AuthorityReceipt, AuthorityResult, AuthorityStoreError, CancellationToken,
     CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource,
@@ -162,13 +162,13 @@ impl IndexedDbObjectStore {
     fn doubled(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
         length
             .checked_mul(2)
-            .ok_or_else(|| Self::failure(acyclic_fs::WorkError::Overflow.into(), work))
+            .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), work))
     }
 
     fn peak_with_key(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
         OBJECT_KEY_BYTES
             .checked_add(length)
-            .ok_or_else(|| Self::failure(acyclic_fs::WorkError::Overflow.into(), work))
+            .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), work))
     }
 
     fn create_blob(bytes: &[u8], work: WorkCounters) -> Result<Blob, ObjectFailure> {
@@ -255,7 +255,7 @@ impl IndexedDbObjectStore {
         &self,
         objects: &indexed_db_futures::object_store::ObjectStore<'_>,
         metadata: &indexed_db_futures::object_store::ObjectStore<'_>,
-        request: acyclic_fs::ObjectReadRequest,
+        request: crate::ObjectReadRequest,
         state: &mut ObjectBatchState,
         cancellation: &CancellationToken,
     ) -> Result<ObjectRead, ObjectFailure> {
@@ -325,7 +325,7 @@ impl IndexedDbObjectStore {
         state.retained = state
             .retained
             .checked_add(length)
-            .ok_or_else(|| Self::failure(acyclic_fs::WorkError::Overflow.into(), state.work))?;
+            .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), state.work))?;
         state.work.peak_allocation_bytes = state.work.peak_allocation_bytes.max(state.retained);
         Ok(ObjectRead {
             bytes,
@@ -536,10 +536,10 @@ impl IndexedDbAuthorityStore {
     async fn read_window(
         &self,
         transaction: &Transaction<'_>,
-        workspace: acyclic_fs::WorkspaceId,
+        workspace: crate::WorkspaceId,
         prior: WorkCounters,
         budget: Option<WorkBudget>,
-    ) -> AuthorityResult<Option<acyclic_fs::OperationWindowSnapshot>> {
+    ) -> AuthorityResult<Option<crate::OperationWindowSnapshot>> {
         let work = prior
             .checked_add(authority_backend_read_work())
             .map_err(|error| Self::failure(error.into(), prior))?;
@@ -589,7 +589,7 @@ impl IndexedDbAuthorityStore {
         if let Some(budget) = budget {
             Self::admit(work, budget)?;
         }
-        let snapshot: acyclic_fs::OperationWindowSnapshot =
+        let snapshot: crate::OperationWindowSnapshot =
             serde_json::from_slice(&array.to_vec()).map_err(|error| Self::corrupt(error, work))?;
         if !snapshot.is_valid_for(workspace) {
             return Err(Self::corrupt("invalid operation window", work));
@@ -615,17 +615,17 @@ impl IndexedDbAuthorityStore {
                 lease_id,
                 expires_at_millis,
             } => {
-                let workspace = acyclic_fs::WorkspaceId::from_bytes(workspace_id);
+                let workspace = crate::WorkspaceId::from_bytes(workspace_id);
                 let receipt = self
                     .read_window(transaction, workspace, work, Some(budget))
                     .await?;
                 let work = receipt.work;
                 let active = match receipt.value {
-                    Some(acyclic_fs::OperationWindowSnapshot {
-                        phase: acyclic_fs::OperationWindowPhase::Active { leases, .. },
+                    Some(crate::OperationWindowSnapshot {
+                        phase: crate::OperationWindowPhase::Active { leases, .. },
                         ..
                     }) => leases
-                        .get(&acyclic_fs::OperationLeaseId::from_bytes(lease_id))
+                        .get(&crate::OperationLeaseId::from_bytes(lease_id))
                         .is_some_and(|lease| lease.expires_at_millis == expires_at_millis),
                     _ => false,
                 };
@@ -634,8 +634,7 @@ impl IndexedDbAuthorityStore {
                     .parse::<u64>()
                     .map_err(|error| Self::backend(error, work))?;
                 let value = permitted_authority == authority_id.into_bytes()
-                    && acyclic_fs::kernel::volume_authority_id(workspace.volume_id())
-                        == authority_id
+                    && crate::kernel::volume_authority_id(workspace.volume_id()) == authority_id
                     && active
                     && now < expires_at_millis;
                 Ok(AuthorityReceipt { value, work })
@@ -1040,7 +1039,7 @@ impl IndexedDbAuthorityStore {
         };
         let encoded_commit = encode_commit(&durable).map_err(|error| Self::backend(error, work))?;
         let encoded_commit_bytes = u64::try_from(encoded_commit.len())
-            .map_err(|_| Self::failure(acyclic_fs::WorkError::Overflow.into(), work))?;
+            .map_err(|_| Self::failure(crate::WorkError::Overflow.into(), work))?;
         let append_work = authority_append_work(payload_bytes, encoded_commit_bytes)
             .map_err(|error| Self::failure(error.into(), work))?;
         let write_work = work
@@ -1278,7 +1277,7 @@ impl IndexedDbAuthorityStore {
             if !is_predecessor {
                 let next_payload = returned_payload_bytes
                     .checked_add(payload_length)
-                    .ok_or_else(|| Self::failure(acyclic_fs::WorkError::Overflow.into(), work))?;
+                    .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), work))?;
                 if next_payload > maximum_payload_bytes {
                     if returned_payload_bytes == 0 {
                         return Err(Self::failure(
@@ -1314,7 +1313,7 @@ impl IndexedDbAuthorityStore {
         cancellation: &CancellationToken,
         mut work: WorkCounters,
     ) -> AuthorityResult<Vec<DurableCommit>> {
-        let mut previous_digest = acyclic_fs::Digest::ZERO;
+        let mut previous_digest = crate::Digest::ZERO;
         let mut output = Vec::new();
         for replay in blobs {
             let read_work =
@@ -1433,13 +1432,13 @@ impl IndexedDbAuthorityStore {
     }
 }
 
-impl acyclic_fs::OperationWindowStore for IndexedDbAuthorityStore {
+impl crate::OperationWindowStore for IndexedDbAuthorityStore {
     type Error = AuthorityStoreError;
 
     async fn load(
         &self,
-        workspace: acyclic_fs::WorkspaceId,
-    ) -> Result<Option<acyclic_fs::OperationWindowSnapshot>, Self::Error> {
+        workspace: crate::WorkspaceId,
+    ) -> Result<Option<crate::OperationWindowSnapshot>, Self::Error> {
         let transaction = self
             .database
             .transaction([OPERATION_WINDOWS])
@@ -1453,9 +1452,9 @@ impl acyclic_fs::OperationWindowStore for IndexedDbAuthorityStore {
 
     async fn compare_and_swap(
         &self,
-        workspace: acyclic_fs::WorkspaceId,
+        workspace: crate::WorkspaceId,
         expected_revision: u64,
-        replacement: acyclic_fs::OperationWindowSnapshot,
+        replacement: crate::OperationWindowSnapshot,
     ) -> Result<bool, Self::Error> {
         if !replacement.is_valid_for(workspace)
             || expected_revision.checked_add(1) != Some(replacement.revision)
@@ -1553,15 +1552,9 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let transaction = self.first_record_transaction(work)?;
         if Self::authority_exists(&transaction, authority, cancellation, work).await? {
             drop(transaction);
-            let appended = acyclic_fs::append_first_record(
-                self,
-                authority,
-                commit,
-                work,
-                budget,
-                cancellation,
-            )
-            .await?;
+            let appended =
+                crate::append_first_record(self, authority, commit, work, budget, cancellation)
+                    .await?;
             return Ok(appended);
         }
         let work = self
@@ -1600,7 +1593,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             || Self::authority_exists(&transaction, fork.destination, cancellation, work).await?
         {
             drop(transaction);
-            return acyclic_fs::commit_workspace_fork_in_steps(self, fork, budget, cancellation)
+            return crate::commit_workspace_fork_in_steps(self, fork, budget, cancellation)
                 .await
                 .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))
                 .and_then(|stepped| {
@@ -2357,7 +2350,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
 
     async fn read_many(
         &self,
-        requests: &[acyclic_fs::ObjectReadRequest],
+        requests: &[crate::ObjectReadRequest],
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<Vec<ObjectRead>> {
@@ -2501,10 +2494,10 @@ fn authority_payload_length(
 fn authority_commit_read_work(
     encoded_length: u64,
     payload_length: u64,
-) -> Result<WorkCounters, acyclic_fs::WorkError> {
+) -> Result<WorkCounters, crate::WorkError> {
     let copied = encoded_length
         .checked_mul(2)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     Ok(WorkCounters {
         authority_records_read: 1,
         authority_bytes_read: payload_length,
@@ -2519,27 +2512,27 @@ fn authority_commit_read_work(
 fn authority_append_work(
     payload_bytes: u64,
     encoded_commit_bytes: u64,
-) -> Result<WorkCounters, acyclic_fs::WorkError> {
+) -> Result<WorkCounters, crate::WorkError> {
     let fixed_bytes = u64::try_from(HEAD_BYTES.saturating_add(OPERATION_BYTES))
-        .map_err(|_| acyclic_fs::WorkError::Overflow)?;
+        .map_err(|_| crate::WorkError::Overflow)?;
     let encoded_bytes = encoded_commit_bytes
         .checked_add(fixed_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     let copied_commit = encoded_commit_bytes
         .checked_mul(2)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     let bytes_copied = copied_commit
         .checked_add(fixed_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     let peak_commit = encoded_commit_bytes
         .checked_mul(3)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     let peak_fixed = fixed_bytes
         .checked_mul(2)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     let peak_allocation_bytes = peak_commit
         .checked_add(peak_fixed)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(crate::WorkError::Overflow)?;
     Ok(WorkCounters {
         authority_records_appended: 1,
         authority_bytes_written: payload_bytes,
@@ -2616,7 +2609,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_fs::{AsyncObjectStore, Digest, ObjectKind, WorkError};
+    use crate::{AsyncObjectStore, Digest, ObjectKind, WorkError};
     use wasm_bindgen::JsValue;
     use wasm_bindgen_test::*;
 
