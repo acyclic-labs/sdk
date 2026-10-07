@@ -289,25 +289,26 @@ impl Binding {
     /// Constructs a binding while applying the same non-empty admission rule
     /// used by the canonical create and update validators.
     pub fn new(name: String, capability: String, resource: String) -> Result<Self, DomainError> {
-        if name.is_empty() || capability.is_empty() || resource.is_empty() {
-            return Err(DomainError::InvalidBinding);
-        }
-        Ok(Self {
+        let binding = Self {
             name,
             capability,
             resource,
-        })
+        };
+        binding.validate_admission()?;
+        Ok(binding)
+    }
+
+    fn validate_admission(&self) -> Result<(), DomainError> {
+        if self.name.is_empty() || self.capability.is_empty() || self.resource.is_empty() {
+            return Err(DomainError::InvalidBinding);
+        }
+        Ok(())
     }
 
     /// Re-checks a value admitted from an untrusted protobuf wire message
     /// through the canonical constructor predicate.
-    pub fn validate_from_proto(&self) -> Result<(), DomainError> {
-        Self::new(
-            self.name.clone(),
-            self.capability.clone(),
-            self.resource.clone(),
-        )
-        .map(|_| ())
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        self.validate_admission()
     }
 
     /// Returns the binding name.
@@ -540,30 +541,31 @@ impl SubscriptionSpec {
         start: SubscriptionStart,
         placement_anchor: bool,
     ) -> Result<Self, DomainError> {
-        if subscription_id.is_empty()
-            || stream_path.is_empty()
-            || (start.cursor_value().is_none() && start.current_head_value() != Some(true))
-        {
-            return Err(DomainError::InvalidSubscription);
-        }
-        Ok(Self {
+        let subscription = Self {
             subscription_id,
             stream_path,
             start,
             placement_anchor,
-        })
+        };
+        subscription.validate_admission()?;
+        Ok(subscription)
+    }
+
+    fn validate_admission(&self) -> Result<(), DomainError> {
+        if self.subscription_id.is_empty()
+            || self.stream_path.is_empty()
+            || (self.start.cursor_value().is_none()
+                && self.start.current_head_value() != Some(true))
+        {
+            return Err(DomainError::InvalidSubscription);
+        }
+        Ok(())
     }
 
     /// Re-checks a value admitted from an untrusted protobuf wire message
     /// through the canonical constructor predicate.
-    pub fn validate_from_proto(&self) -> Result<(), DomainError> {
-        Self::new(
-            self.subscription_id.clone(),
-            self.stream_path.clone(),
-            self.start,
-            self.placement_anchor,
-        )
-        .map(|_| ())
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        self.validate_admission()
     }
 
     /// Returns the subscription identifier.
