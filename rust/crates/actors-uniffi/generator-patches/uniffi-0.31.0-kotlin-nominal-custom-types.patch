@@ -1,5 +1,5 @@
 diff --git a/src/bindings/kotlin/gen_kotlin/mod.rs b/src/bindings/kotlin/gen_kotlin/mod.rs
-index cf4d9d15e5..4f1b7a34db 100644
+index cf4d9d15e5..db83a7ed56 100644
 --- a/src/bindings/kotlin/gen_kotlin/mod.rs
 +++ b/src/bindings/kotlin/gen_kotlin/mod.rs
 @@ -157,6 +157,14 @@ impl KotlinVersion {
@@ -11,14 +11,29 @@ index cf4d9d15e5..4f1b7a34db 100644
 +    /// generated validating factory below.
 +    #[serde(default)]
 +    nominal: bool,
-+    /// Kotlin predicate evaluated by the generated nominal factory.
++    /// Rust-exported validator called by the generated nominal factory.
 +    #[serde(default)]
-+    constructor_validation: Option<String>,
++    validator: Option<String>,
      into_custom: String, // b/w compat alias for lift
      lift: String,
      from_custom: String, // b/w compat alias for lower
+@@ -165,6 +173,14 @@ pub struct CustomTypeConfig {
+ 
+ // functions replace literal "{}" in strings with a specified value.
+ impl CustomTypeConfig {
++    fn has_lift(&self) -> bool {
++        !self.lift.is_empty() || !self.into_custom.is_empty()
++    }
++
++    fn has_lower(&self) -> bool {
++        !self.lower.is_empty() || !self.from_custom.is_empty()
++    }
++
+     fn lift(&self, name: &str) -> String {
+         let converter = if self.lift.is_empty() {
+             &self.into_custom
 diff --git a/src/bindings/kotlin/templates/CustomTypeTemplate.kt b/src/bindings/kotlin/templates/CustomTypeTemplate.kt
-index ac02f5593a..d02e66ccfa 100644
+index ac02f5593a..30f3c721b1 100644
 --- a/src/bindings/kotlin/templates/CustomTypeTemplate.kt
 +++ b/src/bindings/kotlin/templates/CustomTypeTemplate.kt
 @@ -13,6 +13,27 @@ public typealias {{ ffi_converter_name }} = {{ builtin|ffi_converter_name }}
@@ -34,9 +49,9 @@ index ac02f5593a..d02e66ccfa 100644
 +public value class {{ type_name }} private constructor(public val value: {{ builtin|type_name(ci) }}) {
 +    public companion object {
 +        public fun from(value: {{ builtin|type_name(ci) }}): {{ type_name }} {
-+            {%- match config.constructor_validation %}
-+            {%- when Some(predicate) %}
-+            require({{ predicate }}) { "Invalid {{ type_name }}" }
++            {%- match config.validator %}
++            {%- when Some(validator) %}
++            {{ validator }}(value)
 +            {%- when None %}
 +            {%- endmatch %}
 +            return {{ type_name }}(value)
@@ -54,12 +69,12 @@ index ac02f5593a..d02e66ccfa 100644
      override fun lift(value: {{ ffi_type_name }}): {{ type_name }} {
          val builtinValue = {{ builtin|lift_fn }}(value)
 -        return {{ config.lift("builtinValue") }}
-+        return {% if config.nominal %}{{ type_name }}.from({% endif %}{{ config.lift("builtinValue") }}{% if config.nominal %}){% endif %}
++        return {% if config.nominal %}{{ type_name }}.from({% if config.has_lift() %}{{ config.lift("builtinValue") }}{% else %}builtinValue{% endif %}){% else %}{{ config.lift("builtinValue") }}{% endif %}
      }
  
      override fun lower(value: {{ type_name }}): {{ ffi_type_name }} {
 +        {%- if config.nominal %}
-+        val builtinValue = {{ config.lower("value.value") }}
++        val builtinValue = {% if config.has_lower() %}{{ config.lower("value.value") }}{% else %}value.value{% endif %}
 +        {%- else %}
          val builtinValue = {{ config.lower("value") }}
 +        {%- endif %}
@@ -69,12 +84,12 @@ index ac02f5593a..d02e66ccfa 100644
      override fun read(buf: ByteBuffer): {{ type_name }} {
          val builtinValue = {{ builtin|read_fn }}(buf)
 -        return {{ config.lift("builtinValue") }}
-+        return {% if config.nominal %}{{ type_name }}.from({% endif %}{{ config.lift("builtinValue") }}{% if config.nominal %}){% endif %}
++        return {% if config.nominal %}{{ type_name }}.from({% if config.has_lift() %}{{ config.lift("builtinValue") }}{% else %}builtinValue{% endif %}){% else %}{{ config.lift("builtinValue") }}{% endif %}
      }
  
      override fun allocationSize(value: {{ type_name }}): ULong {
 +        {%- if config.nominal %}
-+        val builtinValue = {{ config.lower("value.value") }}
++        val builtinValue = {% if config.has_lower() %}{{ config.lower("value.value") }}{% else %}value.value{% endif %}
 +        {%- else %}
          val builtinValue = {{ config.lower("value") }}
 +        {%- endif %}
@@ -83,12 +98,11 @@ index ac02f5593a..d02e66ccfa 100644
  
      override fun write(value: {{ type_name }}, buf: ByteBuffer) {
 +        {%- if config.nominal %}
-+        val builtinValue = {{ config.lower("value.value") }}
++        val builtinValue = {% if config.has_lower() %}{{ config.lower("value.value") }}{% else %}value.value{% endif %}
 +        {%- else %}
          val builtinValue = {{ config.lower("value") }}
 +        {%- endif %}
          {{ builtin|write_fn }}(builtinValue, buf)
      }
  }
-
 

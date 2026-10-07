@@ -24,6 +24,19 @@ is built. They provide compile-time evidence for brands, bigint, required
 oneof presence, and readonly client views; they do not replace a native/WASM
 runtime fixture.
 
+An isolated copied-package install with a platform companion shim exercised the
+root default Node loader and all eight operation methods, proving the expected
+companion module shape and result envelope. The candidate itself still ships
+no real platform companion package; the shim is only loader qualification.
+
+The generated Rust WASM bridge was also exercised through the default browser
+branch by removing the Node process marker and serving a local gRPC-Web stub.
+All eight operations reached the stub with `grpc-web` transport, while Rust
+rejected `currentHead=false`, a 31-byte SHA digest, and an empty ActorId before
+the request reached the stub. This validates the actual WASM admission path;
+an interactive browser process was unavailable in the review environment, so
+this is a browser-branch/runtime qualification rather than a browser UI run.
+
 The generated semantic declarations inspected from the qualified bundle also
 use mutable object properties and `Array` collections. The negative fixture
 therefore includes mutation expectations so the public immutability policy is

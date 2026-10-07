@@ -3,12 +3,25 @@ generate_immutable_records = true
 
 [bindings.kotlin.custom_types.ActorId]
 nominal = true
-constructor_validation = "value.isNotEmpty()"
+validator = "validateActorId"
+imports = ["uniffi.acyclic_actors_uniffi.validateActorId"]
 
 [bindings.kotlin.custom_types.CodeSha256]
 nominal = true
-constructor_validation = "value.size == 32 && value.any { it != 0.toByte() }"
+validator = "validateCodeSha256"
+imports = ["uniffi.acyclic_actors_uniffi.validateCodeSha256"]
 
 [bindings.kotlin.custom_types.PositiveU64]
 nominal = true
-constructor_validation = "value > 0uL"
+validator = "validatePositiveU64"
+imports = ["uniffi.acyclic_actors_uniffi.validatePositiveU64"]
+
+# Populated when the Rust domain promotes the true-only wire marker to a
+# custom type. The marker keeps the bool wire representation but cannot forge
+# false in foreign constructors.
+[bindings.kotlin.custom_types.CurrentHead]
+nominal = true
+
+# Other bindings may opt into nominal wrappers only after their generator
+# exposes the same Rust-backed validator hook. Semantic predicates must remain
+# in the Rust domain and must not be repeated in this config.

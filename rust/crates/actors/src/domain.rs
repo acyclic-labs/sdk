@@ -14,6 +14,7 @@ use protify::*;
 use ts_rs::{Config, ExportError, TS};
 
 #[cfg(kani)]
+#[path = "domain/kani_proofs.rs"]
 mod kani_proofs;
 
 /// A non-empty Actor identity.

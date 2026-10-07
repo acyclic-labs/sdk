@@ -20,7 +20,13 @@ await client.removeSubscription({ actorId: "actor-a", subscriptionId: "sub", ide
 await client.resumeSubscription({ actorId: "actor-a", subscriptionId: "sub", idempotencyKey: "resume" });
 await client.checkpointActor({ actorId: "actor-a", idempotencyKey: "checkpoint" });
 await client.invokeActor({ actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([4, 5]), headers: [{ name: "content-type", value: "application/json" }] });
-let rejected = false;
-try { await client.addSubscription({ actorId: "actor-a", subscription: { subscriptionId: "bad", streamPath: "events", start: { start: { case: "currentHead", value: false } }, placementAnchor: false }, idempotencyKey: "bad" }); } catch { rejected = true; }
-assert.equal(rejected, true);
-console.log("default WASM branch passed transport, 8 operations, and invalid currentHead rejection");
+let rejectedCurrentHead = false;
+try { await client.addSubscription({ actorId: "actor-a", subscription: { subscriptionId: "bad", streamPath: "events", start: { start: { case: "currentHead", value: false } }, placementAnchor: false }, idempotencyKey: "bad" }); } catch { rejectedCurrentHead = true; }
+let rejectedDigest = false;
+try { await client.createActor({ codeSha256: new Uint8Array(31), homeRegion: "eu", bindings: [], limits, subscriptions: [], idempotencyKey: "bad-digest" }); } catch { rejectedDigest = true; }
+let rejectedActorId = false;
+try { await client.inspectActor({ actorId: "" }); } catch { rejectedActorId = true; }
+assert.equal(rejectedCurrentHead, true);
+assert.equal(rejectedDigest, true);
+assert.equal(rejectedActorId, true);
+console.log("default WASM branch passed transport, 8 operations, and Rust rejections for currentHead=false, 31-byte digest, and empty ActorId");

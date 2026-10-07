@@ -14,7 +14,7 @@ import {
   UpdateActorResponseSchema,
 } from "@acyclic-labs/actors/proto";
 
-const root = fileURLToPath(new URL("../../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../", import.meta.url));
 const responseSchemas = {
   "/v1/actors/create": CreateActorResponseSchema,
   "/v1/actors/update": UpdateActorResponseSchema,
@@ -36,6 +36,9 @@ const grpcSchemas = {
   InvokeActor: InvokeActorResponseSchema,
 };
 let requests = 0;
+let active = 0;
+let aborted = 0;
+let holdInvoke = false;
 
 function contentType(path) {
   return { ".js": "text/javascript", ".d.ts": "text/plain", ".wasm": "application/wasm", ".html": "text/html" }[extname(path)] ?? "application/octet-stream";
@@ -48,9 +51,22 @@ const server = http.createServer(async (request, response) => {
   response.setHeader("Access-Control-Expose-Headers", "grpc-status,grpc-message");
   if (request.method === "OPTIONS") { response.writeHead(204); response.end(); return; }
   const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+  const query = new URL(request.url, "http://127.0.0.1").searchParams;
+  if (request.method === "GET" && pathname === "/set-hold") {
+    holdInvoke = query.get("value") === "1";
+    response.writeHead(204); response.end(); return;
+  }
   const schema = responseSchemas[pathname] ?? grpcSchemas[pathname.split("/").at(-1)];
   if (request.method === "POST" && schema) {
     requests += 1;
+    if (holdInvoke && schema === InvokeActorResponseSchema) {
+      active += 1;
+      let settled = false;
+      const release = () => { if (!settled) { settled = true; active -= 1; } };
+      request.on("aborted", () => { aborted += 1; release(); });
+      response.on("close", release);
+      return;
+    }
     const message = toBinary(schema, create(schema, {}));
     const frame = Buffer.alloc(5 + message.byteLength);
     frame.writeUInt32BE(message.byteLength, 1);
@@ -76,8 +92,20 @@ const server = http.createServer(async (request, response) => {
     catch { response.writeHead(404); response.end(); }
     return;
   }
+  if (request.method === "GET" && pathname === "/browser-abort.html") {
+    const body = await readFile(join(root, "research/qualified-prototypes/actors-types-consumer-20261007/browser-abort.html"));
+    response.writeHead(200, { "content-type": "text/html" }); response.end(body); return;
+  }
+  if (request.method === "GET" && pathname.startsWith("/buf/")) {
+    const relative = normalize(pathname.slice("/buf/".length));
+    if (relative.startsWith("..")) { response.writeHead(403); response.end(); return; }
+    const file = join(root, "research/qualified-prototypes/actors-types-consumer-20261007/node_modules/@bufbuild/protobuf", relative);
+    try { const body = await readFile(file); response.writeHead(200, { "content-type": contentType(file) }); response.end(body); }
+    catch { response.writeHead(404); response.end(); }
+    return;
+  }
   if (request.method === "GET" && pathname === "/metrics") {
-    response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ requests })); return;
+    response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ requests, active, aborted })); return;
   }
   response.writeHead(404); response.end();
 });
