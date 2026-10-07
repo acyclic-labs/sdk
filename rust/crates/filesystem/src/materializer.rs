@@ -555,17 +555,9 @@ fn validate_plan(plan: &MaterializationPlan) -> Result<(), ()> {
 }
 
 fn validate_materialization_path(path: &str) -> Result<(), ()> {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.starts_with('\\')
-        || path.contains('\\')
-        || path
-            .split('/')
-            .any(|component| component.is_empty() || component == "." || component == "..")
-    {
-        return Err(());
-    }
-    Ok(())
+    crate::path::is_canonical_relative(path)
+        .then_some(())
+        .ok_or(())
 }
 
 /// Native same-volume tree publisher used for root checkout application.

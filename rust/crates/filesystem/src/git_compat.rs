@@ -4844,13 +4844,7 @@ fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String>, GitPatch
         .or_else(|| value.strip_prefix("b/"))
         .unwrap_or(value)
         .trim_matches('/');
-    if value.is_empty()
-        || value.contains('\\')
-        || value.contains(':')
-        || value
-            .split('/')
-            .any(|component| component.is_empty() || component == "." || component == "..")
-    {
+    if value.contains(':') || !crate::path::is_canonical_relative(value) {
         return Err(GitPatchError::Invalid(
             "patch path escapes its root".to_owned(),
         ));
