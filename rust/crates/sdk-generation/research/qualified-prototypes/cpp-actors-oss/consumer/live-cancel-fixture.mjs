@@ -1,5 +1,6 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
 
 const sdkRoot = process.env.ACYCLIC_SDK_ROOT;
 if (!sdkRoot) throw new Error("ACYCLIC_SDK_ROOT must name the authoritative SDK checkout");
@@ -8,11 +9,14 @@ const { startConformanceFixture } = await import(pathToFileURL(fixturePath));
 
 let inspectStarted = false;
 let inspectAborted = false;
+let inspectCount = 0;
 let finish;
 const aborted = new Promise(resolve => { finish = resolve; });
 const fixture = await startConformanceFixture({
   onUnaryRequest: async (method, _request, context) => {
     if (method.name !== "InspectActor" || inspectStarted) return;
+    inspectCount += 1;
+    if (inspectCount < 2) return;
     inspectStarted = true;
     const signal = context.signal;
     if (signal?.aborted) {
@@ -33,6 +37,9 @@ process.stdout.write(JSON.stringify({
   token: fixture.options.token,
   caCertificate: fixture.options.caCertificate,
 }) + "\n");
+if (process.env.ACYCLIC_CA_PATH) {
+  await writeFile(process.env.ACYCLIC_CA_PATH, fixture.options.caCertificate);
+}
 
 const timeout = setTimeout(async () => {
   await fixture.close();

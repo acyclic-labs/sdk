@@ -8,6 +8,7 @@ use cargo_metadata::{MetadataCommand, TargetKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -131,6 +132,12 @@ pub enum Error {
         "qualification receipt {path} does not contain the required evidence marker {marker:?}"
     )]
     ReceiptEvidenceMissing { path: PathBuf, marker: String },
+    #[error(
+        "qualification receipt {path} does not bind the requested source, generator, artifact, or language"
+    )]
+    ReceiptBindingMismatch { path: PathBuf },
+    #[error("qualification receipt {path} is not a typed JSON receipt")]
+    ReceiptMalformed { path: PathBuf },
     #[error("qualification receipt {0} is empty")]
     EmptyReceipt(PathBuf),
     #[error("git revision lookup failed: {0}")]
@@ -176,7 +183,7 @@ fn is_rust_owned_input(path: &str) -> bool {
 /// Hash all tracked and non-ignored untracked Rust-owned inputs in a stable
 /// path order. Missing tracked files fail through the normal file read, while
 /// new source files are included by git's --others output.
-pub fn source_inventory(root: &Path) -> Result<SourceInventory, Error> {
+fn inventory_for_paths(root: &Path, package_roots: &[PathBuf]) -> Result<SourceInventory, Error> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -189,7 +196,29 @@ pub fn source_inventory(root: &Path) -> Result<SourceInventory, Error> {
     }
     let mut paths = String::from_utf8_lossy(&output.stdout)
         .split('\0')
-        .filter(|path| !path.is_empty() && is_rust_owned_input(path))
+        .filter(|path| {
+            if path.is_empty() || !is_rust_owned_input(path) {
+                return false;
+            }
+            if matches!(path, &"Cargo.toml" | &"Cargo.lock")
+                || path.to_ascii_lowercase().starts_with("rust-toolchain")
+                || path.starts_with("proto/")
+                || path.starts_with("generated/rust/")
+            {
+                return true;
+            }
+            package_roots.iter().any(|package_root| {
+                package_root
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(|relative| relative.to_str())
+                    .map(|relative| {
+                        let relative = relative.replace('\\', "/");
+                        path == relative || path.starts_with(&(relative + "/"))
+                    })
+                    .unwrap_or(false)
+            })
+        })
         .map(str::to_owned)
         .collect::<Vec<_>>();
     paths.sort();
@@ -198,7 +227,18 @@ pub fn source_inventory(root: &Path) -> Result<SourceInventory, Error> {
     let mut files = Vec::with_capacity(paths.len());
     for relative in paths {
         let path = root.join(&relative);
-        let identity = sha256_file(&path)?;
+        // A sparse checkout can legitimately omit generated Rust outputs.
+        // Keep an explicit missing sentinel in the inventory so the omission
+        // is provenance-visible and a later materialization changes the digest.
+        let identity = if path.is_file() {
+            sha256_file(&path)?
+        } else {
+            ArtifactIdentity {
+                path: path.clone(),
+                sha256: "MISSING".into(),
+                bytes: 0,
+            }
+        };
         files.push(SourceFileIdentity {
             path: relative.replace('\\', "/"),
             sha256: identity.sha256,
@@ -218,6 +258,56 @@ pub fn source_inventory(root: &Path) -> Result<SourceInventory, Error> {
         files,
         sha256: format!("{:x}", digest.finalize()),
     })
+}
+
+/// Hash the Rust package and local path-dependency closure, plus workspace
+/// manifests and generated protocol inputs. This avoids making every package
+/// qualification rehash unrelated crates in a monorepo.
+pub fn source_inventory_for_manifest(
+    root: &Path,
+    manifest: &Path,
+) -> Result<SourceInventory, Error> {
+    let metadata = MetadataCommand::new().manifest_path(manifest).exec()?;
+    let package_name = metadata
+        .packages
+        .iter()
+        .find(|package| package.manifest_path.clone().into_std_path_buf() == manifest)
+        .map(|package| package.name.clone())
+        .ok_or_else(|| Error::MissingPackage(manifest.display().to_string()))?;
+    let mut wanted = HashSet::from([package_name]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for package in &metadata.packages {
+            if !wanted.contains(package.name.as_str()) {
+                continue;
+            }
+            for dependency in &package.dependencies {
+                if dependency.source.is_none() && wanted.insert(dependency.name.clone()) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    let package_roots = metadata
+        .packages
+        .iter()
+        .filter(|package| wanted.contains(package.name.as_str()))
+        .filter_map(|package| {
+            package
+                .manifest_path
+                .clone()
+                .into_std_path_buf()
+                .parent()
+                .map(Path::to_owned)
+        })
+        .collect::<Vec<_>>();
+    inventory_for_paths(root, &package_roots)
+}
+
+/// Broad inventory helper for callers that need to attest an entire checkout.
+pub fn source_inventory(root: &Path) -> Result<SourceInventory, Error> {
+    inventory_for_paths(root, &[])
 }
 
 pub fn cargo_package(manifest: &Path, package_name: &str) -> Result<RustPackageIdentity, Error> {
@@ -272,18 +362,61 @@ pub fn sha256_file(path: &Path) -> Result<ArtifactIdentity, Error> {
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct ReceiptFile {
+    path: PathBuf,
+    sha256: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReceiptToolchain {
+    uniffi_bindgen: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReceiptDocument {
+    source_revision: Option<String>,
+    source_inventory_sha256: Option<String>,
+    toolchain: Option<ReceiptToolchain>,
+    source: Option<BTreeMap<String, ReceiptFile>>,
+    artifacts: Option<BTreeMap<String, ReceiptFile>>,
+}
+
+fn receipt_artifact_key(language: Language) -> &'static str {
+    match language {
+        Language::Python => "wheel",
+        Language::Jvm => "kotlin",
+        Language::Swift => "swift",
+        Language::Ruby => "gem",
+        Language::Dotnet => "nuget",
+        Language::Go => "go",
+        Language::Cpp => "cpp",
+        Language::Dart => "dart",
+        Language::Php => "php",
+        Language::Rust => "rust",
+        Language::TypeScript => "typescript",
+    }
+}
+
 fn validate_receipt(
     receipt: &Path,
     status: QualificationStatus,
     marker: &str,
+    source_revision: &str,
+    source_inventory: &SourceInventory,
+    generator: &GeneratorIdentity,
+    language: Language,
+    artifact: &ArtifactIdentity,
 ) -> Result<ArtifactIdentity, Error> {
     let identity = sha256_file(receipt)?;
+    let bytes = fs::read(receipt)?;
     if identity.bytes == 0 {
         return Err(Error::EmptyReceipt(receipt.to_owned()));
     }
     if status == QualificationStatus::Passed
         && (marker.is_empty()
-            || !fs::read(receipt)?
+            || !bytes
                 .windows(marker.len())
                 .any(|window| window == marker.as_bytes()))
     {
@@ -291,6 +424,68 @@ fn validate_receipt(
             path: receipt.to_owned(),
             marker: marker.to_owned(),
         });
+    }
+    if status == QualificationStatus::Passed {
+        let document: ReceiptDocument =
+            serde_json::from_slice(&bytes).map_err(|_| Error::ReceiptMalformed {
+                path: receipt.to_owned(),
+            })?;
+        if document.source_revision.as_deref() != Some(source_revision)
+            || document.source_inventory_sha256.as_deref() != Some(source_inventory.sha256.as_str())
+        {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        }
+        if generator.family == "uniffi"
+            && document
+                .toolchain
+                .as_ref()
+                .and_then(|toolchain| toolchain.uniffi_bindgen.as_deref())
+                != Some(generator.version.as_str())
+        {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        }
+        let Some(receipt_artifact) = document
+            .artifacts
+            .as_ref()
+            .and_then(|artifacts| artifacts.get(receipt_artifact_key(language)))
+        else {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        };
+        if receipt_artifact.path != artifact.path
+            || receipt_artifact.sha256.to_ascii_lowercase() != artifact.sha256
+            || receipt_artifact.bytes != artifact.bytes
+        {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        }
+        if let Some(source_files) = document.source.as_ref() {
+            for source in source_files.values() {
+                let normalized = source.path.to_string_lossy().replace('\\', "/");
+                let Some(current) = source_inventory
+                    .files
+                    .iter()
+                    .find(|file| file.path == normalized)
+                else {
+                    return Err(Error::ReceiptBindingMismatch {
+                        path: receipt.to_owned(),
+                    });
+                };
+                if current.sha256 != source.sha256.to_ascii_lowercase()
+                    || current.bytes != source.bytes
+                {
+                    return Err(Error::ReceiptBindingMismatch {
+                        path: receipt.to_owned(),
+                    });
+                }
+            }
+        }
     }
     Ok(identity)
 }
@@ -310,7 +505,17 @@ fn build_record_with_identity(
     if source_revision.is_empty() {
         return Err(Error::EmptyRevision);
     }
-    qualification.receipt = validate_receipt(receipt, qualification.status, receipt_marker)?;
+    let artifact_identity = sha256_file(artifact)?;
+    qualification.receipt = validate_receipt(
+        receipt,
+        qualification.status,
+        receipt_marker,
+        &source_revision,
+        &source_inventory,
+        &generator,
+        language,
+        &artifact_identity,
+    )?;
     Ok(LanguagePackageArtifact {
         schema: "acyclic.language-package-artifact/v2".into(),
         language,
@@ -318,7 +523,7 @@ fn build_record_with_identity(
         source_revision,
         source_inventory,
         generator,
-        artifact: sha256_file(artifact)?,
+        artifact: artifact_identity,
         qualification,
     })
 }
@@ -480,6 +685,27 @@ mod tests {
         }
     }
 
+    fn typed_receipt(root: &Path, artifact: &Path, language: &str, version: &str) -> PathBuf {
+        let revision = source_revision(root).unwrap();
+        let inventory = source_inventory(root).unwrap();
+        let artifact = sha256_file(artifact).unwrap();
+        let key = match language {
+            "python" => "wheel",
+            "swift" => "swift",
+            _ => panic!("unsupported fixture language"),
+        };
+        let receipt = root.join("receipt.json");
+        let text = format!(
+            r#"{{"source_revision":"{revision}","source_inventory_sha256":"{inventory}","toolchain":{{"uniffi_bindgen":"{version}"}},"artifacts":{{"{key}":{{"path":"{}","sha256":"{}","bytes":{}}}}},"status":"PASS"}}"#,
+            artifact.path.display(),
+            artifact.sha256,
+            artifact.bytes,
+            inventory = inventory.sha256,
+        );
+        fs::write(&receipt, text).unwrap();
+        receipt
+    }
+
     #[test]
     fn cargo_metadata_is_authoritative_for_package_and_crate_identity() {
         let root = fixture_root();
@@ -495,8 +721,7 @@ mod tests {
         let root = committed_fixture();
         let artifact = root.join("artifact.whl");
         fs::write(&artifact, b"qualified artifact\n").unwrap();
-        let receipt = root.join("receipt.json");
-        fs::write(&receipt, br#"{"status":"PASS","scope":"all-eight-actors"}"#).unwrap();
+        let receipt = typed_receipt(&root, &artifact, "python", "0.31.0");
         let record = build_record_from_source(
             &root,
             &root.join("Cargo.toml"),
@@ -543,7 +768,73 @@ mod tests {
             "PASS",
             qualification(&receipt),
         );
-        assert!(matches!(result, Err(Error::ReceiptEvidenceMissing { .. })));
+        assert!(matches!(
+            result,
+            Err(Error::ReceiptBindingMismatch { .. }) | Err(Error::ReceiptMalformed { .. })
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receipt_rejects_changed_generator_artifact_and_language() {
+        let root = committed_fixture();
+        let artifact = root.join("artifact.whl");
+        fs::write(&artifact, b"qualified artifact\n").unwrap();
+        let receipt = typed_receipt(&root, &artifact, "python", "0.31.0");
+
+        let changed_generator = build_record_from_source(
+            &root,
+            &root.join("Cargo.toml"),
+            "acyclic-actors-uniffi",
+            Language::Python,
+            GeneratorIdentity {
+                family: "uniffi".into(),
+                version: "0.32.0".into(),
+                source: "mozilla/uniffi-rs".into(),
+            },
+            &artifact,
+            &receipt,
+            "PASS",
+            qualification(&receipt),
+        );
+        assert!(matches!(
+            changed_generator,
+            Err(Error::ReceiptBindingMismatch { .. })
+        ));
+
+        fs::write(&artifact, b"other artifact\n").unwrap();
+        let wrong_artifact = build_record_from_source(
+            &root,
+            &root.join("Cargo.toml"),
+            "acyclic-actors-uniffi",
+            Language::Python,
+            generator(),
+            &artifact,
+            &receipt,
+            "PASS",
+            qualification(&receipt),
+        );
+        assert!(matches!(
+            wrong_artifact,
+            Err(Error::ReceiptBindingMismatch { .. })
+        ));
+
+        fs::write(&artifact, b"qualified artifact\n").unwrap();
+        let wrong_language = build_record_from_source(
+            &root,
+            &root.join("Cargo.toml"),
+            "acyclic-actors-uniffi",
+            Language::Swift,
+            generator(),
+            &artifact,
+            &receipt,
+            "PASS",
+            qualification(&receipt),
+        );
+        assert!(matches!(
+            wrong_language,
+            Err(Error::ReceiptBindingMismatch { .. })
+        ));
         let _ = fs::remove_dir_all(root);
     }
 }

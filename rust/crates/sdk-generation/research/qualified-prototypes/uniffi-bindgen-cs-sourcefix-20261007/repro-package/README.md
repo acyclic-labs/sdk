@@ -57,7 +57,8 @@ The pending probe reads the exclusive fixture options file
 is deliberately not copied into this source-only package. `receipt.json` in
 the parent qualification directory records the complete run provenance.
 
-`SHA256SUMS.txt` covers every retained input and probe; the receipt is intentionally excluded from its own manifest. `receipt.json` records the package
+The source-only NuGet layout recipe is under `nuget/`; the external package archive and installation receipt remain in the qualification work area. `SHA256SUMS.txt` covers every retained input and probe; the receipt is intentionally excluded from its own manifest. `receipt.json` records the package
 scope and exact observed hashes. No production Rust or SDK files were changed
 by assembling this package.
+
 

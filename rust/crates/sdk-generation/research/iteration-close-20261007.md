@@ -38,8 +38,12 @@ this loop.
   build, 24 tests and TypeScript check pass. Keep it out of the Filesystem PR;
   port the bounded TypeScript deletion while retaining main's conversion fixes.
 - Actors has Rust-owned Protify contracts, descriptor semantic parity, archive
-  all-target compilation and 70 passing tests. The ten-owner generation/docs
-  drift run is still being closed. Other families retain legacy contracts;
+  all-target compilation and 70 passing tests. The pinned ten-owner release
+  fixture now passes (625.66 seconds), including package/version/source SHA,
+  generated artifacts, drift rejection and three compiled-source tamper checks.
+  Its compiled closure is 244cb35048bd78ceb70b2a286e050f5212f69fb970465cedb405f9dcce950187.
+  This qualifies the frozen staging tree, not the pending current-main port.
+  Other families retain legacy contracts;
   broad authored-TypeScript deletion has not been accomplished.
 - Real Rustdoc feature-profile executions pass. Production integration and
   binding API coverage remain outstanding. Resolving a core-crate owner must
@@ -55,7 +59,7 @@ this loop.
 
 1. Port Stream and Filesystem onto current main without undoing PR262. Complete
    exact-source installed qualification and independent review before merging.
-2. Close the frozen Actors ten-owner generation/drift run, port the minimal
+2. Port the qualified Actors ten-owner generation/drift implementation, close the minimal
    contract cutover, and delete replaced mirrors and generation scripts.
 3. Preserve Machines and language/profile/proof prototype source remotely;
    integrate only qualified, minimal dependencies and source patches.

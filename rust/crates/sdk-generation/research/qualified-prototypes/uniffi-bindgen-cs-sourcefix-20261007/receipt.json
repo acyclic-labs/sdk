@@ -71,11 +71,16 @@
       "managed/AllEightProgram.cs",
       "managed/RawHandleNegative.cs",
       "receipt.json",
-      "README.md"
+      "README.md",
+      "repro-package/nuget/Acyclic.Actors.nuspec",
+      "repro-package/nuget/buildTransitive/net8.0/Acyclic.Actors.targets",
+      "repro-package/nuget/PACKAGE-RECIPE.md"
     ],
     "source_only": true,
     "production_abi_changed": false,
-    "native_or_managed_build_outputs_persisted": false
+    "native_or_managed_build_outputs_persisted": false,
+    "nuget_recipe": "repro-package/nuget/PACKAGE-RECIPE.md",
+    "external_package_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json",
+    "external_nupkg_sha256": "725646DB8246EC3131F703BEB7EAAB58D87867EE0B2C156686CDF0262B0F06BA"
   }
 }
-

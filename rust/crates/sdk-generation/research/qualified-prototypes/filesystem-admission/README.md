@@ -6,8 +6,23 @@ assets into the repository. The runner takes the package-owned WASM files and a
 package-owned N-API companion as inputs, then records their hashes beside the
 observed admission results.
 
-Run it only after package assembly has extracted the archive and after the
-native companion has been installed:
+First freeze the candidate checkout, then create its source attestation with
+the runner itself. The writer derives the actual Git `HEAD` and clean/dirty
+state; it refuses a caller-supplied commit and never permits relabeling an
+older manifest:
+
+```text
+node research/qualified-prototypes/filesystem-admission/run.mjs \
+  --write-source-manifest \
+  --source-root <frozen-source-root> \
+  --source-manifest <frozen-source-root>/target/qualification/source-attestation.json
+```
+
+The manifest path should be ignored build output or outside the checkout when
+the source is clean. If it is an untracked path inside the checkout, Git will
+correctly classify the snapshot as dirty on the next validation. Run the
+runtime qualification only after package assembly has extracted the archive
+and after the native companion has been installed:
 
 ```text
 node research/qualified-prototypes/filesystem-admission/run.mjs \
@@ -19,6 +34,12 @@ node research/qualified-prototypes/filesystem-admission/run.mjs \
   --archive <packed-@acyclic-labs-fs.tgz> \
   --receipt <qualification-directory>/filesystem-admission.json
 ```
+
+`--source-commit` is required for runtime qualification and must equal the
+actual checkout `HEAD`. The validator also compares the manifest's
+`source_state` with Git, checks the exact selector, and verifies the declared
+lockfiles, toolchain file, and generator scripts. A dirty source snapshot is
+allowed only when the manifest explicitly says `source_state: "dirty"`.
 
 The runner invokes `liveRebase` through the generated WASM module and through
 the installed N-API binding. Each call uses the same Rust-owned boundary
@@ -50,6 +71,9 @@ digest of sorted `path\0sha256\0bytes\n` records. The selector covers the
 Rust filesystem/native/WASM dependency closure, locked root/toolchain and
 packaging inputs, protocol sources, and the TypeScript filesystem package's
 source/test/example files while excluding generated package outputs. This
+manifest also records the generator provenance: `Cargo.lock`, `bun.lock`,
+`rust-toolchain.toml`, the filesystem generator scripts, and the package
+metadata that selects them. This
 permits an explicitly labelled dirty snapshot while still making the exact
 tested source tree reviewable. The runner independently walks that selector,
 rejects symlinks, and re-hashes every selected file. Removing a manifest entry

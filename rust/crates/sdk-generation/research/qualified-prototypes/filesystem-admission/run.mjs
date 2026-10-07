@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { lstat, readFile, readdir, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { lstat, readFile, readdir, writeFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -45,6 +46,22 @@ const REQUIRED_SOURCE_ROOTS = [
   "typescript/packages/filesystem/tsconfig.json",
   "typescript/packages/filesystem/tsconfig.type-tests.json",
 ];
+const GENERATOR_PROVENANCE = Object.freeze({
+  lockfiles: ["Cargo.lock", "bun.lock"],
+  toolchain: ["rust-toolchain.toml"],
+  generator_files: [
+    "scripts/build-wasm.mjs",
+    "scripts/check-filesystem-napi.mjs",
+    "scripts/check-generated.mjs",
+    "scripts/filesystem-napi-types.mjs",
+    "scripts/generated-bindings.mjs",
+    "scripts/generate.mjs",
+    "scripts/stage-npm-package.sh",
+    "scripts/sync-generated.mjs",
+    "scripts/validate-npm-package.mjs",
+    "typescript/packages/filesystem/package.json",
+  ],
+});
 const EDGE_VALUES = [
   ["zero", 0],
   ["one", 1],
@@ -79,16 +96,36 @@ const argument = name => {
   if (index < 0 || args[index + 1] === undefined) throw new Error(`missing ${name}`);
   return args[index + 1];
 };
+const optionalArgument = name => {
+  const index = args.indexOf(name);
+  return index < 0 ? undefined : args[index + 1];
+};
 const attestationOnly = args.includes("--attestation-only");
-const packageRoot = attestationOnly ? undefined : resolve(argument("--package-root"));
-const nativeBinding = attestationOnly ? undefined : resolve(argument("--native-binding"));
-const sourceCommit = argument("--source-commit");
+const writeSourceManifest = args.includes("--write-source-manifest");
+const manifestOnly = attestationOnly || writeSourceManifest;
+const packageRoot = manifestOnly ? undefined : resolve(argument("--package-root"));
+const nativeBinding = manifestOnly ? undefined : resolve(argument("--native-binding"));
+const requestedSourceCommit = optionalArgument("--source-commit");
 const sourceRoot = resolve(argument("--source-root"));
 const sourceManifest = resolve(argument("--source-manifest"));
-const archivePath = attestationOnly ? undefined : resolve(argument("--archive"));
-const receiptPath = attestationOnly ? undefined : resolve(argument("--receipt"));
-if (!/^[0-9a-f]{40}$/i.test(sourceCommit)) {
+const archivePath = manifestOnly ? undefined : resolve(argument("--archive"));
+const receiptPath = manifestOnly ? undefined : resolve(argument("--receipt"));
+if (writeSourceManifest && requestedSourceCommit !== undefined) {
+  throw new Error("--write-source-manifest derives --source-commit from the source root HEAD");
+}
+if (!writeSourceManifest && !/^[0-9a-f]{40}$/i.test(requestedSourceCommit ?? "")) {
   throw new Error("--source-commit must be the full 40-character checked-out commit");
+}
+
+const git = (...gitArgs) => execFileSync("git", ["-C", sourceRoot, ...gitArgs], { encoding: "utf8" }).trim();
+const actualSourceCommit = git("rev-parse", "--verify", "HEAD");
+if (!/^[0-9a-f]{40}$/i.test(actualSourceCommit)) {
+  throw new Error(`source root does not resolve to a full Git commit: ${actualSourceCommit}`);
+}
+const actualSourceState = git("status", "--porcelain=v1", "--untracked-files=all").length === 0 ? "clean" : "dirty";
+const sourceCommit = requestedSourceCommit ?? actualSourceCommit;
+if (sourceCommit !== actualSourceCommit) {
+  throw new Error(`--source-commit does not match the source root HEAD: expected ${actualSourceCommit}, got ${sourceCommit}`);
 }
 
 const digest = async path => {
@@ -131,6 +168,54 @@ const collectSourceSelector = async (sourceRoot, selector, files = []) => {
   }
   return files;
 };
+const selectedSourceEntries = async () => {
+  const selected = [];
+  for (const selector of REQUIRED_SOURCE_ROOTS) await collectSourceSelector(sourceRoot, selector, selected);
+  selected.sort((left, right) => compareCodepoints(left.path, right.path));
+  return Promise.all(selected.map(async entry => ({
+    path: entry.path,
+    sha256: await digest(entry.absolute),
+    bytes: entry.bytes,
+  })));
+};
+const generatorProvenancePaths = () => [
+  ...GENERATOR_PROVENANCE.lockfiles,
+  ...GENERATOR_PROVENANCE.toolchain,
+  ...GENERATOR_PROVENANCE.generator_files,
+];
+const validateGeneratorProvenance = (manifest, entries) => {
+  if (JSON.stringify(manifest.generator_provenance) !== JSON.stringify(GENERATOR_PROVENANCE)) {
+    throw new Error("source manifest generator/lock provenance differs from the Rust qualification selector");
+  }
+  const paths = new Set(entries.map(entry => entry.path));
+  for (const path of generatorProvenancePaths()) {
+    if (!paths.has(path)) throw new Error(`source manifest omits generator provenance file: ${path}`);
+  }
+};
+const writeSourceManifestFile = async () => {
+  const entries = await selectedSourceEntries();
+  validateGeneratorProvenance({ generator_provenance: GENERATOR_PROVENANCE }, entries);
+  const manifest = {
+    schema: "acyclic.sdk.source-attestation.v1",
+    inventory_complete: true,
+    source_state: actualSourceState,
+    source_commit: actualSourceCommit,
+    required_source_roots: REQUIRED_SOURCE_ROOTS,
+    generator_provenance: GENERATOR_PROVENANCE,
+    source_digest: `sha256:${canonicalSourceDigest(entries)}`,
+    file_count: entries.length,
+    files: entries,
+  };
+  await mkdir(resolve(sourceManifest, ".."), { recursive: true });
+  await writeFile(sourceManifest, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
+  console.log(JSON.stringify({
+    path: sourceManifest,
+    source_commit: actualSourceCommit,
+    source_state: actualSourceState,
+    source_digest: manifest.source_digest,
+    file_count: entries.length,
+  }, null, 2));
+};
 const sourceAttestation = async () => {
   const manifestBytes = await readFile(sourceManifest);
   let manifest;
@@ -147,6 +232,12 @@ const sourceAttestation = async () => {
   }
   if (manifest.source_commit !== sourceCommit) {
     throw new Error(`source manifest commit mismatch: expected ${sourceCommit}, got ${manifest.source_commit}`);
+  }
+  if (manifest.source_commit !== actualSourceCommit) {
+    throw new Error(`source manifest commit is not the source root HEAD: expected ${actualSourceCommit}, got ${manifest.source_commit}`);
+  }
+  if (manifest.source_state !== actualSourceState) {
+    throw new Error(`source manifest state does not match Git: expected ${actualSourceState}, got ${manifest.source_state}`);
   }
   if (JSON.stringify(manifest.required_source_roots) !== JSON.stringify(REQUIRED_SOURCE_ROOTS)) {
     throw new Error("source manifest required source selector differs from the Rust qualification selector");
@@ -184,6 +275,10 @@ const sourceAttestation = async () => {
       throw new Error(`source manifest byte count mismatch for ${entry.path}: expected ${actualBytes}, got ${entry.bytes}`);
     }
   }
+  if (manifest.file_count !== entries.length) {
+    throw new Error(`source manifest file count mismatch: expected ${entries.length}, got ${manifest.file_count}`);
+  }
+  validateGeneratorProvenance(manifest, entries);
   const selected = [];
   for (const selector of REQUIRED_SOURCE_ROOTS) await collectSourceSelector(sourceRoot, selector, selected);
   selected.sort((left, right) => compareCodepoints(left.path, right.path));
@@ -206,6 +301,10 @@ const sourceAttestation = async () => {
     file_count: entries.length,
   };
 };
+if (writeSourceManifest) {
+  await writeSourceManifestFile();
+  process.exit(0);
+}
 if (attestationOnly) {
   console.log(JSON.stringify(await sourceAttestation(), null, 2));
   process.exit(0);

@@ -4,6 +4,25 @@
   "publish": false,
   "source_authority": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\actors-uniffi\\src\\kotlin_generation_metadata.rs",
   "source_authority_note": "This JSON records observed artifacts and receipts; it is not release metadata authority.",
+  "patched_generator_cohort": {
+    "template_patch_sha256": "275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474",
+    "rust_metadata_source": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\actors-uniffi\\src\\kotlin_generation_metadata.rs",
+    "rust_metadata_source_sha256": "18B00F165D52B02C4EA1C7A542EF21AC8EEAAA9FB73DBCCCDC954EA17DBF1DA1",
+    "patched_bindgen_sha256": "A7445B306A9140D6F5C4883766D09FB10C3E9EA55F70545469F930EDC8F3A7E6",
+    "generated_kotlin_sha256": "201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58",
+    "pom_path": "Q:\\sdk\\work\\actors-uniffi-kotlin-internal-20261007\\consumer\\pom.xml",
+    "pom_uses_cargo_version": "0.2.0",
+    "jar_sha256": "A5E5C1D76ABC11A97DCC96C32A5B5D4C51879C19BAFA3C794C20E9D76E662CFE",
+    "external_negative_compile": {
+      "raw_handle": "Cannot access '<init>': it is internal in 'ActorId'",
+      "wrong_enum_payload": "The boolean literal does not conform to the expected type ULong"
+    },
+    "runtime_receipts": [
+      "KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS",
+      "KOTLIN_ALL8_IMMUTABLE_PROBE_PASS",
+      "KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS"
+    ]
+  },
   "authority": {
     "cargo_manifest": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\actors-uniffi\\Cargo.toml",
     "cargo_package": "acyclic-actors-uniffi",
