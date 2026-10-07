@@ -9,6 +9,7 @@ correctness proofs. No machine-checked proof is supplied by this table.
 | Cancellation never removes an owned reservation without its exact fence. | `Scheduler::apply`: cancellation records intent; owned completion and lease release require `LeaseFence`. | Trusted host acknowledges stopped ownership; Stream compare-and-append is linearizable. | `cancellation_retains_owned_capacity_until_fenced_acknowledgement` covers root/direct-child and partial/full admission; existing running-release test covers the stopped-worker path. |
 | An indeterminate execution retains its reservation through cancellation and restart; it cannot be pulled again. | `Completed(Indeterminate)` enters `Reconciling` with its reservation; readiness excludes reconciliation; completion still requires the reservation fence. | Trusted provider reconciles effects rather than repeating uncertain dispatch. | `uncertain_execution_retains_capacity_and_rejects_stale_owners`; `active_worker_reservations_are_subtracted_from_capacity` reopens the Stream coordinator after uncertainty. Memory-provider test evidence, not crash/filesystem qualification. |
 | A waiting parent has durable identity and no execution reservation. | Existing fenced `WaitingForChildren` transition. | Executor suspends before publishing this transition. | `waiting_parent_releases_execution_capacity`; waiting-parent cancellation regression. |
+| A suspended workflow releases its slot, retains one authenticated resume input, and cannot be advanced by its previous lease. Bounded yields and uncertain commands retain their slot. | The existing scheduler adds `WorkflowSuspended`, `WorkflowResumed` and same-fence `ReconciliationResumed`; `run_task` uses the existing registry, host and checkpoint consumption marker. | Linearizable Stream, immutable task-readable input files, deterministic machines, and a trusted command adapter reporting quiescence and using existing provider journals. | `workflow_suspension_releases_shared_capacity_and_fences_wakes` covers shared capacity, wake revisions, cancellation and legacy state decoding. `bounded_worker_suspends_and_consumes_wake_after_full_reopen` uses real local stores. `worker_reconciles_journaled_model_without_releasing_ownership` checks a bounded yield, interrupted stock dispatch, retained same-fence ownership and one generate/one reconcile across reopen. Built-in adapters, acknowledgement faults and cross-platform qualification remain open. |
 | Configured sessions never exceed retained-task, depth, owned-reservation or distinct-model-attempt ceilings (task, turn and step). Exact request retries consume no additional units. | Immutable `SessionConfigured` and fenced `ModelDispatchClaimed` events in the existing scheduler journal; child claims count against their root. A task-bound `StockExecutor` charges before its `ModelStarted` CAS; the host derives ceilings from retained admission. | Stream compare-and-append is linearizable. Charges represent admitted attempts: a crash between accounting and `ModelStarted` retains the charge. Mandatory generic composition remains incomplete. | `session_ceilings_are_shared_and_claims_survive_recovery`, competing-coordinator race and `local_session_budget_survives_provider_reopen`; `model_claims_use_pinned_ceiling_and_current_owner` verifies host ceilings, retries and cancellation. The interrupted executor regression checks one claim across reconciliation and rejects a stale binding; these are separate component tests, not a complete persistent executor qualification. |
 | New child admissions cannot widen their immediate parent's pinned grants, content limits or run limits. Invalid child batches publish no manifest. | `CoordinatorTaskHost` loads the parent admission and uses the existing `RuntimeScope::narrow` and `with_run_limits` checks before declaration or batch publication. | Immutable owner-attested parent admissions. | The coordinator batch/reopen regression now attempts wider grants, model ceilings and removed step/concurrency limits through the host directly; a narrower child succeeds. |
 | A retained model-charge receipt cannot bypass cancellation observed when the coordinator completes its append. | Initial intent hits, committed receipts and tail-conflict intent resolution all revalidate the current reservation fence and cancellation state. | The refresh observes durable cancellation. This check does not atomically fence later execution-journal writes or provider dispatch. | The competing-coordinator budget regression passes actual committed and conflict outcomes through the completion boundary after cancellation; it runs with MemoryStream and reopened LocalStream. The charge remains retained. |
@@ -23,6 +24,17 @@ correctness proofs. No machine-checked proof is supplied by this table.
 | Persistent stock construction cannot omit task accounting or substitute another journal, and model inputs cannot borrow the storage owner's broader read grants. | `FilesystemTaskRuntime` composes one configured host and the existing registries/providers; `FilesystemTaskExecution` owns its stock binding and task-namespaced execution journal. `TaskJournalOwner` validates input files against retained task grants and limits. | Trusted caller-owned persistent providers and linearizable Stream transactions; collision-resistant task/turn namespace. Uncomposed deadline, policy and execution-route runners are rejected. | The real local registered-task restart test interrupts the model, drops runtime/provider handles, replaces the lease and reconciles without redispatch or another charge. A second turn hits the retained shared ceiling; wrong turn IDs, widened step counts and an actual owner-readable/task-ungranted file are rejected. Publication acknowledgement-fault and generic worker qualification remain open. |
 
 ## Remaining implementation gates
+
+The bounded generic worker now opens the same registry entry without typed
+input/output parameters. `WorkflowSuspended` releases its exact reservation;
+authenticated `WorkflowResumed` retains one verified wake file and revision
+across restart. Checkpoint advancement consumes that input without another
+ledger. `ReconciliationResumed` preserves the existing uncertain reservation.
+The command adapter is trusted to use existing journaled dispatch and report
+quiescence honestly; this is not a guarantee for arbitrary callbacks. The local
+worker regressions cover suspension/wake, stale leases, and interrupted stock
+model reconciliation. Built-in adapters and full provider-fault qualification
+remain open.
 
 The optional `FilesystemTaskRuntime` now composes the existing configured host,
 typed runtime and task-bound journals. Its stock execution wrapper accepts no
@@ -43,13 +55,12 @@ or generic worker qualification.
   the same claim without refunding uncertainty. The task-bound Filesystem
   execution journal now compares coordinator and journal tails atomically;
   further stock execution/provider fault qualification remains required.
-- Compose the registered task open/resume path into the generic worker using the
-  existing workflow journal and scheduler fences. Registered tasks now reopen
-  through a task-bound workflow session; a complete generic local task executor and fenced
-  command dispatch remain incomplete. Do not introduce a second scheduler,
-  lifecycle or registry.
-- Bound active ownership, release slots on durable suspension, and retain no
-  passive worker futures or whole execution histories.
+- Complete built-in command adapters using existing provider journals and
+  scheduler fences. The generic loop now exposes bounded transitions and durable
+  suspension, but callback dispatch/quiescence must be qualified for each provider.
+  Do not introduce a second scheduler, lifecycle or registry.
+- Qualify active ownership, durable suspension and cancellation under provider
+  faults; retain no passive worker futures or whole execution histories.
 - Incremental bounded cold replay and lazy rebuildable listing projections.
   Coordinator Stream replay is paged, but its current projection retains all
   operations and intent events. Workflow and execution replay now read bounded

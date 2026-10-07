@@ -13,7 +13,7 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
-    FilesystemTaskRuntime,
+    FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, TaskWorkerOutcome,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -21,13 +21,13 @@ use acyclic_harness::model::{
 };
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
-    DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry, TaskRunLimits,
+    DurableTaskHost, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
 use acyclic_harness::tool::ToolRegistry;
 use acyclic_harness::workflow::{
     MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, MemoryWorkflowJournal,
-    ResumableMachine, WorkflowJournal, WorkflowRecord,
+    ResumableMachine, WorkflowCommand, WorkflowJournal, WorkflowRecord,
 };
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
@@ -81,6 +81,404 @@ impl ModelProvider for InterruptedModel {
 struct TaskMachine {
     identity: MachineIdentity,
     schema: Value,
+}
+
+struct NoCommands;
+
+impl TaskCommandHost for NoCommands {
+    fn execute<'a>(
+        &'a self,
+        _: TaskContext,
+        _: LeaseFence,
+        _: WorkflowCommand,
+        _: Value,
+    ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "empty outbox dispatched a command".into(),
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn bounded_worker_suspends_and_consumes_wake_after_full_reopen() -> Result<()> {
+    worker_restart(false).await
+}
+
+#[tokio::test]
+async fn worker_reconciles_journaled_model_without_releasing_ownership() -> Result<()> {
+    worker_restart(true).await
+}
+
+struct CommandMachine(TaskMachine);
+
+impl ResumableMachine for CommandMachine {
+    fn identity(&self) -> &MachineIdentity {
+        self.0.identity()
+    }
+    fn state_schema(&self) -> &Value {
+        self.0.state_schema()
+    }
+    fn initialize(&self, input: &Value) -> Result<Value> {
+        Ok(input.clone())
+    }
+    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        if input.is_null() {
+            Ok(MachineTransition {
+                state: state.clone(),
+                commands: vec![WorkflowCommand {
+                    operation_id: OperationId::from_bytes([26; 16]),
+                    kind: "model.test".into(),
+                    payload: serde_json::from_value(state.clone())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                }],
+                status: MachineStatus::Suspended,
+            })
+        } else {
+            assert_eq!(
+                input
+                    .get("commands")
+                    .and_then(|values| values.get(0))
+                    .and_then(|value| value.get("value")),
+                Some(&json!("partial-restored"))
+            );
+            Ok(MachineTransition {
+                state: state.clone(),
+                commands: Vec::new(),
+                status: MachineStatus::Completed { value: json!(7) },
+            })
+        }
+    }
+}
+
+struct JournaledModel<'a, P, A, O> {
+    runtime: &'a FilesystemTaskRuntime<P, A, O>,
+    model: Arc<InterruptedModel>,
+}
+
+impl<P, A, O> TaskCommandHost for JournaledModel<'_, P, A, O>
+where
+    P: acyclic_stream::StreamProvider + Send + Sync + 'static,
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
+    fn execute<'a>(
+        &'a self,
+        context: TaskContext,
+        fence: LeaseFence,
+        command: WorkflowCommand,
+        payload: Value,
+    ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async move {
+            assert_eq!(command.kind, "model.test");
+            let execution = self
+                .runtime
+                .stock_execution(
+                    context
+                        .durable_task_id()
+                        .ok_or_else(|| Error::Invalid("missing durable task".into()))?,
+                    fence,
+                    command.operation_id,
+                    Model::new("test", "interrupted", "1", Value::Null)?,
+                    self.model.clone(),
+                    ContextPipeline::default(),
+                )
+                .await?;
+            let output = execution
+                .execute(TurnInput {
+                    operation_id: execution.operation_id(),
+                    input: ModelContent::Text(payload.as_str().unwrap_or_default().into()),
+                    selected_context: None,
+                    max_steps: 1,
+                })
+                .await?;
+            Ok(TaskCommandProgress::Ready(json!(output.text)))
+        })
+    }
+}
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "parallel restart assertions for suspended and uncertain ownership"
+)]
+async fn worker_restart(with_command: bool) -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let fs_options = LocalOptions::new(directory.path().join("filesystem"));
+    let stream_root = directory.path().join("streams");
+    let provider = ProviderRef::new("worker-restart", "filesystem", "2")?;
+    let agent = AgentId::from_bytes([21; 16]);
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+    )?;
+    let authority = Authority {
+        kind: AggregateKind::Task,
+        id: "worker-owner".into(),
+    };
+    let issuer = AuthorityIssuer::new("worker-restart", [23; 32], authority);
+    let signed = issuer.root_for_agent(
+        agent,
+        "owner",
+        Capabilities::new([
+            "operation:declare".to_owned(),
+            "operation:observe".to_owned(),
+            "operation:cancel".to_owned(),
+            "operation:wake".to_owned(),
+            "model:generate".to_owned(),
+            "task:spawn:test.restart@1".to_owned(),
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
+    let base = TaskMachine {
+        identity: MachineIdentity {
+            name: "test.restart".into(),
+            version: "1".into(),
+            digest: [24; 32],
+        },
+        schema: if with_command {
+            json!({"type":"object"})
+        } else {
+            json!({"type":"integer"})
+        },
+    };
+    let machine: Arc<dyn ResumableMachine> = if with_command {
+        Arc::new(CommandMachine(base))
+    } else {
+        Arc::new(base)
+    };
+    let input_schema = machine.state_schema().clone();
+    let mut tasks = TaskRegistry::default();
+    tasks.register(TaskDefinition::<Value, u64>::resumable(
+        machine.clone(),
+        input_schema,
+        json!({"type":"integer"}),
+    )?)?;
+    let definition = tasks.get_version::<Value, u64>("test.restart", "1")?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine)?;
+    let operation = OperationId::from_bytes([25; 16]);
+    let task = TaskId::from_bytes(operation.into_bytes());
+    let worker = Worker {
+        id: "worker".into(),
+        available: ResourceSnapshot::default(),
+        labels: BTreeMap::new(),
+    };
+    let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
+    let model = Arc::new(InterruptedModel {
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    for reopened in [false, true] {
+        let filesystem = Arc::new(FilesystemHost::new(
+            Fs::local(fs_options.clone())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            provider.clone(),
+        )?);
+        if !reopened {
+            filesystem.create_volume(&volume).await?;
+        }
+        let stream = StreamClient::new(Arc::new(
+            LocalStream::open(&stream_root, LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+            filesystem.clone(),
+            volume.clone(),
+            &issuer.verifier(),
+            &signed,
+            65_536,
+        )?);
+        let reader = Arc::new(FilesystemContentVerifier::new(
+            filesystem.clone(),
+            issuer.verifier(),
+            signed.clone(),
+            65_536,
+        )?);
+        let runtime = FilesystemTaskRuntime::open(
+            stream.clone(),
+            filesystem,
+            volume.clone(),
+            issuer.verifier(),
+            signed.clone(),
+            scope.clone(),
+            tasks.clone(),
+            machines.clone(),
+            ToolRegistry::default(),
+            SessionLimits {
+                active_tasks: 1,
+                total_tasks: 1,
+                depth: 1,
+                model_steps: 1,
+            },
+            1,
+            65_536,
+        )
+        .await?;
+        if !reopened {
+            let input = if with_command {
+                serde_json::to_value(
+                    payloads
+                        .stage(operation, "command-hello", b"\"hello\"")
+                        .await?,
+                )
+                .map_err(|error| Error::Invalid(error.to_string()))?
+            } else {
+                json!(0)
+            };
+            assert!(matches!(
+                runtime
+                    .harness()
+                    .admit(operation, &definition, input, None)
+                    .await?,
+                Admission::Accepted(_)
+            ));
+        }
+        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
+            .await?
+            .with_payload_store(payloads.clone());
+        if reopened && !with_command {
+            let retained = coordinator
+                .scheduler()
+                .operation(operation)
+                .ok_or_else(|| Error::NotFound("retained task".into()))?;
+            assert_eq!(
+                retained.phase,
+                acyclic_harness::scheduler::OperationPhase::Suspended
+            );
+            assert!(retained.reservation.is_none());
+            assert!(coordinator.pull(&worker).await?.is_none());
+            let input = payloads.stage(operation, "wake-seven", b"7").await?;
+            assert!(
+                runtime
+                    .task_host()
+                    .resume_workflow(
+                        task,
+                        2,
+                        input.clone(),
+                        IdempotencyKey::new("wrong-revision")?
+                    )
+                    .await
+                    .is_err()
+            );
+            runtime
+                .task_host()
+                .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
+                .await?;
+            // Exact publication retries do not deliver another wake.
+            runtime
+                .task_host()
+                .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
+                .await?;
+        }
+        let lease = if reopened && with_command {
+            let retained = coordinator
+                .scheduler()
+                .operation(operation)
+                .ok_or_else(|| Error::NotFound("uncertain task".into()))?;
+            assert_eq!(
+                retained.phase,
+                acyclic_harness::scheduler::OperationPhase::Reconciling
+            );
+            assert!(retained.reservation.is_some());
+            assert!(coordinator.pull(&worker).await?.is_none());
+            old_lease
+                .clone()
+                .ok_or_else(|| Error::NotFound("retained lease".into()))?
+        } else {
+            coordinator
+                .pull(&worker)
+                .await?
+                .ok_or_else(|| Error::NotFound("worker lease".into()))?
+        };
+        if let Some(old) = &old_lease
+            && !with_command
+        {
+            assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
+        }
+        let outcome = if with_command {
+            if !reopened {
+                assert!(
+                    runtime
+                        .run_task(lease.clone(), &NoCommands, 0)
+                        .await
+                        .is_err()
+                );
+                let yielded = runtime.run_task(lease.clone(), &NoCommands, 1).await?;
+                assert!(
+                    matches!(yielded, TaskWorkerOutcome::Yielded { lease: retained } if retained == lease)
+                );
+                assert_eq!(model.generated.load(Ordering::SeqCst), 0);
+                coordinator.refresh().await?;
+                let retained = coordinator
+                    .scheduler()
+                    .operation(operation)
+                    .ok_or_else(|| Error::NotFound("yielded task".into()))?;
+                assert_eq!(
+                    retained.phase,
+                    acyclic_harness::scheduler::OperationPhase::Running
+                );
+                assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+            }
+            runtime
+                .run_task(
+                    lease.clone(),
+                    &JournaledModel {
+                        runtime: &runtime,
+                        model: model.clone(),
+                    },
+                    2,
+                )
+                .await?
+        } else {
+            runtime.run_task(lease.clone(), &NoCommands, 1).await?
+        };
+        if reopened {
+            assert!(
+                matches!(outcome, TaskWorkerOutcome::Completed { task: completed } if completed == task)
+            );
+            coordinator.refresh().await?;
+            let retained = coordinator
+                .scheduler()
+                .operation(operation)
+                .ok_or_else(|| Error::NotFound("completed task".into()))?;
+            assert_eq!(
+                retained.phase,
+                acyclic_harness::scheduler::OperationPhase::Terminal
+            );
+            assert!(retained.reservation.is_none());
+            let Some(acyclic_harness::Outcome::Succeeded(result)) = &retained.outcome else {
+                return Err(Error::Invalid("missing result".into()));
+            };
+            assert_eq!(reader.read(result).await?, b"7");
+            assert!(coordinator.pull(&worker).await?.is_none());
+            if with_command {
+                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+                assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            }
+        } else {
+            if with_command {
+                assert!(
+                    matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
+                );
+                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            } else {
+                assert!(
+                    matches!(outcome, TaskWorkerOutcome::Suspended { task: suspended, revision:1 } if suspended == task)
+                );
+            }
+            old_lease = Some(lease);
+        }
+        // All provider, runtime and coordinator handles are dropped here.
+    }
+    Ok(())
 }
 
 impl ResumableMachine for TaskMachine {
@@ -400,7 +798,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
         drop(execution);
         let journal = runtime.workflow_journal(task, fence.clone()).await?;
         let mut session = harness
-            .open_task(task, &definition, fence.clone(), journal.clone())
+            .open_registered_task(task, fence.clone(), journal.clone())
             .await?;
         assert_eq!(session.task_id(), task);
         if reopened {
@@ -492,7 +890,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
             drop(session);
             let recovery_journal = runtime.workflow_journal(task, fence.clone()).await?;
             let mut recovered = harness
-                .open_task(task, &definition, fence, recovery_journal.clone())
+                .open_registered_task(task, fence, recovery_journal.clone())
                 .await?;
             assert_eq!(
                 recovered

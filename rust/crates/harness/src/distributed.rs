@@ -407,6 +407,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn verify_published_result(&self, event: &SchedulerEvent) -> Result<()> {
+        if let SchedulerEvent::WorkflowResumed { input, .. } = event {
+            return self.content_verifier.verify(input).await;
+        }
         let (operation_id, outcome, reducer) = match event {
             SchedulerEvent::Completed {
                 operation_id,
@@ -636,6 +639,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "session configuration requires owner authority".into(),
             ));
         }
+        if matches!(&event, SchedulerEvent::WorkflowResumed { .. }) {
+            return Err(Error::Unauthorized(
+                "workflow wake requires owner authority".into(),
+            ));
+        }
         if matches!(&event, SchedulerEvent::Orchestrated { .. }) {
             return Err(Error::Unauthorized(
                 "orchestration decisions require coordinator-owned materialization".into(),
@@ -643,6 +651,42 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         self.apply_internal(operation_id, idempotency_key, event)
             .await
+    }
+
+    /// Authenticates the exact owner before filling one durable resume slot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit signed owner and exact suspension identity"
+    )]
+    pub async fn resume_workflow(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        workflow_revision: u64,
+        input: FileRef,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<CoordinatorApply> {
+        verifier.verify_audience(owner)?;
+        verifier.verify(scope)?;
+        if !scope.capabilities().contains("operation:wake") {
+            return Err(Error::Unauthorized(
+                "owner scope lacks operation:wake".into(),
+            ));
+        }
+        self.refresh().await?;
+        self.observe_operation(owner, scope, verifier, operation_id)?;
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::WorkflowResumed {
+                operation_id,
+                workflow_revision,
+                input,
+            },
+        )
+        .await
     }
 
     /// Authenticates the exact durable owner before publishing a declaration.
@@ -1327,6 +1371,9 @@ fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::Started { operation_id, .. }
         | SchedulerEvent::Checkpointed { operation_id, .. }
         | SchedulerEvent::WaitingForChildren { operation_id, .. }
+        | SchedulerEvent::WorkflowSuspended { operation_id, .. }
+        | SchedulerEvent::WorkflowResumed { operation_id, .. }
+        | SchedulerEvent::ReconciliationResumed { operation_id, .. }
         | SchedulerEvent::LeaseReleased { operation_id, .. }
         | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }

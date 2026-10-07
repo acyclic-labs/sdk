@@ -162,6 +162,8 @@ pub enum OperationPhase {
     Running,
     /// Parent is suspended and consumes no execution reservation.
     WaitingForChildren,
+    /// Task workflow is durably suspended without an execution reservation.
+    Suspended,
     /// External completion requires reconciliation.
     Reconciling,
     /// Terminal result is known.
@@ -208,12 +210,28 @@ pub struct OperationState {
     pub reservation: Option<Reservation>,
     /// Latest durable resumable checkpoint.
     pub checkpoint: Option<CheckpointRef>,
+    /// Registered workflow revision and its one retained resume input. This is
+    /// separate from the Machines-owned execution sandbox checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowSuspension>,
     /// Terminal result when known.
     pub outcome: Option<Outcome<FileRef>>,
     /// Whether cancellation was requested but not yet observed.
     pub cancellation_requested: bool,
     /// Per-operation fencing revision advanced by every committed mutation.
     pub revision: u64,
+}
+
+/// One durable workflow suspension/resume slot in the existing scheduler.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowSuspension {
+    /// Exact committed workflow revision at which execution suspended.
+    pub revision: u64,
+    /// Immutable wake input, retained through admission and worker recovery.
+    /// Absent while awaiting a wake; a workflow step consumes it by advancing
+    /// beyond this suspension revision, without a separate consumption ledger.
+    pub input: Option<FileRef>,
 }
 
 /// One deterministic scheduler transition.
@@ -294,6 +312,32 @@ pub enum SchedulerEvent {
         /// Suspended parent operation.
         operation_id: OperationId,
         /// Active reservation fence being released.
+        fence: LeaseFence,
+    },
+    /// A committed registered workflow suspended and released its active slot.
+    WorkflowSuspended {
+        /// Owned task operation.
+        operation_id: OperationId,
+        /// Exact active reservation being released.
+        fence: LeaseFence,
+        /// Committed workflow revision, not a sandbox checkpoint reference.
+        workflow_revision: u64,
+    },
+    /// Owner-authorized input made one exact suspended workflow ready again.
+    WorkflowResumed {
+        /// Suspended task operation.
+        operation_id: OperationId,
+        /// Revision whose one resume slot this input fills.
+        workflow_revision: u64,
+        /// Immutable owner-verified input staged before publication.
+        input: FileRef,
+    },
+    /// The same retained owner resumed its reconciliation work, without
+    /// releasing capacity or admitting another worker.
+    ReconciliationResumed {
+        /// Operation with an indeterminate observation.
+        operation_id: OperationId,
+        /// Exact reservation still retained through uncertainty.
         fence: LeaseFence,
     },
     /// A dead worker's fenced lease was released for recovery.
@@ -671,6 +715,7 @@ impl Scheduler {
                         phase: OperationPhase::WaitingForDependencies,
                         reservation: None,
                         checkpoint: None,
+                        workflow: None,
                         outcome: None,
                         cancellation_requested: false,
                         revision: 0,
@@ -866,6 +911,69 @@ impl Scheduler {
                 operation.reservation = None;
                 operation.phase = OperationPhase::WaitingForChildren;
             }
+            SchedulerEvent::WorkflowSuspended {
+                operation_id,
+                fence,
+                workflow_revision,
+            } => {
+                let operation = self.mutable(operation_id)?;
+                require_execution_owner(operation, &fence, false)?;
+                if workflow_revision == 0
+                    || workflow_revision > crate::workflow::MAX_WORKFLOW_RECORDS
+                    || operation.workflow.as_ref().is_some_and(|previous| {
+                        workflow_revision < previous.revision
+                            || (workflow_revision == previous.revision && previous.input.is_none())
+                    })
+                {
+                    return Err(Error::Conflict(
+                        "workflow suspension revision did not advance".into(),
+                    ));
+                }
+                operation.workflow = Some(WorkflowSuspension {
+                    revision: workflow_revision,
+                    input: None,
+                });
+                operation.reservation = None;
+                operation.phase = OperationPhase::Suspended;
+            }
+            SchedulerEvent::WorkflowResumed {
+                operation_id,
+                workflow_revision,
+                input,
+            } => {
+                input.validate()?;
+                let operation = self.mutable(operation_id)?;
+                require_phase(operation, OperationPhase::Suspended)?;
+                if operation.cancellation_requested
+                    || operation.workflow.as_ref().is_none_or(|slot| {
+                        slot.revision != workflow_revision || slot.input.is_some()
+                    })
+                {
+                    return Err(Error::Conflict(
+                        "workflow resume slot is not available".into(),
+                    ));
+                }
+                operation.workflow = Some(WorkflowSuspension {
+                    revision: workflow_revision,
+                    input: Some(input),
+                });
+                operation.phase = OperationPhase::WaitingForCapacity;
+            }
+            SchedulerEvent::ReconciliationResumed {
+                operation_id,
+                fence,
+            } => {
+                let operation = self.mutable(operation_id)?;
+                require_phase(operation, OperationPhase::Reconciling)?;
+                require_fence(operation, &fence)?;
+                if operation.cancellation_requested {
+                    return Err(Error::Conflict(
+                        "cancelled reconciliation cannot start fresh work".into(),
+                    ));
+                }
+                operation.phase = OperationPhase::Running;
+                operation.outcome = None;
+            }
             SchedulerEvent::LeaseReleased {
                 operation_id,
                 fence,
@@ -913,6 +1021,7 @@ impl Scheduler {
                                     | OperationPhase::WaitingForCapacity
                                     | OperationPhase::Admitted
                                     | OperationPhase::WaitingForChildren
+                                    | OperationPhase::Suspended
                             )
                         {
                             operation.phase = OperationPhase::Terminal;
@@ -1064,6 +1173,7 @@ impl Scheduler {
                             OperationPhase::WaitingForDependencies
                                 | OperationPhase::WaitingForCapacity
                                 | OperationPhase::Admitted
+                                | OperationPhase::Suspended
                         )
                     {
                         child.phase = OperationPhase::Terminal;
@@ -1594,6 +1704,9 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::Started { operation_id, .. }
         | SchedulerEvent::Checkpointed { operation_id, .. }
         | SchedulerEvent::WaitingForChildren { operation_id, .. }
+        | SchedulerEvent::WorkflowSuspended { operation_id, .. }
+        | SchedulerEvent::WorkflowResumed { operation_id, .. }
+        | SchedulerEvent::ReconciliationResumed { operation_id, .. }
         | SchedulerEvent::LeaseReleased { operation_id, .. }
         | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }
@@ -1749,6 +1862,193 @@ mod tests {
             scheduler.declare(oversized),
             Err(Error::Invalid(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_suspension_releases_shared_capacity_and_fences_wakes() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        let root = spec(id(91), Orchestration::Leaf)?;
+        scheduler.apply(scheduler.declare(root.clone())?)?;
+        let legacy = serde_json::to_value(scheduler.operation(id(91)))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(legacy.get("workflow").is_none());
+        let decoded: OperationState =
+            serde_json::from_value(legacy).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(decoded.workflow.is_none());
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(91),
+            limits: SessionLimits {
+                active_tasks: 1,
+                total_tasks: 2,
+                depth: 1,
+                model_steps: 1,
+            },
+        })?;
+        let mut child = spec(id(92), Orchestration::Leaf)?;
+        child.owner = root.owner;
+        child.parent = Some(ParentLink {
+            operation_id: id(91),
+            slot: "child".into(),
+        });
+        scheduler.apply(scheduler.declare(child)?)?;
+        let reservation = Reservation {
+            id: "first".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        let first = LeaseFence::from(&reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(91),
+            reservation,
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(91),
+            fence: first.clone(),
+        })?;
+        assert!(
+            !scheduler
+                .ready(&ResourceSnapshot::default())
+                .contains(&id(92))
+        );
+        let stale = LeaseFence {
+            reservation_id: "wrong".into(),
+            placement: "worker".into(),
+        };
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(91),
+                    fence: stale,
+                    workflow_revision: 1
+                })
+                .is_err()
+        );
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(91),
+                    fence: first.clone(),
+                    workflow_revision: 0
+                })
+                .is_err()
+        );
+        scheduler.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(91),
+            fence: first.clone(),
+            workflow_revision: 1,
+        })?;
+        let suspended = scheduler
+            .operation(id(91))
+            .ok_or_else(|| Error::NotFound("root".into()))?;
+        assert_eq!(suspended.phase, OperationPhase::Suspended);
+        assert!(suspended.reservation.is_none());
+        assert_eq!(
+            suspended.workflow,
+            Some(WorkflowSuspension {
+                revision: 1,
+                input: None
+            })
+        );
+        assert!(
+            scheduler
+                .ready(&ResourceSnapshot::default())
+                .contains(&id(92))
+        );
+        assert!(
+            !scheduler
+                .ready(&ResourceSnapshot::default())
+                .contains(&id(91))
+        );
+        let input = result_ref(b"7")?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowResumed {
+                    operation_id: id(91),
+                    workflow_revision: 2,
+                    input: input.clone()
+                })
+                .is_err()
+        );
+        scheduler.apply(SchedulerEvent::WorkflowResumed {
+            operation_id: id(91),
+            workflow_revision: 1,
+            input: input.clone(),
+        })?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowResumed {
+                    operation_id: id(91),
+                    workflow_revision: 1,
+                    input
+                })
+                .is_err()
+        );
+        let second_reservation = Reservation {
+            id: "second".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        let second = LeaseFence::from(&second_reservation);
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(91),
+            reservation: second_reservation,
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(91),
+            fence: second.clone(),
+        })?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(91),
+                    fence: first,
+                    workflow_revision: 2
+                })
+                .is_err()
+        );
+        // A durable wake may poll an outbox that remains pending. Releasing
+        // that new lease at the same checkpoint consumes the wake slot.
+        let mut polled = scheduler.clone();
+        polled.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(91),
+            fence: second.clone(),
+            workflow_revision: 1,
+        })?;
+        assert!(
+            polled
+                .operation(id(91))
+                .and_then(|state| state.workflow.as_ref())
+                .is_some_and(|slot| slot.input.is_none())
+        );
+        scheduler.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(91),
+            fence: second,
+            workflow_revision: 2,
+        })?;
+        assert!(
+            scheduler
+                .operation(id(91))
+                .and_then(|state| state.workflow.as_ref())
+                .is_some_and(|slot| slot.input.is_none() && slot.revision == 2)
+        );
+        scheduler.apply(SchedulerEvent::CancellationRequested {
+            operation_id: id(91),
+            recursive: true,
+        })?;
+        assert_eq!(
+            scheduler.operation(id(91)).map(|state| &state.outcome),
+            Some(&Some(Outcome::Cancelled))
+        );
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::WorkflowResumed {
+                    operation_id: id(91),
+                    workflow_revision: 2,
+                    input: result_ref(b"7")?
+                })
+                .is_err()
+        );
         Ok(())
     }
 
@@ -1928,6 +2228,29 @@ mod tests {
             .operation(id(1))
             .ok_or_else(|| Error::NotFound("parent".into()))?
             .revision;
+        let mut suspended_loser = scheduler.clone();
+        suspended_loser.apply(SchedulerEvent::WorkflowSuspended {
+            operation_id: id(2),
+            fence: LeaseFence {
+                reservation_id: "lease-a".into(),
+                placement: "worker".into(),
+            },
+            workflow_revision: 1,
+        })?;
+        suspended_loser.apply(SchedulerEvent::Orchestrated {
+            operation_id: id(1),
+            expected_revision,
+            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
+            cancel: vec![id(2)],
+            reducer: None,
+            reduction_digest: None,
+        })?;
+        assert!(
+            suspended_loser
+                .operation(id(2))
+                .is_some_and(|state| state.phase == OperationPhase::Terminal
+                    && state.outcome == Some(Outcome::Cancelled))
+        );
         scheduler.apply(SchedulerEvent::Orchestrated {
             operation_id: id(1),
             expected_revision,
@@ -2259,10 +2582,50 @@ mod tests {
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(replayed, scheduler);
+        let mut resumed = scheduler.clone();
+        assert!(
+            resumed
+                .apply(SchedulerEvent::ReconciliationResumed {
+                    operation_id: id(32),
+                    fence: LeaseFence {
+                        reservation_id: "stale".into(),
+                        placement: "worker".into()
+                    },
+                })
+                .is_err()
+        );
+        resumed.apply(SchedulerEvent::ReconciliationResumed {
+            operation_id: id(32),
+            fence: fence.clone(),
+        })?;
+        assert_eq!(
+            resumed.available_for("worker", &capacity).0.get("cpu"),
+            Some(&0)
+        );
+        assert!(
+            resumed
+                .ready(&capacity)
+                .iter()
+                .all(|operation| *operation != id(32))
+        );
+        assert_eq!(
+            resumed
+                .operation(id(32))
+                .and_then(|state| state.reservation.as_ref()),
+            Some(&reservation)
+        );
         scheduler.apply(SchedulerEvent::CancellationRequested {
             operation_id: id(32),
             recursive: true,
         })?;
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::ReconciliationResumed {
+                    operation_id: id(32),
+                    fence: fence.clone()
+                })
+                .is_err()
+        );
         let before = scheduler.clone();
         for candidate in [
             None,

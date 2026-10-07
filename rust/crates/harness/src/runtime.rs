@@ -448,6 +448,32 @@ struct TaskEntry {
     output_schema: Value,
     requirements: BTreeSet<String>,
     definition: Arc<dyn Any + Send + Sync>,
+    workflow_definition: Option<Arc<dyn RegisteredTaskDefinition>>,
+}
+
+// An erased view of the same registered Arc, not another definition or registry.
+// Workers need not know a task's Rust input/output types to reopen its workflow.
+trait RegisteredTaskDefinition: Send + Sync {
+    fn open_workflow(
+        self: Arc<Self>,
+        context: TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> BoxFuture<'static, Result<ResumableTaskSession>>;
+}
+
+impl<I: 'static, O: 'static> RegisteredTaskDefinition for TaskDefinition<I, O>
+where
+    TaskDefinition<I, O>: Send + Sync,
+{
+    fn open_workflow(
+        self: Arc<Self>,
+        context: TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> BoxFuture<'static, Result<ResumableTaskSession>> {
+        Box::pin(async move { self.open(&context, fence, journal).await })
+    }
 }
 
 /// Immutable typed definitions indexed by their exact name and version.
@@ -470,6 +496,7 @@ impl TaskRegistry {
                 "task {name}@{version} is already registered"
             )));
         }
+        let definition = Arc::new(definition);
         self.0.insert(
             (name, version),
             TaskEntry {
@@ -482,7 +509,11 @@ impl TaskRegistry {
                 input_schema: definition.input_schema.clone(),
                 output_schema: definition.output_schema.clone(),
                 requirements: definition.requirements.clone(),
-                definition: Arc::new(definition),
+                workflow_definition: match &definition.implementation {
+                    TaskImplementation::Live(_) => None,
+                    TaskImplementation::Resumable(_) => Some(definition.clone()),
+                },
+                definition,
             },
         );
         Ok(())
@@ -3334,6 +3365,34 @@ impl AgentHarness {
         context
             .open_resumable_task(definition, fence, journal)
             .await
+    }
+
+    /// Reopens an admitted task through its exact registered definition without
+    /// requiring the worker to know its Rust input/output types. Uses the same
+    /// definition Arc and validation path as `open_task`.
+    pub async fn open_registered_task(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
+        let retained = state.observe_admission(task_id).await?;
+        self.validate_observed_admission(&retained)?;
+        let entry = self
+            .tasks
+            .0
+            .get(&(retained.task.name.clone(), retained.task.version.clone()))
+            .ok_or_else(|| Error::NotFound("admitted task definition".into()))?;
+        let definition = entry
+            .workflow_definition
+            .clone()
+            .ok_or_else(|| Error::Unsupported("live tasks have no resumable workflow".into()))?;
+        let context = self.durable_context(task_id, retained.operation_id).await?;
+        definition.open_workflow(context, fence, journal).await
     }
 
     /// Discovers direct durable children from their owner, not from fork or

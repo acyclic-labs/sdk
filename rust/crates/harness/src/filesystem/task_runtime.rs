@@ -5,7 +5,7 @@ use super::{
     FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
 use crate::{
-    Error, OperationId, Result, TaskId,
+    Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
     conversation::VolumeRef,
     core::{AuthorityVerifier, Scope},
@@ -13,14 +13,70 @@ use crate::{
     durable_host::CoordinatorTaskHost,
     executor::{Executor, StockExecutor, TurnInput, TurnOutput},
     model::{Model, ModelProvider},
-    runtime::{AgentHarness, DurableTaskHost, RuntimeScope, TaskRegistry, TaskRunLimits},
+    runtime::{
+        AgentHarness, DurableTaskHost, ResumableTaskSession, RuntimeScope, TaskContext,
+        TaskRegistry, TaskRunLimits,
+    },
     scheduler::{LeaseFence, SessionLimits},
     tool::ToolRegistry,
-    workflow::MachineRegistry,
+    workflow::{MachineRegistry, MachineStatus, WorkflowCommand},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{StreamClient, StreamProvider, SystemUnixMillisClock};
+use futures::future::BoxFuture;
+use serde_json::{Value, json};
 use std::sync::Arc;
+
+/// Trusted command adapter. Implementations must dispatch/reconcile each stable
+/// command identity through the existing journaled provider APIs. A ready result
+/// certifies that no uncertain dispatch remains; pending retains durable wait
+/// state rather than a future. This trait does not provide an effects ledger.
+pub trait TaskCommandHost: Send + Sync {
+    /// Executes or reconciles a retained command under the exact task lease.
+    fn execute<'a>(
+        &'a self,
+        context: TaskContext,
+        fence: LeaseFence,
+        command: WorkflowCommand,
+        payload: Value,
+    ) -> BoxFuture<'a, Result<TaskCommandProgress>>;
+}
+
+/// Explicit dispatch ownership returned by a trusted command adapter.
+pub enum TaskCommandProgress {
+    /// Durable result, safe to deliver to the machine.
+    Ready(Value),
+    /// Durable wait with no active uncertain dispatch.
+    Pending,
+    /// A dispatch may still be active; retain the existing reservation.
+    Indeterminate,
+}
+
+/// A bounded worker turn retains no suspended future or second queue.
+pub enum TaskWorkerOutcome {
+    /// Checkpoint retained and reservation released until an authorized wake.
+    Suspended {
+        /// Admitted task identity.
+        task: TaskId,
+        /// Committed checkpoint awaiting a wake.
+        revision: u64,
+    },
+    /// Terminal result published through the existing task host.
+    Completed {
+        /// Admitted task identity.
+        task: TaskId,
+    },
+    /// Transition allowance exhausted; caller still owns this exact lease.
+    Yielded {
+        /// Exact retained reservation.
+        lease: crate::distributed::WorkLease,
+    },
+    /// Ordered reconciliation required; no new lease may be pulled for this task.
+    Reconciling {
+        /// Exact reservation required for ordered reconciliation.
+        lease: crate::distributed::WorkLease,
+    },
+}
 
 /// Composes caller-owned persistent providers without creating another scheduler
 /// or registry. Callers create/reopen the private volume before opening this
@@ -134,6 +190,173 @@ where
             self.signed.clone(),
             self.maximum_payload_bytes.min(admission.limits.file_bytes),
         )?))
+    }
+
+    /// Reopens the admitted registered task and its bound workflow without
+    /// requiring a typed definition at the worker boundary.
+    pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
+        let journal = self.workflow_journal(task, fence.clone()).await?;
+        self.harness
+            .open_registered_task(task, fence, journal)
+            .await
+    }
+
+    /// Drives an already-claimed lease through the registered machine. The first
+    /// trigger is null; wake values and ordered command results are subsequent
+    /// machine inputs. Commands use `{"commands":[{"operation_id":...,"value":...}]}`.
+    /// Callers choose the invocation allowance; suspended work consumes no slot.
+    pub async fn run_task(
+        &self,
+        lease: crate::distributed::WorkLease,
+        commands: &dyn TaskCommandHost,
+        maximum_transitions: u32,
+    ) -> Result<TaskWorkerOutcome> {
+        if maximum_transitions == 0
+            || u64::from(maximum_transitions) > crate::workflow::MAX_WORKFLOW_RECORDS
+        {
+            return Err(Error::Invalid("invalid worker transition allowance".into()));
+        }
+        let operation_id = lease.operation.operation_id;
+        let task = TaskId::from_bytes(operation_id.into_bytes());
+        let fence = LeaseFence::from(&lease.reservation);
+        let context = self.harness.durable_context(task, operation_id).await?;
+        if context.scope().run_limits().deadline_epoch_ms.is_some() {
+            return Err(Error::Unsupported(
+                "persistent worker deadline runner is not composed".into(),
+            ));
+        }
+        self.host.start_task(&lease).await?;
+        let mut session = self.open_task(task, fence.clone()).await?;
+        let wake = self.host.workflow_input(task, &fence).await?;
+        let mut advanced = 0;
+        loop {
+            let revision = session.checkpoint().revision;
+            let transition = session.latest_transition().await?;
+            // Check the allowance before provider work whose result requires a
+            // further step. Terminal transitions may still settle at the bound.
+            if advanced == maximum_transitions
+                && transition.as_ref().is_none_or(|value| {
+                    matches!(value.status, MachineStatus::Suspended) && !value.commands.is_empty()
+                })
+            {
+                return Ok(TaskWorkerOutcome::Yielded { lease });
+            }
+            let mut command_input = None;
+            if let Some(transition) = &transition {
+                if !transition.commands.is_empty() {
+                    match self
+                        .dispatch_commands(task, &context, &fence, &transition.commands, commands)
+                        .await?
+                    {
+                        TaskCommandProgress::Ready(value) => command_input = Some(value),
+                        TaskCommandProgress::Pending => {
+                            self.host.suspend_workflow(task, fence, revision).await?;
+                            return Ok(TaskWorkerOutcome::Suspended { task, revision });
+                        }
+                        TaskCommandProgress::Indeterminate => {
+                            self.host
+                                .settle_task(task, fence, Outcome::Indeterminate { operation_id })
+                                .await?;
+                            return Ok(TaskWorkerOutcome::Reconciling { lease });
+                        }
+                    }
+                }
+                let outcome = match &transition.status {
+                    MachineStatus::Completed { value } => Some(Outcome::Succeeded(value.clone())),
+                    MachineStatus::Failed { message } => Some(Outcome::Failed {
+                        message: message.clone(),
+                    }),
+                    MachineStatus::Suspended => None,
+                };
+                if let Some(outcome) = outcome {
+                    self.host.settle_task(task, fence, outcome).await?;
+                    return Ok(TaskWorkerOutcome::Completed { task });
+                }
+            }
+            let input = if transition.is_none() {
+                Value::Null
+            } else if let Some(value) = command_input {
+                value
+            } else if let Some((wake_revision, value)) = &wake {
+                if *wake_revision == revision {
+                    value.clone()
+                } else {
+                    self.host.suspend_workflow(task, fence, revision).await?;
+                    return Ok(TaskWorkerOutcome::Suspended { task, revision });
+                }
+            } else {
+                self.host.suspend_workflow(task, fence, revision).await?;
+                return Ok(TaskWorkerOutcome::Suspended { task, revision });
+            };
+            if advanced == maximum_transitions {
+                return Ok(TaskWorkerOutcome::Yielded { lease });
+            }
+            // The checkpoint itself is the durable consumption marker. Recovery
+            // retries this identity rather than creating another input ledger.
+            let mut digest = blake3::Hasher::new();
+            digest.update(b"harness/v2/task-worker-step\0");
+            digest.update(&task.into_bytes());
+            digest.update(&revision.to_be_bytes());
+            let mut bytes = [0; 16];
+            bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+            session
+                .step(
+                    OperationId::from_bytes(bytes),
+                    IdempotencyKey::new(format!("task-step:{revision}"))?,
+                    input,
+                )
+                .await?;
+            advanced += 1;
+        }
+    }
+
+    async fn dispatch_commands(
+        &self,
+        task: TaskId,
+        context: &TaskContext,
+        fence: &LeaseFence,
+        outbox: &[WorkflowCommand],
+        commands: &dyn TaskCommandHost,
+    ) -> Result<TaskCommandProgress> {
+        use crate::conversation::ContentResidencyVerifier as _;
+        let reader = FilesystemContentVerifier::new(
+            self.filesystem.clone(),
+            self.verifier.clone(),
+            self.signed.clone(),
+            self.maximum_payload_bytes
+                .min(context.scope().limits().file_bytes),
+        )?;
+        let mut results = Vec::new();
+        for command in outbox {
+            self.host.verify_dispatch_owner(task, fence.clone()).await?;
+            context.scope().limits().validate_file(&command.payload)?;
+            if !crate::runtime::read_granted(context.scope().grants(), &command.payload)? {
+                return Err(Error::Unauthorized(
+                    "task cannot read command payload".into(),
+                ));
+            }
+            let payload = serde_json::from_slice(&reader.read(&command.payload).await?)
+                .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
+            let progress = commands
+                .execute(context.clone(), fence.clone(), command.clone(), payload)
+                .await;
+            self.host.verify_dispatch_owner(task, fence.clone()).await?;
+            match progress {
+                Ok(TaskCommandProgress::Ready(value)) => {
+                    results.push(json!({"operation_id":command.operation_id,"value":value}));
+                    // Include the machine-input envelope in the admitted bound.
+                    if crate::contract::canonical_json_bytes(&json!({"commands":&results}))?.len()
+                        as u64
+                        > context.scope().limits().file_bytes
+                    {
+                        return Ok(TaskCommandProgress::Indeterminate);
+                    }
+                }
+                Ok(progress) => return Ok(progress),
+                Err(_) => return Ok(TaskCommandProgress::Indeterminate),
+            }
+        }
+        Ok(TaskCommandProgress::Ready(json!({"commands":results})))
     }
 
     /// Constructs stock execution with mandatory shared accounting, retained

@@ -73,6 +73,19 @@ fn task_interaction_id(task_id: TaskId, operation_id: OperationId) -> Interactio
     InteractionId::from_bytes(bytes)
 }
 
+fn worker_key(
+    kind: &str,
+    operation: OperationId,
+    fence: &crate::scheduler::LeaseFence,
+    revision: u64,
+) -> Result<IdempotencyKey> {
+    let digest = crate::contract::canonical_json_digest(fence)?;
+    IdempotencyKey::new(format!(
+        "task-worker:{kind}:{operation}:{}:{revision}",
+        blake3::Hash::from_bytes(digest).to_hex()
+    ))
+}
+
 /// Stream-backed admission and observation for one durable owner. More
 /// specialized wait, mail, interaction, and effect providers can be composed
 /// around this boundary without giving callers a coordinator handle.
@@ -423,6 +436,221 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Starts or reattaches the exact already-admitted lease. This does not
+    /// acquire another reservation or infer that an uncertain provider stopped.
+    pub async fn start_task(&self, lease: &crate::distributed::WorkLease) -> Result<()> {
+        let operation_id = lease.operation.operation_id;
+        let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+        self.admission(operation_id).await?;
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+        )?;
+        if operation.spec != lease.operation
+            || operation.reservation.as_ref() != Some(&lease.reservation)
+        {
+            return Err(Error::Conflict(
+                "worker lease differs from retained admission".into(),
+            ));
+        }
+        if operation.phase == crate::scheduler::OperationPhase::Running {
+            return crate::scheduler::require_execution_owner(&operation, &fence, false);
+        }
+        let event = if operation.phase == crate::scheduler::OperationPhase::Reconciling {
+            crate::scheduler::SchedulerEvent::ReconciliationResumed {
+                operation_id,
+                fence: fence.clone(),
+            }
+        } else {
+            crate::scheduler::SchedulerEvent::Started {
+                operation_id,
+                fence: fence.clone(),
+            }
+        };
+        coordinator
+            .apply(
+                operation_id,
+                worker_key("start", operation_id, &fence, operation.revision)?,
+                event,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Releases an owned slot after the worker durably retains its checkpoint
+    /// and knows there is no uncertain active dispatch. No passive future is kept.
+    pub async fn suspend_workflow(
+        &self,
+        task: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        revision: u64,
+    ) -> Result<()> {
+        let operation_id = OperationId::from_bytes(task.into_bytes());
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+        )?;
+        coordinator
+            .apply(
+                operation_id,
+                worker_key("suspend", operation_id, &fence, revision)?,
+                crate::scheduler::SchedulerEvent::WorkflowSuspended {
+                    operation_id,
+                    fence,
+                    workflow_revision: revision,
+                },
+            )
+            .await?;
+        let current = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+        )?;
+        if current.phase != crate::scheduler::OperationPhase::Suspended
+            || current
+                .workflow
+                .as_ref()
+                .is_none_or(|slot| slot.revision != revision)
+        {
+            return Err(Error::Conflict(
+                "workflow suspension receipt is no longer current".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Owner-authorized delivery into one exact durable workflow resume slot.
+    pub async fn resume_workflow(
+        &self,
+        task: TaskId,
+        revision: u64,
+        input: FileRef,
+        key: IdempotencyKey,
+    ) -> Result<()> {
+        let operation_id = OperationId::from_bytes(task.into_bytes());
+        let admission = self.admission(operation_id).await?;
+        admission.limits.validate_file(&input)?;
+        if !read_granted(&admission.grants, &input)? {
+            return Err(Error::Unauthorized(
+                "task cannot read its workflow resume input".into(),
+            ));
+        }
+        self.read_json(&input).await?;
+        self.coordinator
+            .lock()
+            .await
+            .resume_workflow(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                revision,
+                input,
+                key,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Reads the retained input under the current lease. Its workflow revision
+    /// lets recovery skip an input already consumed by a committed step.
+    pub async fn workflow_input(
+        &self,
+        task: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+    ) -> Result<Option<(u64, Value)>> {
+        let operation_id = OperationId::from_bytes(task.into_bytes());
+        let admission = self.admission(operation_id).await?;
+        let slot = {
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh().await?;
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+            )?;
+            crate::scheduler::require_execution_owner(&operation, fence, false)?;
+            operation.workflow
+        };
+        let Some(slot) = slot else { return Ok(None) };
+        let Some(input) = slot.input else {
+            return Ok(None);
+        };
+        admission.limits.validate_file(&input)?;
+        if !read_granted(&admission.grants, &input)? {
+            return Err(Error::Unauthorized(
+                "task cannot read its retained workflow input".into(),
+            ));
+        }
+        let value = self.read_json(&input).await?;
+        self.verify_owner(task, fence, false).await?;
+        Ok(Some((slot.revision, value)))
+    }
+
+    /// Publishes a schema-checked result or retains uncertainty with this exact
+    /// lease. A staged result can survive a publication conflict without making
+    /// that conflict a successful task completion.
+    pub async fn settle_task(
+        &self,
+        task: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        outcome: Outcome<Value>,
+    ) -> Result<()> {
+        let operation_id = OperationId::from_bytes(task.into_bytes());
+        let admission = self.admission(operation_id).await?;
+        self.verify_owner(task, &fence, true).await?;
+        let digest = crate::contract::canonical_json_digest(&outcome)?;
+        let key = IdempotencyKey::new(format!(
+            "task-settle:{operation_id}:{}:{}",
+            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&fence)?).to_hex(),
+            blake3::Hash::from_bytes(digest).to_hex()
+        ))?;
+        let outcome = match outcome {
+            Outcome::Succeeded(value) => {
+                crate::tool::validate_value(&admission.output_schema, &value, "task output")?;
+                let bytes = crate::contract::canonical_json_bytes(&value)?;
+                if bytes.len() as u64 > admission.limits.file_bytes {
+                    return Err(Error::Invalid(
+                        "task result exceeds admitted file limit".into(),
+                    ));
+                }
+                Outcome::Succeeded(
+                    self.payloads
+                        .stage(operation_id, key.as_str(), &bytes)
+                        .await?,
+                )
+            }
+            Outcome::Failed { message } => Outcome::Failed { message },
+            Outcome::Cancelled => Outcome::Cancelled,
+            Outcome::Indeterminate { operation_id } => Outcome::Indeterminate { operation_id },
+        };
+        self.coordinator
+            .lock()
+            .await
+            .apply(
+                operation_id,
+                key,
+                crate::scheduler::SchedulerEvent::Completed {
+                    operation_id,
+                    outcome,
+                    fence: Some(fence),
+                    execution_duration_ns: None,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn verify_owner(
         &self,
         task_id: TaskId,
