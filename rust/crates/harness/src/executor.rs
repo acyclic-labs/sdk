@@ -1558,8 +1558,12 @@ async fn stage_bytes(
     bytes: Vec<u8>,
 ) -> Result<FileRef> {
     let expected = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json")?;
+    // An unpublished staged payload may survive a failed journal append. A
+    // reconciled value at that position may differ; only the journal's exact
+    // append claim chooses the authoritative value, not the orphaned file.
+    let payload_key = format!("{key}:{}", blake3::hash(&bytes).to_hex());
     let reference = journal
-        .stage(operation_id, key.into(), bytes, "application/json")
+        .stage(operation_id, payload_key, bytes, "application/json")
         .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
@@ -2506,7 +2510,25 @@ mod tests {
                 .await,
             Err(Error::Conflict(_))
         ));
-        let request_key = format!("{}:model:0:request", input.operation_id);
+        let request_ref = reopened
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    step: 0, request, ..
+                } => Some(request.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound("recorded model start".into()))?;
+        let request_key = reopened
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .iter()
+            .find_map(|(key, (reference, _))| (reference == &request_ref).then(|| key.clone()))
+            .ok_or_else(|| Error::NotFound("recorded request".into()))?;
         reopened
             .1
             .lock()

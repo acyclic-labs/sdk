@@ -900,13 +900,28 @@ where
                 ));
             }
             historical.messages.truncate(length);
+            let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
+                (
+                    crate::conversation::MAX_PORTABLE_COUNT,
+                    crate::conversation::MAX_PORTABLE_COUNT,
+                    self.maximum_payload_bytes,
+                ),
+                |(owner, _)| {
+                    let limits = owner.input_limits();
+                    (
+                        limits.context_messages,
+                        limits.attachments,
+                        limits.render_bytes,
+                    )
+                },
+            );
             let projected = select_model_context(
                 &historical,
                 committed.clone(),
                 verifier.as_ref(),
-                1_000_000,
-                65_536,
-                self.maximum_payload_bytes,
+                messages,
+                attachments,
+                render_bytes,
             )
             .await?;
             if &projected != selected {

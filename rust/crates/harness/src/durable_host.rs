@@ -133,6 +133,10 @@ pub struct TaskJournalOwner<P> {
 
 #[cfg(feature = "filesystem")]
 impl<P: StreamProvider> TaskJournalOwner<P> {
+    pub(crate) const fn input_limits(&self) -> crate::conversation::Limits {
+        self.input_limits
+    }
+
     pub(crate) fn validate_input_file(&self, file: &FileRef) -> Result<()> {
         self.input_limits.validate_file(file)?;
         if !read_granted(&self.input_grants, file)? {

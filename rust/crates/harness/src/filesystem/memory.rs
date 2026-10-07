@@ -255,7 +255,6 @@ impl ToolExecutor for LocalListFilesTool {
             let input: ListFilesInput = serde_json::from_value(invocation.arguments.clone())
                 .map_err(|error| Error::Invalid(format!("list_files input is invalid: {error}")))?;
             if input.maximum_entries == 0
-                || input.maximum_entries > 64
                 || (input.after.is_some() && input.expected_generation.is_none())
             {
                 return Err(Error::Invalid(
@@ -265,7 +264,7 @@ impl ToolExecutor for LocalListFilesTool {
             let after = input
                 .after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 255)
+                    LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -545,7 +544,7 @@ impl MemoryHarnessStorage {
                         "path": {"type": "string"},
                         "expected_generation": {"type": ["object", "null"]},
                         "after": {"type": ["string", "null"]},
-                        "maximum_entries": {"type": "integer", "minimum": 1, "maximum": 64}
+                        "maximum_entries": {"type": "integer", "minimum": 1, "maximum": u32::MAX}
                     },
                     "required": ["path", "maximum_entries"],
                     "additionalProperties": false
@@ -1579,7 +1578,7 @@ mod tests {
             operation_id: OperationId::new(),
             call_id: "list-1".into(),
             name: "acyclic.list_files".into(),
-            arguments: json!({"path": "notes", "maximum_entries": 8}),
+            arguments: json!({"path": "notes", "maximum_entries": 65}),
         };
         let page = tool.executor.execute(invocation.clone()).await?;
         assert_eq!(page.value["entries"][0]["name"], "one.txt");

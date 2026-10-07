@@ -54,6 +54,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc};
 
 struct InterruptedModel {
+    observed_events: usize,
     output_tokens: AtomicU64,
     generated: AtomicUsize,
     reconciled: AtomicUsize,
@@ -180,9 +181,13 @@ impl ModelProvider for InterruptedModel {
         Box::pin(async move {
             assert_eq!(
                 attempt.observed,
-                vec![ModelEvent::Content {
-                    delta: "partial-".into()
-                }]
+                if self.observed_events == 0 {
+                    Vec::new()
+                } else {
+                    vec![ModelEvent::Content {
+                        delta: "partial-".into(),
+                    }]
+                }
             );
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             Ok(Some(vec![
@@ -747,6 +752,7 @@ async fn worker_restart_with_options(
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
+        observed_events: 1,
         output_tokens: AtomicU64::new(0),
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
@@ -1723,8 +1729,32 @@ impl ResumableMachine for TaskMachine {
     }
 }
 
+#[path = "support/stream.rs"]
+mod fault_stream;
+use fault_stream::{ExecutionFaultMode, LostSessionAck};
+
 #[tokio::test]
 async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<()> {
+    stock_restart_with_publication_fault(None).await
+}
+
+#[tokio::test]
+async fn stock_model_publication_faults_reconcile_after_provider_reopen() -> Result<()> {
+    for mode in [
+        ExecutionFaultMode::Before,
+        ExecutionFaultMode::AfterVisible,
+        ExecutionFaultMode::AfterHidden,
+    ] {
+        stock_restart_with_publication_fault(Some(mode)).await?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one restart ownership scenario shared by normal and publication-fault cases"
+)]
+async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
@@ -1787,6 +1817,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
     };
     let mut previous_lease = None;
     let model = Arc::new(InterruptedModel {
+        observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
         output_tokens: AtomicU64::new(0),
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
@@ -1808,11 +1839,12 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
         if !reopened {
             filesystem.create_volume(&volume).await?;
         }
-        let stream = StreamClient::new(Arc::new(
+        let stream_provider = Arc::new(LostSessionAck::new(
             LocalStream::open(&stream_root, LocalStreamLimits::default())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
+        let stream = StreamClient::new(stream_provider.clone());
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
             volume.clone(),
@@ -1904,6 +1936,9 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
             session_limits
         );
         if let Some(old) = &previous_lease {
+            // This fixture's finite in-process model stream is quiescent after
+            // dropping it. Replacement is explicit, never inferred from a
+            // failed publication or an unknown external provider state.
             coordinator
                 .release_lease(old, IdempotencyKey::new("release-crashed")?)
                 .await?;
@@ -1981,7 +2016,14 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
         );
         if reopened {
             let restored = execution.execute(turn.clone()).await?;
-            assert_eq!(restored.text, "partial-restored");
+            assert_eq!(
+                restored.text,
+                if fault == Some(ExecutionFaultMode::Before) {
+                    "restored"
+                } else {
+                    "partial-restored"
+                }
+            );
             assert_eq!(execution.execute(turn).await?, restored);
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
@@ -2010,13 +2052,34 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
         } else {
+            if let Some(mode) = fault {
+                stream_provider.arm_execution(2, mode);
+            }
             let interrupted = execution.execute(turn).await;
             assert!(
-                matches!(interrupted, Err(Error::Storage(_))),
+                match fault {
+                    Some(ExecutionFaultMode::Before | ExecutionFaultMode::AfterHidden) =>
+                        matches!(interrupted, Err(Error::Indeterminate(id)) if id == operation),
+                    _ => matches!(interrupted, Err(Error::Storage(_))),
+                },
                 "{interrupted:?}"
+            );
+            assert_eq!(
+                stream_provider.execution_faults.load(Ordering::SeqCst),
+                usize::from(fault.is_some())
             );
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            coordinator.refresh().await?;
+            let retained = coordinator
+                .scheduler()
+                .operation(operation)
+                .ok_or_else(|| Error::NotFound("faulted task ownership".into()))?;
+            assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+            assert_eq!(
+                retained.phase,
+                acyclic_harness::scheduler::OperationPhase::Running
+            );
         }
         drop(execution);
         let journal = runtime.workflow_journal(task, fence.clone()).await?;
