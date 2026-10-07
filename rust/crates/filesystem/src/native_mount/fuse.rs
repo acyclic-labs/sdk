@@ -5009,12 +5009,14 @@ mod tests {
             let invalidator = std::thread::spawn({
                 let core = Arc::clone(&core);
                 move || {
-                    // Waits once: only a notification ends it before the
-                    // deadline.
+                    // Only a notification ends the wait before the deadline;
+                    // an item deferred before the wait began needs none.
                     let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
                     let (state, waited) = core
                         .invalidation
-                        .wait_timeout(state, std::time::Duration::from_secs(20))
+                        .wait_timeout_while(state, std::time::Duration::from_secs(20), |state| {
+                            state.invalidation.deferred.is_empty()
+                        })
                         .unwrap_or_else(PoisonError::into_inner);
                     (state.invalidation.deferred.len(), waited.timed_out())
                 }
