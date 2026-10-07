@@ -472,7 +472,7 @@ function isMissingNativePackage(error: unknown, packageName: string): boolean {
   if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
   const message = error instanceof Error ? error.message : String(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  const requested = firstLine.match(/^Cannot find package ['"]([^'"]+)['"]/i)?.[1];
+  const requested = firstLine.match(/^Cannot find (?:package|module) ['"]([^'"]+)['"]/i)?.[1];
   return requested === packageName;
 }
 
