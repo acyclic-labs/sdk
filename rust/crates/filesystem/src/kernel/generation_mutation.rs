@@ -2003,7 +2003,7 @@ impl TransactionState {
             root_file_id: generation.root_file_id,
             file_table,
             parents,
-            required_features: generation.required_features,
+            required_features: generation.continuation_features(),
         })
     }
 }

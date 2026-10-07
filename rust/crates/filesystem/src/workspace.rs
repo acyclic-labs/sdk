@@ -970,6 +970,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 destination,
                 &options.generation,
                 options.idempotency_key,
+                options.paths,
                 budget,
                 cancellation,
             )
@@ -4680,6 +4681,20 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Verifies an initial fork against the same immutable selection builder used
+    /// for creation. May stage content-addressed objects; publishes no authority.
+    pub async fn matches_fork_selection(
+        &self,
+        source: &Self,
+        paths: Option<Vec<String>>,
+    ) -> Result<bool, WorkspaceError> {
+        self.workspace
+            .volume
+            .fs
+            .verify_fork_selection(source, self, paths)
+            .await
+    }
+
     /// Computes the exact normalized second-parent identity that a merge of
     /// this source generation into `target` must retain. This is read-only.
     pub async fn normalized_join_parent_for(
@@ -5496,6 +5511,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
 pub struct ForkOptions<A, O> {
     pub(crate) generation: Generation<A, O>,
     pub(crate) idempotency_key: IdempotencyKey,
+    pub(crate) paths: Option<Vec<String>>,
 }
 
 impl<A, O> ForkOptions<A, O> {
@@ -5505,7 +5521,24 @@ impl<A, O> ForkOptions<A, O> {
         Self {
             generation,
             idempotency_key,
+            paths: None,
         }
+    }
+
+    /// Keeps the pinned parent lineage but starts with an empty namespace.
+    /// The initial view is the child's merge baseline: excluded parent paths
+    /// are never interpreted as child-authored deletions.
+    #[must_use]
+    pub fn empty(self) -> Self {
+        self.inherit_paths(Vec::new())
+    }
+
+    /// Carries only explicitly selected files or directory subtrees. Selection
+    /// is part of the initial fork, never an authored deletion after creation.
+    #[must_use]
+    pub fn inherit_paths(mut self, paths: Vec<String>) -> Self {
+        self.paths = Some(paths);
+        self
     }
 }
 

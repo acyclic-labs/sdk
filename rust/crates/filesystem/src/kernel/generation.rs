@@ -27,6 +27,15 @@ pub struct GenerationRoot {
 }
 
 impl GenerationRoot {
+    /// The initial namespace of a filtered fork is its delta baseline. Older
+    /// readers reject this required feature rather than publish false deletions.
+    pub const FILTERED_FORK: u64 = 1;
+
+    /// Features of subsequent publications; filtering describes only creation.
+    pub(crate) fn continuation_features(&self) -> u64 {
+        self.required_features & !Self::FILTERED_FORK
+    }
+
     fn validate(&self) -> Result<(), CanonicalDecodeError> {
         if self.file_table.kind != ObjectKind::FileTablePage {
             return Err(invariant("generation file table has the wrong object kind"));
@@ -39,8 +48,11 @@ impl GenerationRoot {
         {
             return Err(invariant("generation parents are duplicated"));
         }
-        if self.required_features != 0 {
+        if self.required_features & !Self::FILTERED_FORK != 0 {
             return Err(invariant("generation requires unsupported format features"));
+        }
+        if self.required_features & Self::FILTERED_FORK != 0 && self.parents.len() != 1 {
+            return Err(invariant("filtered fork requires one pinned source parent"));
         }
         Ok(())
     }

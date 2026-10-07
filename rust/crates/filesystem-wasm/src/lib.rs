@@ -547,11 +547,39 @@ mod bindings {
 
     #[derive(Deserialize, Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
+    pub struct BrowserForkOptions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paths: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[tsify(type = "Uint8Array")]
+        idempotency_key: Option<Vec<u8>>,
+    }
+
+    fn browser_fork_options<A, O>(
+        generation: Generation<A, O>,
+        key: IdempotencyKey,
+        paths: Option<Vec<String>>,
+    ) -> ForkOptions<A, O> {
+        let options = ForkOptions::from_generation(generation, key);
+        match paths {
+            Some(paths) => options.inherit_paths(paths),
+            None => options,
+        }
+    }
+
+    #[derive(Deserialize, Serialize, Tsify)]
+    #[serde(rename_all = "camelCase")]
     pub struct BrowserJoinOptions {
         history: String,
         maximum_generations: u32,
         maximum_changes: u32,
         maximum_conflicts: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[tsify(type = "Uint8Array")]
+        source_generation: Option<Vec<u8>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[tsify(type = "Uint8Array")]
+        target_generation: Option<Vec<u8>>,
     }
 
     #[derive(Serialize, Tsify)]
@@ -923,9 +951,11 @@ mod bindings {
             &self,
             destination: String,
             generation: &BrowserGeneration,
-            idempotency_key: Option<Vec<u8>>,
+            #[wasm_bindgen(unchecked_param_type = "BrowserForkOptions")] options: JsValue,
         ) -> Result<BrowserWorkspace, JsValue> {
-            let idempotency_key = idempotency_key.map_or_else(
+            let options: BrowserForkOptions =
+                serde_wasm_bindgen::from_value(options).map_err(js_error)?;
+            let idempotency_key = options.idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
@@ -936,7 +966,11 @@ mod bindings {
                 ) => BrowserWorkspaceEngine::IndexedDb(
                     Box::pin(value.fork(
                         destination,
-                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                        browser_fork_options(
+                            generation.clone(),
+                            idempotency_key,
+                            options.paths.clone(),
+                        ),
                     ))
                     .await
                     .map_err(js_error)?,
@@ -947,7 +981,11 @@ mod bindings {
                 ) => BrowserWorkspaceEngine::IndexedDbOpfs(
                     Box::pin(value.fork(
                         destination,
-                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                        browser_fork_options(
+                            generation.clone(),
+                            idempotency_key,
+                            options.paths.clone(),
+                        ),
                     ))
                     .await
                     .map_err(js_error)?,
@@ -958,7 +996,11 @@ mod bindings {
                 ) => BrowserWorkspaceEngine::Memory(
                     Box::pin(value.fork(
                         destination,
-                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                        browser_fork_options(
+                            generation.clone(),
+                            idempotency_key,
+                            options.paths.clone(),
+                        ),
                     ))
                     .await
                     .map_err(js_error)?,
@@ -1117,7 +1159,26 @@ mod bindings {
                             options.maximum_changes,
                             options.maximum_conflicts,
                         )
-                        .plan()
+                        .plan_pinned(
+                            match &options.source_generation {
+                                Some(id) => source
+                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                        fixed_32(id, "source generation")?,
+                                    )))
+                                    .await
+                                    .map_err(js_error)?,
+                                None => source.head().await.map_err(js_error)?,
+                            },
+                            match &options.target_generation {
+                                Some(id) => target
+                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                        fixed_32(id, "target generation")?,
+                                    )))
+                                    .await
+                                    .map_err(js_error)?,
+                                None => target.head().await.map_err(js_error)?,
+                            },
+                        )
                         .await
                         .map_err(js_error)?,
                 ),
@@ -1133,7 +1194,26 @@ mod bindings {
                             options.maximum_changes,
                             options.maximum_conflicts,
                         )
-                        .plan()
+                        .plan_pinned(
+                            match &options.source_generation {
+                                Some(id) => source
+                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                        fixed_32(id, "source generation")?,
+                                    )))
+                                    .await
+                                    .map_err(js_error)?,
+                                None => source.head().await.map_err(js_error)?,
+                            },
+                            match &options.target_generation {
+                                Some(id) => target
+                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                        fixed_32(id, "target generation")?,
+                                    )))
+                                    .await
+                                    .map_err(js_error)?,
+                                None => target.head().await.map_err(js_error)?,
+                            },
+                        )
                         .await
                         .map_err(js_error)?,
                 ),
@@ -1149,7 +1229,26 @@ mod bindings {
                             options.maximum_changes,
                             options.maximum_conflicts,
                         )
-                        .plan()
+                        .plan_pinned(
+                            match &options.source_generation {
+                                Some(id) => source
+                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                        fixed_32(id, "source generation")?,
+                                    )))
+                                    .await
+                                    .map_err(js_error)?,
+                                None => source.head().await.map_err(js_error)?,
+                            },
+                            match &options.target_generation {
+                                Some(id) => target
+                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                        fixed_32(id, "target generation")?,
+                                    )))
+                                    .await
+                                    .map_err(js_error)?,
+                                None => target.head().await.map_err(js_error)?,
+                            },
+                        )
                         .await
                         .map_err(js_error)?,
                 ),

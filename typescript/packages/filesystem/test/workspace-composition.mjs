@@ -1,4 +1,38 @@
 export async function exerciseWorkspace(engine) {
+  for (const paths of [[], ["/memory"]]) {
+    const tag = paths.length === 0 ? "empty" : "selected";
+    const parent = await engine.createWorkspace(`selection-${tag}`);
+    await parent.write("/memory", Uint8Array.of(1));
+    await parent.write("/omitted", Uint8Array.of(2));
+    const child = await parent.forkAt(`selection-child-${tag}`, await parent.sync(), { paths });
+    await child.write("/added", Uint8Array.of(3));
+    if (paths.length !== 0) await child.write("/memory", Uint8Array.of(4));
+    const selected = await child.head();
+    await child.write("/after-pin", Uint8Array.of(5));
+    await parent.write("/omitted", Uint8Array.of(6));
+    const sourceHead = await child.head();
+    const plan = await child.joinInto(parent, {
+      history: "merge", maximumGenerations: 64, maximumChanges: 64, maximumConflicts: 16,
+      sourceGeneration: selected, targetGeneration: await parent.head(),
+    });
+    if ((await plan.apply(plan.targetHead, new Uint8Array(16).fill(paths.length + 110))).status !== "applied") {
+      throw new Error(`filtered ${tag} fork did not publish`);
+    }
+    if ((await parent.read("/omitted", 1n))[0] !== 6 ||
+        (await parent.read("/memory", 1n))[0] !== (paths.length === 0 ? 1 : 4) ||
+        (await parent.read("/added", 1n))[0] !== 3) {
+      throw new Error(`filtered ${tag} import changed omitted or selected content incorrectly`);
+    }
+    if (!(await child.head()).every((byte, index) => byte === sourceHead[index])) {
+      throw new Error("destination import moved the source head");
+    }
+    try {
+      await parent.read("/after-pin", 1n);
+      throw new Error("import ignored the pinned source generation");
+    } catch (error) {
+      if (error instanceof Error && error.message === "import ignored the pinned source generation") throw error;
+    }
+  }
   const workspace = await engine.createWorkspace("main");
   if ("listDirectory" in workspace) {
     throw new Error("moving workspace head exposes unsafe paginated directory reads");

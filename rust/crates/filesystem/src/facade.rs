@@ -129,6 +129,8 @@ const CREATION_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-create-operation-v1\0";
 const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-fingerprint-v1\0";
 const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-workspace-join-operation-v1\0";
 
+mod fork_selection;
+
 pub(crate) enum WorkspaceJoinOutcome {
     Applied(GenerationId),
     AlreadyApplied(GenerationId),
@@ -3007,6 +3009,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         source: &crate::Generation<A, O>,
         destination_id: crate::WorkspaceId,
         config: VolumeConfig,
+        paths: Option<Vec<String>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<(VerifiedForkSource, ObjectId, WorkCounters), crate::workspace::WorkspaceError>
@@ -3016,7 +3019,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             kind: ObjectKind::GenerationRoot,
             digest: source.id.digest(),
         };
-        let (source_root, work) = read_generation_root(
+        let (source_root, mut work) = read_generation_root(
             &self.inner.objects,
             source_object,
             config,
@@ -3028,12 +3031,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if source_root.volume_id != source.workspace.volume.id {
             return Err(crate::workspace::WorkspaceError::ForeignGeneration);
         }
+        let file_table = if let Some(paths) = paths {
+            let selected = self
+                .select_fork_paths(
+                    source,
+                    &source_root,
+                    paths,
+                    remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                    cancellation,
+                )
+                .await?;
+            work = add(work, selected.1).map_err(crate::workspace::WorkspaceError::engine)?;
+            selected.0
+        } else {
+            source_root.file_table
+        };
         let fork_root = GenerationRoot {
             volume_id: destination_id.volume_id(),
             root_file_id: source_root.root_file_id,
-            file_table: source_root.file_table,
+            file_table,
             parents: vec![source.id],
-            required_features: source_root.required_features,
+            required_features: source_root.continuation_features()
+                | if file_table == source_root.file_table {
+                    0
+                } else {
+                    GenerationRoot::FILTERED_FORK
+                },
         };
         let encoded =
             encode_generation_root(&fork_root).map_err(crate::workspace::WorkspaceError::engine)?;
@@ -3081,6 +3104,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         destination: crate::WorkspaceName,
         source: &crate::Generation<A, O>,
         idempotency_key: crate::IdempotencyKey,
+        paths: Option<Vec<String>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<crate::Workspace<A, O>>, crate::workspace::WorkspaceError> {
@@ -3098,6 +3122,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source,
             destination_id,
             config,
+            paths,
             budget,
             cancellation,
         ))
@@ -3550,8 +3575,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             volume_id: target.workspace.volume.id,
             root_file_id: target_root.root_file_id,
             file_table: source_root.file_table,
+            required_features: source_root.continuation_features(),
             parents: source_root.parents,
-            required_features: source_root.required_features,
         };
         let encoded = encode_generation_root(&normalized)
             .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -4058,6 +4083,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
         let mut cursor = target_object;
         let mut adopted = None;
+        let mut filtered_baseline = None;
         for _ in 0..maximum_generations {
             let (root, _) = read_generation_root(
                 &self.inner.objects,
@@ -4071,6 +4097,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             if root.volume_id != target.id {
                 adopted = Some((cursor, root));
                 break;
+            }
+            if filtered_baseline.is_none()
+                && root.required_features & GenerationRoot::FILTERED_FORK != 0
+            {
+                filtered_baseline = Some(root.clone());
             }
             let Some(parent) = root.parents.first() else {
                 return Err(crate::workspace::WorkspaceError::NotFork);
@@ -4100,7 +4131,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             target_head,
             target_root,
             base_object,
-            base_root,
+            base_root: filtered_baseline.unwrap_or(base_root),
             source,
             source_object,
         })
@@ -4172,7 +4203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             root_file_id: target_root.root_file_id,
             file_table: root.file_table,
             parents: Vec::new(),
-            required_features: root.required_features,
+            required_features: root.continuation_features(),
         };
         let normalized_base = normalize(&base_root);
         let normalized_source = normalize(&source_root);
@@ -4230,7 +4261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             root_file_id: merged_root.root_file_id,
             file_table: merged_root.file_table,
             parents: vec![GenerationId::new(source_object.digest)],
-            required_features: merged_root.required_features,
+            required_features: merged_root.continuation_features(),
         };
         let (candidate, _) = self
             .put_encoded(
@@ -4364,15 +4395,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             volume_id: target.id,
             root_file_id: target_root.root_file_id,
             file_table: base_root.file_table,
+            required_features: base_root.continuation_features(),
             parents: base_root.parents,
-            required_features: base_root.required_features,
         };
         let normalized_source = GenerationRoot {
             volume_id: target.id,
             root_file_id: target_root.root_file_id,
             file_table: source_root.file_table,
+            required_features: source_root.continuation_features(),
             parents: source_root.parents,
-            required_features: source_root.required_features,
         };
         let (normalized_base_object, _) = self
             .put_encoded(
@@ -13833,13 +13864,13 @@ async fn find_first_generation_ancestor<O: AsyncObjectStore>(
 ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
     let mut visited = BTreeSet::new();
-    let mut pending = VecDeque::from([start]);
-    while let Some(generation) = pending.pop_front() {
+    let mut pending = VecDeque::from([(start, None)]);
+    while let Some((generation, baseline)) = pending.pop_front() {
         if let Some(Some(volume_id)) = candidates.get(&generation) {
-            return Ok(WorkspaceCommonAncestor {
+            return Ok(baseline.unwrap_or(WorkspaceCommonAncestor {
                 id: generation,
                 volume_id: *volume_id,
-            });
+            }));
         }
         let is_candidate_frontier = matches!(candidates.get(&generation), Some(None));
         if visited.contains(&generation) {
@@ -13862,12 +13893,28 @@ async fn find_first_generation_ancestor<O: AsyncObjectStore>(
         .map_err(crate::workspace::WorkspaceError::engine)?;
         visited.insert(generation);
         if is_candidate_frontier {
-            return Ok(WorkspaceCommonAncestor {
+            return Ok(baseline.unwrap_or(WorkspaceCommonAncestor {
                 id: generation,
                 volume_id: root.volume_id,
-            });
+            }));
         }
-        pending.extend(root.parents);
+        // A filtered fork's initial namespace is its delta baseline. Crossing
+        // that boundary must not reinterpret omitted parent paths as deletions.
+        // Keep it on this ancestry path only; another merge parent may reach a
+        // nearer common ancestor without crossing the filtered boundary.
+        for parent in &root.parents {
+            let boundary = if baseline.is_none()
+                && root.required_features & GenerationRoot::FILTERED_FORK != 0
+            {
+                Some(WorkspaceCommonAncestor {
+                    id: generation,
+                    volume_id: root.volume_id,
+                })
+            } else {
+                baseline
+            };
+            pending.push_back((*parent, boundary));
+        }
     }
     if candidates_truncated {
         Err(crate::workspace::WorkspaceError::LineageLimit)

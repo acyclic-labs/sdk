@@ -78,6 +78,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             "project:merge".to_owned(),
             project.capability(VolumeOperation::Read)?,
             project.capability(VolumeOperation::Write)?,
+            child_project.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
         ]),
@@ -213,6 +214,17 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             selections: vec![
                 ForkSelection {
                     required: true,
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: private.clone(),
+                        generation: host
+                            .resolve(&workspace_ref(provider.clone(), &private.storage_name()?)?)
+                            .await?
+                            .generation,
+                        paths: Vec::new(),
+                    },
+                },
+                ForkSelection {
+                    required: true,
                     revision: ResourceRevision::History(StreamRef::new(
                         stream_provider.clone(),
                         parent.stream_path()?.into_bytes(),
@@ -281,7 +293,19 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             extensions: Default::default(),
         };
         let plan = workspaces
-            .prepare_project_merge(&scope, aggregate.reducer(), &child, &child_project)
+            .prepare_project_import(
+                &scope,
+                aggregate.reducer(),
+                &child,
+                &child_project,
+                &host
+                    .resolve(&workspace_ref(
+                        provider.clone(),
+                        &(child_project).storage_name()?,
+                    )?)
+                    .await?
+                    .generation,
+            )
             .await?;
         let outcome = plan
             .apply(

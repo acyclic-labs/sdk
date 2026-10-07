@@ -838,11 +838,13 @@ where
         let idempotency_key = operation(request.operation)?;
         let source = self.generation(request.source).await?;
         let source_workspace = source.workspace.clone();
+        let options = ForkOptions::from_generation(source, idempotency_key);
+        let options = match request.selection {
+            Some(selection) => options.inherit_paths(selection.paths),
+            None => options,
+        };
         let destination = source_workspace
-            .fork(
-                request.destination_name,
-                ForkOptions::from_generation(source, idempotency_key),
-            )
+            .fork(request.destination_name, options)
             .await
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
@@ -2834,6 +2836,7 @@ mod tests {
 
         let forked = service
             .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                selection: None,
                 source: Some(generation),
                 destination_name: "agent".to_owned(),
                 operation: operation(4),
@@ -3043,6 +3046,7 @@ mod tests {
 
         let conflict_target = service
             .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                selection: None,
                 source: Some(changed.clone()),
                 destination_name: "conflict-target".to_owned(),
                 operation: operation(20),
@@ -3053,6 +3057,7 @@ mod tests {
             .ok_or("missing conflict target")?;
         let conflict_source = service
             .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                selection: None,
                 source: Some(changed.clone()),
                 destination_name: "conflict-source".to_owned(),
                 operation: operation(21),
@@ -3063,6 +3068,7 @@ mod tests {
             .ok_or("missing conflict source")?;
         let benign_source = service
             .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                selection: None,
                 source: Some(changed.clone()),
                 destination_name: "benign-source".to_owned(),
                 operation: operation(22),

@@ -334,8 +334,8 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     async fork(destination) {
       return fork(client, await currentGeneration(client, reference), destination);
     },
-    async forkAt(destination, selected) {
-      return fork(client, requireGeneration(selected, client, reference.workspaceId), destination);
+    async forkAt(destination, selected, options = {}) {
+      return fork(client, requireGeneration(selected, client, reference.workspaceId), destination, options);
     },
     async beginTransaction(idempotencyKey) {
       return transaction(client, await currentGeneration(client, reference), idempotencyKey);
@@ -372,8 +372,8 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);
       const plan = await call(client.rpc.planJoin({
-        source: await currentGeneration(client, reference),
-        target: await currentGeneration(client, destination.reference),
+        source: options.sourceGeneration === undefined ? await currentGeneration(client, reference) : { workspace: reference, generationId: options.sourceGeneration },
+        target: options.targetGeneration === undefined ? await currentGeneration(client, destination.reference) : { workspace: destination.reference, generationId: options.targetGeneration },
         maximumChanges: options.maximumChanges,
         maximumConflicts: options.maximumConflicts,
         maximumGenerations: options.maximumGenerations,
@@ -501,12 +501,14 @@ async function fork(
   client: HostedClient,
   source: WireGenerationRef,
   destinationName: string,
+  options: import("./contracts.js").WorkspaceForkOptions = {},
 ): Promise<HostedFsWorkspace> {
   requireName(destinationName);
   const response = await call(client.rpc.forkWorkspace({
     source,
     destinationName,
-    operation: operation(),
+    operation: operation(options.idempotencyKey),
+    selection: options.paths === undefined ? undefined : { paths: [...options.paths] },
   }));
   return workspace(client, required(response.workspace, "forked workspace"));
 }

@@ -231,9 +231,12 @@ function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptWorkspace(await raw.fork(destination, idempotencyKey));
     },
-    async forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace> {
+    async forkAt(destination: string, generation: FsGeneration, options: import("./contracts.js").WorkspaceForkOptions = {}): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
-      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)));
+      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation), {
+        ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+        ...(options.paths === undefined ? {} : { paths: [...options.paths] }),
+      }));
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");

@@ -175,7 +175,7 @@ impl Limits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeClass {
-    /// Copy-on-write project files; the sole mergeable class.
+    /// Consumer's project role. Lineage and merge semantics belong to Filesystem.
     Project,
     /// Scratch files owned by exactly one agent.
     AgentPrivate,
@@ -221,7 +221,7 @@ impl<'de> Deserialize<'de> for VolumeRef {
 }
 
 impl VolumeRef {
-    /// Validates the owner/class pair at construction and decoding.
+    /// Validates independent consumer role and owner identities.
     pub fn new(
         provider: ProviderRef,
         id: impl Into<String>,
@@ -238,21 +238,10 @@ impl VolumeRef {
         Ok(value)
     }
 
-    /// Rejects malformed identities and mismatched owner classes.
+    /// Rejects malformed provider and owner identities.
     pub fn validate(&self) -> Result<()> {
         self.provider.validate()?;
         validate_label(&self.id, MAX_LABEL_BYTES)?;
-        let matches = matches!(
-            (&self.class, &self.owner),
-            (VolumeClass::Project, VolumeOwner::Project(_))
-                | (VolumeClass::AgentPrivate, VolumeOwner::Agent(_))
-                | (VolumeClass::SessionShared, VolumeOwner::Session(_))
-        );
-        if !matches {
-            return Err(Error::Invalid(
-                "volume owner does not match its class".into(),
-            ));
-        }
         match &self.owner {
             VolumeOwner::Project(id) | VolumeOwner::Session(id) => {
                 validate_label(id, MAX_LABEL_BYTES)?;
@@ -274,7 +263,7 @@ impl VolumeRef {
         &self.id
     }
 
-    /// Access and fork semantics of this namespace.
+    /// Consumer role of this namespace; grants determine access.
     #[must_use]
     pub const fn class(&self) -> VolumeClass {
         self.class
@@ -284,6 +273,18 @@ impl VolumeRef {
     #[must_use]
     pub const fn owner(&self) -> &VolumeOwner {
         &self.owner
+    }
+
+    /// Enforces owner-only agent mutations independently of the consumer role.
+    pub(crate) fn require_writer(&self, agent: Option<AgentId>) -> Result<()> {
+        if let VolumeOwner::Agent(owner) = self.owner()
+            && agent != Some(*owner)
+        {
+            return Err(Error::Unauthorized(
+                "only the owning agent may write this volume".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Exact capability for one operation on this volume identity.
@@ -296,13 +297,8 @@ impl VolumeRef {
     }
 
     /// Owner-issued read capability for a directory and its descendants.
-    /// Empty prefix names the whole private volume. It never implies a write.
+    /// Empty prefix names the whole volume. It never implies a write.
     pub fn directory_read_capability(&self, prefix: &str) -> Result<String> {
-        if self.class != VolumeClass::AgentPrivate {
-            return Err(Error::Invalid(
-                "directory delegation requires an agent-private volume".into(),
-            ));
-        }
         if !prefix.is_empty() {
             validate_content_path(prefix)?;
         }
@@ -425,15 +421,8 @@ impl ContentGrant {
         operation: VolumeOperation,
     ) -> Result<Self> {
         verifier.verify(scope)?;
-        if operation == VolumeOperation::Write && volume.class() == VolumeClass::AgentPrivate {
-            match (scope.agent(), volume.owner()) {
-                (Some(agent), VolumeOwner::Agent(owner)) if &agent == owner => {}
-                _ => {
-                    return Err(Error::Unauthorized(
-                        "only the original agent may write its private volume".into(),
-                    ));
-                }
-            }
+        if operation == VolumeOperation::Write {
+            volume.require_writer(scope.agent())?;
         }
         if !scope
             .capabilities()
