@@ -21,20 +21,20 @@ Binding project: [Mozilla UniFFI](https://github.com/mozilla/uniffi-rs), MPL-2.0
   are identified, but current-authority qualification evidence is absent.
 
 Receipts from the older Q Actors/control-wire architecture do not qualify this
-checkout. In particular, the Python receipt at
-`Q:\sdk\work\uniffi-python-oss-prototype\actors-receipt.json` is explicitly
+checkout. In particular, the former PyPI receipt at
+`Q:\sdk\work\uniffi-legacy-oss-prototype\actors-receipt.json` is explicitly
 `INVALID_FOR_CURRENT_ACTORS_BACKEND`.
 
 ## Cohort matrix
 
 | Language | Maintained OSS path and exact observed pin | Evidence in this snapshot | State | Required work for qualification |
 | --- | --- | --- | --- | --- |
-| Python | UniFFI 0.31.0 was used by the older external package prototype; the separate generator-only template proof is UniFFI 0.32.2. Maturin 1.15.0 was the external packaging pin. | The 0.31.0 wheel exercised the superseded control-wire backend. The 0.32.2 proof covers opaque constructors, rich errors, `u64`, bytes, enums, and mypy/Pyright checks, but has no Actors backend or package. | **Prototype; current Python SDK unqualified** | Pick one cohort UniFFI pin, generate from the current Rust facade, build an installable wheel for each supported target, and run typed remote operations, errors, cancellation, recovery, `u64`, bytes, and embedded tests. Maturin remains packaging tooling; it must not own behavior. |
+| PyPI binding | UniFFI 0.31.0 was used by the older external package prototype; the separate generator-only template proof is UniFFI 0.32.2. Maturin 1.15.0 was the external packaging pin. | The 0.31.0 wheel exercised the superseded control-wire backend. The 0.32.2 proof covers opaque constructors, rich errors, `u64`, bytes, enums, and mypy/Pyright checks, but has no Actors backend or package. | **Prototype; current PyPI SDK unqualified** | Pick one cohort UniFFI pin, generate from the current Rust facade, build an installable wheel for each supported target, and run typed remote operations, errors, cancellation, recovery, `u64`, bytes, and embedded tests. Maturin remains packaging tooling; it must not own behavior. |
 | Kotlin/JVM | UniFFI's maintained Kotlin backend is the candidate path. The external source snapshot contains UniFFI 0.31.0 templates; no current-authority Kotlin package pin has been selected. | No `Q:\sdk\work\uniffi-jvm-oss-prototype` or current-C Kotlin artifact was found. The existing source contains no C-authority UniFFI package. | **Candidate; unqualified** | Reproduce the selected UniFFI pin against the current facade, then package the native library plus generated Kotlin in a Gradle/Maven-consumable artifact. Qualify a supported JDK/Kotlin/OS matrix, typed errors, cancellation, streaming, and lifecycle behavior. |
 | Swift | UniFFI 0.31.0 is the exact pin in `Q:\sdk\work\uniffi-swift-oss-prototype\source`. The source is Mozilla UniFFI with MPL-2.0 package metadata. | Generated Swift bindings and static checks cover `UInt64`, oneof/unknown values, semantic types, and async signatures. They are fixture bindings from the external prototype and do not call the C-authority Actors client or ship a Swift package. | **Prototype; current Swift SDK unqualified** | Re-run binding generation from the current facade, build the Rust native artifact, and ship a SwiftPM/Xcode-consumable package. Test macOS/iOS targets, typed errors, cancellation, streams, recovery, `u64`, bytes, and ownership/lifecycle. |
 
-UniFFI's core maintained language set includes Kotlin, Swift, Python, and Ruby;
-this matrix covers the requested Python/JVM/Swift cohort. C# and Go adapters are
+UniFFI's core maintained language set includes Kotlin, Swift, the PyPI binding,
+and Ruby; this matrix covers the requested PyPI/JVM/Swift cohort. C# and Go adapters are
 third-party paths and are not silently treated as equivalent qualification.
 
 ## Rust source surface to bind
@@ -65,7 +65,7 @@ Every qualified package must record:
 5. consumer evidence for serialization, transport, streaming, cancellation,
    recovery, typed errors, and embedded behavior where supported.
 
-Until those records exist for the current C checkout, Python, Kotlin/JVM, and
+Until those records exist for the current C checkout, the PyPI binding, Kotlin/JVM, and
 Swift remain useful generator/package prototypes rather than qualified SDKs.
 
 ## Bounded proof obligations

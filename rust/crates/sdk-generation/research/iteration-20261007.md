@@ -56,3 +56,11 @@ Current accepted eleven-harness proof receipt now has dynamic 11/0/11 counters a
 PR252 lateste870be9e48f6fcebeb5efcd18b2b9482aeca393b passes all cheap core CI jobs (plan/gate/policy/record/SDK Qualification), with Windows skipped. Review is still required; no coordinator main merge. PR254 latestbac48c3432038bed318103f5ebeeed62d3fe6e6c remains the three-file consolidated repair. Its local package retry handle19376 uses an explicit native Linux tool path after handle85247 terminated at missing wasm-bindgen resolution.
 
 SDKdocs current local follow-up passes26/26, with one ignored corpus test; the new nonignored fixture verifies local array receiver links through full projection. Standalone maintained UniFFI0.31 adapter compiles with Rust-owned nominal constructors and connect/inspect cancellation. Native Filesystem strict numeric admission is implemented across all u32 inputs; its first compilation found denied low-level unsafe hooks, now narrowed to documented maintained N-API conversion hooks and awaiting recheck.
+
+## Completed package and binding gates
+
+Native Linux installed Inference qualification for bac48c3432038bed318103f5ebeeed62d3fe6e6c completed with exit zero (handle19376). WASM release build, TypeScript19/19, isolated npm-tarball installation and validator smoke test, Rust crate packaging, and extracted crate15/15 passed. SOURCE_COMMIT matches the exact revision; two independent reviewers verified both SHA256SUMS entries and the qualification checkout remained clean. Artifacts and log are under Q:/sdk/work/inference-installed-bac48c3-linux-nativepath-20261007. Windows Bun path coverage remains separate.
+
+Filesystem NAPI Rust tests passed12/12 after narrowing the unsafe conversion hooks (handle74779). Actual installed JavaScript boundary admission and generated declaration checks are next; Rust tests alone do not qualify that boundary.
+
+Remote checkpoint push completed: codex/rust-foundation-checkpoint-20261006 points to 0fb47f3d0e6476ce97be07959393ef69663b67f3. Subsequent changes require a new checkpoint. No coordinator main merge has occurred. PR252 still needs an approving review and thread resolution; its latest three source-collision/read-consistency/version-path findings are being checked before merge. PR254 package qualification is complete but remains stacked on PR252.
