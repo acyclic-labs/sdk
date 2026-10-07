@@ -24,7 +24,7 @@ export type ActorsRustClient = {
 
 /** Bridge factory supplied by the generated WASM or native package. */
 export interface ActorsRustBinding {
-  connect(endpoint: string, token: string): Promise<ActorsRustClient>;
+  connect(endpoint: string, token: string, signal?: AbortSignal): Promise<ActorsRustClient>;
 }
 
 export interface ActorsCallOptions {
@@ -62,15 +62,20 @@ export class ActorsTransportError extends Error {
 
 /** Typed Actors client backed by one Rust implementation on every platform. */
 export class ActorsClient {
-  readonly #client: Promise<ActorsRustClient>;
+  readonly #endpoint: string;
+  readonly #token: string;
+  readonly #binding: ActorsRustBinding;
+  #client: Promise<ActorsRustClient> | undefined;
   readonly #observer: AcyclicObserver | undefined;
 
   constructor(options: ActorsOptions) {
     this.#observer = resolveObserver(options.observer);
-    this.#client = (options.binding ?? defaultBinding()).connect(options.endpoint, options.token);
+    this.#endpoint = options.endpoint;
+    this.#token = options.token;
+    this.#binding = options.binding ?? defaultBinding();
   }
 
-  get transport(): Promise<string | undefined> { return this.#client.then(client => client.transport); }
+  get transport(): Promise<string | undefined> { return this.#connection().then(client => client.transport); }
   createActor(request: ReadonlySemantic<Semantic.CreateActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.CreateActorResponse>> { return this.#call("createActor", CreateActorRequestSchema, request, CreateActorResponseSchema, options); }
   updateActor(request: ReadonlySemantic<Semantic.UpdateActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.UpdateActorResponse>> { return this.#call("updateActor", UpdateActorRequestSchema, request, UpdateActorResponseSchema, options); }
   inspectActor(request: ReadonlySemantic<Semantic.InspectActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.InspectActorResponse>> { return this.#call("inspectActor", InspectActorRequestSchema, request, InspectActorResponseSchema, options); }
@@ -83,13 +88,23 @@ export class ActorsClient {
   async #call<I extends DescMessage, O extends DescMessage, Request, Response>(operation: Operation, input: I, request: Request, output: O, options?: ActorsCallOptions): Promise<Response> {
     const encoded = toBinary(input, create(input, request as MessageShape<I>));
     throwIfAborted(options?.signal);
-    const client = await this.#client;
+    const client = await this.#connection(options?.signal);
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
       return normalizeSemantic(fromBinary(output, response), output) as Response;
     }) as Promise<Response>;
+  }
+
+  #connection(signal?: AbortSignal): Promise<ActorsRustClient> {
+    if (this.#client === undefined) {
+      this.#client = this.#binding.connect(this.#endpoint, this.#token, signal).catch(error => {
+        this.#client = undefined;
+        throw error;
+      });
+    }
+    return abortable(this.#client, signal);
   }
 }
 
@@ -125,7 +140,7 @@ function defaultBinding(): ActorsRustBinding {
 
 function nativeBinding(): ActorsRustBinding {
   return {
-    async connect(endpoint, token) {
+    async connect(endpoint, token, signal) {
       let module: NativeActorsModule;
       try {
         // The native build script stages this generated loader and its exact
@@ -138,7 +153,7 @@ function nativeBinding(): ActorsRustBinding {
         // native artifact is preferred on Node, but a package install remains
         // usable when its optional platform artifact is not present.
         if (isMissingNativeArtifact(error)) {
-          return wasmBinding().connect(endpoint, token);
+          return wasmBinding().connect(endpoint, token, signal);
         }
         throw error;
       }
@@ -146,7 +161,9 @@ function nativeBinding(): ActorsRustBinding {
       if (Client === undefined) {
         throw new ActorsTransportError("native Actors companion did not export NativeActorsClient", "configuration");
       }
-      const inner = await Client.connect(endpoint, token);
+      const cancellation = nativeCancellation(module, signal);
+      const inner = await Client.connect(endpoint, token, cancellation?.handle);
+      cancellation?.cleanup();
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = `${operation}Result` as keyof NativeActorsMethods;
         return [operation, (request: Uint8Array, signal?: AbortSignal) => {
@@ -175,9 +192,9 @@ interface NativeActorsClient extends NativeActorsMethods {
 }
 
 interface NativeActorsModule {
-  readonly NativeActorsClient?: { connect(endpoint: string, token: string): Promise<NativeActorsClient> };
+  readonly NativeActorsClient?: { connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient> };
   readonly NativeActorsCancellation?: new () => { cancel(): void };
-  readonly default?: { readonly NativeActorsClient?: { connect(endpoint: string, token: string): Promise<NativeActorsClient> }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+  readonly default?: { readonly NativeActorsClient?: { connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient> }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
 }
 
 function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
@@ -200,12 +217,12 @@ async function nativeResult(result: Promise<NativeActorsOperationResult>): Promi
 
 function wasmBinding(): ActorsRustBinding {
   return {
-    async connect(endpoint, token) {
+    async connect(endpoint, token, signal) {
       // The generated module is produced by `build:wasm` immediately before tsc.
       // @ts-ignore generated Rust WASM module is intentionally untracked
       const module = await import("../generated/wasm/acyclic_actors_wasm.js");
       await module.default();
-      const inner = await module.ActorsClient.connect(endpoint, token);
+      const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = snakeCase(operation);

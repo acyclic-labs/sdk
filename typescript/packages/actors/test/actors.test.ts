@@ -67,6 +67,6 @@ describe("Rust-backed Actors client", () => {
     const call = cancellable.inspectActor({ actorId: "actor-a" as semantic.ActorId }, { signal: controller.signal });
     controller.abort();
     await expect(call).rejects.toMatchObject({ code: "cancelled" });
-    finish(new Uint8Array());
+    finish?.(new Uint8Array());
   });
 });

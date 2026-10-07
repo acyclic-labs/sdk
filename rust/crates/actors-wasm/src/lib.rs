@@ -111,11 +111,20 @@ pub struct ActorsClient {
 impl ActorsClient {
     /// Connect to an HTTPS endpoint using the canonical browser gRPC-Web transport.
     #[wasm_bindgen]
-    pub async fn connect(endpoint: String, token: String) -> Result<ActorsClient, JsValue> {
-        client::connect(&endpoint, &token)
-            .await
-            .map(|inner| Self { inner })
-            .map_err(map_error)
+    pub async fn connect(
+        endpoint: String,
+        token: String,
+        signal: Option<JsValue>,
+    ) -> Result<ActorsClient, JsValue> {
+        let registration = AbortRegistration::new(signal)?;
+        let cancellation = registration.as_ref().map(AbortRegistration::token);
+        let result = client::run_with_cancellation(
+            client::connect(&endpoint, &token),
+            cancellation,
+        )
+        .await;
+        drop(registration);
+        result.map(|inner| Self { inner }).map_err(map_error)
     }
 
     async fn run<T, F>(
