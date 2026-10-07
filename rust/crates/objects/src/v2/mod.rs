@@ -14,6 +14,7 @@ pub mod local;
 mod memory;
 pub mod request;
 pub mod response;
+pub mod typed;
 #[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
 mod upload;
 

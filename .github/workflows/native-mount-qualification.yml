@@ -1,8 +1,6 @@
 name: Native Mount Qualification
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
   workflow_call:
 

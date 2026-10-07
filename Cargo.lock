@@ -462,15 +462,18 @@ name = "acyclic-stream-napi"
 version = "0.2.0"
 dependencies = [
  "acyclic-stream",
+ "async-trait",
  "futures",
  "napi",
  "napi-build",
  "napi-derive",
  "prost",
+ "rcgen",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+ "tonic",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: run-kani.sh --isolated-root DIR [options]
 
-Runs the ten source-owned Actors Kani harnesses in a parameterized isolated
+Runs the eleven source-owned Actors Kani harnesses in a parameterized isolated
 tool/cache directory and writes a receipt only after successful verification
 and unchanged source hashes.
 
@@ -176,6 +176,7 @@ set +e
     --harness domain::kani_proofs::code_sha256_rejects_33_bytes \
     --harness domain::kani_proofs::code_sha256_rejects_64_bytes \
     --harness domain::kani_proofs::subscription_start_preserves_cursor_and_current_head_presence \
+    --harness domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity \
     --harness domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values \
     --harness domain::kani_proofs::actor_limits_constructor_accepts_exactly_positive_values \
     --harness domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless \
@@ -262,8 +263,8 @@ summary = re.search(
     r"(\d+) failures, (\d+) total",
     log_text,
 )
-if not summary or tuple(map(int, summary.groups())) != (10, 0, 10):
-    raise SystemExit("Kani log does not report exactly ten successful harnesses")
+if not summary or tuple(map(int, summary.groups())) != (11, 0, 11):
+    raise SystemExit("Kani log does not report exactly eleven successful harnesses")
 if "VERIFICATION:- SUCCESSFUL" not in log_text:
     raise SystemExit("Kani log does not contain a successful verification marker")
 if "CARGO_KANI_EXIT=0" not in log_text:
@@ -297,6 +298,10 @@ harnesses = [
     {
         "name": "domain::kani_proofs::subscription_start_preserves_cursor_and_current_head_presence",
         "obligation": "subscription_start preserves the cursor and optional current-head presence.",
+    },
+    {
+        "name": "domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
+        "obligation": "Valid subscription_start wire values round-trip through the domain without changing oneof identity.",
     },
     {
         "name": "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",

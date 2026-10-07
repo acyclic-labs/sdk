@@ -126,6 +126,27 @@ fn subscription_start_preserves_cursor_and_current_head_presence() {
 
 #[kani::proof]
 #[kani::unwind(1)]
+fn subscription_start_valid_wire_round_trip_preserves_oneof_identity() {
+    let cursor: u64 = kani::any();
+    let cursor_wire = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::Cursor(cursor)),
+    };
+    let parsed_cursor =
+        SubscriptionStart::try_from(cursor_wire.clone()).expect("cursor is valid");
+    let cursor_round_trip: wire::SubscriptionStart = parsed_cursor.into();
+    assert_eq!(cursor_round_trip, cursor_wire);
+
+    let current_head_wire = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::CurrentHead(true)),
+    };
+    let parsed_current_head = SubscriptionStart::try_from(current_head_wire.clone())
+        .expect("true current head is valid");
+    let current_head_round_trip: wire::SubscriptionStart = parsed_current_head.into();
+    assert_eq!(current_head_round_trip, current_head_wire);
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
 fn positive_u64_constructor_accepts_exactly_nonzero_values() {
     let value: u64 = kani::any();
     match PositiveU64::new(value) {

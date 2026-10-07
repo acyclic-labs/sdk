@@ -785,6 +785,422 @@ impl From<MultipartUpload> for wire::MultipartUpload {
     }
 }
 
+/// A validated part receipt selected when completing a multipart upload.
+///
+/// The part number, ETag, and decoded size are kept together so a completion
+/// request cannot accidentally select a receipt with an invalid field. The
+/// ordering and nonempty-list rules remain request-level invariants.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletedPart {
+    part_number: PartNumber,
+    etag: Etag,
+    size: u64,
+}
+
+impl CompletedPart {
+    /// Validates one receipt through the canonical uploaded-part predicates.
+    pub fn new(part_number: PartNumber, etag: Etag, size: u64) -> Result<Self, Error> {
+        let value = wire::UploadedPart {
+            part_number: part_number.get(),
+            etag: etag.as_str().to_owned(),
+            size,
+        };
+        request::validate_uploaded_part(&value, 0, false)?;
+        Ok(Self {
+            part_number,
+            etag,
+            size,
+        })
+    }
+
+    /// Returns the validated multipart part number.
+    pub const fn part_number(&self) -> PartNumber {
+        self.part_number
+    }
+
+    /// Returns the validated opaque receipt ETag.
+    pub fn etag(&self) -> &Etag {
+        &self.etag
+    }
+
+    /// Returns the decoded size recorded in the receipt.
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+impl TryFrom<wire::UploadedPart> for CompletedPart {
+    type Error = Error;
+
+    fn try_from(value: wire::UploadedPart) -> Result<Self, Self::Error> {
+        request::validate_uploaded_part(&value, 0, false)?;
+        Ok(Self {
+            part_number: PartNumber::new(value.part_number)?,
+            etag: Etag::from_validated(value.etag),
+            size: value.size,
+        })
+    }
+}
+
+impl From<CompletedPart> for wire::UploadedPart {
+    fn from(value: CompletedPart) -> Self {
+        Self {
+            part_number: value.part_number.get(),
+            etag: value.etag.into_string(),
+            size: value.size,
+        }
+    }
+}
+
+/// A typed live eventual object listing request.
+///
+/// Empty strings in the generated request are represented as `None` here.
+/// Likewise, a wire page size of zero means the protocol default and is kept
+/// distinct from a caller-supplied [`PageSize`]. Continuation tokens remain
+/// opaque; this type checks only their wire length and NUL restriction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListObjectsRequest {
+    bucket: BucketName,
+    prefix: Option<String>,
+    delimiter: Option<String>,
+    page_size: Option<PageSize>,
+    continuation_token: Option<String>,
+}
+
+impl ListObjectsRequest {
+    /// Creates a listing request using the protocol's default filters and page size.
+    pub fn new(bucket: BucketName) -> Self {
+        Self {
+            bucket,
+            prefix: None,
+            delimiter: None,
+            page_size: None,
+            continuation_token: None,
+        }
+    }
+
+    /// Adds a prefix filter, validating its wire representation.
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Result<Self, Error> {
+        let prefix = prefix.into();
+        self.prefix = (!prefix.is_empty()).then_some(prefix);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Adds a delimiter filter, validating its wire representation.
+    pub fn with_delimiter(mut self, delimiter: impl Into<String>) -> Result<Self, Error> {
+        let delimiter = delimiter.into();
+        self.delimiter = (!delimiter.is_empty()).then_some(delimiter);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Uses a caller-supplied nonzero page size instead of the wire default.
+    pub fn with_page_size(mut self, page_size: PageSize) -> Self {
+        self.page_size = Some(page_size);
+        self
+    }
+
+    /// Resumes from an opaque continuation token after checking wire bounds.
+    pub fn with_continuation_token(mut self, token: impl Into<String>) -> Result<Self, Error> {
+        let token = token.into();
+        self.continuation_token = (!token.is_empty()).then_some(token);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Returns the validated logical bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the optional prefix filter.
+    pub fn prefix(&self) -> Option<&str> {
+        self.prefix.as_deref()
+    }
+
+    /// Returns the optional delimiter filter.
+    pub fn delimiter(&self) -> Option<&str> {
+        self.delimiter.as_deref()
+    }
+
+    /// Returns the caller page size, or `None` for the protocol default.
+    pub fn page_size(&self) -> Option<PageSize> {
+        self.page_size
+    }
+
+    /// Returns the opaque continuation token, if this request resumes a page.
+    pub fn continuation_token(&self) -> Option<&str> {
+        self.continuation_token.as_deref()
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        use prost::Message;
+        request::validate_binary(
+            "objects/list",
+            &wire::ListObjectsRequest::from(self.clone()).encode_to_vec(),
+            0,
+        )
+    }
+}
+
+impl TryFrom<wire::ListObjectsRequest> for ListObjectsRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::ListObjectsRequest) -> Result<Self, Self::Error> {
+        use prost::Message;
+        request::validate_binary("objects/list", &value.encode_to_vec(), 0)?;
+        let wire::ListObjectsRequest {
+            bucket,
+            prefix,
+            delimiter,
+            page_size,
+            continuation_token,
+        } = value;
+        Ok(Self {
+            bucket: BucketName::try_from(bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?,
+            prefix: (!prefix.is_empty()).then_some(prefix),
+            delimiter: (!delimiter.is_empty()).then_some(delimiter),
+            page_size: (page_size != 0).then(|| PageSize::new(page_size)).transpose()?,
+            continuation_token: (!continuation_token.is_empty()).then_some(continuation_token),
+        })
+    }
+}
+
+impl From<ListObjectsRequest> for wire::ListObjectsRequest {
+    fn from(value: ListObjectsRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            prefix: value.prefix.unwrap_or_default(),
+            delimiter: value.delimiter.unwrap_or_default(),
+            page_size: value.page_size.map(PageSize::get).unwrap_or_default(),
+            continuation_token: value.continuation_token.unwrap_or_default(),
+        }
+    }
+}
+
+/// A typed request for a page of receipts from one staged multipart upload.
+///
+/// A zero wire `after_part_number` and page size are represented as `None` so
+/// default traversal remains distinguishable from explicit values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListPartsRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    upload_id: UploadId,
+    after_part_number: Option<PartNumber>,
+    page_size: Option<PageSize>,
+}
+
+impl ListPartsRequest {
+    /// Creates a first-page request using both protocol defaults.
+    pub fn new(bucket: BucketName, object_key: ObjectKey, upload_id: UploadId) -> Self {
+        Self {
+            bucket,
+            object_key,
+            upload_id,
+            after_part_number: None,
+            page_size: None,
+        }
+    }
+
+    /// Starts after a validated inclusive part number.
+    pub fn with_after_part_number(mut self, part_number: PartNumber) -> Self {
+        self.after_part_number = Some(part_number);
+        self
+    }
+
+    /// Uses a caller-supplied nonzero page size instead of the wire default.
+    pub fn with_page_size(mut self, page_size: PageSize) -> Self {
+        self.page_size = Some(page_size);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the validated staged upload identifier.
+    pub fn upload_id(&self) -> &UploadId {
+        &self.upload_id
+    }
+
+    /// Returns the optional part-number cursor.
+    pub const fn after_part_number(&self) -> Option<PartNumber> {
+        self.after_part_number
+    }
+
+    /// Returns the caller page size, or `None` for the protocol default.
+    pub const fn page_size(&self) -> Option<PageSize> {
+        self.page_size
+    }
+}
+
+impl TryFrom<wire::ListPartsRequest> for ListPartsRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::ListPartsRequest) -> Result<Self, Self::Error> {
+        use prost::Message;
+        request::validate_binary("multipart/list-parts", &value.encode_to_vec(), 0)?;
+        let wire::ListPartsRequest {
+            bucket,
+            object_key,
+            upload_id,
+            after_part_number,
+            page_size,
+        } = value;
+        Ok(Self {
+            bucket: BucketName::try_from(bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?,
+            object_key: ObjectKey::from_validated(object_key),
+            upload_id: UploadId::from_validated(upload_id),
+            after_part_number: (after_part_number != 0)
+                .then(|| PartNumber::new(after_part_number))
+                .transpose()?,
+            page_size: (page_size != 0).then(|| PageSize::new(page_size)).transpose()?,
+        })
+    }
+}
+
+impl From<ListPartsRequest> for wire::ListPartsRequest {
+    fn from(value: ListPartsRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            upload_id: value.upload_id.into_string(),
+            after_part_number: value
+                .after_part_number
+                .map(PartNumber::get)
+                .unwrap_or_default(),
+            page_size: value.page_size.map(PageSize::get).unwrap_or_default(),
+        }
+    }
+}
+
+/// A typed request that atomically publishes selected multipart receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompleteMultipartRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    upload_id: UploadId,
+    parts: Vec<CompletedPart>,
+    preconditions: Option<Precondition>,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl CompleteMultipartRequest {
+    /// Creates a completion request after validating nonempty ordered receipts.
+    pub fn new(
+        bucket: BucketName,
+        object_key: ObjectKey,
+        upload_id: UploadId,
+        parts: Vec<CompletedPart>,
+    ) -> Result<Self, Error> {
+        let value = Self {
+            bucket,
+            object_key,
+            upload_id,
+            parts,
+            preconditions: None,
+            mutation: None,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Adds an atomic current-value condition.
+    pub fn with_precondition(mut self, precondition: Precondition) -> Self {
+        self.preconditions = Some(precondition);
+        self
+    }
+
+    /// Adds a caller retry identity.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the validated staged upload identifier.
+    pub fn upload_id(&self) -> &UploadId {
+        &self.upload_id
+    }
+
+    /// Returns the ordered validated completion receipts.
+    pub fn parts(&self) -> &[CompletedPart] {
+        &self.parts
+    }
+
+    /// Returns the optional atomic condition.
+    pub fn precondition(&self) -> Option<&Precondition> {
+        self.preconditions.as_ref()
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        request::complete_multipart_digest(&wire::CompleteMultipartRequest::from(self.clone()))
+            .map(|_| ())
+    }
+}
+
+impl TryFrom<wire::CompleteMultipartRequest> for CompleteMultipartRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::CompleteMultipartRequest) -> Result<Self, Self::Error> {
+        request::complete_multipart_digest(&value)?;
+        let wire::CompleteMultipartRequest {
+            bucket,
+            object_key,
+            upload_id,
+            parts,
+            preconditions,
+            mutation,
+        } = value;
+        Ok(Self {
+            bucket: BucketName::try_from(bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?,
+            object_key: ObjectKey::from_validated(object_key),
+            upload_id: UploadId::from_validated(upload_id),
+            parts: parts
+                .into_iter()
+                .map(CompletedPart::try_from)
+                .collect::<Result<_, _>>()?,
+            preconditions: preconditions.map(Precondition::try_from).transpose()?,
+            mutation: mutation.map(IdempotencyKey::try_from).transpose()?,
+        })
+    }
+}
+
+impl From<CompleteMultipartRequest> for wire::CompleteMultipartRequest {
+    fn from(value: CompleteMultipartRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            upload_id: value.upload_id.into_string(),
+            parts: value.parts.into_iter().map(Into::into).collect(),
+            preconditions: value.preconditions.map(Into::into),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
 /// A typed object read request with explicit optional range and ETag filters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetObjectRequest {
@@ -1431,6 +1847,180 @@ impl From<ObjectInfo> for wire::ObjectInfo {
     }
 }
 
+/// A validated, bounded object download returned by a typed provider.
+///
+/// The body length and optional range are checked against the request and
+/// response header before this value is constructed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DownloadedObject {
+    info: ObjectInfo,
+    content_range: Option<ContentRange>,
+    body: bytes::Bytes,
+}
+
+impl DownloadedObject {
+    /// Validates a provider download against its typed request and allocation bound.
+    pub fn try_from_wire(
+        value: super::Object,
+        request: &GetObjectRequest,
+        maximum: u64,
+    ) -> Result<Self, Error> {
+        let wire_request = wire::GetObjectRequest::from(request.clone());
+        let expected = response::get_header(&value.header, &wire_request.range, maximum)?;
+        if value.body.len() as u64 != expected {
+            return Err(response::invalid());
+        }
+        let content_range = match value.header.content_range {
+            Some(range) => Some(ContentRange::try_from_wire(
+                range,
+                request
+                    .range()
+                    .ok_or_else(response::invalid)?,
+                value
+                    .header
+                    .object
+                    .as_ref()
+                    .ok_or_else(response::invalid)?
+                    .size,
+            )?),
+            None => None,
+        };
+        let info = ObjectInfo::try_from(
+            value
+                .header
+                .object
+                .ok_or_else(response::invalid)?,
+        )?;
+        Ok(Self {
+            info,
+            content_range,
+            body: value.body,
+        })
+    }
+
+    /// Returns validated object metadata for the selected representation.
+    pub fn info(&self) -> &ObjectInfo {
+        &self.info
+    }
+
+    /// Returns the canonical range when the request selected a byte range.
+    pub fn content_range(&self) -> Option<ContentRange> {
+        self.content_range
+    }
+
+    /// Returns the bounded selected bytes.
+    pub fn body(&self) -> &bytes::Bytes {
+        &self.body
+    }
+
+    /// Consumes the wrapper and returns the bounded selected bytes.
+    pub fn into_body(self) -> bytes::Bytes {
+        self.body
+    }
+}
+
+/// A validated page from an eventual object listing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListObjectsPage {
+    entries: Vec<(ObjectKey, ObjectInfo)>,
+    common_prefixes: Vec<String>,
+    continuation_token: Option<String>,
+    is_truncated: bool,
+}
+
+impl ListObjectsPage {
+    /// Validates a listing page against the typed request and converts its entries.
+    pub fn try_from_wire(
+        value: wire::ListObjectsResponse,
+        request: &ListObjectsRequest,
+    ) -> Result<Self, Error> {
+        let wire_request = wire::ListObjectsRequest::from(request.clone());
+        response::listing(&wire_request, &value)?;
+        let entries = value
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let object = entry.object.ok_or_else(response::invalid)?;
+                Ok((ObjectKey::try_from(entry.object_key)?, ObjectInfo::try_from(object)?))
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(Self {
+            entries,
+            common_prefixes: value.common_prefixes,
+            continuation_token: (!value.continuation_token.is_empty())
+                .then_some(value.continuation_token),
+            is_truncated: value.is_truncated,
+        })
+    }
+
+    /// Returns validated object entries in provider order.
+    pub fn entries(&self) -> &[(ObjectKey, ObjectInfo)] {
+        &self.entries
+    }
+
+    /// Returns validated common prefixes in provider order.
+    pub fn common_prefixes(&self) -> &[String] {
+        &self.common_prefixes
+    }
+
+    /// Returns the opaque next-page token, if the page is truncated.
+    pub fn continuation_token(&self) -> Option<&str> {
+        self.continuation_token.as_deref()
+    }
+
+    /// Returns whether another page is available.
+    pub const fn is_truncated(&self) -> bool {
+        self.is_truncated
+    }
+}
+
+/// A validated page of receipts from one staged multipart upload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListPartsPage {
+    parts: Vec<CompletedPart>,
+    next_part_number: Option<PartNumber>,
+    is_truncated: bool,
+}
+
+impl ListPartsPage {
+    /// Validates a parts page against its typed request and converts its receipts.
+    pub fn try_from_wire(
+        value: wire::ListPartsResponse,
+        request: &ListPartsRequest,
+    ) -> Result<Self, Error> {
+        let wire_request = wire::ListPartsRequest::from(request.clone());
+        response::parts(&wire_request, &value)?;
+        let next_part_number = (value.next_part_number != 0)
+            .then(|| PartNumber::new(value.next_part_number))
+            .transpose()?;
+        let parts = value
+            .parts
+            .into_iter()
+            .map(CompletedPart::try_from)
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            parts,
+            next_part_number,
+            is_truncated: value.is_truncated,
+        })
+    }
+
+    /// Returns validated multipart receipts in provider order.
+    pub fn parts(&self) -> &[CompletedPart] {
+        &self.parts
+    }
+
+    /// Returns the next part cursor when the page is truncated.
+    pub const fn next_part_number(&self) -> Option<PartNumber> {
+        self.next_part_number
+    }
+
+    /// Returns whether another page is available.
+    pub const fn is_truncated(&self) -> bool {
+        self.is_truncated
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ByteSelectionKind {
     Bytes { start: u64, end: Option<u64> },
@@ -1898,6 +2488,141 @@ mod tests {
         .is_err());
         assert!(MultipartUpload::try_from(wire::MultipartUpload {
             upload_id: String::new(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn typed_listing_requests_preserve_wire_defaults_and_opaque_tokens() {
+        let bucket = BucketName::try_from("customer.inputs").unwrap();
+        let defaults = ListObjectsRequest::new(bucket.clone());
+        assert_eq!(defaults.prefix(), None);
+        assert_eq!(defaults.delimiter(), None);
+        assert_eq!(defaults.page_size(), None);
+        assert_eq!(defaults.continuation_token(), None);
+        assert_eq!(
+            wire::ListObjectsRequest::from(defaults),
+            wire::ListObjectsRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                ..Default::default()
+            }
+        );
+
+        let request = ListObjectsRequest::new(bucket)
+            .with_prefix("customer/")
+            .unwrap()
+            .with_delimiter("/")
+            .unwrap()
+            .with_page_size(PageSize::try_from(7).unwrap())
+            .with_continuation_token("opaque-token")
+            .unwrap();
+        let wire = wire::ListObjectsRequest::from(request.clone());
+        assert_eq!(wire.page_size, 7);
+        assert_eq!(wire.continuation_token, "opaque-token");
+        assert_eq!(ListObjectsRequest::try_from(wire), Ok(request));
+
+        assert!(ListObjectsRequest::new(BucketName::try_from("customer.inputs").unwrap())
+            .with_prefix("bad\0prefix")
+            .is_err());
+        assert!(ListObjectsRequest::new(BucketName::try_from("customer.inputs").unwrap())
+            .with_continuation_token("x".repeat(8193))
+            .is_err());
+        assert!(ListObjectsRequest::try_from(wire::ListObjectsRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            page_size: 1001,
+            ..Default::default()
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn typed_parts_listing_preserves_zero_cursor_and_page_defaults() {
+        let bucket = BucketName::try_from("customer.inputs").unwrap();
+        let defaults = ListPartsRequest::new(
+            bucket.clone(),
+            ObjectKey::try_from("artifact").unwrap(),
+            UploadId::try_from("upload-1").unwrap(),
+        );
+        assert_eq!(defaults.after_part_number(), None);
+        assert_eq!(defaults.page_size(), None);
+        let defaults_wire = wire::ListPartsRequest::from(defaults.clone());
+        assert_eq!(defaults_wire.after_part_number, 0);
+        assert_eq!(defaults_wire.page_size, 0);
+        assert_eq!(ListPartsRequest::try_from(defaults_wire), Ok(defaults.clone()));
+
+        let request = defaults
+            .with_after_part_number(PartNumber::try_from(3).unwrap())
+            .with_page_size(PageSize::try_from(2).unwrap());
+        let wire = wire::ListPartsRequest::from(request.clone());
+        assert_eq!(wire.after_part_number, 3);
+        assert_eq!(wire.page_size, 2);
+        assert_eq!(ListPartsRequest::try_from(wire), Ok(request));
+
+        assert!(ListPartsRequest::try_from(wire::ListPartsRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            object_key: "artifact".into(),
+            upload_id: "upload-1".into(),
+            after_part_number: PartNumber::MAX + 1,
+            ..Default::default()
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn typed_completion_reuses_uploaded_part_order_and_presence_rules() {
+        let bucket = BucketName::try_from("customer.inputs").unwrap();
+        let object_key = ObjectKey::try_from("artifact").unwrap();
+        let upload_id = UploadId::try_from("upload-1").unwrap();
+        let part_one = CompletedPart::new(
+            PartNumber::try_from(1).unwrap(),
+            Etag::try_from("etag-1").unwrap(),
+            5,
+        )
+        .unwrap();
+        let part_two = CompletedPart::new(
+            PartNumber::try_from(2).unwrap(),
+            Etag::try_from("etag-2").unwrap(),
+            8,
+        )
+        .unwrap();
+        let request = CompleteMultipartRequest::new(
+            bucket,
+            object_key,
+            upload_id,
+            vec![part_one, part_two],
+        )
+        .unwrap()
+        .with_precondition(Precondition::IfAbsent)
+        .with_idempotency_key(IdempotencyKey::try_from("complete-1").unwrap());
+        let wire = wire::CompleteMultipartRequest::from(request.clone());
+        assert_eq!(wire.parts.len(), 2);
+        assert!(wire.preconditions.is_some());
+        assert!(wire.mutation.is_some());
+        assert_eq!(CompleteMultipartRequest::try_from(wire), Ok(request));
+
+        let duplicate = CompletedPart::new(
+            PartNumber::try_from(1).unwrap(),
+            Etag::try_from("etag-3").unwrap(),
+            9,
+        )
+        .unwrap();
+        assert!(CompleteMultipartRequest::new(
+            BucketName::try_from("customer.inputs").unwrap(),
+            ObjectKey::try_from("artifact").unwrap(),
+            UploadId::try_from("upload-1").unwrap(),
+            vec![duplicate.clone(), duplicate],
+        )
+        .is_err());
+        assert!(CompletedPart::try_from(wire::UploadedPart {
+            part_number: 1,
+            etag: String::new(),
+            size: 1,
         })
         .is_err());
     }

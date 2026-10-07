@@ -906,9 +906,20 @@ async fn read_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::{
+        AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest,
+        ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest,
+        IdempotencyKey, IdempotencyObservation, ReadRequest, RecordStream, StreamBounds,
+        StreamProvider,
+    };
+    use async_trait::async_trait;
+    use futures::StreamExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::Poll;
     use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tonic::transport::{Identity, Server, ServerTlsConfig};
+    use tonic::{Request, Status};
 
     struct DropSentinel(Arc<AtomicBool>);
 
@@ -1074,5 +1085,196 @@ mod tests {
         let second = follow.next_result().await.expect("second read failed");
         assert!(second.value.is_none());
         assert!(second.error.is_none());
+    }
+
+    struct TcpDropProbe {
+        started: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl StreamProvider for TcpDropProbe {
+        async fn inspect_idempotency(
+            &self,
+            _idempotency_key: IdempotencyKey,
+        ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn tail(&self, _path: StreamPath) -> std::result::Result<u64, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn bounds(
+            &self,
+            _path: StreamPath,
+        ) -> std::result::Result<StreamBounds, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn append(
+            &self,
+            _request: AppendRequest,
+        ) -> std::result::Result<AppendOutcome, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn fork(
+            &self,
+            _request: ForkRequest,
+        ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn read(&self, _request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn follow(
+            &self,
+            _path: StreamPath,
+            _from: u64,
+        ) -> std::result::Result<RecordStream, StreamError> {
+            self.started.store(true, Ordering::SeqCst);
+            let dropped = Arc::clone(&self.dropped);
+            let sentinel = DropSentinel(dropped);
+            Ok(futures::stream::poll_fn(move |_| {
+                let _sentinel = &sentinel;
+                Poll::Pending
+            })
+            .boxed())
+        }
+
+        async fn children(
+            &self,
+            _request: ChildrenRequest,
+        ) -> std::result::Result<ChildStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn children_page(
+            &self,
+            _request: ChildrenPageRequest,
+        ) -> std::result::Result<ChildrenPage, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn commit(
+            &self,
+            _request: CommitRequest,
+        ) -> std::result::Result<CommitOutcome, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+
+        async fn read_commit(
+            &self,
+            _commit_id: CommitId,
+        ) -> std::result::Result<CommittedEnvelope, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+    }
+
+    #[tokio::test]
+    async fn real_tcp_follow_close_releases_the_server_stream() {
+        let result = async {
+            let identity = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+            let certificate_pem = identity.cert.pem();
+            let private_key_pem = identity.signing_key.serialize_pem();
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+            let started = Arc::new(AtomicBool::new(false));
+            let dropped = Arc::new(AtomicBool::new(false));
+            let provider = Arc::new(TcpDropProbe {
+                started: Arc::clone(&started),
+                dropped: Arc::clone(&dropped),
+            });
+            let service = acyclic_stream::wire::stream_service_server::StreamServiceServer::with_interceptor(
+                acyclic_stream::grpc::Service::new(provider),
+                |request: Request<()>| {
+                    if request
+                        .metadata()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        != Some("Bearer exact-token")
+                    {
+                        return Err(Status::unauthenticated("missing exact bearer credential"));
+                    }
+                    Ok(request)
+                },
+            );
+            let incoming = futures::stream::unfold(listener, |listener| async move {
+                listener
+                    .accept()
+                    .await
+                    .ok()
+                    .map(|(socket, _)| (Ok::<_, std::io::Error>(socket), listener))
+            });
+            let server = tokio::spawn(async move {
+                Server::builder()
+                    .tls_config(
+                        ServerTlsConfig::new()
+                            .identity(Identity::from_pem(certificate_pem, private_key_pem)),
+                    )?
+                    .add_service(service)
+                    .serve_with_incoming_shutdown(incoming, async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+            });
+
+            let endpoint = format!("https://localhost:{}", address.port());
+            let connected = NativeStreamClient::connect_with_ca_result(
+                endpoint,
+                "exact-token".to_owned(),
+                Buffer::from(certificate_pem.as_bytes().to_vec()),
+                None,
+            )
+            .await?;
+            assert!(connected.error.is_none(), "connect failed: {:?}", connected.error);
+            let client = connected.client.expect("connect result omitted client");
+            let request = wire::FollowRequest {
+                path: "accounts/events".to_owned(),
+                from: 0,
+            };
+            let opened = client
+                .open_follow_result(Buffer::from(request.encode_to_vec()), None)
+                .await?;
+            assert!(opened.error.is_none(), "open failed: {:?}", opened.error);
+            assert!(started.load(Ordering::SeqCst));
+            let follow = Arc::new(opened.follow.expect("open result omitted follow"));
+            let pending = tokio::spawn({
+                let follow = Arc::clone(&follow);
+                async move { follow.next_result().await }
+            });
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !started.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+
+            follow.close().await;
+            let closed = tokio::time::timeout(Duration::from_secs(1), pending).await??;
+            assert!(closed.value.is_none());
+            assert!(closed.error.is_none());
+            let closed_again = follow.next_result().await?;
+            assert!(closed_again.value.is_none());
+            assert!(closed_again.error.is_none());
+
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !dropped.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "server follow stream was not dropped after close")?;
+
+            let _ = shutdown_tx.send(());
+            server.await??;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        }
+        .await;
+        assert!(result.is_ok(), "real TCP follow lifecycle failed: {result:?}");
     }
 }

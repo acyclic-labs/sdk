@@ -31,3 +31,12 @@ Release publisher review fixed the exact caller job-name predicate. PR252 remain
 Standalone SDKdocs recheck passed 25/25; docs-only three-file update pushed to PR252 head 61b3d50bc59c5e4299d3ef0d93361e3460a1a5c2. PR254 restacked without force to 3628d7b0b3b0c3a35dbe19b56f75bc154965cb28. No main merge. Objects latest multipart cohort passes 31/31; Stream lifecycle 5/5; staging8/8; WSL preflight passes.
 
 Release fixture handle85390 remains live, compiling its fresh private Rustdoc cache. Full clean generator build26984 terminated because Windows held the SDKgen executable open for that fixture. Direct use of the existing binary correctly rejected the clean snapshot's differing compiled-source digest; it produced no valid bundle. Wait for that exact live fixture before rebuilding the generator from clean qualification snapshot103006. Do not replace or restart live work based on quiet output.
+## Current local qualification results
+
+Objects typed request cohort passes 34/34 Rust library tests. The clean all-eleven-owner generation at snapshot 103006a55886ff811151da91ca5cb137b1be18e1 built every Rustdoc JSON and dep-info lane, then failed public API projection for generic receiver T::commit_workspace_fork. Generic receiver support and an all-eleven-owner warm corpus regression check are being qualified; no complete generation bundle or drift pass is claimed.
+
+Release fixture handle85390 terminated on a missing Workers README in its synthetic checkout. The fixture now includes that source and reuses a stable sibling cache; its recheck is pending. Generator build34330 is terminal, so neither prior build remains live.
+
+Current PR254 b8beb24d89e5f69ce5510bcf658aa6d5e7ac6ade Linux qualification used native Bun1.3.14 and built Rust WASM successfully. Its TypeScript suite reached 17 passes and one failing high-level handle test (identity length differs in nested context validation). This is a qualification failure, not a current installed-package receipt. Diagnosis is in progress before changing fixture or behavior.
+
+PR252 head61b3d50bc59c5e4299d3ef0d93361e3460a1a5c2 and PR254 remain open; no coordinator merge has occurred. The required-review gate is still present. Goal remains active.

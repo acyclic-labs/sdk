@@ -655,6 +655,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
         fs::write(root.join(path), contents).unwrap();
     }
     write_fixture_owner_packages(&root);
+    fs::write(root.join("rust/crates/workers/README.md"), "Workers\n").unwrap();
     write_fixture_private_packages(&root);
     copy_compiled_generator_sources(&root);
     let lock = Command::new("cargo")
@@ -679,7 +680,10 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     git(&root, &["commit", "--quiet", "-m", "fixture"]);
 
     let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
-    let cache = sandbox.join("cache");
+    let cache = sandbox
+        .parent()
+        .unwrap()
+        .join("sdk-generation-release-fixture-cache");
     let result = command(binary, "generate", &root, None, &output, "release")
         .env("CARGO_TARGET_DIR", &cache)
         .env("RUSTC", root.join("missing-rustc.exe"))
