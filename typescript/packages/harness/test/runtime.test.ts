@@ -1875,7 +1875,7 @@ describe("typed agent runtime", () => {
 
   test("stream event limits stop an unbounded provider before further dispatch", async () => {
     let produced = 0;
-    const runtime = Harness.builder(contracts).limits({ model_events_per_step: 2, tool_calls_per_step: 1 }).model(testModel, {
+    const runtime = Harness.builder(contracts).limits({ model_events_per_step: 2 }).model(testModel, {
       async *generate() {
         while (true) { produced++; yield { kind: "content" as const, delta: "." }; }
       },
@@ -1894,7 +1894,7 @@ describe("typed agent runtime", () => {
         return reads === 1 ? "ok" : "x".repeat(3);
       },
     };
-    const runtime = Harness.builder(contracts).limits({ file_bytes: 2, render_bytes: 2 }).model(testModel, {
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 2 }).model(testModel, {
       async *generate() {
         yield event;
         yield { kind: "completed" as const, metadata: {} };

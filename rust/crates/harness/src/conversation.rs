@@ -50,7 +50,7 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
 }
 /// Maximum file byte length accepted by the limits validator.
 pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
-/// Maximum rendered byte length implied by the file byte ceiling.
+/// Maximum rendered byte length representable by the numeric wire format.
 pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Largest count representable by both this platform and the numeric wire format.
 pub const MAX_PORTABLE_COUNT: usize =
@@ -111,7 +111,7 @@ impl Default for Limits {
 }
 
 impl Limits {
-    /// Prevents zero bounds or configuration that widens the wire protocol.
+    /// Checks each independent budget against its numeric wire representation.
     pub fn validate(&self) -> Result<()> {
         if self.file_bytes == 0
             || self.file_bytes > MAX_LIMIT_FILE_BYTES
@@ -121,14 +121,12 @@ impl Limits {
             || self.attachments > MAX_LIMIT_ATTACHMENTS
             || self.render_bytes == 0
             || self.render_bytes > MAX_LIMIT_RENDER_BYTES
-            || self.render_bytes > self.file_bytes
             || self.model_steps == 0
             || self.model_steps > MAX_LIMIT_MODEL_STEPS
             || self.model_events_per_step == 0
             || self.model_events_per_step > MAX_LIMIT_MODEL_EVENTS_PER_STEP
             || self.tool_calls_per_step == 0
             || self.tool_calls_per_step > MAX_LIMIT_TOOL_CALLS_PER_STEP
-            || self.tool_calls_per_step > self.model_events_per_step
             || self.context_messages == 0
             || self.context_messages > MAX_LIMIT_CONTEXT_MESSAGES
         {
@@ -1720,12 +1718,14 @@ mod tests {
         let file = file(AgentId::new(), "message.txt")?;
         let mut limits = Limits {
             file_bytes: 4,
-            render_bytes: 4,
             ..Limits::default()
         };
+        limits.validate()?;
         assert!(limits.validate_file(&file).is_err());
         limits.file_bytes = 5;
         limits.validate_file(&file)?;
+        limits.model_events_per_step = 1;
+        limits.validate()?;
         limits.attachments = 0;
         assert!(limits.validate().is_err());
         Limits {

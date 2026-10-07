@@ -894,14 +894,8 @@ impl StockExecutor {
         let maximum = self
             .limits
             .model_events_per_step
-            .checked_add(
-                self.limits
-                    .tool_calls_per_step
-                    .checked_mul(3)
-                    .ok_or_else(|| Error::Invalid("tool prefix record bound overflow".into()))?,
-            )
-            .and_then(|bound| bound.checked_add(2))
-            .ok_or_else(|| Error::Invalid("tool prefix record bound overflow".into()))?;
+            .saturating_add(self.limits.tool_calls_per_step.saturating_mul(3))
+            .saturating_add(2);
         let (_, records) = replay_execution(journal, operation_id, maximum, |event| match event {
             ExecutionEvent::Started { .. } => true,
             ExecutionEvent::ModelStarted { step: recorded, .. }
@@ -3035,6 +3029,59 @@ mod tests {
         assert!(matches!(
             replay_execution(&journal, operation, 0, |_| false).await,
             Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
+        let mut executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        );
+        // Exercise the address-width boundary on every platform. On WASM32,
+        // these are the default counts, even when the retained history is tiny.
+        executor.limits.model_events_per_step = usize::MAX;
+        executor.limits.tool_calls_per_step = usize::MAX;
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([27; 16]);
+        journal
+            .append(
+                operation,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+            )
+            .await?;
+        let records = executor.prefix_records(&journal, operation, 0).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sequence, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn independently_selected_event_budget_still_rejects_excess_observations() -> Result<()> {
+        let limits = Limits {
+            model_events_per_step: 1,
+            ..Limits::default()
+        };
+        limits.validate()?;
+        let mut admission = ModelEventAdmission::default();
+        let event = ModelEvent::ToolCall {
+            call_id: "call-1".into(),
+            name: "example.echo".into(),
+            arguments: Value::Null,
+        };
+        admission.observe(&event, limits)?;
+        assert!(matches!(
+            admission.observe(&ModelEvent::Completed { metadata: Value::Null }, limits),
+            Err(Error::Invalid(reason)) if reason == "model event limit exceeded"
         ));
         Ok(())
     }
