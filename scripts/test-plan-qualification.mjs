@@ -212,5 +212,5 @@ test("the core lanes cover the Rust workspace, docs crate, and TypeScript worksp
   const policy = script.slice(script.indexOf("\n  policy)"));
   assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
   const typescript = script.slice(script.indexOf("\n  typescript)"));
-  assert.match(typescript, /bun run check:generated\n +bun run test\n/);
+  assert.match(typescript, /bun run test\n(?: .*\n)+? +bun run check:generated\n/);
 });
