@@ -1207,7 +1207,7 @@ mod tests {
                 NativeStreamFollow { state: close_state }.close().await;
             });
             *close_task_slot.lock().expect("close task slot poisoned") = Some(close_task);
-            Poll::Ready(record.take().map(|record| Ok(record)))
+            Poll::Ready(record.take().map(Ok))
         }));
         *follow.state.records.lock().await = Some(records);
 
@@ -1315,6 +1315,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the real TCP lifecycle test keeps connection, follow, close, and server-drop assertions together"
+    )]
     #[tokio::test]
     async fn real_tcp_follow_close_releases_the_server_stream() {
         let result = async {
@@ -1400,10 +1404,9 @@ mod tests {
             .await?;
 
             follow.close().await;
-            let closed = match tokio::time::timeout(Duration::from_secs(1), pending).await?? {
-                Ok(value) => value,
-                Err(_) => panic!("pending next_result rejected"),
-            };
+            let closed = tokio::time::timeout(Duration::from_secs(1), pending)
+                .await??
+                .map_err(|_| "pending next_result rejected")?;
             assert!(closed.value.is_none());
             assert!(closed.error.is_none());
             let closed_again = follow.next_result().await?;
