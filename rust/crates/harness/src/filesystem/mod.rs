@@ -48,7 +48,12 @@ mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 mod memory;
 pub use memory::{LocalHarness, MemoryHarnessStorage};
+mod task_commands;
 mod task_runtime;
+pub use task_commands::{
+    FilesystemTaskCommands, MODEL_TASK_COMMAND_KIND, ModelTaskCommand, TOOL_TASK_COMMAND_KIND,
+    ToolTaskCommand,
+};
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
     TaskWorkerOutcome,

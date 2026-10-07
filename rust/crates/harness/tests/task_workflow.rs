@@ -13,7 +13,8 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
-    FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, TaskWorkerOutcome,
+    FilesystemTaskRuntime, MODEL_TASK_COMMAND_KIND, ModelTaskCommand, TOOL_TASK_COMMAND_KIND,
+    TaskCommandHost, TaskCommandProgress, TaskWorkerOutcome, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -22,15 +23,18 @@ use acyclic_harness::model::{
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
     DurableTaskHost, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
+    ToolContext,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
-use acyclic_harness::tool::ToolRegistry;
+use acyclic_harness::tool::{
+    Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
+};
 use acyclic_harness::workflow::{
     MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, MemoryWorkflowJournal,
     ResumableMachine, WorkflowCommand, WorkflowJournal, WorkflowRecord,
 };
 use acyclic_harness::{
-    Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
+    Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient, SystemUnixMillisClock};
 use futures::{future::BoxFuture, stream::BoxStream};
@@ -42,6 +46,69 @@ use std::{collections::BTreeMap, sync::Arc};
 struct InterruptedModel {
     generated: AtomicUsize,
     reconciled: AtomicUsize,
+}
+
+struct InterruptedTool {
+    executed: AtomicUsize,
+    reconciled: AtomicUsize,
+}
+
+impl ToolExecutor for InterruptedTool {
+    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async { Err(Error::Unsupported("scoped tool context required".into())) })
+    }
+
+    fn execute_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            let file = serde_json::from_value(
+                invocation
+                    .arguments
+                    .get("file")
+                    .cloned()
+                    .ok_or_else(|| Error::Invalid("missing file".into()))?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(context.task().read_file(&file).await?, b"hello");
+            self.executed.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Storage("lost tool result".into()))
+        })
+    }
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async { Err(Error::Unsupported("scoped reconciliation required".into())) })
+    }
+
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            let file = serde_json::from_value(
+                invocation
+                    .arguments
+                    .get("file")
+                    .cloned()
+                    .ok_or_else(|| Error::Invalid("missing file".into()))?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(context.task().read_file(&file).await?, b"hello");
+            self.reconciled.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(ToolResult {
+                value: json!("tool-restored"),
+            }))
+        })
+    }
+}
+
+impl ToolProjection for InterruptedTool {
+    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        Ok(result.value.clone())
+    }
 }
 
 impl ModelProvider for InterruptedModel {
@@ -103,22 +170,37 @@ impl TaskCommandHost for NoCommands {
 
 #[tokio::test]
 async fn bounded_worker_suspends_and_consumes_wake_after_full_reopen() -> Result<()> {
-    worker_restart(false).await
+    worker_restart(WorkerCommand::Wait).await
 }
 
 #[tokio::test]
 async fn worker_reconciles_journaled_model_without_releasing_ownership() -> Result<()> {
-    worker_restart(true).await
+    worker_restart(WorkerCommand::Model).await
 }
 
-struct CommandMachine(TaskMachine);
+#[tokio::test]
+async fn worker_reconciles_pinned_tool_without_reexecuting_after_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::Tool).await
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WorkerCommand {
+    Wait,
+    Model,
+    Tool,
+}
+
+struct CommandMachine {
+    base: TaskMachine,
+    command: WorkerCommand,
+}
 
 impl ResumableMachine for CommandMachine {
     fn identity(&self) -> &MachineIdentity {
-        self.0.identity()
+        self.base.identity()
     }
     fn state_schema(&self) -> &Value {
-        self.0.state_schema()
+        self.base.state_schema()
     }
     fn initialize(&self, input: &Value) -> Result<Value> {
         Ok(input.clone())
@@ -129,20 +211,35 @@ impl ResumableMachine for CommandMachine {
                 state: state.clone(),
                 commands: vec![WorkflowCommand {
                     operation_id: OperationId::from_bytes([26; 16]),
-                    kind: "model.test".into(),
+                    kind: if self.command == WorkerCommand::Tool {
+                        TOOL_TASK_COMMAND_KIND
+                    } else {
+                        MODEL_TASK_COMMAND_KIND
+                    }
+                    .into(),
                     payload: serde_json::from_value(state.clone())
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 }],
                 status: MachineStatus::Suspended,
             })
         } else {
-            assert_eq!(
+            let outcome: Outcome<Value> = serde_json::from_value(
                 input
                     .get("commands")
                     .and_then(|values| values.get(0))
-                    .and_then(|value| value.get("value")),
-                Some(&json!("partial-restored"))
-            );
+                    .and_then(|value| value.get("value"))
+                    .cloned()
+                    .ok_or_else(|| Error::Invalid("missing command result".into()))?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            let Outcome::Succeeded(value) = outcome else {
+                return Err(Error::Invalid("unexpected command outcome".into()));
+            };
+            if self.command == WorkerCommand::Tool {
+                assert_eq!(value, json!("tool-restored"));
+            } else {
+                assert_eq!(value.get("text"), Some(&json!("partial-restored")));
+            }
             Ok(MachineTransition {
                 state: state.clone(),
                 commands: Vec::new(),
@@ -152,57 +249,13 @@ impl ResumableMachine for CommandMachine {
     }
 }
 
-struct JournaledModel<'a, P, A, O> {
-    runtime: &'a FilesystemTaskRuntime<P, A, O>,
-    model: Arc<InterruptedModel>,
-}
-
-impl<P, A, O> TaskCommandHost for JournaledModel<'_, P, A, O>
-where
-    P: acyclic_stream::StreamProvider + Send + Sync + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
-    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-{
-    fn execute<'a>(
-        &'a self,
-        context: TaskContext,
-        fence: LeaseFence,
-        command: WorkflowCommand,
-        payload: Value,
-    ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(async move {
-            assert_eq!(command.kind, "model.test");
-            let execution = self
-                .runtime
-                .stock_execution(
-                    context
-                        .durable_task_id()
-                        .ok_or_else(|| Error::Invalid("missing durable task".into()))?,
-                    fence,
-                    command.operation_id,
-                    Model::new("test", "interrupted", "1", Value::Null)?,
-                    self.model.clone(),
-                    ContextPipeline::default(),
-                )
-                .await?;
-            let output = execution
-                .execute(TurnInput {
-                    operation_id: execution.operation_id(),
-                    input: ModelContent::Text(payload.as_str().unwrap_or_default().into()),
-                    selected_context: None,
-                    max_steps: 1,
-                })
-                .await?;
-            Ok(TaskCommandProgress::Ready(json!(output.text)))
-        })
-    }
-}
-
 #[allow(
     clippy::cognitive_complexity,
     reason = "parallel restart assertions for suspended and uncertain ownership"
 )]
-async fn worker_restart(with_command: bool) -> Result<()> {
+async fn worker_restart(command: WorkerCommand) -> Result<()> {
+    let with_command = command != WorkerCommand::Wait;
+    let with_tool = command == WorkerCommand::Tool;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
@@ -228,6 +281,7 @@ async fn worker_restart(with_command: bool) -> Result<()> {
             "operation:cancel".to_owned(),
             "operation:wake".to_owned(),
             "model:generate".to_owned(),
+            "tool:call:test.restore".to_owned(),
             "task:spawn:test.restart@1".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
@@ -247,7 +301,7 @@ async fn worker_restart(with_command: bool) -> Result<()> {
         },
     };
     let machine: Arc<dyn ResumableMachine> = if with_command {
-        Arc::new(CommandMachine(base))
+        Arc::new(CommandMachine { base, command })
     } else {
         Arc::new(base)
     };
@@ -273,6 +327,22 @@ async fn worker_restart(with_command: bool) -> Result<()> {
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
     });
+    let tool = Arc::new(InterruptedTool {
+        executed: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    let mut tools = ToolRegistry::default();
+    tools.register(Tool {
+        definition: ToolDefinition {
+            name: "test.restore".into(),
+            revision: "1".into(),
+            description: "Read and reconcile".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({"type":"string"}),
+        },
+        executor: tool.clone(),
+        projection: tool.clone(),
+    })?;
     for reopened in [false, true] {
         let filesystem = Arc::new(FilesystemHost::new(
             Fs::local(fs_options.clone())
@@ -310,7 +380,7 @@ async fn worker_restart(with_command: bool) -> Result<()> {
             scope.clone(),
             tasks.clone(),
             machines.clone(),
-            ToolRegistry::default(),
+            tools.clone(),
             SessionLimits {
                 active_tasks: 1,
                 total_tasks: 1,
@@ -323,12 +393,25 @@ async fn worker_restart(with_command: bool) -> Result<()> {
         .await?;
         if !reopened {
             let input = if with_command {
-                serde_json::to_value(
-                    payloads
-                        .stage(operation, "command-hello", b"\"hello\"")
-                        .await?,
-                )
-                .map_err(|error| Error::Invalid(error.to_string()))?
+                let payload = if with_tool {
+                    let file = payloads.stage(operation, "tool-input", b"hello").await?;
+                    serde_json::to_value(ToolTaskCommand {
+                        name: "test.restore".into(),
+                        revision: "1".into(),
+                        arguments: json!({"file":file}),
+                    })
+                } else {
+                    serde_json::to_value(ModelTaskCommand {
+                        input: ModelContent::Text("hello".into()),
+                        selected_context: None,
+                        max_steps: 1,
+                    })
+                }
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                let bytes = serde_json::to_vec(&payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                serde_json::to_value(payloads.stage(operation, "command-payload", &bytes).await?)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
             } else {
                 json!(0)
             };
@@ -425,14 +508,48 @@ async fn worker_restart(with_command: bool) -> Result<()> {
                     acyclic_harness::scheduler::OperationPhase::Running
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+                if with_tool {
+                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let admission = runtime.task_host().observe_admission(task).await?;
+                    let file = serde_json::from_value(admission.input)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let payload: ToolTaskCommand =
+                        serde_json::from_slice(&context.read_file(&file).await?)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let command = WorkflowCommand {
+                        operation_id: OperationId::from_bytes([26; 16]),
+                        kind: TOOL_TASK_COMMAND_KIND.into(),
+                        payload: file,
+                    };
+                    let wrong = serde_json::to_value(ToolTaskCommand {
+                        revision: "2".into(),
+                        ..payload
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                    assert!(matches!(
+                        runtime
+                            .commands()
+                            .execute(
+                                context,
+                                LeaseFence::from(&lease.reservation),
+                                command,
+                                wrong
+                            )
+                            .await,
+                        Err(Error::NotFound(_))
+                    ));
+                    assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
+                    assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+                }
             }
             runtime
                 .run_task(
                     lease.clone(),
-                    &JournaledModel {
-                        runtime: &runtime,
-                        model: model.clone(),
-                    },
+                    &runtime.commands().with_model(
+                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        model.clone(),
+                        ContextPipeline::default(),
+                    ),
                     2,
                 )
                 .await?
@@ -459,15 +576,30 @@ async fn worker_restart(with_command: bool) -> Result<()> {
             assert_eq!(reader.read(result).await?, b"7");
             assert!(coordinator.pull(&worker).await?.is_none());
             if with_command {
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    model.generated.load(Ordering::SeqCst),
+                    usize::from(!with_tool)
+                );
+                assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
+                assert_eq!(
+                    model.reconciled.load(Ordering::SeqCst),
+                    usize::from(!with_tool)
+                );
+                assert_eq!(
+                    tool.reconciled.load(Ordering::SeqCst),
+                    usize::from(with_tool)
+                );
             }
         } else {
             if with_command {
                 assert!(
                     matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
                 );
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    model.generated.load(Ordering::SeqCst),
+                    usize::from(!with_tool)
+                );
+                assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
                 assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
             } else {
                 assert!(
@@ -673,6 +805,14 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
         // The composition owner can read this actual committed file, but the
         // task deliberately lacks that owner's private-volume read grant.
         reader.verify(&input_file).await?;
+        assert!(matches!(
+            harness
+                .durable_context(task, operation)
+                .await?
+                .read_file(&input_file)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         let mut coordinator = DistributedCoordinator::open(&stream, reader)
             .await?
             .with_payload_store(payloads);

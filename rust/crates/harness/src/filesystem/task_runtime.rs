@@ -14,11 +14,11 @@ use crate::{
     executor::{Executor, StockExecutor, TurnInput, TurnOutput},
     model::{Model, ModelProvider},
     runtime::{
-        AgentHarness, DurableTaskHost, ResumableTaskSession, RuntimeScope, TaskContext,
-        TaskRegistry, TaskRunLimits,
+        AgentHarness, ContentBindings, DurableTaskHost, ResumableTaskSession, RuntimeScope,
+        TaskContext, TaskRegistry, TaskRunLimits,
     },
     scheduler::{LeaseFence, SessionLimits},
-    tool::ToolRegistry,
+    tool::{ToolDefinition, ToolRegistry},
     workflow::{MachineRegistry, MachineStatus, WorkflowCommand},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -138,7 +138,7 @@ where
                     .with_payload_store(payloads.clone()),
                 stream,
                 payloads,
-                reader,
+                reader.clone(),
                 verifier.audience().clone(),
                 signed.clone(),
                 verifier.clone(),
@@ -149,8 +149,18 @@ where
             )?
             .with_session_limits(session_limits)?,
         );
-        let harness =
-            AgentHarness::new(tasks, tools.clone(), scope, concurrency, Some(host.clone()))?;
+        let harness = AgentHarness::with_content(
+            tasks,
+            tools.clone(),
+            scope,
+            concurrency,
+            Some(host.clone()),
+            None,
+            Some(ContentBindings {
+                reader,
+                writer: None,
+            }),
+        )?;
         Ok(Self {
             host,
             harness,
@@ -173,6 +183,41 @@ where
     #[must_use]
     pub const fn task_host(&self) -> &Arc<CoordinatorTaskHost<P>> {
         &self.host
+    }
+
+    /// Stock model/tool command adapters using this runtime's existing bindings.
+    #[must_use]
+    pub const fn commands(&self) -> super::FilesystemTaskCommands<'_, P, A, O> {
+        super::FilesystemTaskCommands::new(self)
+    }
+
+    pub(super) fn tool_definition(&self, name: &str, revision: &str) -> Result<ToolDefinition> {
+        self.tools
+            .get_version(name, revision)
+            .map(|tool| tool.definition.clone())
+            .ok_or_else(|| Error::NotFound(format!("tool {name}@{revision}")))
+    }
+
+    pub(super) fn tool_registry(&self) -> ToolRegistry {
+        self.tools.clone()
+    }
+
+    pub(super) async fn execution_journal(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        turn: OperationId,
+    ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>> {
+        let admission = self.host.observe_admission(task).await?;
+        Ok(Arc::new(FilesystemExecutionJournal::for_task(
+            self.host.journal_owner(task, fence).await?,
+            execution_operation(task, turn),
+            self.filesystem.clone(),
+            self.volume.clone(),
+            self.verifier.clone(),
+            self.signed.clone(),
+            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+        )?))
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
@@ -397,13 +442,7 @@ where
                 "persistent stock task deadline runner is not composed".into(),
             ));
         }
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"harness/v2/task-execution\0");
-        hasher.update(&task.into_bytes());
-        hasher.update(&turn.into_bytes());
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-        let operation_id = OperationId::from_bytes(bytes);
+        let operation_id = execution_operation(task, turn);
         let journal = FilesystemExecutionJournal::for_task(
             self.host.journal_owner(task, fence.clone()).await?,
             operation_id,
@@ -424,6 +463,16 @@ where
             run_limits,
         })
     }
+}
+
+pub(super) fn execution_operation(task: TaskId, turn: OperationId) -> OperationId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"harness/v2/task-execution\0");
+    hasher.update(&task.into_bytes());
+    hasher.update(&turn.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
 }
 
 /// A stock executor and its mandatory task-owned journal. No caller-selected
