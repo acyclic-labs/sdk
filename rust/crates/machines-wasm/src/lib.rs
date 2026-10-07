@@ -208,9 +208,9 @@ fn is_js_whitespace(character: char) -> bool {
 pub fn validate_page_size(
     #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
 ) -> Result<(), JsValue> {
-    let value = value.as_f64().ok_or_else(|| {
-        js_error("invalid-page-size", "machine page limit must be 1..=256")
-    })?;
+    let value = value
+        .as_f64()
+        .ok_or_else(|| js_error("invalid-page-size", "machine page limit must be 1..=256"))?;
     if !public::is_safe_integer(value) || value < 1.0 || value > MAX_PAGE_SIZE as f64 {
         return Err(js_error(
             "invalid-page-size",
