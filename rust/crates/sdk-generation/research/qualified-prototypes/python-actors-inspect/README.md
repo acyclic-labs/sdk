@@ -1,44 +1,40 @@
-# Python Actors inspect qualification
+# Python Actors all-eight qualification
 
-This record covers the installed Windows x64 wheel for the Rust-owned
-`actors-uniffi` facade. It qualifies the current `ActorsClient::inspect_actor`
-slice; it is not a qualification of a complete Python SDK. The adapter does
-not currently export `ActorLimits`, `SubscriptionStart`, or a stream reader.
+This record tracks the Rust-owned `actors-uniffi` facade and its installed
+Windows x64 Python wheel. The checked-in consumer and receipt are the source
+record for the external qualification run.
 
-The source snapshot was revision `371bb4170e16aca973176b6756a261ee5add7297`.
-The Rust crate version was read from
-`rust/crates/actors-uniffi/Cargo.toml` (`0.2.0`, Cargo.toml SHA-256
-`382B7819A8EAC5CCC8264E9C4EF743CC4CD359808A67434BE2E687271A14200F`). The
-adapter source SHA-256 was
-`A7E0399E381BA2A2B1D8D07587E81CF2C6245FAC3E04277E04331179DC2BC8CF`.
+The source revision is `371bb4170e16aca973176b6756a261ee5add7297`. The adapter
+`rust/crates/actors-uniffi/src/lib.rs` has SHA-256
+`0AB7C322373075A4DD60113A7C768F15B15CC5BE5EEAEACCC44277049292F3B5`.
+The generated Python facade has SHA-256
+`AC3E8CD8FD86ECFDB7515D3D9195DFD79B021CECE1BEA279C420BDAA09456FB8`, and the
+rebuilt native DLL has SHA-256
+`A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241`.
 
-The generated Python facade SHA-256 was
-`A7ECAEAD2058C98B1231EAD7F3C10EC5AC194903E29A271F70D1D61822203744` and the
-matching native artifact SHA-256 was
-`F04A0403781A67916B941307E67BC660C5CCDE0B6098F3F4ED6C960DC88FA77A`.
-The external source-staged probe passed before packaging. Its SHA-256 was
-`8BB6AC79E44100EBC671D82EE42C284C97E6298B91E99EC6CBABC5C676E3B615`.
-
-The maintained PyPA build path (`python -m build --wheel --no-isolation`,
-setuptools `84.0.0`, wheel `0.46.3`) produced
+The installed wheel is
 `acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl`, SHA-256
-`B1A7B5E1561999F65725D2EFC44E92937EBF1D1F91C0AD4DE7F3EAB52A4E3D24`.
-The wheel uses Python plus ctypes and a Windows native library, so the generic platform tag py3-none-win_amd64 is correct; current runtime qualification ran on CPython 3.12. The wheel metadata records `Root-Is-Purelib: false` and the native Windows
-tag. Version `0.2.0` came from the Rust Cargo manifest; it was not separately
-chosen for the Python artifact.
+`151B60F7644E1EEE98969FDF0F0DB11CE5A6FDE967E604DB6DEEA9F62C807919`.
+The package contains generated annotations and the source-owned `py.typed`
+marker. The wheel was installed into an isolated environment without network
+resolution.
 
-The wheel was installed into an isolated virtual environment with
-`pip install --no-index --no-deps`. The installed consumer reran the same
-shared fixture probe and passed nominal constructors, exact 32-byte digest
-preservation, `u64::MAX` and invalid-value checks, CA-authenticated unary
-`inspect_actor`, exact typed response fields, and pre-cancelled inspection.
+The installed consumer exercises all eight canonical operations: create,
+update, inspect, add subscription, remove subscription, resume subscription,
+checkpoint, and invoke. It also verifies the typed service error for an
+unauthorized call and a pre-cancelled operation. The run passed against the
+Rust-backed fixture. The full source and result are retained in
+`installed-all8-remote-conformance.py` and `all8-qualification-receipt.json`.
 
-The complete external receipts are retained at:
+`typing/positive.py` is the positive generated-annotation fixture. It covers
+nominal IDs, fixed bytes, unsigned values, opaque bindings, optional record
+fields, enums, request constructors, headers, and invoke responses.
+`typing/negative.py` contains deliberate wrong-type cases that a maintained
+checker must reject. Both fixtures compile as Python syntax. `mypy` and
+`pyright` were not installed in the local or isolated environments, so the
+static-checker result remains pending while generated annotation and runtime
+results are recorded separately.
 
-- `Q:\sdk\work\actors-uniffi-python-qualification-receipt.json`
-- `Q:\sdk\work\actors-uniffi-python-wheel-20261007\wheel-qualification-receipt.json`
-
-No package was published.
-
-
-
+The generated Kotlin and Swift artifact hashes and the shared fixture identity
+are recorded in `all8-qualification-receipt.json`. No binary artifacts are
+checked into this research directory.

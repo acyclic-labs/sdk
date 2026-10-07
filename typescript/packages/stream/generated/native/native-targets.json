@@ -1,0 +1,16 @@
+{
+  "schema": "acyclic.stream.native-targets.v1",
+  "package": "acyclic-stream-napi",
+  "version": "0.2.0",
+  "source_path": "rust/crates/stream-napi/Cargo.toml",
+  "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "source_sha256": "sha256:943191f5c52cf817fe617bcc3ef8d8d05e6483ad9e4ffca97c5126a6f91024b2",
+  "targets": [
+    "x86_64-pc-windows-msvc"
+  ],
+  "selected_target": "x86_64-pc-windows-msvc",
+  "artifact": {
+    "path": "generated/native/index.win32-x64-msvc.node",
+    "sha256": "sha256:f32e3a6d26ebdcc158b074d651a8a5624eab0f114ccfb1d25c1f7541973c28d2"
+  }
+}

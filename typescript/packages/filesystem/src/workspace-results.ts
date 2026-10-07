@@ -1,7 +1,7 @@
 import type {
-  JoinOptions, JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,
-  WorkspaceCommit, WorkspaceDeleteStatus,
-  WorkspaceRebaseOptions, WorkspaceRebaseResult, WorkspaceRebaseStatus, WasmRawMergeConflict,
+  JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,
+  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus,
+  WasmRawMergeConflict,
 } from "./contracts.js";
 
 export function decodeMergeConflict(raw: unknown, origin: string): MergeConflict {
@@ -64,21 +64,6 @@ interface RawResult<Conflict> {
   readonly conflicts: readonly Conflict[];
   readonly truncated: boolean;
 }
-
-function positive(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
-}
-
-function validateOptions(options: JoinOptions | WorkspaceRebaseOptions, operation: string): void {
-  positive(options.maximumGenerations, `maximum ${operation} generations`);
-  positive(options.maximumChanges, `maximum ${operation} changes`);
-  positive(options.maximumConflicts, `maximum ${operation} conflicts`);
-}
-
-export function validateJoinOptions(options: JoinOptions): void { validateOptions(options, "join"); }
-export function validateWorkspaceRebaseOptions(options: WorkspaceRebaseOptions): void { validateOptions(options, "rebase"); }
 
 const joinStatuses: ReadonlySet<JoinStatus> = new Set<JoinStatus>([
   "applied", "already-applied", "no-changes", "stale-target", "conflicted", "fenced", "idempotency-conflict",

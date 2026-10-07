@@ -52,6 +52,24 @@ A Go candidate qualifies only after a clean-checkout run proves all of the follo
 
 The current local UniFFI Go prototype does not pass the generator/compile portion of this gate. This excludes the **native UniFFI/cgo binding route for the current cohort**. It does not exclude the recorded remote Go wire prototype; the full semantic Go SDK remains unqualified until a Rust-owned facade demonstrates remote and embedded behavior parity. This is not a reason to introduce a custom cgo facade.
 
+### Maintained upstream blockers and their scope
+
+The current maintained upstream record gives three separate blockers; they must not be collapsed into a claim that Go as a language is excluded:
+
+- [uniffi-bindgen-go#94](https://github.com/NordSecurity/uniffi-bindgen-go/issues/94) reports that installing the pinned `v0.7.1+v0.31.0` generator requires about 11 GB of memory. This is a generator resource/qualification blocker, not evidence against the remote protobuf transport.
+- [uniffi-bindgen-go#53](https://github.com/NordSecurity/uniffi-bindgen-go/issues/53) records that `Async` and `WithForeign` are unsupported. The current Rust facade exports asynchronous Tokio operations, so this prevents claiming generated Go async/cancellation parity until upstream support exists.
+- [uniffi-bindgen-go#97](https://github.com/NordSecurity/uniffi-bindgen-go/issues/97) shows `Option` values in Go error variants rendering as pointers. The current facade has an optional service error code; this is a typed-error correctness blocker even when generation completes.
+
+These are maintained upstream issues against the external generator. The local prototype's metadata/compile failure should be recorded as the observed local result and linked to these relevant upstream constraints, rather than naming an unverified issue as its root cause.
+
+### Bounded C ABI fallback architecture
+
+If the maintained Go generator remains blocked, a Rust-owned C ABI is the only bounded fallback that preserves the semantic boundary, but it is an architecture proposal rather than a qualification. The existing `actors-uniffi` Rust facade already has the right ownership shape: constructors for nominal values (`ActorId`, `CodeSha256`, `PositiveU64`, `Binding`, `ActorLimits`, and `SubscriptionSpec`), opaque validated request objects, a Rust-owned client, typed errors, and a cancellation handle. A C ABI target could expose that same facade through Rust-owned opaque handles with explicit retain/release and Rust-owned buffers; a Go wrapper would hold only those handles and call exported Rust constructors/operations.
+
+The Go side may generate descriptor-backed wire structs and thin nominal wrapper declarations, but constructors must call the Rust ABI. It must not reimplement domain validation, endpoint or credential checks, transport choice, retries/recovery, capability checks, error classification, or remote/embedded dispatch. Cancellation would be a generated `context.Context` adapter that invokes the Rust cancellation handle; streaming would be a Rust-owned stream handle with explicit next/cancel/close operations. The same Rust operation must serve remote and embedded modes.
+
+This fallback still needs a maintained generator or a reviewed, generated C header/wrapper pipeline. `cbindgen` alone only emits declarations; handwritten cgo runtime code would recreate the unsupported language-owned behavior and fails the source-of-truth boundary. Qualification therefore requires generated wrappers from the current Rust facade, artifact and ABI version pinning, constructor/error/cancellation conformance, and remote/embedded parity. Until that toolchain exists, the C ABI path is feasible design work, not a Go SDK claim.
+
 ### Historical remote Go evidence
 
 A recorded external remote probe exists at `Q:\sdk\work\go-typed-consumer-probe`. Its `generation-receipt.json` identifies Rust authority and records source/model digest `fa78445a9203c4c69dff2d3baa6ff7c11e5301e51cefff3b73b1fd8b27bffdd6`, Go `go1.27.1`, `libprotoc 36.2`, `protoc-gen-go v1.36.10`, and `protoc-gen-go-grpc 1.5.1`. The receipt hashes `gen/actors/v1/actors.pb.go` as `56e7d46acfbb9cd58fddbefba1d91782d1abd2a06d8e8b3a8e463ae81759cc3d` and `gen/actors/v1/actors_grpc.pb.go` as `482e20bdd07853779065bc61ada4d09df670cadad313c46ef224cc931d5712f1`.

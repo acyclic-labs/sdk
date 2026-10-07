@@ -1334,9 +1334,12 @@ fn normalize_rustdoc_attrs(
         serde_json::Value::Object(values) => {
             if let Some(serde_json::Value::String(other)) = values.get_mut("other") {
                 // rustdoc serializes compiler-generated attribute spans inside
-                // `attrs.other`. Rewrite only this metadata field; arbitrary
-                // strings elsewhere in the JSON remain untouched.
-                normalize_generated_attribute_paths(other, replacements);
+                // `attrs.other`. `Attribute::Other` can also be authored by a
+                // crate, so require the exact compiler serialization markers
+                // observed around these spans before rewriting paths.
+                if is_compiler_generated_attribute_span(other) {
+                    normalize_generated_attribute_paths(other, replacements);
+                }
             }
             for value in values.values_mut() {
                 normalize_rustdoc_attrs(value, replacements);
@@ -1344,6 +1347,10 @@ fn normalize_rustdoc_attrs(
         }
         _ => {}
     }
+}
+
+fn is_compiler_generated_attribute_span(value: &str) -> bool {
+    value.contains("CfgTrace") && value.contains("span:") && value.contains("(#")
 }
 
 fn normalize_generated_attribute_paths(
@@ -1362,13 +1369,53 @@ fn normalize_generated_attribute_paths(
             format!(r"\\?\{}", slash_display),
         ];
         for candidate in candidates {
-            *value = value.replace(&candidate, reference);
+            replace_exact_generated_candidate(value, &candidate, reference);
         }
         let path_for_matching = slash_display
             .strip_prefix(r"//?/")
             .or_else(|| slash_display.strip_prefix(r"/?/"))
             .unwrap_or(&slash_display);
         replace_generated_path_with_mixed_separators(value, path_for_matching, reference);
+    }
+}
+
+fn replace_exact_generated_candidate(value: &mut String, candidate: &str, reference: &str) {
+    let mut search_from = 0;
+    while let Some(found) = value[search_from..].find(candidate) {
+        let start = search_from + found;
+        let end = start + candidate.len();
+        if generated_path_start_boundary(value.as_bytes(), start)
+            && generated_path_boundary(value.as_bytes(), end)
+        {
+            value.replace_range(start..end, reference);
+            search_from = start + reference.len();
+        } else {
+            search_from = end;
+        }
+    }
+}
+
+fn generated_path_start_boundary(value: &[u8], index: usize) -> bool {
+    if index >= 3 && value[..index].ends_with(br"\?\") {
+        return true;
+    }
+    if index >= 4 && value[..index].ends_with(br"\\?\") {
+        return true;
+    }
+    match index.checked_sub(1).and_then(|index| value.get(index)) {
+        None => true,
+        Some(byte) => {
+            !byte.is_ascii_alphanumeric() && !matches!(*byte, b'.' | b'_' | b'-' | b'/' | b'\\')
+        }
+    }
+}
+
+fn generated_path_boundary(value: &[u8], index: usize) -> bool {
+    match value.get(index) {
+        None => true,
+        Some(byte) => {
+            !byte.is_ascii_alphanumeric() && !matches!(*byte, b'.' | b'_' | b'-' | b'/' | b'\\')
+        }
     }
 }
 
@@ -1404,7 +1451,10 @@ fn replace_generated_path_with_mixed_separators(
             value_index += 1;
             path_index += 1;
         }
-        if path_index == slash_path.len() {
+        if path_index == slash_path.len()
+            && generated_path_start_boundary(value.as_bytes(), start)
+            && generated_path_boundary(value.as_bytes(), value_index)
+        {
             let mut replacement_start = start;
             let before = &value[..start];
             for prefix in [r"\\?\", r"\?\"] {
@@ -2330,16 +2380,25 @@ mod tests {
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::create_dir_all(json.parent().unwrap()).unwrap();
         fs::write(&source, b"pub struct Wire;\n").unwrap();
+        let source_string = source.to_string_lossy().into_owned();
+        let mixed_path = source_string.replace('/', "\\");
         let raw_filename = format!(r"\\?\{}", source.display());
         fs::write(
             &json,
             serde_json::json!({
                 "span": { "filename": raw_filename },
-                "same": { "filename": source.to_string_lossy() },
+                "same": { "filename": source_string.clone() },
                 "other": format!("authored text {}", format!(r"\?\{}", source.display())),
-                "attrs": [{
-                    "other": format!("generated span {}:1:2", format!(r"\?\{}", source.display()))
-                }],
+                "attrs": [
+                    { "other": format!(
+                        "#[attr = CfgTrace(span: {}:1:2 (#0), {}:3:4 (#0))]",
+                        format!(r"\?\{}", source.display()),
+                        format!(r"\?\{}", source.display())
+                    ) },
+                    { "other": format!("#[attr = CfgTrace(span: {}:5:6 (#0))]", mixed_path) },
+                    { "other": format!("#[attr = CfgTrace(span: {}.bak:7:8 (#0))]", source.display()) },
+                    { "other": format!("user supplied {}", source.display()) },
+                ],
             })
             .to_string(),
         )
@@ -2354,7 +2413,6 @@ mod tests {
         };
         let logical_path = PathBuf::from("generated/acyclic_workers/rust/wire.rs");
         let source_hash = hash_file(&source, "wire.rs".into()).unwrap().sha256;
-        let source_string = source.to_string_lossy().into_owned();
         let generated = GeneratedSource {
             physical_path: source.clone(),
             logical_path: logical_path.clone(),
@@ -2377,7 +2435,22 @@ mod tests {
         );
         assert_eq!(
             value["attrs"][0]["other"],
-            "generated span ../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs:1:2"
+            "#[attr = CfgTrace(span: ../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs:1:2 (#0), ../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs:3:4 (#0))]"
+        );
+        assert_eq!(
+            value["attrs"][1]["other"],
+            "#[attr = CfgTrace(span: ../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs:5:6 (#0))]"
+        );
+        assert_eq!(
+            value["attrs"][2]["other"],
+            format!(
+                "#[attr = CfgTrace(span: {}.bak:7:8 (#0))]",
+                source.display()
+            )
+        );
+        assert_eq!(
+            value["attrs"][3]["other"],
+            format!("user supplied {}", source.display())
         );
         assert!(staged[0].physical_path.is_file());
         assert_eq!(staged[0].logical_path, logical_path);

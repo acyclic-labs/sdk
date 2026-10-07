@@ -1,3 +1,5 @@
+pub mod cancellation_metadata;
+
 //! Rust-owned UniFFI metadata for the Actors client.
 //!
 //! This facade exposes nominal semantic values, an explicit cancellation

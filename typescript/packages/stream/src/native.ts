@@ -36,14 +36,16 @@ async function loadNativeModule(): Promise<NativeModule> {
 }
 
 function missingNativeBinding(error: unknown): boolean {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? (error as { readonly code?: unknown }).code : undefined;
-  if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("generated/native/binding.cjs") || message.includes("generated\\native\\binding.cjs");
+  if (typeof error !== "object" || error === null) return false;
+  const code = "code" in error ? (error as { readonly code?: unknown }).code : undefined;
+  if (code !== "MODULE_NOT_FOUND") return false;
+  const message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
+    ? (error as { readonly message: string }).message : String(error);
+  const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
+  return /Cannot find module ['"][^'"]*[\\/]generated[\\/]native[\\/]binding\.cjs['"]/.test(firstLine);
 }
 
-/** Whether the optional native companion is installed for this runtime. */
+/** Whether the staged native binding is installed for this runtime. */
 export async function nativeStreamAvailable(): Promise<boolean> {
   try { await loadNativeModule(); return true; }
   catch (error) { if (missingNativeBinding(error)) return false; throw error; }
@@ -114,14 +116,33 @@ export class NativeStreamProvider implements StreamProvider {
     await validateWireRequest(request);
     if (options.signal?.aborted) return;
     const cancellation = new this.module.NativeStreamCancellation();
-    const opened = await this.client.openFollowResult(Buffer.from(wireRequest(request)), cancellation);
-    if (opened.error !== undefined) throw nativeError(opened.error, "follow");
-    if (opened.follow === undefined) throw new StreamError("invalid_response", "native follow omitted its cursor");
-    const follow = opened.follow;
-    const abort = () => { cancellation.cancel(); void follow.close(); };
+    let follow: NativeFollow | undefined;
+    const abort = () => { cancellation.cancel(); if (follow !== undefined) void follow.close(); };
     options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) {
+      cancellation.cancel();
+      options.signal.removeEventListener("abort", abort);
+      return;
+    }
     let next = request.from;
     try {
+      let opened: Awaited<ReturnType<NativeClient["openFollowResult"]>>;
+      try {
+        opened = await this.client.openFollowResult(Buffer.from(wireRequest(request)), cancellation);
+      } catch (error) {
+        if (options.signal?.aborted) return;
+        throw nativeError(error, "follow");
+      }
+      if (opened.error !== undefined) {
+        if (options.signal?.aborted) return;
+        throw nativeError(opened.error, "follow");
+      }
+      if (opened.follow === undefined) {
+        if (options.signal?.aborted) return;
+        throw new StreamError("invalid_response", "native follow omitted its cursor");
+      }
+      follow = opened.follow;
+      if (options.signal?.aborted) return;
       while (!options.signal?.aborted) {
         const result = await follow.nextResult();
         if (result.error !== undefined) {
@@ -138,7 +159,7 @@ export class NativeStreamProvider implements StreamProvider {
       }
     } finally {
       options.signal?.removeEventListener("abort", abort);
-      await follow.close();
+      if (follow !== undefined) await follow.close();
     }
   }
 

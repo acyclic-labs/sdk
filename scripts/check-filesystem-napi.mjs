@@ -26,9 +26,12 @@ const generatedBindingTypes = await readFile(
   new URL("../typescript/packages/filesystem/generated/native/binding.d.ts", import.meta.url),
   "utf8",
 );
+if (!generatedBindingTypes.includes("export type NapiU32 = number")) {
+  throw new Error("generated N-API declaration is missing the exact-u32 number alias");
+}
 for (const field of ["maximumEntries", "maximumPathBytes", "maximumSpans"]) {
-  if (!generatedBindingTypes.includes(`${field}: number`)) {
-    throw new Error(`generated N-API declaration changed ${field} away from number`);
+  if (!generatedBindingTypes.includes(`${field}: NapiU32`)) {
+    throw new Error(`generated N-API declaration changed ${field} away from NapiU32`);
   }
 }
 

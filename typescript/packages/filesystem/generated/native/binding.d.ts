@@ -22,7 +22,7 @@ export declare class NativeChangeSet {
    *
    * Rejects discontinuous changes, invalid bounds, or authenticated storage failures.
    */
-  compose(next: NativeChangeSet, maximumChanges: number): Promise<NativeChangeSet>
+  compose(next: NativeChangeSet, maximumChanges: NapiU32): Promise<NativeChangeSet>
 }
 
 /** One generation-fenced checkout. Mutable operations are serialized per handle. */
@@ -88,7 +88,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed identity, invalid checkout
    * state, non-head parent, corrupt storage, cancellation, or bounded work.
    */
-  prepareMerge(theirs: Buffer, maximumChanges: number, maximumConflicts: number): Promise<NativeMergePreparation>
+  prepareMerge(theirs: Buffer, maximumChanges: NapiU32, maximumConflicts: NapiU32): Promise<NativeMergePreparation>
   /**
    * Mounts this checkout through the target's real native namespace driver.
    *
@@ -117,7 +117,7 @@ export declare class NativeCheckout {
    * unsupported exact host semantics, source races/I/O, cancellation,
    * canonical engine failure, or work exhaustion.
    */
-  capture(sourceRoot: string, paths: Array<string>, maximumPaths: number, maximumExtentSpans: number): Promise<NativeCaptureResult>
+  capture(sourceRoot: string, paths: Array<string>, maximumPaths: NapiU32, maximumExtentSpans: NapiU32): Promise<NativeCaptureResult>
   /**
    * Captures the complete bounded host/checkout union in one atomic baseline.
    *
@@ -132,7 +132,7 @@ export declare class NativeCheckout {
    * source race or I/O, unsupported host kind, cancellation, canonical
    * engine failure, or work exhaustion.
    */
-  captureBaseline(sourceRoot: string, maximumPaths: number, maximumExtentSpans: number): Promise<NativeCaptureResult>
+  captureBaseline(sourceRoot: string, maximumPaths: NapiU32, maximumExtentSpans: NapiU32): Promise<NativeCaptureResult>
   /**
    * Opens an exact native watcher using this volume's path bounds.
    *
@@ -141,7 +141,7 @@ export declare class NativeCheckout {
    * Returns a typed error for invalid bounds/root or unavailable native
    * watcher startup.
    */
-  watch(sourceRoot: string, maximumQueuedChanges: number, recursive: boolean): NativeWatcher
+  watch(sourceRoot: string, maximumQueuedChanges: NapiU32, recursive: boolean): NativeWatcher
   /**
    * Resolves one canonical absolute path without following links.
    *
@@ -248,7 +248,7 @@ export declare class NativeCheckout {
    *
    * Returns a JavaScript error for class, cursor, path, storage, cancellation, or work failure.
    */
-  listNamedAttributes(path: string, afterClass: string | undefined | null, afterName: Buffer | undefined | null, maximumEntries: number): Promise<NativeNamedAttributePage>
+  listNamedAttributes(path: string, afterClass: string | undefined | null, afterName: Buffer | undefined | null, maximumEntries: NapiU32): Promise<NativeNamedAttributePage>
   /**
    * Inserts or replaces one exact named attribute.
    *
@@ -300,7 +300,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed paths/integers, invalid bounds,
    * non-regular files, corruption, cancellation, or bounded work.
    */
-  planFileExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<NativeExtentPlan>
+  planFileExtents(path: string, offset: bigint, length: bigint, maximumSpans: NapiU32): Promise<NativeExtentPlan>
   /**
    * Plans one bounded sparse range by stable file identity.
    *
@@ -309,7 +309,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed identity/range, invalid bounds,
    * non-regular kind, storage, cancellation, or bounded work.
    */
-  planFileExtentsById(fileId: Buffer, offset: bigint, length: bigint, maximumSpans: number): Promise<NativeExtentPlan>
+  planFileExtentsById(fileId: Buffer, offset: bigint, length: bigint, maximumSpans: NapiU32): Promise<NativeExtentPlan>
   /**
    * Finds the next sparse data or hole boundary without reading file bodies.
    *
@@ -354,7 +354,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed paths/cursors, non-directories,
    * corruption, cancellation, or bounded-work exhaustion.
    */
-  listDirectory(path: string, after: string | undefined | null, maximumEntries: number): Promise<NativeDirectoryPage>
+  listDirectory(path: string, after: string | undefined | null, maximumEntries: NapiU32): Promise<NativeDirectoryPage>
   /**
    * Returns a bounded ordered directory page containing complete file
    * records and canonical metadata bytes.
@@ -364,7 +364,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed paths/cursors, non-directories,
    * corruption, cancellation, serialization, or bounded-work exhaustion.
    */
-  listDirectoryRecords(path: string, after: string | undefined | null, maximumEntries: number): Promise<NativeDirectoryRecordPage>
+  listDirectoryRecords(path: string, after: string | undefined | null, maximumEntries: NapiU32): Promise<NativeDirectoryRecordPage>
   /**
    * Creates one regular file in the private COW overlay.
    *
@@ -409,7 +409,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for an unknown/incompatible kind, malformed
    * path, conflict, storage failure, cancellation, or bounded work.
    */
-  createDevice(path: string, kind: string, major: number, minor: number): Promise<NativeMutationResult>
+  createDevice(path: string, kind: string, major: NapiU32, minor: NapiU32): Promise<NativeMutationResult>
   /**
    * Creates an opaque exact Windows reparse-point payload.
    *
@@ -553,7 +553,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed operations or identity, wrong
    * checkout mode, unresolved work, cancellation, storage, or bounded work.
    */
-  mutateLive(operations: Array<NativeTransactionOperation>, operationId: Buffer, maximumAttempts: number, maximumConflicts: number): Promise<NativeAuthoredLiveMutationResult>
+  mutateLive(operations: Array<NativeTransactionOperation>, operationId: Buffer, maximumAttempts: NapiU32, maximumConflicts: NapiU32): Promise<NativeAuthoredLiveMutationResult>
   /**
    * Resumes an unresolved direct-live transaction with bounded safe retries.
    *
@@ -562,7 +562,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed identity, wrong checkout mode,
    * absent staged work, cancellation, storage, rebase, or bounded-work failure.
    */
-  resumeLive(operationId: Buffer, maximumAttempts: number, maximumConflicts: number): Promise<NativeLiveMutationResult>
+  resumeLive(operationId: Buffer, maximumAttempts: NapiU32, maximumConflicts: NapiU32): Promise<NativeLiveMutationResult>
   /**
    * Safely advances to head and sparsely replays private mutations.
    *
@@ -571,7 +571,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for unsupported consistency, zero bounds,
    * corruption, cancellation, storage, replay, or bounded-work failure.
    */
-  rebaseHead(maximumConflicts: number): Promise<NativeRebaseResult>
+  rebaseHead(maximumConflicts: NapiU32): Promise<NativeRebaseResult>
   /**
    * Discards the private overlay and returns to its current immutable base.
    *
@@ -709,7 +709,7 @@ export declare class NativeFs {
    * Returns a JavaScript error for malformed manifests, invalid cursors,
    * cancellation, storage, allocation, or bounded-work failures.
    */
-  exportGenerationBatch(manifest: NativeExportManifest, cursor: bigint, maximumObjects: number, maximumObjectBytes: bigint): Promise<NativeGenerationTransferBatch>
+  exportGenerationBatch(manifest: NativeExportManifest, cursor: bigint, maximumObjects: NapiU32, maximumObjectBytes: bigint): Promise<NativeGenerationTransferBatch>
   /**
    * Idempotently imports one manifest-aligned immutable-object page.
    *
@@ -718,7 +718,7 @@ export declare class NativeFs {
    * Returns a JavaScript error for malformed manifests, cursor/body bounds,
    * cancellation, storage, or bounded-work failures.
    */
-  importGenerationBatch(manifest: NativeExportManifest, cursor: bigint, objects: Array<Buffer>, maximumObjects: number): Promise<NativeGenerationTransferCursor>
+  importGenerationBatch(manifest: NativeExportManifest, cursor: bigint, objects: Array<Buffer>, maximumObjects: NapiU32): Promise<NativeGenerationTransferCursor>
   /**
    * Restores authority only after authenticating the complete imported closure.
    *
@@ -746,9 +746,9 @@ export declare class NativeGeneration {
   read(path: string, maximumBytes: bigint): Promise<Buffer>
   readRange(path: string, offset: bigint, length: bigint): Promise<Buffer>
   stat(path: string): Promise<NativeWorkspaceStat>
-  listDirectory(path: string, after: NativeWorkspaceName | undefined | null, maximumEntries: number): Promise<NativeWorkspaceDirectoryPage>
+  listDirectory(path: string, after: NativeWorkspaceName | undefined | null, maximumEntries: NapiU32): Promise<NativeWorkspaceDirectoryPage>
   readSymbolicLink(path: string): Promise<Buffer>
-  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<NativeWorkspaceExtentPlan>
+  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: NapiU32): Promise<NativeWorkspaceExtentPlan>
   /**
    * Retains this exact generation under one opaque identity.
    *
@@ -882,7 +882,7 @@ export declare class NativeResolvedFiles {
   /** Exact machine-readable work receipt for the shared namespace traversal. */
   get workJson(): string
   /** Transfers one generation-bound handle to JavaScript. Each index may be taken once. */
-  take(index: number): NativeResolvedFile | null
+  take(index: NapiU32): NativeResolvedFile | null
 }
 
 /** Native owner of one volume generation's two canonical speculation engines. */
@@ -984,7 +984,7 @@ export declare class NativeVolume {
    * Returns a JavaScript error for malformed identities, foreign/corrupt
    * generations, cancellation, storage, allocation, or bounded work.
    */
-  diffGenerations(before: Buffer, after: Buffer, maximumChanges: number): Promise<NativeGenerationDiff>
+  diffGenerations(before: Buffer, after: Buffer, maximumChanges: NapiU32): Promise<NativeGenerationDiff>
   /**
    * Opens a head checkout with explicit consistency and access semantics.
    *
@@ -1009,7 +1009,7 @@ export declare class NativeWatcher {
    * bounded-work failures. Failed baseline capture leaves the watcher
    * explicitly invalidated and retryable.
    */
-  reconcile(maximumPaths: number, maximumExtentSpans: number): Promise<NativeWatchReconcileResult>
+  reconcile(maximumPaths: NapiU32, maximumExtentSpans: NapiU32): Promise<NativeWatchReconcileResult>
   /**
    * Polls and atomically captures one watcher interval. An interval remains
    * retained across failure and is retried verbatim until capture succeeds.
@@ -1019,7 +1019,7 @@ export declare class NativeWatcher {
    * Returns invalid bounds, rescan-required, host-state, engine,
    * cancellation, allocation, watcher, or bounded-work failures.
    */
-  pollCapture(maximumChanges: number, maximumPaths: number, maximumExtentSpans: number): Promise<NativeWatchCaptureResult>
+  pollCapture(maximumChanges: NapiU32, maximumPaths: NapiU32, maximumExtentSpans: NapiU32): Promise<NativeWatchCaptureResult>
 }
 
 /** One named customer workspace backed by the embedded local engine. */
@@ -1105,7 +1105,7 @@ export declare class NativeWorkspace {
   readRange(path: string, offset: bigint, length: bigint): Promise<Buffer>
   stat(path: string): Promise<NativeWorkspaceStat>
   readSymbolicLink(path: string): Promise<Buffer>
-  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<NativeWorkspaceExtentPlan>
+  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: NapiU32): Promise<NativeWorkspaceExtentPlan>
   /**
    * Atomically creates or replaces one complete file.
    *
@@ -1147,7 +1147,7 @@ export declare class NativeWorkspace {
    */
   beginTransaction(idempotencyKey?: Buffer | undefined | null): Promise<NativeWorkspaceTransaction>
   /** Advances this fork onto its source workspace's current generation. */
-  liveRebase(idempotencyKey: Buffer | undefined | null, maximumGenerations: number, maximumChanges: number, maximumConflicts: number): Promise<NativeWorkspaceRebaseResult>
+  liveRebase(idempotencyKey: Buffer | undefined | null, maximumGenerations: NapiU32, maximumChanges: NapiU32, maximumConflicts: NapiU32): Promise<NativeWorkspaceRebaseResult>
   /**
    * Computes one immutable bounded semantic delta between exact generations.
    *
@@ -1155,7 +1155,7 @@ export declare class NativeWorkspace {
    *
    * Rejects foreign endpoints, invalid bounds, or authenticated storage failures.
    */
-  diff(from: NativeGeneration, to: NativeGeneration, maximumChanges: number): Promise<NativeChangeSet>
+  diff(from: NativeGeneration, to: NativeGeneration, maximumChanges: NapiU32): Promise<NativeChangeSet>
   /**
    * Builds one immutable side-effect-free plan for joining this workspace into a target.
    *
@@ -1193,7 +1193,7 @@ export declare class NativeWorkspaceContextRegistry {
   /** Advances one root binding after a compatibility branch switch. */
   setWorkspace(contextId: Buffer, rootId: Buffer, workspaceId: Buffer, workspaceName: string, parentWorkspaceId?: Buffer | undefined | null): Promise<Buffer>
   /** Recursively tombstones a direct-child context subtree. */
-  discardSubtree(parentContextId: Buffer, childContextId: Buffer, maximum: number): Promise<Buffer>
+  discardSubtree(parentContextId: Buffer, childContextId: Buffer, maximum: NapiU32): Promise<Buffer>
 }
 
 /** Native recursive-workspace graph backed by the shared core-state namespace. */
@@ -1207,7 +1207,7 @@ export declare class NativeWorkspaceGraph {
   /** Verifies and returns the child's exact direct-parent registration. */
   authorizeJoin(childWorkspaceId: Buffer, parentWorkspaceId: Buffer): Promise<NativeWorkspaceLineageRecord>
   /** Returns the bounded direct-parent chain, nearest parent first. */
-  ancestors(workspaceId: Buffer, maximum: number): Promise<Array<NativeWorkspaceLineageRecord>>
+  ancestors(workspaceId: Buffer, maximum: NapiU32): Promise<Array<NativeWorkspaceLineageRecord>>
 }
 
 /** Retryable owner of one process-local native workspace mount. */
@@ -1355,7 +1355,7 @@ export declare class NativeWorkspaceTransaction {
    *
    * Returns dependency-probe, authentication, storage, or replay failures.
    */
-  rebase(maximumConflicts: number): Promise<NativeTransactionRebaseResult>
+  rebase(maximumConflicts: NapiU32): Promise<NativeTransactionRebaseResult>
 }
 
 /** Decodes a versioned merge-candidate envelope to its canonical payload. */
@@ -1387,6 +1387,17 @@ export declare function encodeMultiRootPlanJson(valueJson: string): string
 
 /** Encodes a publication payload in the versioned compatibility envelope. */
 export declare function encodePublicationJson(valueJson: string): string
+
+/**
+ * A JavaScript number accepted at the N-API boundary as an exact `u32`.
+ *
+ * N-API's built-in `u32` conversion can coerce fractional, negative, and
+ * overflowing JavaScript numbers. This binding-only wrapper checks the
+ * representation before the canonical Rust policy receives the value. Zero
+ * remains valid here so the Rust core retains ownership of positive-bound
+ * policy for operations that require it.
+ */
+export type NapiU32 = number
 
 /** One direct-live authored transaction result with stable create positions. */
 export interface NativeAuthoredLiveMutationResult {
@@ -1692,11 +1703,11 @@ export interface NativeJoinOptions {
   /** `merge`, `rebase`, `squash`, or `cherry-pick`. */
   history: string
   /** Maximum lineage generations examined while finding an ancestor. */
-  maximumGenerations: number
+  maximumGenerations: NapiU32
   /** Maximum semantic changes admitted by the plan. */
-  maximumChanges: number
+  maximumChanges: NapiU32
   /** Maximum exact conflicts returned by application. */
-  maximumConflicts: number
+  maximumConflicts: NapiU32
 }
 
 /** Terminal result of applying one immutable join plan. */
@@ -1771,9 +1782,9 @@ export interface NativeMaterializeOptions {
   /** Existing empty host directory. */
   destination: string
   /** Maximum entries in one authenticated directory page. */
-  maximumDirectoryEntries: number
+  maximumDirectoryEntries: NapiU32
   /** Maximum spans in one authenticated extent plan. */
-  maximumExtentSpans: number
+  maximumExtentSpans: NapiU32
   /** Maximum bytes in one host transfer allocation. */
   transferBytes: bigint
 }
@@ -1871,13 +1882,13 @@ export interface NativeNamespacePath {
 /** Exact hard limits for the process-local immutable-object accelerator. */
 export interface NativeObjectCacheOptions {
   /** Maximum resident immutable objects. */
-  maximumEntries: number
+  maximumEntries: NapiU32
   /** Maximum resident canonical object bytes. */
   maximumBytes: bigint
   /** Maximum distinct backing-store reads in flight. */
-  maximumInFlight: number
+  maximumInFlight: NapiU32
   /** Maximum followers retained behind one in-flight read. */
-  maximumWaitersPerObject: number
+  maximumWaitersPerObject: NapiU32
 }
 
 /** Exact cumulative and resident immutable-object accelerator observations. */
@@ -1917,17 +1928,17 @@ export interface NativeObjectResidency {
   /** Storage tier of the observed location. */
   tier: string
   /** Deterministic source preference; lower values are preferred. */
-  sourcePriority: number
+  sourcePriority: NapiU32
 }
 
 /** Bounds for final-close or crash-recovery reconciliation. */
 export interface NativeOperationReconcileOptions {
   /** Maximum immutable generations examined for ancestry. */
-  maximumGenerations: number
+  maximumGenerations: NapiU32
   /** Maximum semantic changes admitted by reconciliation. */
-  maximumChanges: number
+  maximumChanges: NapiU32
   /** Maximum exact conflicts returned. */
-  maximumConflicts: number
+  maximumConflicts: NapiU32
 }
 
 /** Result of closing one operation-window lease. */
@@ -1993,7 +2004,7 @@ export interface NativePromotionDestination {
   /** Largest canonical object accepted by the destination. */
   maximumObjectBytes: bigint
   /** Deterministic destination preference; lower values are preferred. */
-  priority: number
+  priority: NapiU32
   /** Exact estimated cost per canonical byte. */
   costUnitsPerByte: bigint
 }
@@ -2001,23 +2012,23 @@ export interface NativePromotionDestination {
 /** Hard policy for native cross-location promotion planning. */
 export interface NativePromotionSpeculationOptions {
   /** Maximum concurrently admitted promotion operations. */
-  maximumActiveOperations: number
+  maximumActiveOperations: NapiU32
   /** Maximum object bytes reserved by active promotions. */
   maximumActiveBytes: bigint
   /** Maximum estimated cost reserved by active promotions. */
   maximumActiveCostUnits: bigint
   /** Maximum exact object-location facts accepted per plan. */
-  maximumResidencyFacts: number
+  maximumResidencyFacts: NapiU32
   /** Maximum destination capabilities accepted per plan. */
-  maximumDestinations: number
+  maximumDestinations: NapiU32
   /** Maximum acceptable storage tiers supplied per plan. */
-  maximumAcceptedTiers: number
+  maximumAcceptedTiers: NapiU32
   /** Number of terminal outcomes retained for usefulness control. */
-  outcomeWindow: number
+  outcomeWindow: NapiU32
   /** Terminal sample count required before usefulness rejection. */
-  minimumUsefulnessSamples: number
+  minimumUsefulnessSamples: NapiU32
   /** Minimum useful terminal outcome ratio after the sample floor. */
-  minimumUsefulnessBasisPoints: number
+  minimumUsefulnessBasisPoints: NapiU32
 }
 
 /** Observation-safe head-rebase outcome. */
@@ -2071,19 +2082,19 @@ export interface NativeResidencyObservation {
 /** Hard policy for native local-residency prediction. */
 export interface NativeResidencySpeculationOptions {
   /** Maximum concurrently admitted residency operations. */
-  maximumActiveOperations: number
+  maximumActiveOperations: NapiU32
   /** Maximum bytes reserved by active residency operations. */
   maximumActiveBytes: bigint
   /** Number of terminal outcomes retained for usefulness control. */
-  outcomeWindow: number
+  outcomeWindow: NapiU32
   /** Number of foreground/speculative traffic samples retained. */
-  trafficWindow: number
+  trafficWindow: NapiU32
   /** Maximum speculative share of observed foreground traffic. */
-  speculativeCostBasisPoints: number
+  speculativeCostBasisPoints: NapiU32
   /** Terminal sample count required before usefulness rejection. */
-  minimumUsefulnessSamples: number
+  minimumUsefulnessSamples: NapiU32
   /** Minimum useful terminal outcome ratio after the sample floor. */
-  minimumUsefulnessBasisPoints: number
+  minimumUsefulnessBasisPoints: NapiU32
 }
 
 /** Exact bounded native directory source configuration. */
@@ -2091,11 +2102,11 @@ export interface NativeSourceOptions {
   /** `pinned` or `tracking`. */
   mode: string
   /** Maximum paths admitted by one baseline or reconciliation. */
-  maximumPaths: number
+  maximumPaths: NapiU32
   /** Maximum sparse spans admitted per regular file. */
-  maximumExtentSpans: number
+  maximumExtentSpans: NapiU32
   /** Maximum pending native changes before fail-closed rescan. */
-  maximumQueuedChanges: number
+  maximumQueuedChanges: NapiU32
   /** Canonical portable prefixes omitted from capture and deletion inference. */
   excludedPaths?: Array<string>
 }
@@ -2184,9 +2195,9 @@ export interface NativeTransactionOperation {
   /** Replacement logical file length. */
   logicalBytes?: bigint
   /** Device major identity. */
-  major?: number
+  major?: NapiU32
   /** Device minor identity. */
-  minor?: number
+  minor?: NapiU32
   /** Rename replacement policy. */
   replace?: boolean
   /** Zero-range physical allocation policy. */
@@ -2232,23 +2243,23 @@ export interface NativeTreeEntry {
 /** Exact hard limits enforced before externally controlled work. */
 export interface NativeVolumeLimits {
   /** Maximum encoded bytes in an absolute path. */
-  maximumPathBytes: number
+  maximumPathBytes: NapiU32
   /** Maximum encoded bytes in one component. */
-  maximumComponentBytes: number
+  maximumComponentBytes: NapiU32
   /** Maximum number of path components. */
-  maximumPathDepth: number
+  maximumPathDepth: NapiU32
   /** Maximum canonical immutable-object bytes. */
   maximumObjectBytes: bigint
   /** Maximum operations in one atomic mutation. */
-  maximumMutationsPerBatch: number
+  maximumMutationsPerBatch: NapiU32
   /** Maximum paths in one shared lookup batch. */
-  maximumPathsPerBatch: number
+  maximumPathsPerBatch: NapiU32
   /** Maximum exact dependencies retained by a checkout. */
-  maximumCheckoutDependencies: number
+  maximumCheckoutDependencies: NapiU32
   /** Maximum entries returned by one listing page. */
-  maximumDirectoryPageEntries: number
+  maximumDirectoryPageEntries: NapiU32
   /** Maximum authenticated tree height. */
-  maximumPageHeight: number
+  maximumPageHeight: NapiU32
   /** Maximum bytes returned by one range read. */
   maximumReadBytes: bigint
   /** Maximum files in one generation closure. */

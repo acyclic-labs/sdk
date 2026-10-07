@@ -193,7 +193,16 @@ try {
     const committed = readFileSync(join(committedRust, relative), "utf8");
     if (fresh !== committed) throw new Error(`generated Rust drift: ${relative}`);
   }
-  for (const [source, destination] of generatedDescriptors) {
+  // Actors has a Rust-owned live descriptor as well as an immutable archived
+  // baseline. The Rust descriptor compatibility test proves the live Rust
+  // descriptor is equivalent to that baseline; include the baseline here so
+  // Buf's checked-in Actors source is tied to the same bytes. This closes the
+  // otherwise independent checked-in proto/TypeScript -> Rust drift path.
+  const descriptorParityChecks = [
+    ...generatedDescriptors,
+    [compatibilityArtifacts.actors.schemaDigest, compatibilityArtifacts.actors.descriptorDigest],
+  ];
+  for (const [source, destination] of descriptorParityChecks) {
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
     const built = spawnSync(executable, ["build", "--path", source, "-o", descriptor], {
       cwd: root,

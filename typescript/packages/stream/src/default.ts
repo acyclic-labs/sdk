@@ -1,7 +1,7 @@
 import { HttpStreamProvider } from "./http.js";
 import type { StreamEnvironment, StreamProvider } from "./types.js";
 
-/** Selects the installed Rust native transport in Node, with the existing WASM-backed HTTP adapter elsewhere. */
+/** Selects the staged Rust native transport in Node, with the existing WASM-backed HTTP adapter elsewhere. */
 export class DefaultStreamProvider implements StreamProvider {
   readonly #options: StreamEnvironment;
   #delegate: Promise<StreamProvider> | undefined;
@@ -18,7 +18,11 @@ export class DefaultStreamProvider implements StreamProvider {
     if (runtime.process?.versions?.node === undefined && runtime.process?.versions?.bun === undefined) {
       return new HttpStreamProvider(this.#options);
     }
-    const native = await import("./native.js");
+    // Keep the Node-only facade out of browser dependency graphs. The import
+    // specifier is fixed; the indirection only prevents browser bundlers from
+    // resolving node:buffer/node:module while compiling the default entry.
+    const loadNative = Function("specifier", "return import(specifier)") as (specifier: string) => Promise<typeof import("./native.js")>;
+    const native = await loadNative("./native.js");
     if (!await native.nativeStreamAvailable()) return new HttpStreamProvider(this.#options);
     return native.NativeStreamProvider.connect(this.#options.endpoint, this.#options.token, this.#options.caCertificate);
   }

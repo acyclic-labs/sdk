@@ -1,0 +1,98 @@
+{
+  "schema": "acyclic.rust-uniffi.qualification.v1",
+  "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "generated_at": "2026-10-07",
+  "toolchain": {
+    "uniffi_bindgen": "0.31.0",
+    "rust": "cargo build --features bindgen",
+    "cargo_target_dir": "Q:\\sdk\\work\\actors-uniffi-all8-check-current-20261007",
+    "generation": "cargo run --features bindgen --bin actors-uniffi-bindgen -- generate --library -l python/kotlin/swift",
+    "wheel_tag": "py3-none-win_amd64"
+  },
+  "source": {
+    "adapter": {
+      "path": "rust/crates/actors-uniffi/src/lib.rs",
+      "sha256": "0AB7C322373075A4DD60113A7C768F15B15CC5BE5EEAEACCC44277049292F3B5",
+      "bytes": 25430
+    },
+    "python_marker": {
+      "path": "rust/crates/actors-uniffi/python/py.typed",
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+      "bytes": 0
+    },
+    "domain": {
+      "path": "rust/crates/actors/src/domain.rs",
+      "sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+      "bytes": 58491
+    },
+    "client": {
+      "path": "rust/crates/actors/src/client.rs",
+      "sha256": "97A4B0318D4CE10BD45D0EA29C616EE13DFB7D0C83B6FFFE54303EC7C11E2342",
+      "bytes": 18737
+    },
+    "grpc": {
+      "path": "rust/crates/actors/src/grpc.rs",
+      "sha256": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
+      "bytes": 4551
+    }
+  },
+  "artifacts": {
+    "dll": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-all8-check-current-20261007\\debug\\acyclic_actors_uniffi.dll",
+      "sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+      "bytes": 8966656
+    },
+    "python": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-all8-generated-current-20261007\\python\\acyclic_actors_uniffi.py",
+      "sha256": "AC3E8CD8FD86ECFDB7515D3D9195DFD79B021CECE1BEA279C420BDAA09456FB8",
+      "bytes": 167375
+    },
+    "kotlin": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-all8-generated-current-20261007\\kotlin\\uniffi\\acyclic_actors_uniffi\\acyclic_actors_uniffi.kt",
+      "sha256": "6E73BC8CA0D0C47DA51C362E98D06AFBC2B29E6F0A7F12385401B59521623A3B",
+      "bytes": 277716
+    },
+    "swift": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-all8-generated-current-20261007\\swift\\acyclic_actors_uniffi.swift",
+      "sha256": "389C541C32059C0C9B8D049079F13896BF27D4822A1B6A816A9BA57C990CE7C4",
+      "bytes": 127176
+    },
+    "wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-wheel-all8-current-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
+      "sha256": "151B60F7644E1EEE98969FDF0F0DB11CE5A6FDE967E604DB6DEEA9F62C807919",
+      "bytes": 3015974
+    }
+  },
+  "fixture": {
+    "options": "Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json",
+    "options_sha256": "C0A745FDF881E09D522EBC56D76B96CD011C686BCB48F65C5EF30F4D400C2A93",
+    "endpoint": "https://localhost:55755",
+    "ca": "Q:\\sdk\\work\\go-remote-primitive-current\\fixture-ca.pem"
+  },
+  "qualification": {
+    "package_install": "PASS: isolated venv installed wheel with --no-index --no-deps --force-reinstall",
+    "remote_conformance": "PASS",
+    "remote_script": "Q:\\sdk\\work\\actors-uniffi-python-wheel-all8-current-20261007\\installed-all8-remote-conformance.py",
+    "remote_log": "Q:\\sdk\\work\\actors-uniffi-python-wheel-all8-current-20261007\\installed-all8-remote-conformance.log",
+    "remote_log_sha256": "B6459CB42ACF8EA444CAE4A7F76370E9857867BB820C380B75F2F6F9A3AD89EB",
+    "operations": [
+      "create",
+      "update",
+      "inspect_actor_request",
+      "add_subscription",
+      "remove_subscription",
+      "resume_subscription",
+      "checkpoint_actor",
+      "invoke"
+    ],
+    "service_error": "PASS: wrong token produces BindingError.Service with grpc_code 16 and detail_message service rejected operation",
+    "cancellation": "PASS: pre-cancelled operation returns cancellation error",
+    "typing": "Generated Python annotations present and py.typed included; mypy/pyright were unavailable in the isolated environment",
+    "scope": "Installed Python wheel, all eight remote operations, service error, cancellation, and artifact/source reproducibility for the current Actors adapter"
+  },
+  "notes": [
+    "Kotlin generation emitted a ktlint-not-installed warning; generated output was still produced.",
+    "No registry publication or merge was performed.",
+    "The py3-none-win_amd64 tag reflects the packaged native Windows wheel layout; this receipt covers Windows x64 only."
+  ]
+}

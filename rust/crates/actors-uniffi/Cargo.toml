@@ -20,6 +20,11 @@ name = "actors-uniffi-bindgen"
 path = "src/bin/actors-uniffi-bindgen.rs"
 required-features = ["bindgen"]
 
+
+[[bin]]
+name = "actors-uniffi-cancellation-adapter"
+path = "src/bin/actors-uniffi-cancellation-adapter.rs"
+required-features = ["bindgen"]
 [dependencies]
 acyclic-actors = { path = "../actors", default-features = true }
 thiserror = "2.0.17"

@@ -131,7 +131,7 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string }
+export interface StreamEnvironment { readonly endpoint: string; readonly token: string; readonly caCertificate?: Uint8Array }
 export class StreamError extends Error {
   constructor(readonly code: string, message: string, readonly status?: number) { super(message); }
 }
