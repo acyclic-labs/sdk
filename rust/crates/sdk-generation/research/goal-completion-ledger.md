@@ -513,3 +513,11 @@ PR267 merged by root using authorized admin squash after current-main cheap qual
 - Harness signedc14d5b2d9 consumer migration passed238 tests and is remote; current-main integration and package provenance preservation are assigned before PR.
 - Docs run7 PID84768 remains live at CPU2207.31, all54 rustdoc receipts exist but no aggregate generation manifest. Seventeen Rust scenarios pass independently; skip-scenarios run7 does not itself qualify those executions.
 - Goal remains active and incomplete. Sixteen useful child responsibilities remain assigned. No additional main merge, publication or deployment in this checkpoint.
+
+### Reviewable Actors PR refresh and package assembly fix — 2026-10-07
+- Root preserved stale PR268 headd69057b2 remotely on codex/actors-pr268-pre-minimality-20261007, then exact-lease updated the draft source to reviewed integration. Current signed3e6bd8c232 includes the parent-archive fix: retain maintained generated/native loader and manifest, exclude only native binaries. Owner's genuine assembled Windows archive exposed the omission; previous manually assembled fixtures were insufficient packaging evidence. Fresh actual Node/Bun platform qualification is assigned.
+- PR268 title/body now describe the Rust/TypeScript-only integration and actual pending installed gates. No merge claim. Rootchanges are pushed on both integration and PRsource refs.
+- Streamc712 cheap CI37693059734 is allgreen. Independent review proves the reachable320 dependency/version nodes matchf6, but current whole-closure provenance rejects oldarchives after rootmanifest/lock changes. Fresh c712 qualification requested instead of adding custom equivalence machinery solely for a merge.
+- Docsrun7 PID84768 remains live CPU2354.67 and emits preview/version/profile datasets. Aggregate manifest/drift remain pending. Generated language snippet compilation must be distinguished from running Rust examples that emit snippets.
+- Filesystem proof evidence audit identified historical negative controls as deliberately false acceptance assertions against unchanged production, not production mutations. Proof documentation and PRclaim correction are assigned before merge.
+- Broadgoal remainsactive; no additional merge in this checkpoint.
