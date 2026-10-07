@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagePath = resolve(root, "typescript/packages/actors");
+const packageTsconfig = resolve(packagePath, "tsconfig.json");
 
 function fail(message) { throw new Error(message); }
 
@@ -59,6 +60,13 @@ async function main() {
   const manifest = JSON.parse(await readFile(join(packagePath, "package.json"), "utf8"));
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-actors-package-"));
   try {
+    // A clean source checkout may not contain the ignored TypeScript output.
+    // Compile it before packing so the neutral parent archive is reproducible
+    // from source rather than depending on a stale or empty dist directory.
+    run("bun", ["x", "tsc", "-p", packageTsconfig, "--pretty", "false"]);
+    const compiledEntrypoint = join(packagePath, "dist", "index.js");
+    try { await readFile(compiledEntrypoint); }
+    catch { fail(`TypeScript compilation did not produce ${compiledEntrypoint}`); }
     const parentRoot = join(temporary, "parent");
     const napiConfigPath = join(temporary, "napi-package.json");
     await cp(packagePath, parentRoot, { recursive: true, filter: (source) => !source.includes(`${join("generated", "native")}`) });
