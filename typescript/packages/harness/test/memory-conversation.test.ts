@@ -337,7 +337,7 @@ test("large canonical attachment lists produce a bounded model request", async (
   expect(omission).toBe("");
   expect(host.conversation().messages[0]!.attachments.kind).toBe("manifest");
   host.free();
-});
+}, 0);
 
 test("concurrent retries serialize before model dispatch", async () => {
   const host = await MemoryConversation.create({ agent, wasm });

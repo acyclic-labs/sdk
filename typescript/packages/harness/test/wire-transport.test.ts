@@ -21,6 +21,7 @@ import {
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 import {
   EmbeddedWireTransport,
+  Harness,
   GrpcWireTransport,
   HttpSseWireTransport,
   JsonlWireTransport,
@@ -35,12 +36,14 @@ import {
 } from "../src/index.js";
 
 const resume = create(ResumeRequestSchema, {});
+const protocolHarness = await Harness.create({
+  authority: { kind: "task", id: "wire-contract" },
+  issuerId: "wire-contract", issuerKey: new Uint8Array(32).fill(7),
+});
+const protocol = protocolHarness.protocolIdentity();
+protocolHarness.free();
 const negotiation = create(HandshakeRequestSchema, {
-  protocol: {
-    version: "2",
-    // blake3(FILE_DESCRIPTOR_SET) for the checked-in v2 protobuf contract.
-    descriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf",
-  },
+  protocol,
   required: { capabilities: [] },
 });
 const handshake = create(HandshakeResponseSchema, {

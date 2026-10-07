@@ -282,4 +282,4 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
   } finally {
     harness.free();
   }
-});
+}, 0);
