@@ -155,7 +155,8 @@ function nativeBinding(): ActorsRustBinding {
             .finally(() => cancellation?.cleanup());
         }];
       }));
-      return { ...client, transport: inner.transport } as ActorsRustClient;
+      const transport = typeof inner.transport === "function" ? inner.transport() : inner.transport;
+      return { ...client, transport } as ActorsRustClient;
     },
   };
 }
@@ -170,7 +171,7 @@ type NativeActorsMethods = {
 };
 
 interface NativeActorsClient extends NativeActorsMethods {
-  readonly transport: string;
+  readonly transport: string | (() => string);
 }
 
 interface NativeActorsModule {
@@ -236,7 +237,7 @@ function isMissingNativeArtifact(error: unknown): boolean {
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
   if (/^Cannot find module ['"][^'"]*generated[\\/]native[\\/]binding\.cjs['"]/i.test(firstLine)) return true;
   if (/^Cannot find package ['"]@acyclic-labs[\\/]actors-(?:win32|linux|darwin|freebsd)-[^'"]+['"]/i.test(firstLine)) return true;
-  return /^Cannot find module ['"][^'"]*[\\/]index\.(?:win32|linux|darwin|freebsd)-[^'"]+\.node['"]/i.test(firstLine);
+  return false;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
