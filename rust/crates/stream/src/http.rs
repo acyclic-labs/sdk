@@ -579,3 +579,129 @@ fn contract_error(code: &str) -> StreamError {
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value, StreamError> {
     value.get(name).ok_or(StreamError::Unavailable)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        task::JoinHandle,
+    };
+
+    async fn request_line(socket: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut chunk).await.expect("read fixture request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        String::from_utf8(request).expect("fixture request is HTTP text")
+    }
+
+    async fn fixture(responses: Vec<(&'static str, String)>) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind HTTP fixture");
+        let endpoint = format!("http://{}/", listener.local_addr().expect("fixture address"));
+        let responses = VecDeque::from(responses);
+        let task = tokio::spawn(async move {
+            for (route, body) in responses {
+                let (mut socket, _) = listener.accept().await.expect("accept fixture request");
+                let request = request_line(&mut socket).await;
+                let actual_route = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .expect("fixture request line");
+                assert_eq!(actual_route, format!("/v1/stream/{route}"));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write fixture response");
+            }
+        });
+        (endpoint, task)
+    }
+
+    fn provider(endpoint: &str) -> HttpStream {
+        HttpStream::new(endpoint, "fixture-token", MAX_RECORD_BYTES.saturating_mul(2))
+            .expect("create HTTP fixture provider")
+    }
+
+    fn read_request() -> ReadRequest {
+        ReadRequest {
+            path: StreamPath::new("runs").expect("fixture path"),
+            from: 0,
+            limit: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn http_rejects_malformed_record_response() {
+        let (endpoint, task) = fixture(vec![
+            ("tail", r#""0""#.to_owned()),
+            (
+                "read",
+                r#"[{"sequence":"0","value":"AAAA","committedAtMicros":"0"}]"#
+                    .to_owned(),
+            ),
+        ])
+        .await;
+
+        let result = provider(&endpoint).read(read_request()).await;
+        assert!(matches!(result, Err(StreamError::Unavailable)));
+        task.await.expect("fixture task");
+    }
+
+    #[tokio::test]
+    async fn http_rejects_non_direct_child_page_response() {
+        let id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let (endpoint, task) = fixture(vec![(
+            "children/page",
+            format!(
+                r#"{{"hierarchyVersion":"{id}","children":[{{"path":"runs/a/leaf"}}],"nextAfter":"runs/a/leaf"}}"#
+            ),
+        )])
+        .await;
+
+        let result = provider(&endpoint)
+            .children_page(ChildrenPageRequest {
+                parent: Some(StreamPath::new("runs").expect("fixture parent")),
+                after: None,
+                hierarchy_version: None,
+                limit: 1,
+            })
+            .await;
+        assert!(matches!(result, Err(StreamError::Unavailable)));
+        task.await.expect("fixture task");
+    }
+
+    #[tokio::test]
+    async fn http_rejects_oversized_record_response() {
+        let id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let value = "AAAA".repeat(MAX_RECORD_BYTES / 3 + 1);
+        let (endpoint, task) = fixture(vec![
+            ("tail", r#""0""#.to_owned()),
+            (
+                "read",
+                format!(
+                    r#"[{{"sequence":"0","value":"{value}","commitId":"{id}","committedAtMicros":"0"}}]"#
+                ),
+            ),
+        ])
+        .await;
+
+        let result = provider(&endpoint).read(read_request()).await;
+        assert!(matches!(result, Err(StreamError::Unavailable)));
+        task.await.expect("fixture task");
+    }
+}

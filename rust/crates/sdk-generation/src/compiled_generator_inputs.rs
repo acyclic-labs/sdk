@@ -1,7 +1,7 @@
 //! Source files that define the compiled SDK generator's behavior.
 
-/// Files whose contents or dependency selection can change generated
-/// TypeScript or documentation output.
+/// Files whose contents or dependency selection can change generated SDK or
+/// documentation output.
 pub const PATHS: &[&str] = &[
     "release/cargo-crates.json",
     "rust/crates/actors/src/codegen.rs",

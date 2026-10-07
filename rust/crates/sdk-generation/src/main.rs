@@ -140,6 +140,7 @@ struct RustdocOwner {
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
 const WORKERS_GENERATED_ROOT: &str = "generated/workers";
+const WORKERS_PROTO_HEADER: &str = "// Generated from Rust-owned Workers contract. Do not edit.\n";
 const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
 const ACTORS_TYPESCRIPT_BARREL: &str = "types.ts";
 
@@ -190,9 +191,9 @@ fn cargo_metadata(root: &Path) -> io::Result<CargoMetadata> {
         ])
         .arg(root.join("Cargo.toml"));
     command.env_remove("RUSTUP_TOOLCHAIN");
-    let output = command
-        .output()
-        .map_err(|error| io::Error::other(format!("failed to run pinned cargo metadata: {error}")))?;
+    let output = command.output().map_err(|error| {
+        io::Error::other(format!("failed to run pinned cargo metadata: {error}"))
+    })?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "pinned cargo metadata exited with {}: {}",
@@ -211,15 +212,17 @@ fn published_package(publish: &Option<Vec<String>>) -> bool {
 
 fn is_library_target(target: &CargoTarget) -> bool {
     target.kind.iter().any(|kind| {
-        matches!(kind.as_str(), "lib" | "rlib" | "cdylib" | "dylib" | "proc-macro")
+        matches!(
+            kind.as_str(),
+            "lib" | "rlib" | "cdylib" | "dylib" | "proc-macro"
+        )
     })
 }
 
 fn load_rustdoc_owners(root: &Path) -> io::Result<Vec<RustdocOwner>> {
-    let declared: Vec<String> = serde_json::from_slice(
-        &fs::read(root.join("release/cargo-crates.json"))?,
-    )
-    .map_err(io::Error::other)?;
+    let declared: Vec<String> =
+        serde_json::from_slice(&fs::read(root.join("release/cargo-crates.json"))?)
+            .map_err(io::Error::other)?;
     if declared.is_empty() {
         return Err(io::Error::other(
             "release/cargo-crates.json must declare at least one package",
@@ -239,7 +242,9 @@ fn load_rustdoc_owners(root: &Path) -> io::Result<Vec<RustdocOwner>> {
     let mut packages = BTreeMap::new();
     for package in metadata.packages {
         if packages.insert(package.name.clone(), package).is_some() {
-            return Err(io::Error::other("cargo metadata contains duplicate packages"));
+            return Err(io::Error::other(
+                "cargo metadata contains duplicate packages",
+            ));
         }
     }
 
@@ -366,13 +371,11 @@ fn generate_workers_contract_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(WORKERS_GENERATED_ROOT);
     let proto_root = stage.join("proto");
     acyclic_workers::contract::render_proto_files(&proto_root).map_err(io::Error::other)?;
+    let proto = proto_root.join("workers/v1/workers.proto");
+    let rendered = fs::read_to_string(&proto)?;
+    fs::write(&proto, format!("{WORKERS_PROTO_HEADER}{rendered}"))?;
     let descriptor = stage.join("acyclic-workers-v1.bin");
     fs::write(&descriptor, acyclic_workers::FILE_DESCRIPTOR_SET)?;
-    if !descriptor.is_file() {
-        return Err(io::Error::other(
-            "Workers contract metadata did not produce a descriptor",
-        ));
-    }
     Ok(())
 }
 
@@ -806,7 +809,10 @@ fn collect_rustdoc_files(paths: &[PathBuf]) -> io::Result<Vec<FileHash>> {
             .ok_or_else(|| io::Error::other("rustdoc input has no file name"))?
             .to_string_lossy()
             .into_owned();
-        if files.insert(name.clone(), hash_file(&path, name.clone())?).is_some() {
+        if files
+            .insert(name.clone(), hash_file(&path, name.clone())?)
+            .is_some()
+        {
             return Err(io::Error::other(format!(
                 "duplicate rustdoc crate file: {name}"
             )));
@@ -946,7 +952,10 @@ fn docs_channel(channel: &str) -> Channel {
 }
 
 fn validate_rustdoc_data(data: &DocsData, owners: &[RustdocOwner]) -> io::Result<()> {
-    let mut expected: Vec<&str> = owners.iter().map(|owner| owner.crate_name.as_str()).collect();
+    let mut expected: Vec<&str> = owners
+        .iter()
+        .map(|owner| owner.crate_name.as_str())
+        .collect();
     expected.sort_unstable();
     let mut actual: Vec<&str> = data
         .families
@@ -1168,7 +1177,11 @@ fn run_pinned_rustdoc(
     } else {
         cargo.args(["--bin", target_name]);
     }
-    cargo.args(["--target-dir"]).arg(target).arg("--").args(rustdoc_args);
+    cargo
+        .args(["--target-dir"])
+        .arg(target)
+        .arg("--")
+        .args(rustdoc_args);
     sanitize_compiler_environment(&mut cargo, tools);
     let status = cargo
         .status()
@@ -1200,14 +1213,15 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
 fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<RustdocInput> {
     let cache_lock = RustdocCacheLock::acquire(config)?;
     let json_target = rustdoc_target_named(config, "sdk-generation-rustdoc-target")?;
-    let dep_info_target =
-        rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
+    let dep_info_target = rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
     let manifest = config.root.join("Cargo.toml");
     let tools = pinned_toolchain()?;
     let mut paths = Vec::with_capacity(owners.len());
     let mut markdown_dependencies = Vec::new();
     for owner in owners {
-        let json = json_target.join("doc").join(format!("{}.json", owner.crate_name));
+        let json = json_target
+            .join("doc")
+            .join(format!("{}.json", owner.crate_name));
         let dep_json = dep_info_target
             .join("doc")
             .join(format!("{}.json", owner.crate_name));
@@ -1346,8 +1360,7 @@ fn generate(config: &Config) -> io::Result<()> {
     validate_owner_versions(config, &owners)?;
     let owner_roots = owner_package_roots(&owners);
     let source_extras_before = baseline_source_extras(&config.root)?;
-    let source_before_stage =
-        collect_sources(&config.root, &source_extras_before, &owner_roots)?;
+    let source_before_stage = collect_sources(&config.root, &source_extras_before, &owner_roots)?;
     generate_actors_contract_artifacts(config)?;
     generate_workers_contract_artifacts(config)?;
     generate_actors_typescript_artifacts(config)?;
@@ -1413,7 +1426,10 @@ fn generate(config: &Config) -> io::Result<()> {
         generator_version: VERSION.into(),
         version: config.version.clone(),
         family: ACTORS_CRATE.into(),
-        families: owners.iter().map(|owner| owner.crate_name.clone()).collect(),
+        families: owners
+            .iter()
+            .map(|owner| owner.crate_name.clone())
+            .collect(),
         revision,
         source_sha256: tree_digest(&source),
         source,
@@ -1617,10 +1633,7 @@ mod tests {
     fn relative_dep_info_paths_resolve_from_the_workspace_root() {
         let root = Path::new("workspace");
         assert_eq!(
-            resolve_dep_info_path(
-                PathBuf::from("rust/crates/actors/README.md"),
-                root,
-            ),
+            resolve_dep_info_path(PathBuf::from("rust/crates/actors/README.md"), root,),
             root.join("rust/crates/actors/README.md")
         );
     }

@@ -114,10 +114,10 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
         } else if matches!(
             token,
             Token::Identifier(_)
-            | Token::Function(_)
-            | Token::Type(_)
-            | Token::Primitive(_)
-            | Token::Self_(_)
+                | Token::Function(_)
+                | Token::Type(_)
+                | Token::Primitive(_)
+                | Token::Self_(_)
         ) {
             Some(index)
         } else {
@@ -427,16 +427,11 @@ mod tests {
                 Token::Type("Trait".into()),
             ],
         ] {
-            let mut tokens = vec![
-                Token::Keyword("impl".into()),
-                Token::Whitespace,
-            ];
+            let mut tokens = vec![Token::Keyword("impl".into()), Token::Whitespace];
             tokens.extend(target);
-            assert!(
-                exported_path_for_item(tokens.iter(), true)
-                    .expect("compound impl should be retained without an exported path")
-                    .is_empty()
-            );
+            assert!(exported_path_for_item(tokens.iter(), true)
+                .expect("compound impl should be retained without an exported path")
+                .is_empty());
         }
     }
 

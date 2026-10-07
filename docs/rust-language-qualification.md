@@ -107,8 +107,12 @@ The bounded harness stays independent of package generation and network code:
 
 * `valid_code_sha256(&[u8])` is checked with a symbolic `[u8; 32]`: it returns
   true exactly when at least one byte is non-zero. The same run checks rejection
-  for `[u8; 0]`, `[u8; 31]`, `[u8; 33]`, and `[u8; 64]`. `Vec` allocation and
-  `CodeSha256::new` conversion remain runtime property-test concerns.
+  for `[u8; 0]`, `[u8; 31]`, `[u8; 33]`, and `[u8; 64]`. A separate harness uses
+  Kani's maintained `kani::vec::exact_vec::<u8, 32>()` model to provide a
+  symbolic, bounded 32-byte allocation, calls the real `CodeSha256::new`, and
+  proves that `as_bytes()` preserves every input byte for valid non-zero input.
+  This is a fixed-length constructor proof; it makes no claim about arbitrary
+  or unbounded `Vec` inputs.
 * A symbolic `i32` is checked through `SubscriptionState`, `ActorState`, and
   `ErrorCode` conversions. Known values round-trip, while unknown values remain
   observable in the corresponding `DomainError` payload.
@@ -119,8 +123,9 @@ The bounded harness stays independent of package generation and network code:
 
 These harnesses target exact functions already present in
 `rust/crates/actors/src/domain.rs`; they do not introduce a second contract or
-validation rule. The recorded proofs cover fixed arrays, finite enum domains,
-and symbolic `i32` and `u64` values; they do not claim an unbounded theorem.
+validation rule. The recorded proofs cover the bounded fixed arrays and exact
+32-byte allocation above, finite enum domains, and symbolic `i32` and `u64`
+values; they do not claim an unbounded theorem.
 
 [Kani](https://github.com/model-checking/kani) is the maintained OSS candidate
 for bounded model checking of small, pure Rust conversion and validation
@@ -131,12 +136,13 @@ native package loading, a remote service, or an unbounded stream.
 
 The current receipt `rust/crates/actors/proofs/kani-domain-invariants-current.json`
 records Kani 0.68.0 with CBMC 6.11.0, Rust nightly 1.100.0, unwind 65, and one
-verifier worker. All nine listed harnesses passed with exit code 0: the symbolic
-digest, wrong-length, enum, subscription-presence, PositiveU64, and ActorLimits
-constructor invariants. The receipt identifies the exact source revision and
+verifier worker. All ten listed harnesses passed with exit code 0: the symbolic
+digest predicate, wrong-length cases, exact 32-byte constructor preservation,
+enum, subscription-presence, PositiveU64, and ActorLimits constructor
+invariants. The receipt identifies the exact source revision and
 hashes the complete Actors Rust source tree, build inputs, manifests, lockfile,
 toolchain/config files, and portable proof runner. Its external evidence log is
-`foundation-kani-068/runner-validation-9.log`.
+`foundation-kani-068/runner-validation-10-final.log`.
 
 The older individual Kani receipts remain historical evidence. The current
 combined receipt is the source of truth for the bounded proof snapshot.
@@ -144,7 +150,7 @@ combined receipt is the source of truth for the bounded proof snapshot.
 The earlier Kani 0.67 attempt is retained as historical failed evidence: it
 used a Rust 1.93 nightly compiler path and stopped before proving a harness.
 The current isolated Kani 0.68 run uses its pinned nightly compiler and records
-the exact compiler, solver, nine-harness command, source inventory, output
+the exact compiler, solver, ten-harness command, source inventory, output
 validation policy, source hashes, and unwind setting in
 `rust/crates/actors/proofs/kani-domain-invariants-current.json`.
 

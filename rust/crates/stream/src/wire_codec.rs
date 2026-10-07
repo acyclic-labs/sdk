@@ -5,10 +5,13 @@ use bytes::Bytes;
 use crate::{
     AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId,
     CommitMutation, CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork,
-    CommittedMutation, ChildrenPage, ChildrenPageRequest, ForkReceipt, IdempotencyKey,
+    CommittedMutation, ChildrenPageRequest, ForkReceipt, IdempotencyKey,
     IdempotencyObservation,
     IdempotencyOutcome, Record, StreamError, StreamPath, MAX_ITEMS, MAX_RECORD_BYTES, wire,
 };
+
+#[cfg(any(feature = "grpc", feature = "http", test))]
+use crate::ChildrenPage;
 
 pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     StreamPath::new(value)
@@ -251,11 +254,13 @@ pub(crate) fn validate_children_page_request(
 }
 
 /// Parses a remote path, normalizing malformed response data to `Unavailable`.
+#[cfg(feature = "grpc")]
 pub(crate) fn response_path(value: String) -> Result<StreamPath, StreamError> {
     path(value).map_err(|_| StreamError::Unavailable)
 }
 
 /// Validates one remote hierarchy page against its request cursor.
+#[cfg(any(feature = "grpc", feature = "http", test))]
 pub(crate) fn checked_children_page(
     request: &ChildrenPageRequest,
     page: ChildrenPage,

@@ -730,8 +730,10 @@ impl PartNumber {
 
     /// Constructs a multipart part number in the canonical inclusive range.
     pub const fn new(value: u32) -> Result<Self, Error> {
-        request::part_number(value)?;
-        Ok(Self(value))
+        match request::part_number(value) {
+            Ok(()) => Ok(Self(value)),
+            Err(error) => Err(error),
+        }
     }
 
     /// Returns the validated part number.

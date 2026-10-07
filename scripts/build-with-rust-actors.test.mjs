@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { mock, test } from "bun:test";
 
 const calls = [];
+let defaultStatus = 1;
+let queuedStatuses = [];
 mock.module("node:child_process", () => ({
   spawnSync(command, args, options) {
     calls.push({ command, args, options });
-    return { status: 1 };
+    return { status: queuedStatuses.length ? queuedStatuses.shift() : defaultStatus };
   },
 }));
 
@@ -35,17 +37,19 @@ async function runWrapper(args) {
   }
 }
 
-function bundle(channel, version = "0.2.0") {
+function bundle(channel, version = "0.2.0", families = ["acyclic_actors", "acyclic_workers"]) {
   const directory = mkdtempSync(join(tmpdir(), "acyclic-rust-actors-wrapper-"));
   writeFileSync(
     join(directory, "generation-manifest.json"),
-    JSON.stringify({ version, tool: { channel } }),
+    JSON.stringify({ version, tool: { channel }, families }),
   );
   return directory;
 }
 
 test("drift runs first and release forwards manifest provenance", async () => {
   calls.length = 0;
+  defaultStatus = 1;
+  queuedStatuses = [];
   const directory = bundle("release");
   try {
     await assert.rejects(
@@ -69,6 +73,8 @@ test("drift runs first and release forwards manifest provenance", async () => {
 
 test("preview forwards the supplied Rustdoc input and does not stage after drift failure", async () => {
   calls.length = 0;
+  defaultStatus = 1;
+  queuedStatuses = [];
   const directory = bundle("preview");
   const rustdoc = join(directory, "rustdoc.json");
   writeFileSync(rustdoc, "{}");
@@ -95,6 +101,8 @@ test("preview forwards the supplied Rustdoc input and does not stage after drift
 
 test("release rejects a Rustdoc override before invoking any process", async () => {
   calls.length = 0;
+  defaultStatus = 1;
+  queuedStatuses = [];
   const directory = bundle("release");
   try {
     await assert.rejects(
@@ -109,6 +117,8 @@ test("release rejects a Rustdoc override before invoking any process", async () 
 
 test("preview requires an explicit Rustdoc input", async () => {
   calls.length = 0;
+  defaultStatus = 1;
+  queuedStatuses = [];
   const directory = bundle("preview");
   try {
     await assert.rejects(
@@ -116,6 +126,74 @@ test("preview requires an explicit Rustdoc input", async () => {
       /preview generation bundles require --rustdoc-json <path>/,
     );
     assert.equal(calls.length, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function invocationKinds() {
+  return calls.map(({ command, args }) => {
+    if (command === "cargo") return "drift";
+    const stageIndex = args.findIndex(argument => argument.endsWith("stage-rust-actors-types.mjs"));
+    if (stageIndex >= 0) return `stage:${args[stageIndex + 1]}`;
+    if (args[0] === "run") return `delegate:${args[1]}`;
+    return command;
+  });
+}
+
+test("generate stages Workers before Buf and Actors after it", async () => {
+  calls.length = 0;
+  defaultStatus = 0;
+  queuedStatuses = [];
+  const directory = bundle("release");
+  try {
+    await assert.rejects(
+      runWrapper(["generate", directory]),
+      error => error instanceof ProcessExit && error.code === 0,
+    );
+    assert.deepEqual(invocationKinds(), [
+      "drift",
+      "stage:contract-write",
+      "delegate:generate",
+      "stage:write",
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("check validates Workers before Actors and the delegate", async () => {
+  calls.length = 0;
+  defaultStatus = 0;
+  queuedStatuses = [];
+  const directory = bundle("release");
+  try {
+    await assert.rejects(
+      runWrapper(["check", directory]),
+      error => error instanceof ProcessExit && error.code === 0,
+    );
+    assert.deepEqual(invocationKinds(), [
+      "drift",
+      "stage:contract-check",
+      "stage:check",
+      "delegate:check",
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a missing Workers contract stops check before the delegate", async () => {
+  calls.length = 0;
+  defaultStatus = 0;
+  queuedStatuses = [0, 1];
+  const directory = bundle("release", "0.2.0", ["acyclic_actors"]);
+  try {
+    await assert.rejects(
+      runWrapper(["check-generated", directory]),
+      error => error instanceof ProcessExit && error.code === 1,
+    );
+    assert.deepEqual(invocationKinds(), ["drift", "stage:contract-check"]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

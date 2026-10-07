@@ -877,3 +877,76 @@ async fn read_commit(
     .await?;
     encode(&wire_codec::envelope_to_wire(value), "read_commit")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
+
+    fn cancellation_error(
+        result: std::result::Result<(), NativeStreamErrorMetadata>,
+    ) -> NativeStreamErrorMetadata {
+        match result {
+            Err(error) => error,
+            Ok(()) => panic!("cancellation helper unexpectedly completed the operation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_is_checked_before_polling_operation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let polled = Arc::new(AtomicBool::new(false));
+        let operation_polled = Arc::clone(&polled);
+        let operation = std::future::poll_fn(move |_| {
+            operation_polled.store(true, Ordering::SeqCst);
+            Poll::Ready(Ok::<(), NativeStreamErrorMetadata>(()))
+        });
+
+        let error = cancellation_error(run_with_cancellation(operation, Some(cancellation)).await);
+        assert_eq!(error.code, "cancelled");
+        assert!(!polled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pending_operation_is_interrupted_by_cancellation() {
+        let cancellation = CancellationToken::new();
+        let polled = Arc::new(AtomicBool::new(false));
+        let operation_polled = Arc::clone(&polled);
+        let operation = std::future::poll_fn(move |_| {
+            operation_polled.store(true, Ordering::SeqCst);
+            Poll::Pending::<std::result::Result<(), NativeStreamErrorMetadata>>
+        });
+        let pending = tokio::spawn(run_with_cancellation(operation, Some(cancellation.clone())));
+
+        while !polled.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        cancellation.cancel();
+
+        let error = cancellation_error(pending.await.expect("cancellation task panicked"));
+        assert_eq!(error.code, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_before_a_ready_operation_is_observed() {
+        let cancellation = CancellationToken::new();
+        let first_poll = Arc::new(AtomicBool::new(false));
+        let operation_first_poll = Arc::clone(&first_poll);
+        let operation_cancellation = cancellation.clone();
+        let operation = std::future::poll_fn(move |_| {
+            if !operation_first_poll.swap(true, Ordering::SeqCst) {
+                // The operation and cancellation become ready in the same
+                // select cycle. The biased cancellation branch must win on
+                // the following poll before the operation can complete.
+                operation_cancellation.cancel();
+            }
+            Poll::Pending::<std::result::Result<(), NativeStreamErrorMetadata>>
+        });
+
+        let error = cancellation_error(run_with_cancellation(operation, Some(cancellation)).await);
+        assert_eq!(error.code, "cancelled");
+        assert!(first_poll.load(Ordering::SeqCst));
+    }
+}

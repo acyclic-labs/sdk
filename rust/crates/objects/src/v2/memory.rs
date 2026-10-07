@@ -811,8 +811,8 @@ impl ObjectsProvider for MemoryObjects {
     ) -> Result<wire::UploadedPart, Error> {
         let name = request::bucket(&query.bucket)?;
         request::key(&query.object_key)?;
-        if !(1..=10_000).contains(&query.part_number) || body.len() as u64 > 5 * 1024 * 1024 * 1024
-        {
+        request::part_number(query.part_number)?;
+        if body.len() as u64 > 5 * 1024 * 1024 * 1024 {
             return Err(InvalidArgument.into());
         }
         self.mutate(
@@ -846,7 +846,7 @@ impl ObjectsProvider for MemoryObjects {
         let name = request::bucket(&query.bucket)?;
         request::key(&query.object_key)?;
         let limit = request::page_size(query.page_size)?;
-        if query.after_part_number > 10_000 {
+        if query.after_part_number > wire::ObjectsLimit::MaxMultipartParts as u32 {
             return Err(InvalidArgument.into());
         }
         let state = self.lock_state()?;
@@ -878,7 +878,9 @@ impl ObjectsProvider for MemoryObjects {
         let name = request::bucket(&query.bucket)?;
         request::key(&query.object_key)?;
         request::preconditions(&query.preconditions)?;
-        if query.parts.is_empty() || query.parts.len() > 10_000 {
+        if query.parts.is_empty()
+            || query.parts.len() > wire::ObjectsLimit::MaxMultipartParts as usize
+        {
             return Err(InvalidArgument.into());
         }
         self.mutate(

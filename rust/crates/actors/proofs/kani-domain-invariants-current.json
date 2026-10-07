@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.kani-proof/v1",
-  "captured_at": "2026-10-07T01:43:57Z",
+  "captured_at": "2026-10-07T02:02:16Z",
   "status": "proved",
   "source": {
     "revision": "371bb4170e16aca973176b6756a261ee5add7297",
@@ -10,7 +10,7 @@
       "rust\\crates\\actors\\src\\contract.rs": "BA1F52D0C30E11FD7C0203FE7C2DA1F057874828F18DF61528DC53D838587ABD",
       "rust\\crates\\actors\\src\\contract_definitions.rs": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA",
       "rust\\crates\\actors\\src\\domain.rs": "FABCAF54CB8274425873C5FBA1B288E071C211C15718207AE552D0BC093B1195",
-      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "F000F373FB934A9A4B33C2EEDE88C2DF747049544E6A22468C1ED541A8020E8A",
+      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "85251C6AB16FEE0F62F938681C466037D44AE5622E2788AB72F86C4BA6D9A689",
       "rust\\crates\\actors\\src\\grpc.rs": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
       "rust\\crates\\actors\\src\\http.rs": "FD04B1D37B4D9F75256373EFC232FC0030CC0BA32CB3974390A7081AC81BF675",
       "rust\\crates\\actors\\src\\lib.rs": "9C1F32FAE8D4F2BD4925F785242F85369553E4182D188A894BC06C995F776853",
@@ -18,10 +18,10 @@
       "rust\\crates\\actors\\build.rs": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C",
       "rust\\crates\\actors\\Cargo.toml": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
       "Cargo.toml": "E08A391F59C9B0C5F4694F41453639BD350498332BFD7D01CE58ADCC89A96675",
-      "Cargo.lock": "8300E87F93D3A4CE1713C40C922A29359B50EE375570D6205FFF417288C2CEA1",
+      "Cargo.lock": "95523D7AA4B05BC3E6F63276AABA1DCBE4290FE9EA3D46A1F5AF2D3764CD1D88",
       ".cargo\\config.toml": "B0BAFCC74B1675391E1C26780708F70BFE0F64555A6949BC8D444A6C182AAE41",
       "rust-toolchain.toml": "85DB324345B7937C49EA2AC8B962D741F710719F4F751CAB809985CBE6AFBE3C",
-      "rust\\crates\\actors\\proofs\\run-kani.sh": "AD4FE302331707C315F1D42E20DE77E169141045692C31B3DE2F6A98F5B6DC71"
+      "rust\\crates\\actors\\proofs\\run-kani.sh": "B56D05B4FDE07B0F3A8138208FC7E686A3FBAC672A842960563C4400F0109A27"
     },
     "note": "Receipt is valid only for this exact revision and source-hash inventory."
   },
@@ -38,6 +38,7 @@
     "package": "acyclic-actors",
     "harnesses": [
       "domain::kani_proofs::code_sha256_fixed_length_matches_contract",
+      "domain::kani_proofs::code_sha256_constructor_preserves_valid_bytes",
       "domain::kani_proofs::code_sha256_rejects_empty",
       "domain::kani_proofs::code_sha256_rejects_31_bytes",
       "domain::kani_proofs::code_sha256_rejects_33_bytes",
@@ -60,6 +61,10 @@
     {
       "name": "domain::kani_proofs::code_sha256_fixed_length_matches_contract",
       "obligation": "A symbolic 32-byte digest is accepted by the code_sha256 constructor."
+    },
+    {
+      "name": "domain::kani_proofs::code_sha256_constructor_preserves_valid_bytes",
+      "obligation": "CodeSha256::new preserves every byte for a symbolic valid 32-byte input."
     },
     {
       "name": "domain::kani_proofs::code_sha256_rejects_empty",
@@ -95,18 +100,18 @@
     }
   ],
   "result": {
-    "successful": 9,
+    "successful": 10,
     "failures": 0,
-    "total": 9,
+    "total": 10,
     "unwind": 65,
     "jobs": 1
   },
   "evidence": {
-    "log": "runner-validation-current.log",
-    "log_sha256": "95D294BBD6BCA2445DE17E9F6E270572CF9A99A673F2BA4DE83B01A0564F37FA"
+    "log": "runner-validation-10-final.log",
+    "log_sha256": "F1DC3C325C17718073EF1C9448712F1BE3A57C6F48C9B8B299CA0A8772BDB367"
   },
   "verification_policy": {
-    "summary": "Manual Harness Summary: Complete - 9 successfully verified harnesses, 0 failures, 9 total",
+    "summary": "Manual Harness Summary: Complete - 10 successfully verified harnesses, 0 failures, 10 total",
     "required_markers": [
       "VERIFICATION:- SUCCESSFUL",
       "CARGO_KANI_EXIT=0"

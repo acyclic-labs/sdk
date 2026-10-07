@@ -147,7 +147,7 @@ pub fn parts(
     let mut previous = query.after_part_number;
     for part in &response.parts {
         if part.part_number <= previous
-            || part.part_number > 10_000
+            || part.part_number > wire::ObjectsLimit::MaxMultipartParts as u32
             || part.etag.is_empty()
             || part.etag.len() > 8192
             || part.etag.contains(['\r', '\n', '\0'])

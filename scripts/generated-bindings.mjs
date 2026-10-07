@@ -46,6 +46,7 @@ export const compatibilityArtifacts = {
   },
   actors: {
     schemaDigest: "proto/actors/v1/actors.proto",
+    descriptorDigest: "rust/crates/actors/tests/fixtures/actors/v1/actors_descriptor.bin",
   },
   workers: {
     schemaDigest: "proto/workers/v1/workers.proto",

@@ -25,6 +25,7 @@ const FIXTURE_OWNERS: &[(&str, &str)] = &[
     ("acyclic-harness", "rust/crates/harness"),
     ("acyclic-plugin", "plugin"),
 ];
+const WORKERS_PROTO_HEADER: &str = "// Generated from Rust-owned Workers contract. Do not edit.\n";
 
 fn temp(_name: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -348,6 +349,22 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .iter()
             .any(|artifact| { artifact["path"] == "generated/typescript/actors/types.ts" })
     );
+    assert!(
+        manifest["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| {
+                artifact["path"] == "generated/workers/proto/workers/v1/workers.proto"
+            })
+    );
+    assert!(
+        manifest["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| { artifact["path"] == "generated/workers/acyclic-workers-v1.bin" })
+    );
     assert_eq!(
         fs::read(first.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap(),
         fs::read(second.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap()
@@ -392,6 +409,18 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     assert_eq!(
         fs::read(&types_barrel).unwrap(),
         fs::read(second.join("generated/typescript/actors/types.ts")).unwrap()
+    );
+    let workers_proto = first.join("generated/workers/proto/workers/v1/workers.proto");
+    assert!(workers_proto.is_file());
+    assert!(
+        fs::read_to_string(&workers_proto)
+            .unwrap()
+            .starts_with(WORKERS_PROTO_HEADER)
+    );
+    assert!(
+        first
+            .join("generated/workers/acyclic-workers-v1.bin")
+            .is_file()
     );
     let guide_path = root.join("docs/objects-v2-http.md");
     let guide = fs::read(&guide_path).unwrap();

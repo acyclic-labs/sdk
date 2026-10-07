@@ -772,10 +772,17 @@ pub trait DurableTaskHost: Send + Sync {
     fn scheduler_events_for<'a>(
         &'a self,
         task_id: TaskId,
-        _operation_id: OperationId,
+        operation_id: OperationId,
         after_revision: u64,
         limit: u32,
     ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        if task_id.into_bytes() != operation_id.into_bytes() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "task and operation identities differ; provider must implement identity-aware event replay".into(),
+                ))
+            });
+        }
         self.scheduler_events(task_id, after_revision, limit)
     }
     /// Waits for a terminal observation. Hosts with completion notification
@@ -801,8 +808,15 @@ pub trait DurableTaskHost: Send + Sync {
     fn cancel_for<'a>(
         &'a self,
         task_id: TaskId,
-        _operation_id: OperationId,
+        operation_id: OperationId,
     ) -> BoxFuture<'a, Result<()>> {
+        if task_id.into_bytes() != operation_id.into_bytes() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "task and operation identities differ; provider must implement identity-aware cancellation".into(),
+                ))
+            });
+        }
         self.cancel(task_id)
     }
 
@@ -938,10 +952,17 @@ pub trait TaskStateProvider: Send + Sync {
     fn scheduler_events_for<'a>(
         &'a self,
         task_id: TaskId,
-        _operation_id: OperationId,
+        operation_id: OperationId,
         after_revision: u64,
         limit: u32,
     ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        if task_id.into_bytes() != operation_id.into_bytes() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "task and operation identities differ; provider must implement identity-aware event replay".into(),
+                ))
+            });
+        }
         self.scheduler_events(task_id, after_revision, limit)
     }
     /// Waits for a terminal result; providers may override polling.
@@ -964,8 +985,15 @@ pub trait TaskStateProvider: Send + Sync {
     fn cancel_for<'a>(
         &'a self,
         task_id: TaskId,
-        _operation_id: OperationId,
+        operation_id: OperationId,
     ) -> BoxFuture<'a, Result<()>> {
+        if task_id.into_bytes() != operation_id.into_bytes() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "task and operation identities differ; provider must implement identity-aware cancellation".into(),
+                ))
+            });
+        }
         self.cancel(task_id)
     }
     /// Routes an addressable interaction through owner-retained state.
@@ -7569,5 +7597,172 @@ mod tests {
             );
         }
         assert_eq!(check_tool_approval(InteractionOutcome::Approved), Ok(()));
+    }
+
+    struct DistinctTaskOperationProvider {
+        task_id: TaskId,
+        operation_id: OperationId,
+        event_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
+        cancel_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
+    }
+
+    impl TaskStateProvider for DistinctTaskOperationProvider {
+        fn policy_identity(&self) -> Option<ComponentIdentity> {
+            None
+        }
+
+        fn observe_admission<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            Box::pin(async { Err(Error::Unsupported("test provider".into())) })
+        }
+
+        fn resume_scope<'a>(
+            &'a self,
+            _task_id: TaskId,
+            _operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<RuntimeScope>> {
+            Box::pin(async { Err(Error::Unsupported("test provider".into())) })
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Conflict("task-only cancellation used".into())) })
+        }
+
+        fn cancel_for<'a>(
+            &'a self,
+            task_id: TaskId,
+            operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<()>> {
+            assert_eq!(task_id, self.task_id);
+            self.cancel_operations
+                .lock()
+                .expect("cancel operation recorder is not poisoned")
+                .push(operation_id);
+            Box::pin(async move { Ok(()) })
+        }
+
+        fn scheduler_events_for<'a>(
+            &'a self,
+            task_id: TaskId,
+            operation_id: OperationId,
+            after_revision: u64,
+            limit: u32,
+        ) -> BoxFuture<'a, Result<TaskEventPage>> {
+            assert_eq!(task_id, self.task_id);
+            assert_eq!(limit, 2);
+            self.event_operations
+                .lock()
+                .expect("event operation recorder is not poisoned")
+                .push(operation_id);
+            let cancellation = crate::distributed::CommittedSchedulerEvent {
+                revision: 1,
+                operation_id: self.operation_id,
+                event: crate::scheduler::SchedulerEvent::CancellationRequested {
+                    operation_id: self.operation_id,
+                    recursive: false,
+                },
+                event_digest: [0; 32],
+                committed_at_ms: 1,
+            };
+            let completed = crate::distributed::CommittedSchedulerEvent {
+                revision: 2,
+                operation_id: self.operation_id,
+                event: crate::scheduler::SchedulerEvent::Completed {
+                    operation_id: self.operation_id,
+                    outcome: Outcome::Cancelled,
+                    fence: None,
+                    execution_duration_ns: None,
+                },
+                event_digest: [1; 32],
+                committed_at_ms: 2,
+            };
+            Box::pin(async move {
+                Ok(TaskEventPage {
+                    after_revision,
+                    next_revision: 2,
+                    events: vec![cancellation, completed],
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_runtime_retains_distinct_task_and_operation_identity() -> Result<()> {
+        let task_id = TaskId::from_bytes([10; 16]);
+        let operation_id = OperationId::from_bytes([20; 16]);
+        let event_operations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cancel_operations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = Arc::new(DistinctTaskOperationProvider {
+            task_id,
+            operation_id,
+            event_operations: Arc::clone(&event_operations),
+            cancel_operations: Arc::clone(&cancel_operations),
+        });
+        let task = RuntimeTask::<Value>::Durable {
+            task_id,
+            operation_id,
+            host: provider,
+            output_schema: serde_json::json!({}),
+            extensions: None,
+        };
+
+        let page = task.scheduler_events(0, 2).await?;
+        assert_eq!(page.events.len(), 2);
+        match &page.events[1].event {
+            crate::scheduler::SchedulerEvent::Completed { outcome, .. } => {
+                assert!(matches!(outcome, Outcome::Cancelled));
+            }
+            _ => panic!("expected terminal cancellation event"),
+        }
+        assert_eq!(
+            *event_operations
+                .lock()
+                .expect("event operation recorder is not poisoned"),
+            vec![operation_id]
+        );
+        task.cancel().await?;
+        assert_eq!(
+            *cancel_operations
+                .lock()
+                .expect("cancel operation recorder is not poisoned"),
+            vec![operation_id]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_state_provider_fails_closed_for_split_identity() {
+        let provider = StateOnlyProvider;
+        let task_id = TaskId::from_bytes([31; 16]);
+        let operation_id = OperationId::from_bytes([32; 16]);
+
+        let events = provider.scheduler_events_for(task_id, operation_id, 0, 1).await;
+        assert!(matches!(
+            events,
+            Err(Error::Unsupported(message))
+                if message.contains("identities differ")
+        ));
+        let cancellation = provider.cancel_for(task_id, operation_id).await;
+        assert!(matches!(
+            cancellation,
+            Err(Error::Unsupported(message))
+                if message.contains("identities differ")
+        ));
+
+        let same_id = TaskId::from_bytes([33; 16]);
+        let delegated = provider.cancel_for(same_id, OperationId::from_bytes([33; 16])).await;
+        assert!(matches!(
+            delegated,
+            Err(Error::Unsupported(message)) if message == "state-only test provider"
+        ));
     }
 }

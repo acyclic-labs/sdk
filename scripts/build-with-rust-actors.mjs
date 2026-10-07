@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const operations = new Map([
-  ["build", { stage: "write", delegate: "build", stageAfter: false }],
-  ["check", { stage: "check", delegate: "check", stageAfter: false }],
-  ["generate", { stage: "write", delegate: "generate", stageAfter: true }],
-  ["check-generated", { stage: "check", delegate: "check:generated", stageAfter: false }],
+  ["build", { stage: "write", delegate: "build" }],
+  ["check", { stage: "check", delegate: "check" }],
+  ["generate", { stage: "write", delegate: "generate" }],
+  ["check-generated", { stage: "check", delegate: "check:generated" }],
 ]);
 const [operation, bundleArgument, ...extra] = process.argv.slice(2);
 const selected = operations.get(operation);
@@ -65,14 +65,18 @@ function runDrift() {
   return drift.status ?? 1;
 }
 
-function runStage() {
+function runStage(operation) {
   const stage = spawnSync(
     process.execPath,
-    [join(root, "scripts", "stage-rust-actors-types.mjs"), selected.stage, bundle],
+    [join(root, "scripts", "stage-rust-actors-types.mjs"), operation, bundle],
     { cwd: root, stdio: "inherit" },
   );
   if (stage.error) throw stage.error;
   return stage.status ?? 1;
+}
+
+function runWorkersStage(operation) {
+  return runStage(operation === "write" ? "contract-write" : "contract-check");
 }
 
 function runDelegate() {
@@ -83,6 +87,16 @@ function runDelegate() {
 
 const drift = runDrift();
 if (drift !== 0) process.exit(drift);
-const first = selected.stageAfter ? runDelegate() : runStage();
-if (first !== 0) process.exit(first);
-process.exit(selected.stageAfter ? runStage() : runDelegate());
+if (operation === "generate") {
+  const workers = runWorkersStage("write");
+  if (workers !== 0) process.exit(workers);
+  const delegated = runDelegate();
+  if (delegated !== 0) process.exit(delegated);
+  process.exit(runStage("write"));
+}
+
+const workers = runWorkersStage(selected.stage);
+if (workers !== 0) process.exit(workers);
+const actors = runStage(selected.stage);
+if (actors !== 0) process.exit(actors);
+process.exit(runDelegate());

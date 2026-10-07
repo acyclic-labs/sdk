@@ -503,7 +503,7 @@ impl ObjectsProvider for HttpObjects {
         request::key(&query.object_key)?;
         request::upload_id(&query.upload_id)?;
         request::page_size(query.page_size)?;
-        if query.after_part_number > 10_000 {
+        if query.after_part_number > wire::ObjectsLimit::MaxMultipartParts as u32 {
             return Err(wire::ErrorCode::InvalidArgument.into());
         }
         let result = self.call("multipart/list-parts", &query).await?;
