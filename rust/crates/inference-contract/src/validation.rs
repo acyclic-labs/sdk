@@ -16,27 +16,27 @@ pub const MAXIMUM_EVALUATION_METRICS: usize = 64;
 /// Largest materialized result set.
 pub const MAXIMUM_EVALUATION_RESULTS: u64 = 65_536;
 
-#[derive(Clone, Copy)]
-pub(crate) enum Error {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("invalid customer contract: {0}")]
     Invalid(&'static str),
 }
 
-#[cfg(feature = "host")]
 impl Error {
-    pub(crate) fn message(&self) -> &'static str {
+    pub const fn message(&self) -> &'static str {
         let Self::Invalid(message) = self;
         message
     }
 }
 
-fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
+pub fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
     if *value == [0; N] {
         return Err(Error::Invalid("zero identity"));
     }
     Ok(())
 }
 
-fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
+pub fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
     let bytes = value
         .try_into()
         .map_err(|_| Error::Invalid("identity length differs"))?;
@@ -44,7 +44,46 @@ fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
     Ok(bytes)
 }
 
-pub(crate) fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
+/// Validate the bounded model capability inventory, including both retention
+/// profile families advertised by the customer protocol.
+fn validate_profiles(profiles: &[wire::RetentionProfile]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    profiles.len() <= 64
+        && profiles.iter().all(|profile| {
+            fixed::<32>(&profile.profile).is_ok()
+                && profile.minimum_duration_ms > 0
+                && profile.maximum_duration_ms >= profile.minimum_duration_ms
+                && seen.insert(profile.profile.as_slice())
+        })
+}
+
+pub fn validate_model_capabilities(
+    response: &wire::ListModelsResponse,
+) -> Result<(), Error> {
+    if response.models.is_empty() || response.models.len() > 4_096 {
+        return Err(Error::Invalid("model capability count is invalid"));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for model in &response.models {
+        if model.model.is_empty()
+            || model.model.len() > 256
+            || !names.insert(model.model.as_str())
+            || fixed::<32>(&model.execution_profile).is_err()
+            || model.maximum_context == 0
+            || model.maximum_output == 0
+            || model.features.is_empty()
+            || model.features.len() > 64
+            || model.features.iter().any(|feature| feature.is_empty() || feature.len() > 64)
+            || !validate_profiles(&model.retention_profiles)
+            || !validate_profiles(&model.idle_kv_profiles)
+        {
+            return Err(Error::Invalid("model capability is invalid"));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
     if spec.candidates.is_empty() || spec.candidates.len() > MAXIMUM_EVALUATION_CANDIDATES {
         return Err(Error::Invalid("evaluation candidate count is invalid"));
     }
@@ -135,7 +174,7 @@ fn validate_exact_rational(value: Option<&wire::ExactRational>) -> Result<(), Er
     Ok(())
 }
 
-pub(crate) fn evaluation_observation_binding(
+pub fn evaluation_observation_binding(
     native: &[u8; 32],
     observation: &[u8; 32],
 ) -> [u8; 32] {
@@ -146,7 +185,7 @@ pub(crate) fn evaluation_observation_binding(
     digest.finalize().into()
 }
 
-pub(crate) fn validate_evaluation_admission(
+pub fn validate_evaluation_admission(
     view: &wire::EvaluationView,
     expected: [u8; 16],
     expected_spec: &wire::EvaluationSpec,
@@ -157,7 +196,7 @@ pub(crate) fn validate_evaluation_admission(
     validate_evaluation_view(view, expected)
 }
 
-pub(crate) fn validate_evaluation_view(
+pub fn validate_evaluation_view(
     view: &wire::EvaluationView,
     expected: [u8; 16],
 ) -> Result<(), Error> {
@@ -298,7 +337,7 @@ fn validate_evaluation_aggregates(
     Ok(())
 }
 
-pub(crate) fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
+pub fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
     if fixed::<16>(&view.run_id)? != expected || fixed::<32>(&view.input).is_err() {
         return Err(Error::Invalid("Run identity differs"));
     }
@@ -372,7 +411,7 @@ impl WatchRunState {
     }
 }
 
-pub(crate) fn watch_run_start(
+pub fn watch_run_start(
     view: &wire::RunView,
     from_sequence: u64,
 ) -> Result<WatchRunState, Error> {
@@ -394,7 +433,7 @@ pub(crate) fn watch_run_start(
     })
 }
 
-pub(crate) fn watch_run_event(
+pub fn watch_run_event(
     state: &mut WatchRunState,
     event: &wire::RunEvent,
 ) -> Result<(), Error> {
@@ -476,7 +515,7 @@ pub fn watch_run_start_wire(
     inner().map_err(|Error::Invalid(message)| message)
 }
 
-pub(crate) fn validate_generated_run_view(
+pub fn validate_generated_run_view(
     view: &wire::RunView,
     expected: [u8; 16],
     context: [u8; 32],
@@ -488,7 +527,7 @@ pub(crate) fn validate_generated_run_view(
     Ok(())
 }
 
-pub(crate) fn validate_context_view(
+pub fn validate_context_view(
     view: &wire::ContextView,
     expected: [u8; 32],
 ) -> Result<(), Error> {
@@ -519,7 +558,7 @@ fn validate_idle_policy(policy: &wire::IdleKvPolicy) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn validate_retain_request(request: &wire::RetainWarmRequest) -> Result<(), Error> {
+pub fn validate_retain_request(request: &wire::RetainWarmRequest) -> Result<(), Error> {
     validate_identity(request.identity.as_ref())?;
     fixed::<32>(&request.context)?;
     if let Some(policy) = &request.idle_kv {
@@ -538,7 +577,7 @@ pub(crate) fn validate_retain_request(request: &wire::RetainWarmRequest) -> Resu
     }
 }
 
-pub(crate) fn validate_renew_request(request: &wire::RenewWarmRequest) -> Result<(), Error> {
+pub fn validate_renew_request(request: &wire::RenewWarmRequest) -> Result<(), Error> {
     validate_identity(request.identity.as_ref())?;
     fixed::<32>(&request.commitment)?;
     if let Some(timeout) = request.idle_timeout_ms {
@@ -558,7 +597,7 @@ fn validate_identity(identity: Option<&wire::RequestIdentity>) -> Result<(), Err
     Ok(())
 }
 
-pub(crate) fn validate_warm_view(
+pub fn validate_warm_view(
     view: &wire::WarmView,
     expected_context: Option<[u8; 32]>,
     expected_commitment: Option<[u8; 32]>,
@@ -631,7 +670,7 @@ fn validate_provenance(value: &wire::ContextProvenance) -> Result<(), Error> {
     }
 }
 
-pub(crate) fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
+pub fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
     fixed::<32>(&receipt.revision)?;
     fixed::<32>(&receipt.command_digest)?;
     if receipt.sequence == 0 {
@@ -686,18 +725,26 @@ fn validate_customer_wire_inner(
                 let request = wire::RetainWarmRequest::decode(related)
                     .map_err(|_| Error::Invalid("malformed retention request"))?;
                 validate_retain_request(&request)?;
+                let expected_context = fixed::<32>(expected)?;
+                if request.context.as_slice() != expected_context.as_slice() {
+                    return Err(Error::Invalid("idle retention request identity differs"));
+                }
                 if request.idle_kv.as_ref() != Some(policy) {
                     return Err(Error::Invalid("idle retention policy differs"));
                 }
-                validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
+                validate_warm_view(&view, Some(expected_context), None)
             } else {
                 let request = wire::RenewWarmRequest::decode(related)
                     .map_err(|_| Error::Invalid("malformed renewal request"))?;
                 validate_renew_request(&request)?;
+                let expected_commitment = fixed::<32>(expected)?;
+                if request.commitment.as_slice() != expected_commitment.as_slice() {
+                    return Err(Error::Invalid("idle renewal request identity differs"));
+                }
                 if request.idle_timeout_ms != Some(policy.idle_timeout_ms) {
                     return Err(Error::Invalid("idle renewal timeout differs"));
                 }
-                validate_warm_view(&view, None, Some(fixed::<32>(expected)?))
+                validate_warm_view(&view, None, Some(expected_commitment))
             }
         }
         "mutation_receipt" => validate_receipt(&decode!(wire::MutationReceipt)),
@@ -705,7 +752,11 @@ fn validate_customer_wire_inner(
             validate_context_view(&decode!(wire::ContextView), fixed::<32>(expected)?)
         }
         "warm_context" => {
-            validate_warm_view(&decode!(wire::WarmView), Some(fixed::<32>(expected)?), None)
+            let view = decode!(wire::WarmView);
+            if view.idle_kv.is_some() {
+                return Err(Error::Invalid("retention mode differs"));
+            }
+            validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
         }
         "warm_view" => validate_warm_view(&decode!(wire::WarmView), None, None),
         "warm_commitment" => {
@@ -799,8 +850,40 @@ mod tests {
         );
         // Inspect remains mode-neutral for recovered handles.
         assert!(
+            validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_err()
+        );
+        assert!(
             validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[1; 32], &[]).is_ok()
         );
+    }
+
+    #[test]
+    fn model_capabilities_validate_idle_kv_profiles() {
+        let profile = wire::RetentionProfile {
+            profile: vec![6; 32],
+            minimum_duration_ms: 1,
+            maximum_duration_ms: 10,
+        };
+        let response = wire::ListModelsResponse {
+            models: vec![wire::ModelCapability {
+                model: "model".to_owned(),
+                execution_profile: vec![1; 32],
+                maximum_context: 1,
+                maximum_output: 1,
+                features: vec!["stream".to_owned()],
+                idle_kv_profiles: vec![profile.clone()],
+                ..Default::default()
+            }],
+        };
+        assert!(validate_model_capabilities(&response).is_ok());
+
+        let mut invalid = response.clone();
+        invalid.models[0].idle_kv_profiles[0].profile = vec![6; 31];
+        assert!(validate_model_capabilities(&invalid).is_err());
+
+        let mut duplicate = response;
+        duplicate.models[0].idle_kv_profiles.push(profile);
+        assert!(validate_model_capabilities(&duplicate).is_err());
     }
 
     #[test]
@@ -858,6 +941,19 @@ mod tests {
             )
             .is_ok()
         );
+        let wrong_context = wire::RetainWarmRequest {
+            context: vec![9; 32],
+            ..request.clone()
+        };
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &wrong_context.encode_to_vec()
+            )
+            .is_err()
+        );
         view.idle_kv
             .as_mut()
             .ok_or("fixture field absent")?
@@ -896,6 +992,19 @@ mod tests {
                 &renewal.encode_to_vec()
             )
             .is_ok()
+        );
+        let wrong_commitment = wire::RenewWarmRequest {
+            commitment: vec![9; 32],
+            ..renewal.clone()
+        };
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &wrong_commitment.encode_to_vec()
+            )
+            .is_err()
         );
         view.expires_at_ms = 130;
         assert!(

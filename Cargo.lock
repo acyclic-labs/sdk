@@ -205,8 +205,8 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-inference-contract",
  "prost",
- "prost-build",
  "prost-reflect",
  "prost-types",
  "serde_json",
@@ -237,7 +237,6 @@ name = "acyclic-inference-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-inference",
- "acyclic-inference-contract",
  "js-sys",
  "prost",
  "prost-reflect",
