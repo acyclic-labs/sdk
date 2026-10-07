@@ -341,7 +341,6 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
       return copyWorkspaceLineageRecord(await raw.registerRoot(rawWorkspace(workspace)));
     },
     async fork(parent, destination, idempotencyKey) {
-      requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       const scope = workspaceScopes.get(parent) ?? nativeScope;
       return adaptWorkspace(
@@ -593,11 +592,9 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       return adaptVolume(await raw.restoreVolume(nativeManifest(manifest), operationId));
     },
     async createWorkspace(name: string): Promise<NativeFsWorkspace> {
-      requireWorkspaceName(name);
       return adaptWorkspace(await raw.createWorkspace(name), scope);
     },
     async openWorkspace(name: string): Promise<NativeFsWorkspace> {
-      requireWorkspaceName(name);
       return adaptWorkspace(await raw.openWorkspace(name), scope);
     },
     async attachDirectory(
@@ -605,7 +602,6 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       path: string,
       options: import("./contracts.js").NativeSourceOptions,
     ): Promise<NativeFsWorkspace> {
-      requireWorkspaceName(name);
       if (path.length === 0) throw new RangeError("source path must be non-empty");
       requirePositiveInteger(options.maximumPaths, "maximum source paths");
       requirePositiveInteger(options.maximumExtentSpans, "maximum source extent spans");
@@ -951,12 +947,10 @@ function adaptWorkspace(
       return scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(await raw.seal()));
     },
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
-      requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptWorkspace(await raw.fork(destination, idempotencyKey), scope);
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<NativeFsWorkspace> {
-      requireWorkspaceName(destination);
       return adaptWorkspace(await raw.forkAt(
         destination,
         nativeBoundary<Parameters<typeof raw.forkAt>[1]>(scope.rawGeneration(generation)),
@@ -986,10 +980,6 @@ function adaptWorkspace(
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target, scope), options));
     },
     async mount(destination, options): Promise<NativeWorkspaceMount> {
-      if (destination.length === 0) throw new RangeError("mount destination must be non-empty");
-      if (options.subdirectory.length === 0) {
-        throw new RangeError("mount subdirectory must be non-empty");
-      }
       return adaptWorkspaceMount(await raw.mount(destination, options));
     },
   };
@@ -1065,10 +1055,6 @@ function adaptWorkspaceMount(raw: NativeRawWorkspaceMount): NativeWorkspaceMount
       return nativeBoundary<Promise<boolean>>(raw.unmount());
     },
   };
-}
-
-function requireWorkspaceName(name: string): void {
-  if (name.length === 0) throw new RangeError("workspace name must be non-empty");
 }
 
 function nativePlatform(value: string): "win32" | "linux" | "darwin" {

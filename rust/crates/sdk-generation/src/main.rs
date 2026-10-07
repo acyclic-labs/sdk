@@ -1463,7 +1463,7 @@ fn generate(config: &Config) -> io::Result<()> {
         } else {
             "working-tree".into()
         },
-        source_sha256: Some(source_sha256),
+        source_sha256: Some(source_sha256.clone()),
         repository_root: config.root.clone(),
         rustdoc_files: rustdoc_paths,
         mark_latest: false,

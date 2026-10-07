@@ -1683,4 +1683,13 @@ mod tests {
         ));
         assert_eq!(
             manifest
-                .re
+                .read(0, 2)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?
+                .len(),
+            2
+        );
+        Ok(())
+    }
+}

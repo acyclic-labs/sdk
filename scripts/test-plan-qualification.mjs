@@ -159,6 +159,8 @@ test("release, manual, and scheduled events are full qualification events", () =
     [{ eventName: "release" }, qualificationEventKinds.release],
     [{ eventName: "workflow_dispatch", force: false }, qualificationEventKinds.manual],
     [{ eventName: "schedule" }, qualificationEventKinds.schedule],
+    [{ eventName: "workflow_call", force: true }, qualificationEventKinds.forcedDispatch],
+    [{ eventName: "push", ref: "refs/tags/acyclic-v0.2.0", force: true }, qualificationEventKinds.forcedDispatch],
   ];
   for (const [input, expected] of cases) {
     const event = classifyQualificationEvent(input);
@@ -167,12 +169,31 @@ test("release, manual, and scheduled events are full qualification events", () =
   }
 });
 
+test("a forced reusable release call cannot be reduced to core lanes", () => {
+  const event = classifyQualificationEvent({
+    eventName: "push",
+    ref: "refs/tags/acyclic-v0.2.0",
+    force: true,
+  });
+  const { matrix } = chooseLanes(lanes, {
+    force: true,
+    mainPush: false,
+    fullQualification: requiresFullQualification(event),
+    coreOnly: !requiresFullQualification(event),
+    trusted: null,
+    marker: () => null,
+    retained: () => "",
+  });
+  assert.equal(matrix.length, lanes.length);
+});
+
 test("the workflow keeps full qualification off routine pull requests", () => {
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
-  assert.match(workflow, /^  release:/m);
+  assert.doesNotMatch(workflow, /^  release:/m);
+  assert.match(workflow, /^  workflow_call:/m);
   assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(workflow, /default: false/);
-  assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
+  assert.match(workflow, /github\.event_name == 'schedule' \|\| inputs\.force/);
   assert.match(workflow, /needs: plan/);
   assert.match(workflow, /needs\.plan\.outputs\.windows == 'true'/);
 });

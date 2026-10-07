@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const operations = new Map([
+  ["drift", { stage: null, delegate: null }],
   ["build", { stage: "write", delegate: "build" }],
   ["check", { stage: "check", delegate: "check" }],
   ["generate", { stage: "write", delegate: "generate" }],
@@ -18,7 +19,7 @@ if (
   (extra.length !== 0 && (extra.length !== 2 || extra[0] !== "--rustdoc-json"))
 ) {
   throw new Error(
-    "usage: build-with-rust-actors.mjs <build|check|generate|check-generated> <generation-bundle> [--rustdoc-json <path>]",
+    "usage: build-with-rust-actors.mjs <drift|build|check|generate|check-generated> <generation-bundle> [--rustdoc-json <path>]",
   );
 }
 
@@ -87,6 +88,7 @@ function runDelegate() {
 
 const drift = runDrift();
 if (drift !== 0) process.exit(drift);
+if (operation === "drift") process.exit(0);
 if (operation === "generate") {
   const workers = runWorkersStage("write");
   if (workers !== 0) process.exit(workers);

@@ -11,7 +11,7 @@ target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
 
 full_qualification="${FORCE:-false}"
 case "${GITHUB_EVENT_NAME:-}" in
-  release|workflow_dispatch|schedule) full_qualification=true ;;
+  release|workflow_call|workflow_dispatch|schedule) full_qualification=true ;;
 esac
 
 # Independent builds run beside the main test build in their own target

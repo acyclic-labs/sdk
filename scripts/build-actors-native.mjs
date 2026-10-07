@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { lstat, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ const nativeTargetsArtifact = "generated/native-targets.json";
 const nativeTargetsSchema = "acyclic.actors.native-targets.v1";
 const generationManifestName = "generation-manifest.json";
 const generationSchema = "acyclic.sdk.generation.v1";
+const rustGenerationWrapper = "scripts/build-with-rust-actors.mjs";
 
 function usage() {
   return `usage:
@@ -86,7 +88,7 @@ async function readActorsNativeConfiguration(options) {
   if (!sourceDigest) {
     throw new Error(`${artifactPath} is missing its Rust source digest`);
   }
-  if (!/^[0-9a-f]{40}$/.test(artifact.source_revision ?? "")) {
+  if (!/^[0-9a-f]{40,64}$/.test(artifact.source_revision ?? "")) {
     throw new Error(`${artifactPath} is missing its source revision`);
   }
   const targets = artifact.targets;
@@ -146,9 +148,9 @@ function assertGenerationManifest(manifest, packageJson, artifact, artifactBytes
   if (!manifestDigest || !artifactDigest || manifestDigest !== artifactDigest) {
     throw new Error(`generation manifest source digest does not match ${nativeTargetsArtifact}`);
   }
-  const artifact = manifest.artifacts?.find(entry => entry?.path === nativeTargetsArtifact);
+  const attestedArtifact = manifest.artifacts?.find(entry => entry?.path === nativeTargetsArtifact);
   const actualSha = `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`;
-  if (!artifact || artifact.sha256 !== actualSha || artifact.bytes !== artifactBytes.length) {
+  if (!attestedArtifact || attestedArtifact.sha256 !== actualSha || attestedArtifact.bytes !== artifactBytes.length) {
     throw new Error(`generation manifest does not attest ${nativeTargetsArtifact} (${artifactPath})`);
   }
 }
@@ -177,8 +179,24 @@ function buildOptions(packageJsonPath) {
   };
 }
 
+async function verifyCurrentRustSource(bundle) {
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn(
+      process.execPath,
+      [resolve(root, rustGenerationWrapper), "drift", bundle],
+      { cwd: root, stdio: "inherit", windowsHide: true },
+    );
+    child.once("error", reject);
+    child.once("close", code => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`Rust generation drift check failed with exit code ${code ?? "unknown"}`));
+    });
+  });
+}
+
 async function withGeneratedPackage(options, callback) {
   const configuration = await readActorsNativeConfiguration(options);
+  if (!options.dryRun) await verifyCurrentRustSource(configuration.bundle);
   const packagePath = resolve(
     root,
     `typescript/packages/actors/.napi-generated-${process.pid}-${randomUUID()}.json`,
@@ -203,6 +221,8 @@ async function build(options) {
   if (target === undefined) {
     throw new Error(`build requires --target or NAPI_ACTORS_TARGET\n\n${usage()}`);
   }
+  const configuration = await readActorsNativeConfiguration(options);
+  assertTarget(target, configuration.targets);
   await withGeneratedPackage(options, async ({ targets }, packageJsonPath) => {
     assertTarget(target, targets);
     const build = await new NapiCli().build({

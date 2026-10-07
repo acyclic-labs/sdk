@@ -31,9 +31,6 @@ async function bindings(): Promise<WasmBindings> {
 }
 
 export async function openBrowserFs(options: BrowserFsOptions): Promise<FsVolumeEngine> {
-  if (options.databaseName.length === 0 || options.maximumObjectBytes <= 0) {
-    throw new RangeError("browser filesystem options must be bounded and non-empty");
-  }
   return adaptWasmFs(await (await bindings()).openBrowserFs(options));
 }
 

@@ -6868,6 +6868,18 @@ mod tests {
                 Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
             })
         }
+        fn outcome_for<'a>(
+            &'a self,
+            task_id: TaskId,
+            operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async move {
+                if task_id != self.task_id || operation_id != self.record.operation_id {
+                    return Err(Error::NotFound("task operation".into()));
+                }
+                Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
+            })
+        }
         fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 if task_id != self.task_id {
@@ -7686,6 +7698,7 @@ mod tests {
         operation_id: OperationId,
         event_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
         cancel_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
+        outcome_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
     }
 
     impl TaskStateProvider for DistinctTaskOperationProvider {
@@ -7713,6 +7726,19 @@ mod tests {
             _task_id: TaskId,
         ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
             Box::pin(async { Ok(None) })
+        }
+
+        fn outcome_for<'a>(
+            &'a self,
+            task_id: TaskId,
+            operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            assert_eq!(task_id, self.task_id);
+            self.outcome_operations
+                .lock()
+                .expect("outcome operation recorder is not poisoned")
+                .push(operation_id);
+            Box::pin(async { Ok(Some(Outcome::Cancelled)) })
         }
 
         fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
@@ -7783,16 +7809,18 @@ mod tests {
         let operation_id = OperationId::from_bytes([20; 16]);
         let event_operations = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cancel_operations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let outcome_operations = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = Arc::new(DistinctTaskOperationProvider {
             task_id,
             operation_id,
             event_operations: Arc::clone(&event_operations),
             cancel_operations: Arc::clone(&cancel_operations),
+            outcome_operations: Arc::clone(&outcome_operations),
         });
         let task = RuntimeTask::<Value>::Durable {
             task_id,
             operation_id,
-            host: provider,
+            host: Arc::clone(&provider) as Arc<dyn TaskStateProvider>,
             output_schema: serde_json::json!({}),
             extensions: None,
         };
@@ -7809,6 +7837,20 @@ mod tests {
             *event_operations
                 .lock()
                 .expect("event operation recorder is not poisoned"),
+            vec![operation_id]
+        );
+        let result_task = RuntimeTask::<Value>::Durable {
+            task_id,
+            operation_id,
+            host: Arc::clone(&provider) as Arc<dyn TaskStateProvider>,
+            output_schema: serde_json::json!({}),
+            extensions: None,
+        };
+        assert!(matches!(result_task.result().await?, Outcome::Cancelled));
+        assert_eq!(
+            *outcome_operations
+                .lock()
+                .expect("outcome operation recorder is not poisoned"),
             vec![operation_id]
         );
         task.cancel().await?;
@@ -7833,6 +7875,12 @@ mod tests {
             Err(Error::Unsupported(message))
                 if message.contains("identities differ")
         ));
+        let outcome = provider.outcome_for(task_id, operation_id).await;
+        assert!(matches!(
+            outcome,
+            Err(Error::Unsupported(message))
+                if message.contains("identities differ")
+        ));
         let cancellation = provider.cancel_for(task_id, operation_id).await;
         assert!(matches!(
             cancellation,
@@ -7844,6 +7892,13 @@ mod tests {
         let delegated = provider.cancel_for(same_id, OperationId::from_bytes([33; 16])).await;
         assert!(matches!(
             delegated,
+            Err(Error::Unsupported(message)) if message == "state-only test provider"
+        ));
+        let delegated_outcome = provider
+            .outcome_for(same_id, OperationId::from_bytes([33; 16]))
+            .await;
+        assert!(matches!(
+            delegated_outcome,
             Err(Error::Unsupported(message)) if message == "state-only test provider"
         ));
     }

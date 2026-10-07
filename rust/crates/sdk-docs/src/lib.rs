@@ -3,7 +3,7 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
+use rustdoc_types::{Crate, FORMAT_VERSION, Id, Item, ItemEnum, ItemKind};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -844,10 +844,10 @@ fn public_occurrence_paths(
 }
 
 fn is_local_impl_member(krate: &Crate, public_item: &public_api::PublicItemSignature) -> bool {
-    // public-api queues both explicit impl items and inherited default trait
-    // methods with the impl as their logical parent. Keep either only when
-    // Rustdoc proves the child belongs to this local impl and, for inherited
-    // methods, to the local trait that supplied the default.
+    // public-api queues both explicit impl items and inherited trait members
+    // with the impl as their logical parent. Keep either only when Rustdoc
+    // proves the child belongs to this local impl and, for inherited members,
+    // to the local trait that supplied the default.
     let Some(item) = krate.index.get(&public_item.id) else {
         return false;
     };
@@ -880,10 +880,11 @@ fn is_local_impl_member(krate: &Crate, public_item: &public_api::PublicItemSigna
         return false;
     };
     trait_item.crate_id == 0
-        && implementation
-            .provided_trait_methods
+        && !implementation
+            .items
             .iter()
-            .any(|provided| provided == name)
+            .filter_map(|id| krate.index.get(id))
+            .any(|explicit| explicit.name.as_deref() == Some(name))
         && matches!(
             &trait_item.inner,
             ItemEnum::Trait(trait_definition)
@@ -934,6 +935,7 @@ fn public_use_occurrences(
         vec![crate_name.to_owned()],
         &mut occurrences,
         &mut ancestors,
+        false,
     )?;
     Ok(occurrences)
 }
@@ -944,6 +946,7 @@ fn collect_public_use_occurrences(
     path: Vec<String>,
     occurrences: &mut HashMap<(Id, String), Id>,
     ancestors: &mut Vec<Id>,
+    via_glob: bool,
 ) -> Result<(), Error> {
     // A module can be reachable through multiple public aliases. Keep the
     // current path in the cycle guard so each alias gets its own descendants,
@@ -972,7 +975,15 @@ fn collect_public_use_occurrences(
                     let mut exported = path.clone();
                     exported.push(use_.name.clone());
                     let exported_path = exported.join("::");
-                    occurrences.insert((target, exported_path), *child_id);
+                    let occurrence = (target, exported_path);
+                    let occurrence_is_glob = via_glob || use_.is_glob;
+                    if occurrence_is_glob {
+                        // Explicit re-exports win over a glob reaching the
+                        // same target under the same public path.
+                        occurrences.entry(occurrence).or_insert(*child_id);
+                    } else {
+                        occurrences.insert(occurrence, *child_id);
+                    }
                     if matches!(
                         krate.index.get(&target).map(|item| &item.inner),
                         Some(ItemEnum::Module(_))
@@ -984,6 +995,7 @@ fn collect_public_use_occurrences(
                             nested_path,
                             occurrences,
                             ancestors,
+                            occurrence_is_glob,
                         )?;
                     }
                 }
@@ -998,6 +1010,7 @@ fn collect_public_use_occurrences(
                         nested,
                         occurrences,
                         ancestors,
+                        via_glob,
                     )?;
                 }
             }
@@ -1136,11 +1149,18 @@ fn guides_from_rustdoc(
             .last()
             .map(String::as_str)
             .unwrap_or(crate_name);
+        // Preserve links authored on a public re-export.  The definition's
+        // links are only a fallback when that occurrence has no link metadata.
+        let link_source = if item.links.is_empty() {
+            effective
+        } else {
+            item
+        };
         guides.push(Guide {
             path,
             title: guide_title(&markdown, fallback),
             markdown,
-            links: rustdoc_links(effective, public_occurrence_paths),
+            links: rustdoc_links(link_source, public_occurrence_paths),
         });
     }
     guides.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1405,9 +1425,11 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("publication must reject stale or incomplete navigation");
-        assert!(error
-            .to_string()
-            .contains("navigation entries must exactly match"));
+        assert!(
+            error
+                .to_string()
+                .contains("navigation entries must exactly match")
+        );
         assert!(!output.exists());
     }
 
@@ -1485,7 +1507,9 @@ mod tests {
             id: Id(129),
             parent_id: Some(Id(7)),
             display: "fn from(&ActorId) -> String".into(),
-            path: ["alloc", "string", "String", "from"].map(String::from).to_vec(),
+            path: ["alloc", "string", "String", "from"]
+                .map(String::from)
+                .to_vec(),
         };
         assert!(is_local_impl_member(&krate, &occurrence));
         let mut unparented = occurrence;
@@ -1494,15 +1518,137 @@ mod tests {
     }
 
     #[test]
+    fn inherited_local_trait_associated_members_use_typed_membership() {
+        let krate: Crate = serde_json::from_value(serde_json::json!({
+            "root": 0,
+            "crate_version": "1.0.0",
+            "includes_private": false,
+            "index": {
+                "0": {
+                    "id": 0, "crate_id": 0, "name": "demo", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"module": {"is_crate": true, "items": [8], "is_stripped": false}}
+                },
+                "8": {
+                    "id": 8, "crate_id": 0, "name": "LocalTrait", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"trait": {
+                        "is_auto": false, "is_unsafe": false, "is_dyn_compatible": true,
+                        "items": [130, 131, 133],
+                        "generics": {"params": [], "where_predicates": []},
+                        "bounds": [], "implementations": [7]
+                    }}
+                },
+                "7": {
+                    "id": 7, "crate_id": 0, "name": null, "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"impl": {
+                        "is_unsafe": false,
+                        "generics": {"params": [], "where_predicates": []},
+                        "provided_trait_methods": [],
+                        "trait": {"path": "LocalTrait", "id": 8, "args": null},
+                        "for": {"resolved_path": {"path": "String", "id": 99, "args": null}},
+                        "items": [132], "is_negative": false, "is_synthetic": false,
+                        "blanket_impl": null
+                    }}
+                },
+                "130": {
+                    "id": 130, "crate_id": 0, "name": "VALUE", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_const": {
+                        "type": {"primitive": "usize"}, "value": "0", "default_unstable": null
+                    }}
+                },
+                "131": {
+                    "id": 131, "crate_id": 0, "name": "Output", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_type": {
+                        "generics": {"params": [], "where_predicates": []},
+                        "bounds": [], "type": {"primitive": "usize"}, "default_unstable": null
+                    }}
+                },
+                "132": {
+                    "id": 132, "crate_id": 0, "name": "VALUE", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_const": {
+                        "type": {"primitive": "usize"}, "value": "1", "default_unstable": null
+                    }}
+                },
+                "133": {
+                    "id": 133, "crate_id": 0, "name": "Other", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_const": {
+                        "type": {"primitive": "usize"}, "value": "2", "default_unstable": null
+                    }}
+                }
+            },
+            "paths": {
+                "99": {"crate_id": 1, "path": ["alloc", "string", "String"], "kind": "struct"}
+            },
+            "external_crates": {},
+            "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
+            "format_version": 60
+        }))
+        .expect("associated-member fixture should deserialize");
+
+        for (id, name) in [(131, "Output"), (133, "Other")] {
+            let occurrence = public_api::PublicItemSignature {
+                id: Id(id),
+                parent_id: Some(Id(7)),
+                display: format!("{name}"),
+                path: vec![
+                    "alloc".into(),
+                    "string".into(),
+                    "String".into(),
+                    name.into(),
+                ],
+            };
+            assert!(is_local_impl_member(&krate, &occurrence));
+        }
+        let overridden = public_api::PublicItemSignature {
+            id: Id(130),
+            parent_id: Some(Id(7)),
+            display: "VALUE".into(),
+            path: vec![
+                "alloc".into(),
+                "string".into(),
+                "String".into(),
+                "VALUE".into(),
+            ],
+        };
+        assert!(!is_local_impl_member(&krate, &overridden));
+        let explicit = public_api::PublicItemSignature {
+            id: Id(132),
+            parent_id: Some(Id(7)),
+            display: "VALUE".into(),
+            path: vec![
+                "alloc".into(),
+                "string".into(),
+                "String".into(),
+                "VALUE".into(),
+            ],
+        };
+        assert!(is_local_impl_member(&krate, &explicit));
+    }
+
+    #[test]
     fn build_family_keeps_inherited_local_trait_member_and_source_span() {
-        let root = std::env::temp_dir().join(format!(
-            "sdk-docs-inherited-impl-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("sdk-docs-inherited-impl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("fixture source directory should be creatable");
-        fs::write(root.join("src/lib.rs"), "pub trait LocalTrait { fn default(&self) {} }\n")
-            .expect("fixture source should be writable");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub trait LocalTrait { fn default(&self) {} }\n",
+        )
+        .expect("fixture source should be writable");
         let rustdoc_path = root.join("demo.json");
         let fixture = serde_json::json!({
             "root": 0,
@@ -1582,8 +1728,17 @@ mod tests {
         let inherited = family
             .items
             .iter()
-            .find(|item| item.id == "21" && item.path == "String::default")
-            .expect("inherited default method should retain its foreign receiver path");
+            .find(|item| item.id == "21" && item.path == "alloc::string::String::default")
+            .unwrap_or_else(|| {
+                panic!(
+                    "inherited default method should retain its foreign receiver path: {:?}",
+                    family
+                        .items
+                        .iter()
+                        .map(|item| (&item.id, &item.path, &item.signature))
+                        .collect::<Vec<_>>()
+                )
+            });
         assert_eq!(
             inherited.source,
             Some(SourceSpan {
@@ -1594,10 +1749,12 @@ mod tests {
                 end_column: 43,
             })
         );
-        assert!(family
-            .items
-            .iter()
-            .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default"));
+        assert!(
+            family
+                .items
+                .iter()
+                .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default")
+        );
 
         let mut external_trait = fixture;
         external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);
@@ -1677,9 +1834,11 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("directory at the index path must block publication");
-        assert!(error
-            .to_string()
-            .contains("version index is not a regular file"));
+        assert!(
+            error
+                .to_string()
+                .contains("version index is not a regular file")
+        );
         assert!(output.join("sdk-docs-versions.v1.json").is_dir());
         assert!(!output.join("releases").exists());
         fs::remove_dir_all(output).expect("test output should be removable");
@@ -1883,9 +2042,11 @@ mod tests {
         let before = fs::read(&index_path).expect("index should remain readable");
         let error = write_bundle(&data, &output, true)
             .expect_err("bundle revision mismatch must block publication");
-        assert!(error
-            .to_string()
-            .contains("data revision does not match the index"));
+        assert!(
+            error
+                .to_string()
+                .contains("data revision does not match the index")
+        );
         assert_eq!(
             before,
             fs::read(&index_path).expect("index should be unchanged")
@@ -2068,7 +2229,7 @@ mod tests {
             "includes_private": false,
             "index": {
                 "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": "# Demo\n\nRoot guide", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
-                "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {"alias-only": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
+                "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
                 "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {"target link": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 3, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "5": {"id": 5, "crate_id": 0, "name": "associated_target", "span": null, "visibility": "public", "docs": "target", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
@@ -2113,12 +2274,12 @@ mod tests {
             "span": null,
             "visibility": "public",
             "docs": "# Source\n\nDefinition guide",
-            "links": {},
+            "links": {"target-only": 5},
             "attrs": [],
             "deprecation": null,
             "stability": null,
             "const_stability": null,
-            "inner": {"module": {"is_crate": false, "items": [9], "is_stripped": false}}
+            "inner": {"module": {"is_crate": false, "items": [9, 14], "is_stripped": false}}
         });
         alias_graph["index"]["9"] = serde_json::json!({
             "id": 9,
@@ -2141,7 +2302,7 @@ mod tests {
             "span": null,
             "visibility": "public",
             "docs": "# First\n\nAlias guide",
-            "links": {},
+            "links": {"alias-only": 5},
             "attrs": [],
             "deprecation": null,
             "stability": null,
@@ -2176,6 +2337,20 @@ mod tests {
             "const_stability": null,
             "inner": {"use": {"source": "source", "name": "source", "id": 8, "is_glob": true}}
         });
+        alias_graph["index"]["14"] = serde_json::json!({
+            "id": 14,
+            "crate_id": 0,
+            "name": null,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"use": {"source": "source", "name": "first", "id": 8, "is_glob": false}}
+        });
         let alias_graph: Crate =
             serde_json::from_value(alias_graph).expect("module alias fixture should deserialize");
         let occurrences = public_use_occurrences(&alias_graph, "demo")
@@ -2197,15 +2372,34 @@ mod tests {
             Some(&Id(9))
         );
         assert_eq!(
+            occurrences.get(&(Id(8), "demo::first".into())),
+            Some(&Id(10)),
+            "an explicit re-export must win over the same path reached through a glob"
+        );
+        assert_eq!(
             occurrences.get(&(Id(0), "demo::nested::crate".into())),
             Some(&Id(7))
         );
-        let alias_public_items = vec![public_api::PublicItemSignature {
-            id: Id(8),
-            parent_id: Some(Id(0)),
-            display: "pub use source as first".into(),
-            path: vec!["demo".into(), "first".into()],
-        }];
+        let alias_public_items = vec![
+            public_api::PublicItemSignature {
+                id: Id(8),
+                parent_id: Some(Id(0)),
+                display: "pub use source as first".into(),
+                path: vec!["demo".into(), "first".into()],
+            },
+            public_api::PublicItemSignature {
+                id: Id(8),
+                parent_id: Some(Id(0)),
+                display: "pub use source as second".into(),
+                path: vec!["demo".into(), "second".into()],
+            },
+            public_api::PublicItemSignature {
+                id: Id(5),
+                parent_id: Some(Id(0)),
+                display: "pub fn associated_target".into(),
+                path: vec!["demo".into(), "associated_target".into()],
+            },
+        ];
         let alias_public_paths = public_occurrence_paths(&alias_public_items, "demo");
         let alias_root = alias_graph
             .index
@@ -2226,6 +2420,13 @@ mod tests {
             .expect("the alias guide should be projected");
         assert_eq!(alias_guide.title, "First");
         assert_eq!(alias_guide.markdown, "# First\n\nAlias guide");
+        assert!(alias_guide.links.contains_key("alias-only"));
+        assert!(!alias_guide.links.contains_key("target-only"));
+        let fallback_guide = alias_guides
+            .iter()
+            .find(|guide| guide.path == "demo::second")
+            .expect("the target guide should be projected for an undocumented alias");
+        assert!(fallback_guide.links.contains_key("target-only"));
         let missing_version_path = root.join("missing-version.json");
         let mut missing_version = fixture.clone();
         missing_version["crate_version"] = serde_json::Value::Null;
@@ -2250,10 +2451,12 @@ mod tests {
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
         assert_eq!(alias.docs.as_deref(), Some("hidden"));
-        assert!(alias
-            .links
-            .get("target link")
-            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
+        assert!(
+            alias
+                .links
+                .get("target link")
+                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
+        );
         assert!(!alias.links.contains_key("alias-only"));
         let linked = family
             .items
@@ -2263,10 +2466,12 @@ mod tests {
         // Rustdoc resolves the alias reference to definition id 3; the
         // public occurrence map still exposes the reachable `demo::Visible`
         // use path rather than confusing the use item id with the definition.
-        assert!(linked
-            .links
-            .get("alias target")
-            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
+        assert!(
+            linked
+                .links
+                .get("alias target")
+                .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned()))
+        );
         let associated_paths = linked
             .links
             .get("associated target")
@@ -2309,10 +2514,12 @@ mod tests {
             .iter()
             .find(|guide| guide.path == "demo::nested")
             .expect("the public module guide should be projected");
-        assert!(guide
-            .links
-            .get("associated target")
-            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
+        assert!(
+            guide
+                .links
+                .get("associated target")
+                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
+        );
         let linked_roundtrip: ApiItem = serde_json::from_value(
             serde_json::to_value(linked).expect("non-empty links should serialize"),
         )

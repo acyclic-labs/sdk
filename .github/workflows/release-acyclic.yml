@@ -223,9 +223,19 @@ jobs:
           path: ${{ runner.temp }}/native-mount-artifacts/${{ matrix.backend }}.json
           if-no-files-found: error
 
+  qualification:
+    name: Full SDK qualification
+    needs: [build, native-mount]
+    uses: ./.github/workflows/qualification.yml
+    with:
+      force: true
+    permissions:
+      contents: read
+      actions: read
+
   assemble:
     name: Validate and assemble
-    needs: [build, native-mount]
+    needs: [build, native-mount, qualification]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       attestations: write

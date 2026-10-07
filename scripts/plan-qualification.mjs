@@ -48,6 +48,10 @@ export function classifyQualificationEvent({ eventName, ref, force = false }) {
     return force ? qualificationEventKinds.forcedDispatch : qualificationEventKinds.manual;
   }
   if (eventName === "schedule") return qualificationEventKinds.schedule;
+  // A reusable workflow retains the caller's event context. Release callers
+  // therefore arrive as either `workflow_call` or a tag push while still
+  // passing the explicit full-qualification input.
+  if (force && eventName !== "pull_request") return qualificationEventKinds.forcedDispatch;
   if (eventName === "push" && ref === "refs/heads/main") return qualificationEventKinds.mainPush;
   return qualificationEventKinds.other;
 }

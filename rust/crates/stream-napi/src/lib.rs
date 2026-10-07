@@ -5,7 +5,13 @@
 //! recovery, idempotency, and domain validation remain in
 //! `acyclic_stream::grpc::Client` and `StreamClient`.
 
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use acyclic_stream::{StreamClient, StreamError, StreamPath, grpc, wire, wire_codec};
 use futures::StreamExt;
@@ -279,6 +285,7 @@ where
 struct FollowState {
     records: Arc<Mutex<Option<acyclic_stream::RecordStream>>>,
     token: CancellationToken,
+    closed: Arc<AtomicBool>,
 }
 
 /// Monotonic cancellation handle for native Stream calls.
@@ -327,49 +334,62 @@ impl NativeStreamFollow {
     /// Returns the next canonical `ReadResponse`, or an empty result at end/close.
     #[napi]
     pub async fn next_result(&self) -> Result<NativeStreamNextResult> {
-        let Some(mut records) = self.state.records.lock().await.take() else {
+        if self.state.closed.load(Ordering::Acquire) {
+            return Ok(NativeStreamNextResult::end());
+        }
+        let mut records = self.state.records.lock().await;
+        if self.state.closed.load(Ordering::Acquire) {
+            records.take();
+            return Ok(NativeStreamNextResult::end());
+        }
+        let Some(stream) = records.as_mut() else {
             return Ok(NativeStreamNextResult::end());
         };
         let next = run_with_cancellation(
-            async { records.next().await.transpose().map_err(stream_error) },
+            async { stream.next().await.transpose().map_err(stream_error) },
             Some(self.state.token.clone()),
         )
         .await;
         match next {
             Ok(Some(record)) => {
+                if self.state.closed.load(Ordering::Acquire) {
+                    records.take();
+                    return Ok(NativeStreamNextResult::end());
+                }
                 let response = wire::ReadResponse {
                     record: Some(wire_codec::record_wire(record)),
                 };
-                self.state.records.lock().await.replace(records);
                 Ok(NativeStreamNextResult::value(
                     encode(&response, "follow").map_err(napi_error)?,
                 ))
             }
-            Ok(None) => Ok(NativeStreamNextResult::end()),
+            Ok(None) => {
+                records.take();
+                Ok(NativeStreamNextResult::end())
+            }
             Err(error) => {
                 // `RecordStream` is a recovery-aware stream: a transient item
                 // error is yielded together with its cursor so the next poll
                 // can retry the active endpoint. Keep that cursor alive unless
-                // this handle was explicitly cancelled.
-                if !self.state.token.is_cancelled() {
-                    self.state.records.lock().await.replace(records);
+                // this handle was explicitly closed or cancelled.
+                if self.state.closed.load(Ordering::Acquire) || self.state.token.is_cancelled() {
+                    records.take();
                 }
                 Ok(NativeStreamNextResult::failure(error))
             }
         }
     }
 
-    /// Requests cancellation of this cursor.
+    /// Cancels this cursor and waits for its transport stream to be released.
     ///
     /// A pending `nextResult` call is woken by the cancellation token and
     /// releases its transport stream when that call returns. A cursor cannot
     /// be reopened after it has been cancelled.
     #[napi]
-    pub fn close(&self) {
+    pub async fn close(&self) {
+        self.state.closed.store(true, Ordering::Release);
         self.state.token.cancel();
-        if let Ok(mut records) = self.state.records.try_lock() {
-            records.take();
-        }
+        self.state.records.lock().await.take();
     }
 }
 
@@ -770,6 +790,7 @@ async fn open_follow(
         state: FollowState {
             records: Arc::new(Mutex::new(Some(records))),
             token: cancellation_state(cancellation).unwrap_or_default(),
+            closed: Arc::new(AtomicBool::new(false)),
         },
     })
 }
@@ -883,6 +904,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::Poll;
+    use std::time::Duration;
 
     fn cancellation_error(
         result: std::result::Result<(), NativeStreamErrorMetadata>,
@@ -948,5 +970,91 @@ mod tests {
         let result = run_with_cancellation(operation, Some(cancellation)).await;
         assert!(result.is_ok());
         assert!(first_poll.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
+        let polled = Arc::new(AtomicBool::new(false));
+        let stream_polled = Arc::clone(&polled);
+        let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+            stream_polled.store(true, Ordering::SeqCst);
+            Poll::Pending
+        }));
+        let follow = Arc::new(NativeStreamFollow {
+            state: FollowState {
+                records: Arc::new(Mutex::new(Some(records))),
+                token: CancellationToken::new(),
+                closed: Arc::new(AtomicBool::new(false)),
+            },
+        });
+
+        let first = tokio::spawn({
+            let follow = Arc::clone(&follow);
+            async move { follow.next_result().await }
+        });
+        while !polled.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let mut second = tokio::spawn({
+            let follow = Arc::clone(&follow);
+            async move { follow.next_result().await }
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut second)
+            .await
+            .is_err());
+
+        follow.close().await;
+        let first = first.await.expect("first follow task panicked").expect("first read failed");
+        assert_eq!(first.error.expect("first read omitted cancellation").code, "cancelled");
+        let second = second.await.expect("second follow task panicked").expect("second read failed");
+        assert!(second.value.is_none());
+        assert!(second.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
+        use std::sync::Mutex as StdMutex;
+
+        let follow_state = FollowState {
+            records: Arc::new(Mutex::new(None)),
+            token: CancellationToken::new(),
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+        let follow = NativeStreamFollow {
+            state: follow_state.clone(),
+        };
+        let close_task = Arc::new(StdMutex::new(None));
+        let close_task_slot = Arc::clone(&close_task);
+        let record = acyclic_stream::Record {
+            sequence: 0,
+            value: vec![1_u8, 2].into(),
+            commit_id: acyclic_stream::CommitId::default(),
+            committed_at_micros: 0,
+        };
+        let mut record = Some(record);
+        let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+            let close_state = follow_state.clone();
+            close_state.closed.store(true, Ordering::Release);
+            close_state.token.cancel();
+            let close_task = tokio::spawn(async move {
+                NativeStreamFollow { state: close_state }.close().await;
+            });
+            *close_task_slot.lock().expect("close task slot poisoned") = Some(close_task);
+            Poll::Ready(record.take().map(|record| Ok(record)))
+        }));
+        *follow.state.records.lock().await = Some(records);
+
+        let first = follow.next_result().await.expect("first read failed");
+        assert!(first.value.is_none());
+        assert!(first.error.is_none());
+        let close_task = close_task
+            .lock()
+            .expect("close task slot poisoned")
+            .take()
+            .expect("ready poll did not start close");
+        close_task.await.expect("close task panicked");
+        let second = follow.next_result().await.expect("second read failed");
+        assert!(second.value.is_none());
+        assert!(second.error.is_none());
     }
 }

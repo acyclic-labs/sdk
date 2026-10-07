@@ -4,8 +4,13 @@ on:
   pull_request:
   push:
     branches: [main]
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      force:
+        description: Execute every lane for a release caller
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
     inputs:
       force:
@@ -26,7 +31,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  FORCE: ${{ github.event_name == 'release' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
+  # `inputs` remains available inside a called workflow while retaining the
+  # caller's event context, so key this override directly off the input.
+  FORCE: ${{ github.event_name == 'schedule' || inputs.force }}
 
 jobs:
   plan:

@@ -1,27 +1,51 @@
 # Python bindings research
 
+Status: research and qualification plan. No Python package in this repository
+is currently qualified.
+
 ## Decision
 
-Use **PyO3 0.29.0 plus maturin 1.14.1** as the Python packaging and native
-extension backend. The Python surface must be generated from the Rust contract
-model and Rust domain types. PyO3 wrappers may provide Python naming,
-iteration, and exception ergonomics, but they must call the canonical Rust
-client and constructors. A Python file must not become a second contract or
-implementation.
+Treat **PyO3 0.29.0 plus maturin 1.14.1** as the candidate Python packaging
+and native extension backend, pending an in-repository qualification. The
+Python surface must be generated from the Rust contract model and Rust domain
+types. PyO3 wrappers may provide Python naming, iteration, and exception
+ergonomics, but they must call the canonical Rust client and constructors. A
+Python file must not become a second contract or implementation.
 
-Keep **UniFFI 0.32.2** as a comparison and a possible backend for small,
-object-oriented embedded components. It does not pass the current default for
-the remote SDK because its Python generator does not provide the required
-stream cancellation and packaging behavior without additional handwritten
-adapter code. Its UDL and `uniffi.toml` configuration would also create a
-second interface description unless proc-macro metadata is used consistently
-and the generated surface is checked against the Rust contract model.
+Keep **UniFFI 0.32.2** as a candidate backend for small, object-oriented
+embedded components and as a comparison for the remote facade. No UniFFI
+Python facade is currently qualified against the current Actors backend. Its
+Python generator can cover records, enums, errors, and async functions, but
+stream cancellation still needs a Rust-owned cancellation API and an adapter.
+Its UDL and `uniffi.toml` configuration would also create a second interface
+description unless proc-macro metadata is used consistently and the generated
+surface is checked against the Rust contract model.
 
 The version pins are the versions to record in the generation manifest and
 lockfile. They were selected from the upstream release and package pages:
 [PyO3 0.29.0](https://github.com/PyO3/pyo3/releases),
 [maturin 1.14.1](https://github.com/PyO3/maturin/releases), and
 [UniFFI 0.32.2](https://docs.rs/uniffi/latest/uniffi/).
+
+## Current evidence boundary
+
+There is no Python crate, binding configuration, generated package, or
+qualified wheel in this repository. The external artifacts are useful for
+research only and do not establish qualification:
+
+* The `actors-wheelhouse` artifact is explicitly marked invalid for the
+  current Actors backend because it used the obsolete control-wire and
+  handshake surface.
+* The async and remote wheels are Windows-only external Stream prototypes at
+  source revision `82796c127162a9c55b477c211e6316ba75c9b500`; they do not
+  qualify the current Rust client or platform matrix.
+* The UniFFI 0.32.2 template proof covers generator typing in isolation. It
+  does not contain the Actors backend, a remote service, or a releasable
+  package.
+
+Those prototypes also use absolute external facade paths and independently
+authored wrapper validation. Their receipts, package metadata, and wrappers
+must not be copied into the product generation pipeline.
 
 ## What PyO3 and maturin provide
 
@@ -50,10 +74,12 @@ packages, data files, and the extension module; it does not define the Rust
 contract. Use a checked-in `pyproject.toml`, a locked Cargo graph, and a
 generation manifest that records the maturin version and wheel hashes. The
 upstream binding guide covers PyO3 detection, `abi3`, and platform wheels:
-[maturin bindings](https://www.maturin.rs/bindings). Maturin 1.14 also has
-PyO3 stub-generation support, but the generated `.pyi` output must be treated
-as a Rust-derived artifact and checked for drift rather than edited directly;
-see the [maturin changelog](https://github.com/PyO3/maturin/blob/main/Changelog.md).
+[maturin bindings](https://www.maturin.rs/bindings). The repository has not
+yet established that maturin's PyO3 support emits a complete `.pyi` surface
+for this contract. Any stub output must be treated as a Rust-derived artifact
+and checked for drift rather than edited directly; the exact pinned behavior
+must be demonstrated in the qualification fixture. See the [maturin
+changelog](https://github.com/PyO3/maturin/blob/main/Changelog.md).
 
 PyO3 plus maturin has no ordinary browser runtime. A Python-in-browser build
 would be a separate PyEmscripten/Pyodide wheel with its own ABI and package
@@ -122,6 +148,32 @@ and numeric values survive the boundary. Python exceptions should preserve the
 same stable error category, operation identity, transport code, and service
 detail fields as the other SDKs.
 
+## Minimal current-authority architecture
+
+The first product implementation should be one Rust-owned `actors-python`
+binding crate in the workspace. It may use PyO3 or proc-macro UniFFI, but its
+exports must call the existing domain constructors and canonical client
+directly. Rust owns transport selection, validation, retries, cancellation,
+recovery, wire encoding, and typed errors. Python contains only generated
+names, adapters, and packaging glue.
+
+The generation entrypoint must emit the binding declarations, `.pyi` files,
+the `py.typed` marker, package documentation, executable examples, and a
+manifest containing the Rust revision, generator pins, and artifact hashes.
+The stubs must preserve nominal IDs, exact integer widths, bytes, `Option`
+presence, enum values, distinct records, and structured error fields. Static
+fixtures must prove that mypy and Pyright reject wrong nominal IDs, invalid
+bytes, out-of-range `u64`, and missing required fields without
+`typing.cast`-based workarounds.
+
+No maintained generator has yet been demonstrated here to emit the complete
+current contract as strongly typed `.pyi` files. If PyO3 or UniFFI metadata
+is insufficient, a narrow Rust-owned generation stage must emit the missing
+declarations from the existing Rust metadata and contract model. It may not
+introduce a second schema, validator, transport implementation, or error
+model. The generated stubs and runtime exports must be drift-checked against
+the same Rust revision.
+
 ## Repository viability
 
 The current workspace already has the necessary Rust ownership boundaries:
@@ -150,7 +202,7 @@ also states that it generates bindings but does not provide an end-to-end
 packaging solution, so wheel production would still need a maintained package
 builder and release lane: [foreign-language binding tutorial](https://mozilla.github.io/uniffi-rs/next/tutorial/foreign_language_bindings.html).
 
-## Qualification plan
+## Exact qualification plan
 
 Qualification is release-only for downstream Python wheels. Pull requests run
 fast Rust contract tests, generation drift checks, and one warm native smoke
@@ -162,12 +214,13 @@ fingerprint.
 | --- | --- |
 | Package install | Clean virtual environments install the exact wheel on CPython 3.10, 3.11, 3.12, 3.13, 3.14, and 3.15 for Linux x64, macOS arm64/x64, and Windows x64. Test `abi3` and the separate free-threaded artifact where supported. |
 | Rust-owned types | ActorId, CodeSha256, PositiveU64, all generated records, enums, optional fields, bytes, and errors have runtime constructors and generated stubs. Invalid values fail before transport with the canonical error category. |
+| Strong static typing | Generated `.pyi` files and `py.typed` pass positive mypy and Pyright fixtures and reject wrong nominal IDs, invalid bytes, out-of-range `u64`, wrong enum/record types, and missing required fields. The fixtures must not rely on `typing.cast`; constructor and structured-error annotations must be complete. |
 | Actors remote | All eight operations pass serialization, presence, authentication, default transport selection, service-detail preservation, unknown-enum handling, and idempotency tests against the matching fixture. |
 | Stream | The Python async iterator receives ordered events, propagates terminal errors, supports explicit and task cancellation, closes resources exactly once, and recovers according to the Rust client policy after a reconnectable failure. Cancellation must be observed while the operation is in flight, not only after a response arrives. |
 | Harness | Durable admission, operation identity, retries, uncertain acknowledgements, reconciliation, retained terminal events, and typed provider errors match the Rust conformance suite. A lost acknowledgement must not cause an unsafe duplicate. |
 | Embedded/native | A native Python call exercises the same Rust implementation used by the other native bindings. There must be no independently translated Rust algorithm. Bytes ownership, thread/GIL behavior, and shutdown are checked under load. |
 | Browser boundary | The native wheel is never used as browser evidence. If Pyodide is supported, build and install a matching PyEmscripten wheel and run the same semantic tests in Pyodide; otherwise record Python browser support as excluded while the Rust WASM web SDK remains qualified. |
-| Reproducibility | A clean checkout regenerates the extension, stubs, docs inputs, examples, and wheels with the same pinned tool versions. A drift check fails when any generated Python file or package metadata is edited. |
+| Reproducibility | A clean checkout regenerates the extension, stubs, docs inputs, examples, and wheels with the same pinned tool versions. A drift check fails when any generated Python file or package metadata is edited; no absolute external facade path is allowed. |
 | Documentation | Rust comments and examples generate Python API references and executable snippets tied to the wheel revision. The docs site shows the Python artifact's supported interpreter and platform matrix from the qualification receipt. |
 
 The minimum passing prototype is Actors unary plus one Stream operation and
@@ -190,4 +243,3 @@ the contract.
    its generated Python output passes the same nominal-type, stream,
    cancellation, recovery, Harness, and packaging gates without a separately
    authored contract.
-

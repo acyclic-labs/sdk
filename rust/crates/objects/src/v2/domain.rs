@@ -4,7 +4,7 @@
 //! wrappers make the values that already have canonical validators explicit at
 //! Rust API boundaries without copying any of the validation rules.
 
-use std::fmt;
+use std::{fmt, num::NonZeroU64};
 
 use super::{Error, request, response, wire};
 
@@ -789,6 +789,161 @@ impl From<ObjectInfo> for wire::ObjectInfo {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ByteSelectionKind {
+    Bytes { start: u64, end: Option<u64> },
+    Suffix(NonZeroU64),
+}
+
+/// A validated byte-range selection for a complete object representation.
+///
+/// The end of an inclusive byte range remains optional. Suffix selections use
+/// `NonZeroU64`, so the wire zero sentinel cannot be represented as a suffix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ByteSelection(ByteSelectionKind);
+
+impl ByteSelection {
+    /// Constructs an inclusive byte selection and validates its wire shape.
+    pub fn bytes(start: u64, end: Option<u64>) -> Result<Self, Error> {
+        let selection = Self(ByteSelectionKind::Bytes { start, end });
+        request::range(&Some(selection.to_wire()), u64::MAX)?;
+        Ok(selection)
+    }
+
+    /// Constructs a nonzero suffix selection.
+    pub fn suffix(length: u64) -> Result<Self, Error> {
+        let length = NonZeroU64::new(length)
+            .ok_or(wire::ErrorCode::RangeNotSatisfiable)?;
+        let selection = Self(ByteSelectionKind::Suffix(length));
+        request::range(&Some(selection.to_wire()), u64::MAX)?;
+        Ok(selection)
+    }
+
+    /// Returns the inclusive start for a byte selection, if present.
+    pub const fn start(self) -> Option<u64> {
+        match self.0 {
+            ByteSelectionKind::Bytes { start, .. } => Some(start),
+            ByteSelectionKind::Suffix(_) => None,
+        }
+    }
+
+    /// Returns the optional inclusive end for a byte selection.
+    pub const fn end(self) -> Option<u64> {
+        match self.0 {
+            ByteSelectionKind::Bytes { end, .. } => end,
+            ByteSelectionKind::Suffix(_) => None,
+        }
+    }
+
+    /// Returns the nonzero suffix length, if this is a suffix selection.
+    pub const fn suffix_length(self) -> Option<NonZeroU64> {
+        match self.0 {
+            ByteSelectionKind::Bytes { .. } => None,
+            ByteSelectionKind::Suffix(length) => Some(length),
+        }
+    }
+
+    /// Resolves this selection through the canonical object-range validator.
+    pub fn resolve(self, total: u64) -> Result<ContentRange, Error> {
+        let value = request::range(&Some(self.to_wire()), total)?
+            .ok_or(wire::ErrorCode::RangeNotSatisfiable)?;
+        Ok(ContentRange::from_validated(value))
+    }
+
+    fn to_wire(self) -> wire::ByteRange {
+        let selection = match self.0 {
+            ByteSelectionKind::Bytes { start, end } => {
+                wire::byte_range::Selection::Bytes(wire::InclusiveRange { start, end })
+            }
+            ByteSelectionKind::Suffix(length) => {
+                wire::byte_range::Selection::SuffixLength(length.get())
+            }
+        };
+        wire::ByteRange {
+            selection: Some(selection),
+        }
+    }
+}
+
+impl TryFrom<wire::ByteRange> for ByteSelection {
+    type Error = Error;
+
+    fn try_from(value: wire::ByteRange) -> Result<Self, Self::Error> {
+        match value.selection {
+            Some(wire::byte_range::Selection::Bytes(value)) => Self::bytes(value.start, value.end),
+            Some(wire::byte_range::Selection::SuffixLength(length)) => Self::suffix(length),
+            None => Err(wire::ErrorCode::RangeNotSatisfiable.into()),
+        }
+    }
+}
+
+impl From<ByteSelection> for wire::ByteRange {
+    fn from(value: ByteSelection) -> Self {
+        value.to_wire()
+    }
+}
+
+/// A canonical inclusive byte range resolved against a complete object size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContentRange {
+    start: u64,
+    end: u64,
+    total: u64,
+}
+
+impl ContentRange {
+    fn from_validated(value: wire::ContentRange) -> Self {
+        Self {
+            start: value.start,
+            end: value.end,
+            total: value.total,
+        }
+    }
+
+    /// Resolves a selection and returns its canonical response range.
+    pub fn from_selection(selection: ByteSelection, total: u64) -> Result<Self, Error> {
+        selection.resolve(total)
+    }
+
+    /// Validates a response range against the original selection and size.
+    pub fn try_from_wire(
+        value: wire::ContentRange,
+        selection: ByteSelection,
+        total: u64,
+    ) -> Result<Self, Error> {
+        let expected = selection.resolve(total)?;
+        if wire::ContentRange::from(expected) != value {
+            return Err(wire::ErrorCode::RangeNotSatisfiable.into());
+        }
+        Ok(expected)
+    }
+
+    /// Returns the inclusive start byte.
+    pub const fn start(self) -> u64 {
+        self.start
+    }
+
+    /// Returns the inclusive end byte.
+    pub const fn end(self) -> u64 {
+        self.end
+    }
+
+    /// Returns the complete representation size used for resolution.
+    pub const fn total(self) -> u64 {
+        self.total
+    }
+}
+
+impl From<ContentRange> for wire::ContentRange {
+    fn from(value: ContentRange) -> Self {
+        Self {
+            start: value.start,
+            end: value.end,
+            total: value.total,
+        }
+    }
+}
+
 /// A validated bucket response bound to the request's logical bucket name.
 ///
 /// Responses are constructed with [`Self::try_from_wire`] so the returned
@@ -1098,6 +1253,52 @@ mod tests {
             ..Default::default()
         };
         assert!(ObjectInfo::try_from(invalid_metadata).is_err());
+    }
+
+    #[test]
+    fn typed_ranges_preserve_presence_and_use_canonical_resolution() {
+        let open = ByteSelection::bytes(2, None).unwrap();
+        assert_eq!(open.start(), Some(2));
+        assert_eq!(open.end(), None);
+        assert_eq!(open.suffix_length(), None);
+        assert_eq!(
+            open.resolve(5).unwrap(),
+            ContentRange {
+                start: 2,
+                end: 4,
+                total: 5,
+            }
+        );
+
+        let suffix = ByteSelection::suffix(u64::MAX).unwrap();
+        assert_eq!(suffix.start(), None);
+        assert_eq!(suffix.end(), None);
+        assert_eq!(suffix.suffix_length(), NonZeroU64::new(u64::MAX));
+        assert_eq!(suffix.resolve(4).unwrap().start(), 0);
+        assert_eq!(suffix.resolve(4).unwrap().end(), 3);
+        assert!(ByteSelection::suffix(0).is_err());
+        assert!(ByteSelection::bytes(4, Some(3)).is_err());
+        assert!(open.resolve(0).is_err());
+
+        let wire = wire::ByteRange::from(open);
+        assert_eq!(ByteSelection::try_from(wire).unwrap(), open);
+    }
+
+    #[test]
+    fn typed_content_range_rejects_noncanonical_wire_values() {
+        let selection = ByteSelection::bytes(1, Some(3)).unwrap();
+        let expected = selection.resolve(8).unwrap();
+        let wire = wire::ContentRange::from(expected);
+        assert_eq!(
+            ContentRange::try_from_wire(wire, selection, 8).unwrap(),
+            expected
+        );
+
+        let mismatched = wire::ContentRange {
+            end: 4,
+            ..wire
+        };
+        assert!(ContentRange::try_from_wire(mismatched, selection, 8).is_err());
     }
 
     #[test]

@@ -829,20 +829,19 @@ mod tests {
     #[test]
     fn legacy_admission_and_renewal_reject_idle_responses() {
         let view = idle_view();
-        assert!(validate_customer_wire(
-            "legacy_warm_context",
-            &view.encode_to_vec(),
-            &[2; 32],
-            &[]
-        )
-        .is_err());
-        assert!(validate_customer_wire(
-            "legacy_warm_commitment",
-            &view.encode_to_vec(),
-            &[1; 32],
-            &[]
-        )
-        .is_err());
+        assert!(
+            validate_customer_wire("legacy_warm_context", &view.encode_to_vec(), &[2; 32], &[])
+                .is_err()
+        );
+        assert!(
+            validate_customer_wire(
+                "legacy_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &[]
+            )
+            .is_err()
+        );
         // Generic commitment inspection remains mode-neutral for recovered handles.
         assert!(
             validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_err()
@@ -937,24 +936,28 @@ mod tests {
                 .clone(),
             ..Default::default()
         };
-        assert!(validate_customer_wire(
-            "idle_warm_context",
-            &view.encode_to_vec(),
-            &[2; 32],
-            &request.encode_to_vec()
-        )
-        .is_ok());
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &request.encode_to_vec()
+            )
+            .is_ok()
+        );
         let wrong_context = wire::RetainWarmRequest {
             context: vec![9; 32],
             ..request.clone()
         };
-        assert!(validate_customer_wire(
-            "idle_warm_context",
-            &view.encode_to_vec(),
-            &[2; 32],
-            &wrong_context.encode_to_vec()
-        )
-        .is_err());
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &wrong_context.encode_to_vec()
+            )
+            .is_err()
+        );
         view.idle_kv
             .as_mut()
             .ok_or("fixture field absent")?
@@ -962,13 +965,15 @@ mod tests {
             .as_mut()
             .ok_or("fixture field absent")?
             .profile = vec![8; 32];
-        assert!(validate_customer_wire(
-            "idle_warm_context",
-            &view.encode_to_vec(),
-            &[2; 32],
-            &request.encode_to_vec()
-        )
-        .is_err());
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &request.encode_to_vec()
+            )
+            .is_err()
+        );
         let mixed = wire::RetainWarmRequest {
             latency_profile: vec![9; 32],
             ..request
@@ -997,32 +1002,38 @@ mod tests {
             .ok_or("fixture field absent")?
             .idle_timeout_ms = 20;
         view.expires_at_ms = 120;
-        assert!(validate_customer_wire(
-            "idle_warm_commitment",
-            &view.encode_to_vec(),
-            &[1; 32],
-            &renewal.encode_to_vec()
-        )
-        .is_ok());
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &renewal.encode_to_vec()
+            )
+            .is_ok()
+        );
         let wrong_commitment = wire::RenewWarmRequest {
             commitment: vec![9; 32],
             ..renewal.clone()
         };
-        assert!(validate_customer_wire(
-            "idle_warm_commitment",
-            &view.encode_to_vec(),
-            &[1; 32],
-            &wrong_commitment.encode_to_vec()
-        )
-        .is_err());
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &wrong_commitment.encode_to_vec()
+            )
+            .is_err()
+        );
         view.expires_at_ms = 130;
-        assert!(validate_customer_wire(
-            "idle_warm_commitment",
-            &view.encode_to_vec(),
-            &[1; 32],
-            &renewal.encode_to_vec()
-        )
-        .is_err());
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &renewal.encode_to_vec()
+            )
+            .is_err()
+        );
         let mixed = wire::RenewWarmRequest {
             expires_at_ms: 120,
             ..renewal
@@ -1081,13 +1092,15 @@ mod tests {
             .ok_or(Error::Invalid("result context fixture is absent"))?
             .provenance = None;
         assert!(validate_run_view(&missing_provenance, [2; 16]).is_err());
-        assert!(validate_customer_wire(
-            "run_view",
-            &missing_provenance.encode_to_vec(),
-            &[2; 16],
-            &[]
-        )
-        .is_err());
+        assert!(
+            validate_customer_wire(
+                "run_view",
+                &missing_provenance.encode_to_vec(),
+                &[2; 16],
+                &[]
+            )
+            .is_err()
+        );
 
         let mut invalid_digest = view;
         invalid_digest
