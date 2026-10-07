@@ -102,11 +102,11 @@ pub use file_read::{
     read_file_range_async,
 };
 pub use file_table::{
-    FilePayload, FileRecord, FileRecordBatchLookup, FileRecordLookup, FileRecordReadError,
-    FileRecordReadFailure, FileTableChild, FileTableError, FileTablePage, InlineFileData,
-    InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page,
-    file_table_page_id, lookup_file_record, lookup_file_record_async, lookup_file_records,
-    lookup_file_records_async,
+    FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup,
+    FileRecordReadError, FileRecordReadFailure, FileTableChild, FileTableError, FileTablePage,
+    InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page,
+    encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_record_async,
+    lookup_file_records, lookup_file_records_async,
 };
 pub(crate) use file_table::{decode_file_record, encode_file_record};
 pub use file_table_mutation::{

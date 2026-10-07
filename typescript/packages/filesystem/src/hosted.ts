@@ -779,18 +779,34 @@ function generationDiff(value: DiffResponse): GenerationDiff {
 }
 
 function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot {
+  const payloadKind = filePayloadKind(value.payloadKind);
   return {
     fileId: exactBytes(value.fileId, 16, "file identity"),
     fileKind: fileKind(value.fileKind),
     linkCount: value.linkCount,
     metadataObject: exactBytes(value.metadataObject, 33, "metadata object"),
-    payloadKind: value.payloadKind,
+    payloadKind,
     logicalBytes: optionalU64(value.logicalBytes),
     payloadObject: value.payloadObject.length === 0 ? undefined : exactBytes(value.payloadObject, 33, "payload object"),
-    inlineBytes: value.payloadKind === "inline-regular" ? Uint8Array.from(value.inlineBytes) : undefined,
+    inlineBytes: payloadKind === "inline-regular" ? Uint8Array.from(value.inlineBytes) : undefined,
     deviceMajor: optionalU32(value.deviceMajor),
     deviceMinor: optionalU32(value.deviceMinor),
   };
+}
+
+function filePayloadKind(value: string): FileRecordSnapshot["payloadKind"] {
+  switch (value) {
+    case "inline-regular":
+    case "regular":
+    case "directory":
+    case "symbolic-link":
+    case "empty":
+    case "device":
+    case "reparse-point":
+      return value;
+    default:
+      throw new Error(`unknown file payload kind: ${value}`);
+  }
 }
 
 function treeEntry(value: WireTreeEntrySnapshot): TreeEntrySnapshot {
@@ -959,26 +975,26 @@ function extentKind(value: ExtentKind): "hole" | "allocated-zero" | "content" {
 
 function workCounters(value: WireWorkCounters): WorkCounters {
   return {
-    authorityRecordsRead: safeNumber(value.authorityRecordsRead, "authority records read"),
-    authorityRecordsAppended: safeNumber(value.authorityRecordsAppended, "authority records appended"),
-    authorityBytesRead: safeNumber(value.authorityBytesRead, "authority bytes read"),
-    authorityBytesWritten: safeNumber(value.authorityBytesWritten, "authority bytes written"),
-    objectProbes: safeNumber(value.objectProbes, "object probes"),
-    backendReadOperations: safeNumber(value.backendReadOperations, "backend reads"),
-    backendWriteOperations: safeNumber(value.backendWriteOperations, "backend writes"),
-    durabilityOperations: safeNumber(value.durabilityOperations, "durability operations"),
-    pageReads: safeNumber(value.pageReads, "page reads"), pageWrites: safeNumber(value.pageWrites, "page writes"),
-    objectBytesRead: safeNumber(value.objectBytesRead, "object bytes read"),
-    objectBytesWritten: safeNumber(value.objectBytesWritten, "object bytes written"),
-    bytesHashed: safeNumber(value.bytesHashed, "bytes hashed"), bytesCopied: safeNumber(value.bytesCopied, "bytes copied"),
-    bytesEncoded: safeNumber(value.bytesEncoded, "bytes encoded"), sourceBytesRead: safeNumber(value.sourceBytesRead, "source bytes read"),
-    sourcePathComponents: safeNumber(value.sourcePathComponents, "source path components"),
-    sourceEntriesVisited: safeNumber(value.sourceEntriesVisited, "source entries visited"),
-    outputBytes: safeNumber(value.outputBytes, "output bytes"), itemsExamined: safeNumber(value.itemsExamined, "items examined"),
-    itemsReturned: safeNumber(value.itemsReturned, "items returned"),
-    allocationOperations: safeNumber(value.allocationOperations, "allocation operations"),
-    peakAllocationBytes: safeNumber(value.peakAllocationBytes, "peak allocation bytes"),
-    materializations: safeNumber(value.materializations, "materializations"),
+    authorityRecordsRead: BigInt(value.authorityRecordsRead),
+    authorityRecordsAppended: BigInt(value.authorityRecordsAppended),
+    authorityBytesRead: BigInt(value.authorityBytesRead),
+    authorityBytesWritten: BigInt(value.authorityBytesWritten),
+    objectProbes: BigInt(value.objectProbes),
+    backendReadOperations: BigInt(value.backendReadOperations),
+    backendWriteOperations: BigInt(value.backendWriteOperations),
+    durabilityOperations: BigInt(value.durabilityOperations),
+    pageReads: BigInt(value.pageReads), pageWrites: BigInt(value.pageWrites),
+    objectBytesRead: BigInt(value.objectBytesRead),
+    objectBytesWritten: BigInt(value.objectBytesWritten),
+    bytesHashed: BigInt(value.bytesHashed), bytesCopied: BigInt(value.bytesCopied),
+    bytesEncoded: BigInt(value.bytesEncoded), sourceBytesRead: BigInt(value.sourceBytesRead),
+    sourcePathComponents: BigInt(value.sourcePathComponents),
+    sourceEntriesVisited: BigInt(value.sourceEntriesVisited),
+    outputBytes: BigInt(value.outputBytes), itemsExamined: BigInt(value.itemsExamined),
+    itemsReturned: BigInt(value.itemsReturned),
+    allocationOperations: BigInt(value.allocationOperations),
+    peakAllocationBytes: BigInt(value.peakAllocationBytes),
+    materializations: BigInt(value.materializations),
   };
 }
 
@@ -1084,12 +1100,6 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   let difference = 0;
   for (let index = 0; index < left.length; index++) difference |= left[index]! ^ right[index]!;
   return difference === 0;
-}
-function safeNumber(value: bigint, name: string): number {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new HostedFsError("invalid_response", `${name} exceeds JavaScript's exact integer range`);
-  }
-  return Number(value);
 }
 async function call<T>(request: Promise<T>): Promise<T> {
   try { return await request; }

@@ -13,9 +13,6 @@ export function createChangeSetAdapter<RawDiff>(
       get to() { return adaptGeneration(raw.to); },
       changes() { return decodeDiff(raw.changes()); },
       async compose(next, maximumChanges) {
-        if (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0) {
-          throw new RangeError("maximum changes must be a positive safe integer");
-        }
         return adaptChangeSet(await raw.compose(rawChangeSet(next), maximumChanges));
       },
     };

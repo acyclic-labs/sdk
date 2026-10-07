@@ -40,7 +40,6 @@ export function adaptTransaction(
       return raw.cloneRange(source, sourceOffset, destination, destinationOffset, length);
     },
     async rebase(maximumConflicts) {
-      requirePositiveInteger(maximumConflicts, "maximum transaction conflicts");
       return decodeRebase(await raw.rebase(maximumConflicts));
     },
     async commit() { return parseWorkspaceCommit(await raw.commit()); },
@@ -50,10 +49,4 @@ export function adaptTransaction(
 
 function requireNonnegative(value: bigint, label: string): void {
   if (value < 0n) throw new RangeError(`${label} must be non-negative`);
-}
-
-function requirePositiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
 }
