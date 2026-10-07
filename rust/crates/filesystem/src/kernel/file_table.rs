@@ -188,6 +188,33 @@ pub enum FilePayloadKind {
     ReparsePoint,
 }
 
+impl FilePayloadKind {
+    /// Every payload variant in canonical declaration order.
+    pub const ALL: &[Self] = &[
+        Self::InlineRegular,
+        Self::Regular,
+        Self::Directory,
+        Self::SymbolicLink,
+        Self::Empty,
+        Self::Device,
+        Self::ReparsePoint,
+    ];
+
+    /// Stable public spelling used by generated language bindings.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InlineRegular => "inline-regular",
+            Self::Regular => "regular",
+            Self::Directory => "directory",
+            Self::SymbolicLink => "symbolic-link",
+            Self::Empty => "empty",
+            Self::Device => "device",
+            Self::ReparsePoint => "reparse-point",
+        }
+    }
+}
+
 impl FilePayload {
     /// Returns the finite boundary kind for this payload.
     #[must_use]

@@ -32,7 +32,8 @@ import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
 import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, copyFileRecord,
-  copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult, projectFileKind } from "./binding-results.js";
+  copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult,
+  projectRawFileKind } from "./binding-results.js";
 import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
@@ -169,7 +170,7 @@ function adaptCheckout(checkout: WasmRawCheckout, o: AcyclicObserver | undefined
 
 function adaptResolvedFile(raw: import("./contracts.js").WasmRawResolvedFile): ResolvedFile {
   return {
-    kind: projectFileKind(raw.kind),
+    kind: projectRawFileKind(raw.kind),
     logicalBytes: raw.logicalBytes,
     metadataCanonicalBytes: Uint8Array.from(raw.metadataCanonicalBytes),
     async readRange(offset, length) { return copyFileRead(await raw.readRange(offset, length)); },

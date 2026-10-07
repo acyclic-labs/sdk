@@ -18,6 +18,8 @@ import {
   JOIN_STATUS_TO_STATUS,
   SPARSE_TARGET_TO_TARGET,
   NAME_ENCODING_TO_PUBLIC,
+  WORK_COUNTER_KEYS,
+  isFilePayloadKind,
 } from "../generated/hosted-contract.js";
 
 import {
@@ -795,18 +797,8 @@ function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot {
 }
 
 function filePayloadKind(value: string): FileRecordSnapshot["payloadKind"] {
-  switch (value) {
-    case "inline-regular":
-    case "regular":
-    case "directory":
-    case "symbolic-link":
-    case "empty":
-    case "device":
-    case "reparse-point":
-      return value;
-    default:
-      throw new Error(`unknown file payload kind: ${value}`);
-  }
+  if (!isFilePayloadKind(value)) throw new HostedFsError("invalid_response", "invalid file payload kind");
+  return value;
 }
 
 function treeEntry(value: WireTreeEntrySnapshot): TreeEntrySnapshot {
@@ -974,28 +966,9 @@ function extentKind(value: ExtentKind): "hole" | "allocated-zero" | "content" {
 }
 
 function workCounters(value: WireWorkCounters): WorkCounters {
-  return {
-    authorityRecordsRead: BigInt(value.authorityRecordsRead),
-    authorityRecordsAppended: BigInt(value.authorityRecordsAppended),
-    authorityBytesRead: BigInt(value.authorityBytesRead),
-    authorityBytesWritten: BigInt(value.authorityBytesWritten),
-    objectProbes: BigInt(value.objectProbes),
-    backendReadOperations: BigInt(value.backendReadOperations),
-    backendWriteOperations: BigInt(value.backendWriteOperations),
-    durabilityOperations: BigInt(value.durabilityOperations),
-    pageReads: BigInt(value.pageReads), pageWrites: BigInt(value.pageWrites),
-    objectBytesRead: BigInt(value.objectBytesRead),
-    objectBytesWritten: BigInt(value.objectBytesWritten),
-    bytesHashed: BigInt(value.bytesHashed), bytesCopied: BigInt(value.bytesCopied),
-    bytesEncoded: BigInt(value.bytesEncoded), sourceBytesRead: BigInt(value.sourceBytesRead),
-    sourcePathComponents: BigInt(value.sourcePathComponents),
-    sourceEntriesVisited: BigInt(value.sourceEntriesVisited),
-    outputBytes: BigInt(value.outputBytes), itemsExamined: BigInt(value.itemsExamined),
-    itemsReturned: BigInt(value.itemsReturned),
-    allocationOperations: BigInt(value.allocationOperations),
-    peakAllocationBytes: BigInt(value.peakAllocationBytes),
-    materializations: BigInt(value.materializations),
-  };
+  const result = {} as { -readonly [Key in keyof WorkCounters]: bigint };
+  for (const key of WORK_COUNTER_KEYS) result[key] = BigInt(value[key]);
+  return result;
 }
 
 function operation(idempotencyKey?: Uint8Array) {

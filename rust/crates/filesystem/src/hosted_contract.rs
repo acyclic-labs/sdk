@@ -6,8 +6,9 @@
 //! derives the protobuf names with `as_str_name()`, so a renamed or removed
 //! protobuf variant cannot silently leave a stale string table behind.
 
-use crate::kernel::{FileKind as EngineFileKind, NameEncoding};
+use crate::kernel::{FileKind as EngineFileKind, FilePayloadKind, NameEncoding};
 use crate::model::FilesystemProfile as EngineProfile;
+use crate::performance::WorkCounters;
 use crate::wire::filesystem::v2 as wire;
 use crate::workspace::{
     JoinHistory, TransactionDependencyUse, TransactionSparseSeek, WorkspaceExtentKind,
@@ -362,6 +363,23 @@ fn map<E: HostedWireEnum>(entries: &[HostedEnumEntry<E>]) -> Vec<Value> {
 
 /// Serializes the complete Rust-owned hosted contract for the TypeScript generator.
 pub fn contract_json() -> Value {
+    let file_kinds = EngineFileKind::ALL
+        .iter()
+        .map(|kind| Value::String((*kind).as_str().to_owned()))
+        .collect::<Vec<_>>();
+    let payload_kinds = FilePayloadKind::ALL
+        .iter()
+        .map(|kind| Value::String((*kind).as_str().to_owned()))
+        .collect::<Vec<_>>();
+    #[allow(
+        clippy::expect_used,
+        reason = "WorkCounters derives Serialize and has no fallible field serializer"
+    )]
+    let work_counter_keys = serde_json::to_value(WorkCounters::default())
+        .expect("WorkCounters serialization cannot fail")
+        .as_object()
+        .map(|fields| fields.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
     json!({
         "maps": {
             "filesystem_profile": map(FILESYSTEM_PROFILE),
@@ -378,6 +396,9 @@ pub fn contract_json() -> Value {
             "rebase_status": map(REBASE_STATUS),
             "join_status": map(JOIN_STATUS),
         },
+        "file_kinds": file_kinds,
+        "file_payload_kinds": payload_kinds,
+        "work_counter_keys": work_counter_keys,
     })
 }
 
