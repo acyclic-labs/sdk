@@ -23,7 +23,7 @@ pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 /// Maximum normalized UTF-8 path length admitted by the Harness protocol.
 pub const MAX_PATH_BYTES: usize = 4_096;
 /// Maximum UTF-8 bytes in a protocol label or display name.
-pub const MAX_LABEL_BYTES: usize = 255;
+pub const MAX_LABEL_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Largest integer that can be represented exactly by a JavaScript number.
 pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
 /// Maximum file byte length accepted by the limits validator.

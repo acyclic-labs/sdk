@@ -310,7 +310,10 @@ async fn validate_context_refs(
         }
     }
     for (name, file) in &context.metadata {
-        if !name.contains('.') || name.len() > 255 || name.chars().any(char::is_control) {
+        if !name.contains('.')
+            || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
+            || name.chars().any(char::is_control)
+        {
             return Err(crate::Error::Invalid(
                 "durable context metadata key is invalid".into(),
             ));

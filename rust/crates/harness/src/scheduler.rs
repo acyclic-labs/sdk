@@ -1,6 +1,6 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
-use crate::contract::next_revision;
+use crate::contract::{COMPONENT_LABEL_MAX_BYTES, next_revision};
 use crate::{
     Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, core::Authority,
     resources::CheckpointRef,
@@ -330,8 +330,8 @@ impl Scheduler {
         if spec.placement.len() > 32
             || spec.placement.iter().any(|(key, value)| {
                 key.is_empty()
-                    || key.len() > 255
-                    || value.len() > 255
+                    || key.len() > COMPONENT_LABEL_MAX_BYTES
+                    || value.len() > COMPONENT_LABEL_MAX_BYTES
                     || key.chars().any(char::is_control)
                     || value.chars().any(char::is_control)
             })
@@ -356,7 +356,7 @@ impl Scheduler {
         }
         if let Some(parent) = &spec.parent {
             if parent.slot.trim().is_empty()
-                || parent.slot.len() > 255
+                || parent.slot.len() > COMPONENT_LABEL_MAX_BYTES
                 || parent.slot.chars().any(char::is_control)
             {
                 return Err(Error::Invalid("structured child slot is invalid".into()));

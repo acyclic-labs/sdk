@@ -48,7 +48,7 @@ pub const MAX_CHILD_PAGE: usize = 1_024;
 /// Default number of direct children requested by the SDK facade.
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Maximum UTF-8 byte length of a parent-local child slot.
-pub const MAX_CHILD_SLOT_BYTES: usize = 255;
+pub const MAX_CHILD_SLOT_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Default number of entries requested by the private-directory SDK facade.
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
