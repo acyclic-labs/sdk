@@ -8,7 +8,7 @@ use crate::{
     core::{Authority, AuthorityVerifier, Scope},
     runtime,
     scheduler::{
-        AssemblyKind, DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
+        AssemblyKind, EntrypointRef, LeaseFence, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
         assembly_invocation_digest, reduction_invocation_digest,
     },
@@ -519,11 +519,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .scheduler
             .operation(operation_id)
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
-        let declared_owner = match &operation.spec.owner {
-            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
-                authority
-            }
-        };
+        let declared_owner = operation.spec.owner.authority();
         if declared_owner != owner {
             return Err(Error::NotFound(format!("operation {operation_id}")));
         }
@@ -565,11 +561,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if !scope.capabilities().contains(capability::OPERATION_DECLARE) {
             return Err(Error::Unauthorized("scope lacks operation:declare".into()));
         }
-        let declared_owner = match &spec.owner {
-            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
-                authority
-            }
-        };
+        let declared_owner = spec.owner.authority();
         if declared_owner != owner {
             return Err(Error::Unauthorized(
                 "declaration owner does not match authenticated owner".into(),
@@ -1184,11 +1176,7 @@ mod tests {
         spec: OperationSpec,
         key: &str,
     ) -> Result<CoordinatorApply> {
-        let owner = match &spec.owner {
-            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
-                authority.clone()
-            }
-        };
+        let owner = spec.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root("declare", Capabilities::new(["operation:declare"]));
         coordinator

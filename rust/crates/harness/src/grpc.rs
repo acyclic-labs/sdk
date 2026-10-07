@@ -97,7 +97,9 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
         &self,
         request: Request<wire::CancelRequest>,
     ) -> Result<Response<wire::CancelResponse>, Status> {
-        let (control, _, _) = validate_cancel_request(request.get_ref()).map_err(status)?;
+        let control = validate_cancel_request(request.get_ref())
+            .map_err(status)?
+            .control;
         self.api
             .authorize_operation_control(&control)
             .await

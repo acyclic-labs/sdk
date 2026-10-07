@@ -527,9 +527,11 @@ impl Scheduler {
                         "partial reservation cannot start an operation".into(),
                     ));
                 }
-                if operation.reservation.as_ref().is_some_and(|partial| {
-                    partial.id != reservation.id || partial.placement != reservation.placement
-                }) {
+                if operation
+                    .reservation
+                    .as_ref()
+                    .is_some_and(|partial| LeaseFence::from(partial) != (&reservation).into())
+                {
                     return Err(Error::Conflict(
                         "partial admission must be completed by the same reservation".into(),
                     ));
@@ -560,8 +562,7 @@ impl Scheduler {
                     ));
                 }
                 if let Some(existing) = &operation.reservation
-                    && (existing.id != reservation.id
-                        || existing.placement != reservation.placement
+                    && (LeaseFence::from(existing) != (&reservation).into()
                         || !covers(&reservation.admitted.0, &existing.admitted))
                 {
                     return Err(Error::Conflict(
@@ -1218,7 +1219,7 @@ fn require_fence(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
         .reservation
         .as_ref()
         .ok_or_else(|| Error::Conflict("operation has no active lease".into()))?;
-    if reservation.id != fence.reservation_id || reservation.placement != fence.placement {
+    if LeaseFence::from(reservation) != *fence {
         return Err(Error::Unauthorized("stale or foreign lease fence".into()));
     }
     Ok(())

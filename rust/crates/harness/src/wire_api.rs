@@ -101,28 +101,37 @@ pub fn validate_observe_request(request: &wire::ObserveRequest) -> Result<Operat
     )
 }
 
+/// Decoded cancellation request shared by all server adapters.
+pub struct CancelControlRequest {
+    /// Operation-control identity to authenticate before cancelling.
+    pub control: OperationControlRequest,
+    /// Caller-owned retry identity of this cancellation.
+    pub idempotency_key: IdempotencyKey,
+    /// Whether same-owner descendants are cancelled too.
+    pub recursive: bool,
+}
+
 /// Validates and decodes a cancellation request without authenticating its proof.
-pub fn validate_cancel_request(
-    request: &wire::CancelRequest,
-) -> Result<(OperationControlRequest, IdempotencyKey, bool)> {
+pub fn validate_cancel_request(request: &wire::CancelRequest) -> Result<CancelControlRequest> {
     validate_request_protocol(request.protocol.as_ref())?;
-    let key = IdempotencyKey::new(request.idempotency_key.clone())?;
+    let idempotency_key = IdempotencyKey::new(request.idempotency_key.clone())?;
     let control = decode_control(
         request.owner.clone(),
         &request.operation_id,
         request.scope.clone(),
         capability::OPERATION_CANCEL,
     )?;
-    Ok((control, key, request.recursive))
+    Ok(CancelControlRequest {
+        control,
+        idempotency_key,
+        recursive: request.recursive,
+    })
 }
 
 /// Converts the authoritative scheduler projection to its canonical wire status.
 #[must_use]
 pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
-    let owner = match &state.spec.owner {
-        crate::scheduler::DurableOwner::Attached { authority }
-        | crate::scheduler::DurableOwner::Detached { authority } => authority,
-    };
+    let owner = state.spec.owner.authority();
     let (completion, error) = match state.outcome.as_ref() {
         Some(Outcome::Succeeded(_)) => (wire::CompletionState::Succeeded, None),
         Some(Outcome::Failed { message }) => (
