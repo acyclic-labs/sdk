@@ -1,0 +1,107 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling rustix v1.1.5
+   Compiling serde_core v1.0.229
+   Compiling ring v0.17.14
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling prettyplease v0.2.37
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde v1.0.229
+   Compiling camino v1.2.6
+sccache: encountered fatal errorwarning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+
+sccache: error: failed to set permissions for file `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/debug/build/serde_spanned/5212bbd078801d97/out/libserde_spanned-5212bbd078801d97.rlib`: No such file or directory (os error 2)
+sccache: caused by: failed to set permissions for file `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/debug/build/serde_spanned/5212bbd078801d97/out/libserde_spanned-5212bbd078801d97.rlib`: No such file or directory (os error 2)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+error: could not compile `serde_spanned` (lib)
+
+Caused by:
+  process didn't exit successfully: `/home/var/.cargo/bin/sccache /home/var/.kani/kani-0.68.0/bin/kani-compiler --crate-name serde_spanned --edition=2024 /home/var/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_spanned-1.1.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -Z embed-metadata=no -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="alloc"' --cfg 'feature="serde"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "serde", "std"))' -C metadata=7e58ac14c74093df -C extra-filename=-5212bbd078801d97 --out-dir /mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/debug/build/serde_spanned/5212bbd078801d97/out -L dependency=/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/debug/build/serde_core/0a89576a3ecd3a2d/out --extern serde_core=/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/debug/build/serde_core/0a89576a3ecd3a2d/out/libserde_core-0a89576a3ecd3a2d.rmeta --cap-lints allow --cfg=kani_host` (exit status: 254)
+warning: build failed, waiting for other jobs to finish...
+warning: ring@0.17.14: sccache: encountered fatal error
+warning: ring@0.17.14: sccache: error: failed to set permissions for file `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/ring/08bfe4da28e6f954/out/a4019cc0736b0423-crypto.o`: No such file or directory (os error 2)
+warning: ring@0.17.14: sccache: caused by: failed to set permissions for file `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/ring/08bfe4da28e6f954/out/a4019cc0736b0423-crypto.o`: No such file or directory (os error 2)
+error: failed to run custom build command for `ring v0.17.14`
+
+Caused by:
+  process didn't exit successfully: `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/debug/build/ring/39c14e01b9f64e0c/out/build_script_build` (exit status: 1)
+  --- stdout
+  cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR
+  cargo:rerun-if-env-changed=CARGO_PKG_NAME
+  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MAJOR
+  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MINOR
+  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PATCH
+  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PRE
+  cargo:rerun-if-env-changed=CARGO_MANIFEST_LINKS
+  cargo:rerun-if-env-changed=RING_PREGENERATE_ASM
+  cargo:rerun-if-env-changed=OUT_DIR
+  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH
+  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS
+  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ENV
+  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ENDIAN
+  cargo:rerun-if-env-changed=CC_x86_64-unknown-linux-gnu
+  CC_x86_64-unknown-linux-gnu = None
+  cargo:rerun-if-env-changed=CC_x86_64_unknown_linux_gnu
+  CC_x86_64_unknown_linux_gnu = None
+  cargo:rerun-if-env-changed=HOST_CC
+  HOST_CC = None
+  cargo:rerun-if-env-changed=CC
+  CC = None
+  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+  CRATE_CC_NO_DEFAULTS = None
+  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+  CRATE_CC_NO_DEFAULTS = None
+  cargo:rerun-if-env-changed=CFLAGS
+  CFLAGS = None
+  cargo:rerun-if-env-changed=HOST_CFLAGS
+  HOST_CFLAGS = None
+  cargo:rerun-if-env-changed=CFLAGS_x86_64_unknown_linux_gnu
+  CFLAGS_x86_64_unknown_linux_gnu = None
+  cargo:rerun-if-env-changed=CFLAGS_x86_64-unknown-linux-gnu
+  CFLAGS_x86_64-unknown-linux-gnu = None
+  cargo:rerun-if-env-changed=CFLAGS
+  CFLAGS = None
+  cargo:rerun-if-env-changed=HOST_CFLAGS
+  HOST_CFLAGS = None
+  cargo:rerun-if-env-changed=CFLAGS_x86_64_unknown_linux_gnu
+  CFLAGS_x86_64_unknown_linux_gnu = None
+  cargo:rerun-if-env-changed=CFLAGS_x86_64-unknown-linux-gnu
+  CFLAGS_x86_64-unknown-linux-gnu = None
+  cargo:warning=sccache: encountered fatal error
+  cargo:warning=sccache: error: failed to set permissions for file `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/ring/08bfe4da28e6f954/out/a4019cc0736b0423-crypto.o`: No such file or directory (os error 2)
+  cargo:warning=sccache: caused by: failed to set permissions for file `/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/ring/08bfe4da28e6f954/out/a4019cc0736b0423-crypto.o`: No such file or directory (os error 2)
+
+  --- stderr
+
+
+  error occurred in cc-rs: command did not execute successfully (status code exit status: 254): "/home/var/.cargo/bin/sccache" "cc" "-O0" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-gdwarf-4" "-fno-omit-frame-pointer" "-mno-omit-leaf-frame-pointer" "-m64" "-I" "/home/var/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/home/var/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/ring/08bfe4da28e6f954/out/a4019cc0736b0423-crypto.o" "-c" "/home/var/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/crypto.c"
+
+
+error: Failed to execute cargo (exit status: 101). Found 0 compilation errors.
+KANI_PROCESS_EXIT=
+INFRASTRUCTURE_FAILURE=sccache_missing_output_path_os_error_2

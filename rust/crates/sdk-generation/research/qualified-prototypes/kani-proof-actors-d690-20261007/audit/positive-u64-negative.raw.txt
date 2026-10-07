@@ -1,0 +1,186 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: unused import: `oneof_validator_impl::*`
+ --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:8:9
+  |
+8 | pub use oneof_validator_impl::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `consistency_checks::*`
+  --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:12:9
+   |
+12 | pub use consistency_checks::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:274:19
+    |
+274 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:421:18
+    |
+421 | ... => assert!(raw_state == 0 || raw_state == 1 || raw_state == 2),
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:423:19
+    |
+423 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:443:18
+    |
+443 | ...=> assert!(raw_state == 0 || raw_state == 1 || raw_state == 2 || raw_state == 3),
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:445:19
+    |
+445 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.08s
+warning: the following packages contain code that will be rejected by a future version of Rust: acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Checking harness contract::generated::domain::kani_negative_controls::positive_u64_negative_control_accepts_zero...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/0a3f329c543a9059/out/acyclic_actors-0a3f329c543a9059__RNvNtNtNtNtCsjW13Qj6z2k4_14acyclic_actors8contract9generated6domain22kani_negative_controls42positive_u64_negative_control_accepts_zero.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.0110234s
+size of program expression: 489 steps
+slicing removed 385 assignments
+Generated 11 VCC(s), 2 remaining after simplification
+Runtime Postprocess Equation: 0.000179956s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000827114s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 6.995e-06s
+Solving with CaDiCaL 3.0.0
+373 variables, 488 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 9.0913e-05s
+Runtime decision procedure: 0.00100116s
+
+RESULTS:
+Check 1: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:594:5 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+Check 2: std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1334:15 in function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>
+
+Check 3: contract::generated::domain::kani_negative_controls::positive_u64_negative_control_accepts_zero.assertion.1
+	 - Status: FAILURE
+	 - Description: "assertion failed: PositiveU64::new(0).is_ok()"
+	 - Location: rust/crates/actors/src/domain/kani_negative_controls.rs:6:5 in function contract::generated::domain::kani_negative_controls::positive_u64_negative_control_accepts_zero
+
+Check 4: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1162:15 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 5: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1162:15 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 6: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1164:21 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 7: std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1334:15 in function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>
+
+Check 8: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+Check 9: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+Check 10: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+Check 11: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+Check 12: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+Check 13: std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::PositiveU64, contract::generated::domain::DomainError>::is_ok
+
+
+SUMMARY:
+ ** 1 of 13 failed
+Failed Checks: assertion failed: PositiveU64::new(0).is_ok()
+ File: "rust/crates/actors/src/domain/kani_negative_controls.rs", line 6, in contract::generated::domain::kani_negative_controls::positive_u64_negative_control_accepts_zero
+
+VERIFICATION:- FAILED
+Verification Time: 0.0597677s
+
+Manual Harness Summary:
+Verification failed for - contract::generated::domain::kani_negative_controls::positive_u64_negative_control_accepts_zero
+Complete - 0 successfully verified harnesses, 1 failures, 1 total.
+KANI_PROCESS_EXIT=
+EXPECTED_VERIFICATION_FAILURE=true

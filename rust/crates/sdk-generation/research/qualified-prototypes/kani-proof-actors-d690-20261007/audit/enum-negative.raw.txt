@@ -1,0 +1,175 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: unused import: `oneof_validator_impl::*`
+ --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:8:9
+  |
+8 | pub use oneof_validator_impl::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `consistency_checks::*`
+  --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:12:9
+   |
+12 | pub use consistency_checks::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:274:19
+    |
+274 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:421:18
+    |
+421 | ... => assert!(raw_state == 0 || raw_state == 1 || raw_state == 2),
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:423:19
+    |
+423 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:443:18
+    |
+443 | ...=> assert!(raw_state == 0 || raw_state == 1 || raw_state == 2 || raw_state == 3),
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:445:19
+    |
+445 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.88s
+warning: the following packages contain code that will be rejected by a future version of Rust: acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Checking harness contract::generated::domain::kani_negative_controls::enum_negative_control_accepts_unknown...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/1e4f844cf4d06648/out/acyclic_actors-1e4f844cf4d06648__RNvNtNtNtNtCsjW13Qj6z2k4_14acyclic_actors8contract9generated6domain22kani_negative_controls37enum_negative_control_accepts_unknown.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.0074091s
+size of program expression: 366 steps
+slicing removed 260 assignments
+Generated 8 VCC(s), 2 remaining after simplification
+Runtime Postprocess Equation: 7.3544e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000507713s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 7.739e-06s
+Solving with CaDiCaL 3.0.0
+66 variables, 66 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 8.6569e-05s
+Runtime decision procedure: 0.000667834s
+
+RESULTS:
+Check 1: contract::generated::domain::kani_negative_controls::enum_negative_control_accepts_unknown.assertion.1
+	 - Status: FAILURE
+	 - Description: "assertion failed: SubscriptionState::try_from(i32::MAX).is_ok()"
+	 - Location: rust/crates/actors/src/domain/kani_negative_controls.rs:12:5 in function contract::generated::domain::kani_negative_controls::enum_negative_control_accepts_unknown
+
+Check 2: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:594:5 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 3: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 4: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 5: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 6: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 7: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 8: std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<contract::generated::domain::SubscriptionState, contract::generated::domain::DomainError>::is_ok
+
+Check 9: <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:618:5 in function <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from
+
+Check 10: <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:616:5 in function <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from
+
+Check 11: <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:614:5 in function <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from
+
+
+SUMMARY:
+ ** 1 of 11 failed
+Failed Checks: assertion failed: SubscriptionState::try_from(i32::MAX).is_ok()
+ File: "rust/crates/actors/src/domain/kani_negative_controls.rs", line 12, in contract::generated::domain::kani_negative_controls::enum_negative_control_accepts_unknown
+
+VERIFICATION:- FAILED
+Verification Time: 0.05126169s
+
+Manual Harness Summary:
+Verification failed for - contract::generated::domain::kani_negative_controls::enum_negative_control_accepts_unknown
+Complete - 0 successfully verified harnesses, 1 failures, 1 total.
+EXPECTED_VERIFICATION_FAILURE=true

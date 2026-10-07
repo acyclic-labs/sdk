@@ -1,0 +1,75 @@
+{
+  "artifact": "kani-proof-actors-d690-20261007",
+  "branch": "codex/kani-proof-actors-d690-20261007",
+  "source_revision": "d69057b2b248fcf930aaf962bbaadd0d52297731",
+  "source_worktree": "C:\\Users\\varun\\.codex\\tmp\\kani-proof-actors-d690-20261007",
+  "source_sha256": {
+    "rust\\crates\\actors\\src\\domain.rs": "9C3DB6C8175A233D86190A69E35BF952CA82C9021AFCA4D008EB1BCCAC33DF14",
+    "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "0D4C0F6F7D95111E6727D6E7AE885EF755B42887C3439B9AF57EE9211154F576",
+    "rust\\crates\\actors\\src\\domain\\kani_negative_controls.rs": "0C9F34F809B1E88B84393FFDCC0EE8974713410C5D99E8617EBBEA0B2E6479F3"
+  },
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rust": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "jobs": 1,
+    "offline": true,
+    "rustc_wrapper": "disabled"
+  },
+  "kani_results": [
+    {
+      "harness": "contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "result": "PASS",
+      "checks": "0 of 100 failed",
+      "verification": "SUCCESSFUL",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/positive-u64-final.raw.txt"
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless",
+      "result": "PASS",
+      "checks": "0 of 33 failed (3 unreachable)",
+      "verification": "SUCCESSFUL",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/enum-inverse-final.raw.txt"
+    },
+    {
+      "harness": "contract::generated::domain::kani_negative_controls::positive_u64_negative_control_accepts_zero",
+      "result": "EXPECTED_FAILURE",
+      "checks": "1 of 13 failed",
+      "verification": "FAILED",
+      "raw_log": "audit/positive-u64-negative.raw.txt"
+    },
+    {
+      "harness": "contract::generated::domain::kani_negative_controls::enum_negative_control_accepts_unknown",
+      "result": "EXPECTED_FAILURE",
+      "checks": "1 of 11 failed",
+      "verification": "FAILED",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/enum-negative.raw.txt"
+    }
+  ],
+  "raw_log_sha256": {
+    "enum-inverse-final.raw.txt": "149FB4494437374F95A810E4C413A6B19ED7AFB614E1793D5F921CAB87398858",
+    "enum-inverse-rerun.raw.txt": "6EA870E55C292C5EAC38EEFE7FDC1CD0A729D369FC027D84EABDD7C8F6E6F1E5",
+    "enum-inverse.raw.txt": "855CE4705EE17B412CBAF2493BB5C150C478FB1764A65769D6AE854C745F0F29",
+    "enum-negative.raw.txt": "BCB5F4359A2073BF23C6E00E01EC3D6A895A9207B54C0081434F09AF386CBD9E",
+    "positive-u64-final.raw.txt": "258ED79D1B11F9AE21FB03E408F7C3C8F31565EA2DF1FFFC8BF4688394BBDAC7",
+    "positive-u64-negative.raw.txt": "FAB2A46818832C506165AEDB8C5169E6E7B05D6D1C4BC4F699BF754B0676C944",
+    "positive-u64.raw.txt": "E68D0FE8000245B5A675152197AB9BEABC5325809CDB695CC72DEB053FC61275"
+  },
+  "format_check": {
+    "command": "cargo fmt --check --manifest-path rust/crates/actors/Cargo.toml",
+    "result": "PASS",
+    "exit_code": 0
+  },
+  "stable_check": {
+    "command": "cargo check --manifest-path rust/crates/actors/Cargo.toml --package acyclic-actors --offline --target-dir target/stable-d690 -q",
+    "result": "INCONCLUSIVE_INFRASTRUCTURE_LOCK",
+    "terminal_tool_exit": 1,
+    "notes": "blocked behind package-cache/build locks held by concurrent cargo processes; no compiler failure observed"
+  },
+  "copied_algorithm": false,
+  "claim": "direct production PositiveU64::new, enum TryFrom, and inverse numeric mappings only"
+}

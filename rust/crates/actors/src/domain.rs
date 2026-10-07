@@ -17,6 +17,10 @@ use ts_rs::{Config, ExportError, TS};
 #[path = "domain/kani_proofs.rs"]
 mod kani_proofs;
 
+#[cfg(kani)]
+#[path = "domain/kani_negative_controls.rs"]
+mod kani_negative_controls;
+
 /// A non-empty Actor identity.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(export_to = "actors/ActorId.ts")]
@@ -1608,3 +1612,5 @@ mod tests {
         );
     }
 }
+
+

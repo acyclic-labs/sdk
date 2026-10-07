@@ -1,0 +1,1822 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+   Compiling anyhow v1.0.104
+   Compiling bytes v1.12.1
+   Compiling autocfg v1.5.1
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling either v1.19.0
+   Compiling serde v1.0.229
+   Compiling equivalent v1.0.2
+   Compiling thiserror v2.0.21
+   Compiling stable_deref_trait v1.2.1
+   Compiling hashbrown v0.17.1
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling shlex v2.0.1
+   Compiling bitflags v2.13.2
+   Compiling smallvec v1.16.2
+   Compiling futures-sink v0.3.34
+   Compiling find-msvc-tools v0.1.14
+   Compiling getrandom v0.4.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling indexmap v2.14.2
+   Compiling http v1.5.0
+   Compiling tracing-core v0.1.36
+   Compiling zmij v1.0.23
+   Compiling rustix v1.1.5
+   Compiling percent-encoding v2.3.2
+   Compiling ref-cast v1.0.27
+   Compiling strsim v0.11.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling tower-service v0.3.3
+   Compiling cfg-if v1.0.5
+   Compiling ident_case v1.0.1
+   Compiling writeable v0.6.4
+   Compiling itertools v0.14.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling paste v1.0.15
+   Compiling litemap v0.8.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling cc v1.6.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prettyplease v0.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling httparse v1.10.1
+   Compiling rustc-hash v2.1.3
+   Compiling fastrand v2.5.0
+   Compiling zeroize v1.9.1
+   Compiling http-body v1.1.0
+   Compiling fnv v1.0.7
+   Compiling num-traits v0.2.19
+   Compiling winnow v1.0.4
+   Compiling heck v0.5.0
+   Compiling utf8_iter v1.0.4
+   Compiling icu_properties_data v2.3.0
+   Compiling unicode-segmentation v1.13.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_normalizer_data v2.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling rustls-pki-types v1.15.1
+   Compiling atomic-waker v1.1.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling untrusted v0.9.0
+   Compiling try-lock v0.2.5
+   Compiling sync_wrapper v1.0.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-channel v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling rustls v0.23.45
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling want v0.3.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling pulldown-cmark v0.13.4
+   Compiling tower-layer v0.3.3
+   Compiling camino v1.2.6
+   Compiling ipnet v2.12.2
+   Compiling prettyplease v0.2.37
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling log v0.4.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling httpdate v1.0.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling fs-err v2.11.0
+   Compiling base64 v0.23.1
+   Compiling foldhash v0.1.5
+   Compiling serde_json v1.0.151
+   Compiling regex-syntax v0.8.11
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling unicase v2.10.0
+   Compiling subtle v2.6.1
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling convert_case v0.10.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hashbrown v0.15.5
+   Compiling http-body-util v0.1.5
+   Compiling termcolor v1.4.1
+   Compiling bool-enum v0.1.1
+   Compiling siphasher v1.0.4
+   Compiling winnow v0.7.15
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling fixedbitset v0.5.7
+   Compiling ring v0.17.14
+   Compiling toml_writer v1.1.2+spec-1.1.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling similar v2.7.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling webpki-roots v1.0.9
+   Compiling form_urlencoded v1.2.2
+   Compiling mime v0.3.17
+   Compiling allocator-api2 v0.2.21
+   Compiling multimap v0.10.1
+   Compiling static_assertions v1.1.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling foldhash v0.2.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling petgraph v0.8.3
+   Compiling borrow-or-share v0.2.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling base64 v0.22.1
+   Compiling axum-core v0.5.6
+   Compiling mio v1.2.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling socket2 v0.6.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling getrandom v0.2.17
+   Compiling uniffi_core v0.31.0
+   Compiling ordermap v1.2.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hashbrown v0.16.1
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0
+   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling protoc-bin-vendored-linux-s390_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0
+   Compiling owo-colors v4.4.0
+   Compiling matchit v0.8.4
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling semver v1.0.28
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling float_eq v1.0.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling regex-automata v0.4.18
+   Compiling console v0.15.11
+   Compiling protoc-bin-vendored-win32 v3.2.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0
+   Compiling ordered-float v2.10.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling syn v3.0.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling syn v2.0.119
+   Compiling chrono v0.4.45
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling ordered-float v5.5.0
+   Compiling protoc-bin-vendored v3.2.0
+   Compiling ryu v1.0.23
+   Compiling serde-value v0.7.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling similar-asserts v1.7.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde_urlencoded v0.7.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tempfile v3.27.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling pulldown-cmark-to-cmark v22.0.3
+   Compiling regex v1.13.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling syn-utils v0.5.0
+   Compiling prost-derive v0.14.4
+   Compiling tracing-attributes v0.1.31
+   Compiling uniffi_internal_macros v0.31.0
+   Compiling ts-rs-macros v12.0.1
+   Compiling pin-project-internal v1.1.13
+   Compiling tonic-build v0.14.6
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling futures-macro v0.3.34
+   Compiling zerovec-derive v0.11.6
+   Compiling thiserror-impl v2.0.21
+   Compiling displaydoc v0.2.7
+   Compiling ref-cast-impl v1.0.27
+   Compiling async-trait v0.1.92
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling uniffi_pipeline v0.31.0
+   Compiling pin-project v1.1.13
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tracing v0.1.44
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling darling_macro v0.24.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-util v0.3.34
+   Compiling fluent-uri v0.4.1
+   Compiling tokio v1.53.2
+   Compiling prost v0.14.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling rustls-webpki v0.103.15
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prost-types v0.14.4
+warning: use of an unstable feature
+   --> /home/var/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs:271:50
+    |
+271 | ...ber_access, feature(error_generic_member_access))]
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+
+   Compiling proto-types v0.2.2
+   Compiling ts-rs v12.0.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prost-reflect v0.16.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling uniffi_meta v0.31.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling zerofrom v0.1.8
+   Compiling basic-toml v0.1.10
+   Compiling askama_parser v0.15.6
+   Compiling cargo-platform v0.1.9
+   Compiling prost-build v0.14.4
+   Compiling tokio-util v0.7.19
+   Compiling tokio-stream v0.1.19
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling yoke v0.8.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling cargo_metadata v0.19.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling h2 v0.4.20
+   Compiling tower v0.5.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling tokio-rustls v0.26.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling protify-proc-macro v0.1.4 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/vendor/protify-proc-macro-0.1.4)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_provider v2.3.1
+   Compiling darling v0.24.1
+   Compiling uniffi_macros v0.31.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling axum v0.8.9
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling bon-macros v3.10.2
+   Compiling hyper v1.12.0
+warning: unused import: `oneof_validator_impl::*`
+ --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:8:9
+  |
+8 | pub use oneof_validator_impl::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `consistency_checks::*`
+  --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:12:9
+   |
+12 | pub use consistency_checks::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tonic-prost-build v0.14.6
+   Compiling idna_adapter v1.2.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hyper-util v0.1.21
+   Compiling askama_derive v0.15.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling idna v1.1.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling url v2.5.8
+   Compiling hyper-timeout v0.5.2
+   Compiling hyper-rustls v0.27.10
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tonic v0.14.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tower-http v0.6.11
+   Compiling askama_macros v0.15.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling reqwest v0.12.28
+   Compiling uniffi v0.31.0
+   Compiling bon v3.10.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tonic-prost v0.14.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling askama v0.15.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling protify v0.1.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:274:19
+    |
+274 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:421:18
+    |
+421 | ... => assert!(raw_state == 0 || raw_state == 1 || raw_state == 2),
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:423:19
+    |
+423 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:443:18
+    |
+443 | ...=> assert!(raw_state == 0 || raw_state == 1 || raw_state == 2 || raw_state == 3),
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:445:19
+    |
+445 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 47s
+warning: the following packages contain code that will be rejected by a future version of Rust: acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Checking harness contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/50527a3fa686660b/out/acyclic_actors-50527a3fa686660b__RNvNtNtNtNtCsjW13Qj6z2k4_14acyclic_actors8contract9generated6domain11kani_proofs55positive_u64_constructor_accepts_exactly_nonzero_values.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs line 1162 column 15 function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}> thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs line 1334 column 15 function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError> thread 0
+aborting path on assume(false) at file rust/crates/actors/src/domain/kani_proofs.rs line 453 column 11 function contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values thread 0
+Runtime Symex: 0.0898419s
+size of program expression: 1099 steps
+slicing removed 731 assignments
+Generated 80 VCC(s), 11 remaining after simplification
+Runtime Postprocess Equation: 0.000405562s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.0035407s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 0.00181523s
+Solving with CaDiCaL 3.0.0
+1976 variables, 4201 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.00250211s
+Runtime decision procedure: 0.00624417s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1977 variables, 4202 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000275952s
+Runtime decision procedure: 0.00045143s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+1978 variables, 4203 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00304745s
+Runtime decision procedure: 0.00323149s
+
+RESULTS:
+Check 1: contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:453:11 in function contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 2: contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: value == 0"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:459:13 in function contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 3: contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.2
+	 - Status: SUCCESS
+	 - Description: "assertion failed: error == DomainError::Contract(crate::ContractError::InvalidArgument)"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:460:13 in function contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 4: contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.3
+	 - Status: SUCCESS
+	 - Description: "assertion failed: value != 0"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:455:13 in function contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 5: contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.4
+	 - Status: SUCCESS
+	 - Description: "assertion failed: positive.get() == value"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:456:13 in function contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 6: std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1334:15 in function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>
+
+Check 7: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1162:15 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 8: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1162:15 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 9: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1164:21 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 10: std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1334:15 in function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>
+
+Check 11: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 12: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 13: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 14: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 15: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 16: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 17: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 18: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 19: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 20: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 21: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 22: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/lib.rs:78:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 23: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 24: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 25: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 26: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 27: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 28: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 29: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 30: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 31: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 32: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 33: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 34: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 35: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 36: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 37: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 38: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 39: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 40: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 41: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 42: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 43: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 44: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 45: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 46: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 47: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 48: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 49: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 50: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 51: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 52: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 53: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 54: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 55: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 56: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 57: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 58: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 59: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 60: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 61: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 62: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 63: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 64: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 65: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 66: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 67: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 68: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 69: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 70: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 71: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.13
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 72: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.14
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 73: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.15
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 74: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.16
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 75: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.17
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 76: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.18
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 77: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.19
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 78: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.20
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 79: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.21
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 80: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.22
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 81: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.23
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 82: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.24
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 83: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.25
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 84: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.26
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 85: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.27
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 86: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.28
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 87: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.29
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 88: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.30
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 89: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.31
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 90: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.32
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 91: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.33
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 92: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.34
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 93: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.35
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 94: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.36
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 95: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.37
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 96: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.38
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 97: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.39
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 98: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.40
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 99: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.41
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 100: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.42
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:60:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+
+SUMMARY:
+ ** 0 of 100 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.5213521s
+
+Manual Harness Summary:
+Complete - 1 successfully verified harnesses, 0 failures, 1 total.
+KANI_PROCESS_EXIT=

@@ -1,0 +1,304 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: unused import: `oneof_validator_impl::*`
+ --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:8:9
+  |
+8 | pub use oneof_validator_impl::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `consistency_checks::*`
+  --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:12:9
+   |
+12 | pub use consistency_checks::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:274:19
+    |
+274 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:421:18
+    |
+421 | ... => assert!(raw_state == 0 || raw_state == 1 || raw_state == 2),
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:423:19
+    |
+423 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:443:18
+    |
+443 | ...=> assert!(raw_state == 0 || raw_state == 1 || raw_state == 2 || raw_state == 3),
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rust/crates/actors/src/domain/kani_proofs.rs:445:19
+    |
+445 |         Err(_) => assert!(false),
+    |                   ^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s
+warning: the following packages contain code that will be rejected by a future version of Rust: acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/rust/crates/actors)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Checking harness contract::generated::domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /mnt/c/Users/varun/.codex/tmp/kani-proof-actors-d690-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/4fa6a4a33d1a976f/out/acyclic_actors-4fa6a4a33d1a976f__RNvNtNtNtNtCsjW13Qj6z2k4_14acyclic_actors8contract9generated6domain11kani_proofs46enum_numeric_mappings_are_inverse_and_lossless.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+aborting path on assume(false) at file rust/crates/actors/src/domain/kani_proofs.rs line 74 column 1 function contract::generated::domain::kani_proofs::assert_subscription_state_mapping thread 0
+aborting path on assume(false) at file rust/crates/actors/src/domain/kani_proofs.rs line 84 column 1 function contract::generated::domain::kani_proofs::assert_actor_state_mapping thread 0
+aborting path on assume(false) at file rust/crates/actors/src/domain/kani_proofs.rs line 94 column 1 function contract::generated::domain::kani_proofs::assert_error_code_mapping thread 0
+Runtime Symex: 0.168843s
+size of program expression: 5029 steps
+slicing removed 4036 assignments
+Generated 42 VCC(s), 21 remaining after simplification
+Runtime Postprocess Equation: 0.00263271s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.0173744s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 7.709e-06s
+Solving with CaDiCaL 3.0.0
+992 variables, 3414 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000332196s
+Runtime decision procedure: 0.0180729s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+993 variables, 3415 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000415992s
+Runtime decision procedure: 0.000738295s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+994 variables, 3416 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000458981s
+Runtime decision procedure: 0.000608673s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+995 variables, 3417 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00387185s
+Runtime decision procedure: 0.00412983s
+
+RESULTS:
+Check 1: contract::generated::domain::kani_proofs::assert_subscription_state_mapping.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:74:1 in function contract::generated::domain::kani_proofs::assert_subscription_state_mapping
+
+Check 2: contract::generated::domain::kani_proofs::assert_subscription_state_mapping.assertion.1
+	 - Status: UNREACHABLE
+	 - Description: "assertion failed: false"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:79:13 in function contract::generated::domain::kani_proofs::assert_subscription_state_mapping
+
+Check 3: contract::generated::domain::kani_proofs::assert_subscription_state_mapping.assertion.2
+	 - Status: SUCCESS
+	 - Description: "assertion failed: found == raw"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:77:62 in function contract::generated::domain::kani_proofs::assert_subscription_state_mapping
+
+Check 4: contract::generated::domain::kani_proofs::assert_subscription_state_mapping.assertion.3
+	 - Status: SUCCESS
+	 - Description: "assertion failed: i32::from(value) == raw"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:76:22 in function contract::generated::domain::kani_proofs::assert_subscription_state_mapping
+
+Check 5: contract::generated::domain::kani_proofs::assert_error_code_mapping.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:94:1 in function contract::generated::domain::kani_proofs::assert_error_code_mapping
+
+Check 6: contract::generated::domain::kani_proofs::assert_error_code_mapping.assertion.1
+	 - Status: UNREACHABLE
+	 - Description: "assertion failed: false"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:99:13 in function contract::generated::domain::kani_proofs::assert_error_code_mapping
+
+Check 7: contract::generated::domain::kani_proofs::assert_error_code_mapping.assertion.2
+	 - Status: SUCCESS
+	 - Description: "assertion failed: found == raw"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:97:54 in function contract::generated::domain::kani_proofs::assert_error_code_mapping
+
+Check 8: contract::generated::domain::kani_proofs::assert_error_code_mapping.assertion.3
+	 - Status: SUCCESS
+	 - Description: "assertion failed: i32::from(value) == raw"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:96:22 in function contract::generated::domain::kani_proofs::assert_error_code_mapping
+
+Check 9: contract::generated::domain::kani_proofs::assert_actor_state_mapping.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:84:1 in function contract::generated::domain::kani_proofs::assert_actor_state_mapping
+
+Check 10: contract::generated::domain::kani_proofs::assert_actor_state_mapping.assertion.1
+	 - Status: UNREACHABLE
+	 - Description: "assertion failed: false"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:89:13 in function contract::generated::domain::kani_proofs::assert_actor_state_mapping
+
+Check 11: contract::generated::domain::kani_proofs::assert_actor_state_mapping.assertion.2
+	 - Status: SUCCESS
+	 - Description: "assertion failed: found == raw"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:87:55 in function contract::generated::domain::kani_proofs::assert_actor_state_mapping
+
+Check 12: contract::generated::domain::kani_proofs::assert_actor_state_mapping.assertion.3
+	 - Status: SUCCESS
+	 - Description: "assertion failed: i32::from(value) == raw"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:86:22 in function contract::generated::domain::kani_proofs::assert_actor_state_mapping
+
+Check 13: contract::generated::domain::kani_proofs::assert_error_code_mapping.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:95:11 in function contract::generated::domain::kani_proofs::assert_error_code_mapping
+
+Check 14: contract::generated::domain::kani_proofs::assert_actor_state_mapping.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:85:11 in function contract::generated::domain::kani_proofs::assert_actor_state_mapping
+
+Check 15: contract::generated::domain::kani_proofs::assert_subscription_state_mapping.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain/kani_proofs.rs:75:11 in function contract::generated::domain::kani_proofs::assert_subscription_state_mapping
+
+Check 16: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:670:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 17: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:668:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 18: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:666:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 19: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:664:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 20: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:662:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 21: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:660:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 22: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:658:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 23: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:656:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 24: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:654:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 25: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:652:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 26: <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:650:5 in function <contract::generated::domain::ErrorCode as std::convert::TryFrom<i32>>::try_from
+
+Check 27: <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:637:5 in function <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from
+
+Check 28: <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:635:5 in function <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from
+
+Check 29: <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:633:5 in function <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from
+
+Check 30: <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:631:5 in function <contract::generated::domain::ActorState as std::convert::TryFrom<i32>>::try_from
+
+Check 31: <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:618:5 in function <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from
+
+Check 32: <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:616:5 in function <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from
+
+Check 33: <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:614:5 in function <contract::generated::domain::SubscriptionState as std::convert::TryFrom<i32>>::try_from
+
+
+SUMMARY:
+ ** 0 of 33 failed (3 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.41582364s
+
+Manual Harness Summary:
+Complete - 1 successfully verified harnesses, 0 failures, 1 total.
+KANI_PROCESS_EXIT=
+TERMINAL_TOOL_EXIT=0
