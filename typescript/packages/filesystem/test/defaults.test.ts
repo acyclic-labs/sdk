@@ -8,11 +8,8 @@ import { DEFAULT_MEMORY_FS_OPTIONS } from "../src/memory-options.js";
 
 test("public Filesystem defaults follow the Rust-generated contract", () => {
   expect(DEFAULT_VOLUME_LIMITS).toBe(rawLimits);
-  expect(DEFAULT_OBJECT_CACHE_OPTIONS).toEqual({
-    ...rawCache,
-    maximumBytes: Number(rawCache.maximumBytes),
-  });
-  expect(Number.isSafeInteger(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes)).toBe(true);
+  expect(DEFAULT_OBJECT_CACHE_OPTIONS).toBe(rawCache);
+  expect(typeof DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes).toBe("bigint");
   expect(DEFAULT_MEMORY_FS_OPTIONS.objectCache).toBe(DEFAULT_OBJECT_CACHE_OPTIONS);
   expect(DEFAULT_MEMORY_FS_OPTIONS.maximumObjectBytes).toBe(Number(rawLimits.maximumObjectBytes));
 });

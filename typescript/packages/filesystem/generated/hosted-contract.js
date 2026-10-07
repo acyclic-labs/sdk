@@ -126,3 +126,9 @@ export const JOIN_HISTORY_FROM_PUBLIC = Object.freeze(Object.assign(Object.creat
   "squash": JoinHistory.SQUASH,
   "cherry-pick": JoinHistory.CHERRY_PICK,
 }));
+
+export const FILE_PAYLOAD_KINDS = Object.freeze(["inline-regular", "regular", "directory", "symbolic-link", "empty", "device", "reparse-point"]);
+export const FILE_KINDS = Object.freeze(["regular", "directory", "symbolic-link", "fifo", "socket", "character-device", "block-device", "reparse-point", "mount-boundary"]);
+export const WORK_COUNTER_KEYS = Object.freeze(["allocationOperations", "authorityBytesRead", "authorityBytesWritten", "authorityRecordsAppended", "authorityRecordsRead", "backendReadOperations", "backendWriteOperations", "bytesCopied", "bytesEncoded", "bytesHashed", "durabilityOperations", "itemsExamined", "itemsReturned", "materializations", "objectBytesRead", "objectBytesWritten", "objectProbes", "outputBytes", "pageReads", "pageWrites", "peakAllocationBytes", "sourceBytesRead", "sourceEntriesVisited", "sourcePathComponents"]);
+export function isFileKind(value) { return FILE_KINDS.includes(value); }
+export function isFilePayloadKind(value) { return FILE_PAYLOAD_KINDS.includes(value); }

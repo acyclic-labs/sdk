@@ -15,9 +15,21 @@ import type {
   CheckoutOptions,
   JoinOptions,
   WorkspaceCommit,
+  TreeEntrySnapshot,
+  FileRecordSnapshot,
   WasmBindings,
 } from "../src/contracts.js";
 import type * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
+
+declare const nestedTreeEntry: TreeEntrySnapshot;
+// @ts-expect-error Public filesystem results are deeply readonly.
+nestedTreeEntry.name = nestedTreeEntry.name;
+// @ts-expect-error Nested generated fields remain readonly after projection.
+nestedTreeEntry.name.encoding = "utf8";
+
+declare const fileRecordSnapshot: FileRecordSnapshot;
+// @ts-expect-error Scalar fields from generated records remain readonly too.
+fileRecordSnapshot.linkCount = 0n;
 
 type IsAny<Value> = 0 extends (1 & Value) ? true : false;
 type AnyMethodNames<Value> = {

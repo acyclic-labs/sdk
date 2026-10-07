@@ -117,7 +117,6 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     root: join(engineRoot, "public-adapter"),
     objectCache: {
       ...DEFAULT_OBJECT_CACHE_OPTIONS,
-      maximumBytes: Number(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
     },
   });
   try {
@@ -152,7 +151,6 @@ async function qualifyAdapter(bindingPath, engineRoot) {
       root: join(engineRoot, "foreign-adapter"),
       objectCache: {
         ...DEFAULT_OBJECT_CACHE_OPTIONS,
-        maximumBytes: Number(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
       },
     });
     try {
@@ -210,10 +208,13 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     if (read.bytes.constructor !== Uint8Array || read.bytes[0] !== 4 || read.bytes[1] !== 5) {
       throw new Error("native adapter lost typed file bytes");
     }
+    const readWorkKeys = Object.keys(read.work).sort();
+    const acquisitionWorkKeys = Object.keys(checkout.acquisitionWork).sort();
     if (
-      Object.keys(read.work).length !== 24
-      || Object.values(read.work).some((value) => typeof value !== "number")
-      || Object.keys(checkout.acquisitionWork).length !== 24
+      readWorkKeys.length === 0
+      || JSON.stringify(readWorkKeys) !== JSON.stringify(acquisitionWorkKeys)
+      || Object.values(read.work).some((value) => typeof value !== "bigint")
+      || Object.values(checkout.acquisitionWork).some((value) => typeof value !== "bigint")
     ) {
       throw new Error("native adapter lost the generated work-counter object");
     }

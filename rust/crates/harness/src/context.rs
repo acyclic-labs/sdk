@@ -193,7 +193,7 @@ impl DurableContextProvider {
     }
 
     async fn decode_revision(&self, sequence: u64, bytes: &[u8]) -> Result<ContextRevision> {
-        let revision: ContextRevision = serde_json::from_slice(bytes)
+        let revision: ContextRevision = crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&revision)? != bytes
             || revision.format_version != 2
@@ -315,11 +315,6 @@ async fn validate_context_refs(
     context: &Context,
     verifier: &dyn ContentResidencyVerifier,
 ) -> Result<()> {
-    if context.messages.len() > 65_536 || context.metadata.len() > 1_024 {
-        return Err(crate::Error::Invalid(
-            "durable context exceeds its reference bounds".into(),
-        ));
-    }
     for message in &context.messages {
         let parts = match &message.content {
             ModelContent::Part(part) => std::slice::from_ref(part),
@@ -341,7 +336,7 @@ async fn validate_context_refs(
     }
     for (name, file) in &context.metadata {
         if !name.contains('.')
-            || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
+            || name.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
             || name.chars().any(char::is_control)
         {
             return Err(crate::Error::Invalid(

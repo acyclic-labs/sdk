@@ -10,9 +10,9 @@ const providerOperationBrand: unique symbol = Symbol("harness.provider-operation
 export type ProviderOperationId = readonly number[] & Readonly<{ readonly [providerOperationBrand]: true }>;
 
 export function providerOperationId(value: Uint8Array | readonly number[]): ProviderOperationId {
-  if (value.length === 0 || value.length > 64 || value.every(byte => byte === 0)
+  if (value.length === 0 || value.every(byte => byte === 0)
     || value.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
-    throw new TypeError("Provider operation identity must contain 1–64 nonzero identity bytes");
+    throw new TypeError("Provider operation identity must contain nonzero identity bytes");
   }
   return Object.freeze([...value]) as ProviderOperationId;
 }
@@ -205,7 +205,7 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
   }
 
   #key(value: string): void {
-    if (typeof value !== "string" || value.length === 0 || value.length > 255 || /\p{Cc}/u.test(value)) {
+    if (typeof value !== "string" || value.length === 0 || /\p{Cc}/u.test(value)) {
       throw new TypeError("project operation identity is invalid");
     }
   }

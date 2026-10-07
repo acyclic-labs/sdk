@@ -102,7 +102,7 @@ impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
             let mut operation_bytes = [0_u8; 16];
             operation_bytes.copy_from_slice(&digest[..16]);
             let operation_id = OperationId::from_bytes(operation_bytes);
-            for _ in 0..3 {
+            loop {
                 let mut aggregate = self.aggregate().await?;
                 let current = aggregate
                     .reducer()
@@ -139,7 +139,6 @@ impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
                     Err(error) => return Err(error),
                 }
             }
-            Err(Error::Indeterminate(operation_id))
         })
     }
 }

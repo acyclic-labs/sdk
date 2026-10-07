@@ -72,7 +72,7 @@ fn platform_error(error: JsValue) -> Error {
 
 impl BrowserReader {
     fn new(receiver: JsValue, maximum_bytes: u64) -> Result<Self> {
-        if maximum_bytes == 0 || maximum_bytes > crate::model::MAX_MODEL_REQUEST_BYTES {
+        if maximum_bytes == 0 {
             return Err(Error::Invalid("browser read bound is invalid".into()));
         }
         let function = |name: &str| -> Result<Function> {

@@ -25,8 +25,8 @@ type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
 /**
  * Project one generated browser DTO into the public API shape.  The WASM
  * boundary reports work counters as bigint so it cannot lose precision while
- * crossing the Rust boundary; the public adapters intentionally expose the
- * bounded counters as numbers after checking their range.  Keeping this
+ * crossing the Rust boundary; the public adapters preserve those exact
+ * counters as bigint values. Keeping this
  * projection here makes every result DTO inherit its fields and discriminants
  * from the generated Rust contract instead of re-declaring them in TypeScript.
  */
@@ -41,6 +41,7 @@ type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
         : T;
 
 export type FsProfile = WasmBinding.BrowserVolumeOptions["profile"];
+export type FilePayloadKind = WasmBinding.FilePayloadKind;
 
 export interface EngineCapabilities {
   readonly version: string;
@@ -232,6 +233,9 @@ export interface WorkspaceRebaseOptions {
 
 export type WorkspaceRebaseStatus = WasmBinding.BrowserWorkspaceRebaseResult["status"];
 
+export type ResidencyAdmissionStatus = WasmBinding.BrowserAdmissionResult["status"] | NativeBinding.NativeResidencyStatus;
+export type PromotionAdmissionStatus = WasmBinding.BrowserPromotionAdmission["status"] | NativeBinding.NativePromotionStatus;
+
 export interface WorkspaceRebaseResult {
   readonly status: WorkspaceRebaseStatus;
   readonly generationId: Uint8Array | undefined;
@@ -387,11 +391,11 @@ export interface SpeculationMetrics {
 }
 
 export interface Speculation {
-  observe(observation: ResidencyObservation): Promise<{ readonly status: string; readonly rejection?: string }>;
+  observe(observation: ResidencyObservation): Promise<{ readonly status: ResidencyAdmissionStatus; readonly rejection?: string }>;
   executeResidency(operationId: Uint8Array): Promise<{ readonly objectBytes: bigint; readonly work: WorkCounters }>;
   finishResidency(operationId: Uint8Array, useful: boolean): Promise<void>;
   planPromotion(request: PromotionRequest): Promise<{
-    readonly status: string;
+    readonly status: PromotionAdmissionStatus;
     readonly rejection?: string;
     readonly operationId?: Uint8Array;
     readonly objectId?: Uint8Array;
@@ -433,9 +437,9 @@ export function portableVolumeOptions(
 /** Checkout mode emitted from the Rust WASM input boundary. */
 export type CheckoutOptions = ReadonlyDeep<WasmBinding.BrowserCheckoutOptions>;
 
-/** Bounded customer-side counters projected from the generated Rust DTO. */
+/** Exact customer-side counters projected from the generated Rust DTO. */
 export type WorkCounters = Readonly<{
-  [Key in keyof WasmBinding.BrowserWorkCounters]: number;
+  [Key in keyof WasmBinding.BrowserWorkCounters]: bigint;
 }>;
 
 export type LookupResult = PublicWasm<WasmBinding.BrowserLookupResult>;
@@ -444,7 +448,7 @@ export type FileReadResult = PublicWasm<WasmBinding.BrowserFileReadResult>;
 
 /** One immutable file handle resolved against a pinned checkout generation. */
 export interface ResolvedFile {
-  readonly kind: string;
+  readonly kind: WorkspaceFileKind;
   readonly logicalBytes: bigint;
   readonly metadataCanonicalBytes: Uint8Array;
   readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
@@ -648,7 +652,7 @@ export type LiveMutationResult = PublicWasm<WasmBinding.BrowserLiveMutationResul
 
 export type LiveTransactionResult = PublicWasm<WasmBinding.BrowserLiveTransactionResult>;
 
-export type NamedAttributeClass = "posix-xattr" | "windows-stream" | "mac-resource-fork";
+export type NamedAttributeClass = WasmBinding.BrowserNamedAttributeNameResult["attributeClass"];
 
 export type MetadataResult = PublicWasm<WasmBinding.BrowserMetadataResult>;
 
@@ -661,8 +665,8 @@ export type NamedAttributePage = PublicWasm<WasmBinding.BrowserNamedAttributePag
 export type NamedAttributeName = PublicWasm<WasmBinding.BrowserNamedAttributeNameResult>;
 
 export type NamedAttributeWriteMode = "upsert" | "create" | "replace";
-export type EmptySpecialKind = "fifo" | "socket" | "mount-boundary";
-export type DeviceKind = "character-device" | "block-device";
+export type EmptySpecialKind = Extract<WasmBinding.TransactionOperation, { kind: "create-special" }>["fileKind"];
+export type DeviceKind = Extract<WasmBinding.TransactionOperation, { kind: "create-device" }>["fileKind"];
 
 export type TransactionOperation = ReadonlyDeep<WasmBinding.TransactionOperation>;
 
@@ -881,22 +885,9 @@ export interface NativeFsOptions {
   readonly objectCache: ObjectCacheOptions;
 }
 
-export interface ObjectCacheOptions {
-  readonly maximumEntries: number;
-  readonly maximumBytes: number;
-  readonly maximumInFlight: number;
-  readonly maximumWaitersPerObject: number;
-}
+export type ObjectCacheOptions = Readonly<NativeBinding.NativeObjectCacheOptions>;
 
-const generatedCacheBytes = Number(GENERATED_OBJECT_CACHE_OPTIONS.maximumBytes);
-if (!Number.isSafeInteger(generatedCacheBytes)) {
-  throw new RangeError("Rust object cache default exceeds JavaScript's safe integer range");
-}
-
-export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = Object.freeze({
-  ...GENERATED_OBJECT_CACHE_OPTIONS,
-  maximumBytes: generatedCacheBytes,
-});
+export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = GENERATED_OBJECT_CACHE_OPTIONS;
 
 export interface ObjectCacheStats {
   readonly hits: bigint;

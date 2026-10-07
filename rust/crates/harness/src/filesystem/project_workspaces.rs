@@ -83,8 +83,8 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
 
 impl<A, O> ProjectWorkspaceProvider for FilesystemProjectWorkspaces<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn provider(&self) -> &ProviderRef {
         &self.host.provider
@@ -160,8 +160,8 @@ struct FilesystemProjectJoinPlan<A, O> {
 
 impl<A, O> ProjectJoinPlan for FilesystemProjectJoinPlan<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn source_generation(&self) -> &GenerationRef {
         &self.source
@@ -305,7 +305,7 @@ fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
                 3 => NameEncoding::WindowsUtf16Le,
                 _ => return Err(Error::Invalid("unknown conflict name encoding".into())),
             };
-            let name = LogicalName::new(encoding, name.to_vec(), 4_096)
+            let name = LogicalName::new(encoding, name.to_vec(), u32::MAX)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             Ok(MergeConflict::Binding {
                 directory_id: id,

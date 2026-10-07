@@ -151,8 +151,6 @@ impl ContextDiscoveryLimits {
             || self.directories == 0
             || self.header_bytes == 0
             || self.instruction_bytes == 0
-            || self.header_bytes > 65_536
-            || self.instruction_bytes > crate::model::MAX_MODEL_REQUEST_BYTES
         {
             return Err(Error::Invalid(
                 "discovery requires finite positive bounds".into(),
@@ -241,7 +239,6 @@ impl SkillMetadata {
     pub fn validate(&self) -> Result<()> {
         self.source.validate()?;
         if self.name.is_empty()
-            || self.name.len() > 64
             || self.name.starts_with('-')
             || self.name.ends_with('-')
             || self.name.contains("--")
@@ -250,14 +247,12 @@ impl SkillMetadata {
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
             || self.description.trim().is_empty()
-            || self.description.len() > 1_024
             || self
                 .description
                 .chars()
                 .any(|ch| ch.is_control() && !ch.is_whitespace())
             || self.fields.contains_key("name")
             || self.fields.contains_key("description")
-            || crate::contract::canonical_json_bytes(&self.fields)?.len() > 65_536
         {
             return Err(Error::Invalid("skill metadata is invalid".into()));
         }
@@ -277,9 +272,6 @@ struct Frontmatter {
 /// frontmatter are explicit errors; the trailing body need not be valid UTF-8 yet.
 pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<SkillMetadata> {
     source.validate()?;
-    if prefix.len() > 65_536 {
-        return Err(Error::Invalid("skill prefix exceeds protocol bound".into()));
-    }
     let mut offset = 0;
     let mut header_start = None;
     let mut header_end = None;
@@ -307,12 +299,15 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
     let header = prefix
         .get(start..end)
         .ok_or_else(|| Error::Invalid("invalid skill header".into()))?;
+    // Capture has already enforced the caller's prefix budget. Do not add
+    // unrelated ceilings on the contents of that admitted input. One document
+    // and rejection of expansion features are frontmatter format restrictions.
     let options = serde_saphyr::options! {
         budget: serde_saphyr::budget! {
-            max_events: 2_048, max_nodes: 1_024, max_depth: 16,
-            flow_nesting_limit: 16, max_documents: 1,
+            max_events: usize::MAX, max_nodes: usize::MAX, max_depth: usize::MAX,
+            flow_nesting_limit: usize::MAX, max_documents: 1,
             max_aliases: 0, max_anchors: 0, max_merge_keys: 0,
-            max_total_scalar_bytes: 65_536,
+            max_total_scalar_bytes: usize::MAX,
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
@@ -433,13 +428,6 @@ fn child(directory: &str, name: &str) -> String {
 impl DiscoveredContext {
     /// Checks a serialized snapshot without reading providers or granting authority.
     pub fn validate(&self) -> Result<()> {
-        if crate::contract::canonical_json_bytes(self)?.len() as u64
-            > crate::model::MAX_MODEL_REQUEST_BYTES
-        {
-            return Err(Error::Invalid(
-                "discovered context exceeds protocol bound".into(),
-            ));
-        }
         for file in &self.instructions {
             file.validate()?;
         }

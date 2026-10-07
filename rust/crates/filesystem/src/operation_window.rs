@@ -196,6 +196,16 @@ impl Default for OperationReconcileLimits {
     }
 }
 
+fn validate_reconcile_limits(limits: OperationReconcileLimits) -> Result<(), WorkspaceError> {
+    if limits.maximum_generations == 0
+        || limits.maximum_changes == 0
+        || limits.maximum_conflicts == 0
+    {
+        return Err(WorkspaceError::JoinLimit);
+    }
+    Ok(())
+}
+
 /// Workspace-aware result of closing one tool lease.
 pub enum WorkspaceOperationFinish<A, O> {
     /// Other live leases still pin the shared mount.
@@ -624,6 +634,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         parent: GenerationId,
         limits: OperationReconcileLimits,
     ) -> Result<Option<WorkspaceRebase<A, O>>, OperationWindowError<S::Error>> {
+        validate_reconcile_limits(limits).map_err(OperationWindowError::Workspace)?;
         let workspace_id = workspace.id();
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut current = self.snapshot(workspace_id).await?;
@@ -812,6 +823,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         if workspace.id() != lease.workspace_id {
             return Err(OperationWindowError::IncompatibleState);
         }
+        validate_reconcile_limits(limits).map_err(OperationWindowError::Workspace)?;
         let final_close = || {
             let workspace = workspace.clone();
             async move {
@@ -860,6 +872,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         reconcile: OperationWindowReconcile,
         limits: OperationReconcileLimits,
     ) -> Result<WorkspaceRebase<A, O>, OperationWindowError<S::Error>> {
+        validate_reconcile_limits(limits).map_err(OperationWindowError::Workspace)?;
         let snapshot = self.snapshot(workspace.id()).await?;
         if !matches!(
             snapshot.phase,
@@ -905,6 +918,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         now_millis: u64,
         limits: OperationReconcileLimits,
     ) -> Result<Option<WorkspaceRebase<A, O>>, OperationWindowError<S::Error>> {
+        validate_reconcile_limits(limits).map_err(OperationWindowError::Workspace)?;
         let reconcile = self.claim_reconcile(workspace.id(), now_millis).await?;
         match reconcile {
             Some(reconcile) => self
@@ -1221,6 +1235,67 @@ mod tests {
             coordinator.inspect(workspace).await,
             Err(OperationWindowError::IncompatibleState)
         ));
+    }
+
+    #[tokio::test]
+    async fn zero_reconcile_limits_do_not_close_or_claim_a_window() {
+        for field in 0..3 {
+            let fs = Fs::memory();
+            let parent = fs
+                .create_workspace("invalid-limit-parent")
+                .await
+                .expect("parent");
+            let child = parent
+                .fork(
+                    "invalid-limit-child",
+                    ForkOptions::from_generation(
+                        parent.head().await.expect("base"),
+                        IdempotencyKey::new(),
+                    ),
+                )
+                .await
+                .expect("child");
+            let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
+            let lease = coordinator
+                .begin(
+                    child.id(),
+                    parent.head().await.expect("parent head").id(),
+                    "tool",
+                    1,
+                    20,
+                )
+                .await
+                .expect("lease");
+            let mut limits = OperationReconcileLimits::default();
+            match field {
+                0 => limits.maximum_generations = 0,
+                1 => limits.maximum_changes = 0,
+                2 => limits.maximum_conflicts = 0,
+                _ => unreachable!("only the three reconcile bounds are covered"),
+            }
+
+            assert!(matches!(
+                coordinator
+                    .finish_workspace(&child, &lease, 2, limits)
+                    .await,
+                Err(OperationWindowError::Workspace(WorkspaceError::JoinLimit))
+            ));
+            assert!(matches!(
+                coordinator.inspect(child.id()).await.expect("active window").phase,
+                OperationWindowPhase::Active { ref leases, .. }
+                    if leases.len() == 1 && leases.contains_key(&lease.lease_id)
+            ));
+
+            assert!(matches!(
+                coordinator.recover_workspace(&child, 20, limits).await,
+                Err(OperationWindowError::Workspace(WorkspaceError::JoinLimit))
+            ));
+            assert!(matches!(
+                coordinator.inspect(child.id()).await.expect("unclaimed window").phase,
+                OperationWindowPhase::Active { ref leases, .. }
+                    if leases.len() == 1 && leases.contains_key(&lease.lease_id)
+            ));
+        }
     }
 
     #[tokio::test]
