@@ -1061,6 +1061,7 @@ fn collect_public_use_occurrences(
 }
 
 fn canonical_repository_root(path: &Path) -> Result<PathBuf, Error> {
+    reject_reparse_ancestors(path)?;
     let root = path.canonicalize().map_err(|error| {
         Error::Invalid(format!(
             "cannot resolve rustdoc source root {}: {error}",
@@ -1861,6 +1862,9 @@ mod tests {
             let _ = fs::remove_dir_all(&external_root);
             panic!("PowerShell should create the junction");
         }
+        let error = canonical_repository_root(&junction)
+            .expect_err("repository root junctions must be rejected");
+        assert!(error.to_string().contains("reparse point or symlink"));
         let source = GeneratedSource {
             physical_path: junction.join("wire.rs"),
             logical_path: PathBuf::from("generated/actors/junction-wire.rs"),
