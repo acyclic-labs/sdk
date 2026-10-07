@@ -88,6 +88,15 @@ pub fn validate_positive_u64(value: u64) -> Result<(), BindingError> {
         .map_err(domain_error)
 }
 
+/// Validates the true-only current-head marker through the Rust-owned domain
+/// conversion while preserving its bool wire representation.
+#[uniffi::export]
+pub fn validate_current_head(value: bool) -> Result<(), BindingError> {
+    domain::subscription_start::CurrentHeadMarker::try_from(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
 fn client_error(error: client::Error) -> BindingError {
     match error {
         client::Error::Configuration(detail_message) => {

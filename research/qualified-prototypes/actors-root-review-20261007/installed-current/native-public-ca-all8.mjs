@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { ActorsClient } from './node_modules/@acyclic-labs/actors/dist/index.js';
+const ca=await readFile('../../actors-types-consumer-20261007/native-test-cert.pem');
+const client=new ActorsClient({endpoint:'https://127.0.0.1:54443',token:'fixture-token',caCertificate:ca});
+assert.equal(await client.transport,'grpc');
+const digest=new Uint8Array(32).fill(1); const limits={handlerTimeoutMillis:1n,memoryBytes:2n,checkpointBytes:3n};
+await client.createActor({codeSha256:digest,homeRegion:'eu',bindings:[],limits,subscriptions:[],idempotencyKey:'create'});
+await client.updateActor({actorId:'actor-a',codeSha256:digest,bindings:[],limits,expectedConfigurationRevision:0n,idempotencyKey:'update'});
+await client.inspectActor({actorId:'actor-a'});
+await client.addSubscription({actorId:'actor-a',subscription:{subscriptionId:'sub',streamPath:'events',start:{start:{case:'currentHead',value:true}},placementAnchor:false},idempotencyKey:'add'});
+await client.removeSubscription({actorId:'actor-a',subscriptionId:'sub',idempotencyKey:'remove'});
+await client.resumeSubscription({actorId:'actor-a',subscriptionId:'sub',idempotencyKey:'resume'});
+await client.checkpointActor({actorId:'actor-a',idempotencyKey:'checkpoint'});
+await client.invokeActor({actorId:'actor-a',method:'POST',url:'/invoke',body:new Uint8Array([4,5]),headers:[{name:'content-type',value:'application/json'}]});
+console.log('installed archive public ActorsClient with CA passed grpc and 8 operations');

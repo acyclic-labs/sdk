@@ -456,6 +456,12 @@ pub mod subscription_start {
         }
     }
 
+    #[cfg(feature = "uniffi")]
+    uniffi::custom_type!(CurrentHeadMarker, bool, {
+        lower: |value| bool::from(value),
+        try_lift: |value| Ok(CurrentHeadMarker::try_from(value)?),
+    });
+
     /// The semantic oneof for [`super::SubscriptionStart`].
     #[proto_oneof(proxied, fallible = DomainError)]
     #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]

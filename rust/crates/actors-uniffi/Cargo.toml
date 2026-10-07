@@ -23,5 +23,5 @@ required-features = ["bindgen"]
 acyclic-actors = { path = "../actors", features = ["uniffi"] }
 thiserror = "2.0.17"
 tokio-util = "=0.7.19"
-uniffi = { version = "=0.31.0", features = ["tokio"] }
+uniffi = { version = "=0.31.0", features = ["tokio", "scaffolding-ffi-buffer-fns"] }
 

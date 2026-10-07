@@ -16,11 +16,12 @@ nominal = true
 validator = "validatePositiveU64"
 imports = ["uniffi.acyclic_actors_uniffi.validatePositiveU64"]
 
-# Populated when the Rust domain promotes the true-only wire marker to a
-# custom type. The marker keeps the bool wire representation but cannot forge
-# false in foreign constructors.
-[bindings.kotlin.custom_types.CurrentHead]
+# The marker keeps the bool wire representation but cannot forge false in a
+# foreign constructor; validation is delegated to the Rust conversion.
+[bindings.kotlin.custom_types.CurrentHeadMarker]
 nominal = true
+validator = "validateCurrentHead"
+imports = ["uniffi.acyclic_actors_uniffi.validateCurrentHead"]
 
 [bindings.python.custom_types.ActorId]
 nominal = true
@@ -43,19 +44,16 @@ readonly_collections = true
 
 [bindings.dart.custom_types.ActorId]
 nominal = true
-safe_value = "non-empty-string"
 validator = "validateActorId"
 imports = ["acyclic_actors_uniffi.dart"]
 
 [bindings.dart.custom_types.CodeSha256]
 nominal = true
-safe_value = "fixed-bytes-32"
 validator = "validateCodeSha256"
 imports = ["acyclic_actors_uniffi.dart"]
 
 [bindings.dart.custom_types.PositiveU64]
 nominal = true
-safe_value = "non-zero-u64"
 validator = "validatePositiveU64"
 imports = ["acyclic_actors_uniffi.dart"]
 

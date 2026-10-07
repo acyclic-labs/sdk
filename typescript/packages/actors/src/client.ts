@@ -24,7 +24,7 @@ export type ActorsRustClient = {
 
 /** Bridge factory supplied by the generated WASM or native package. */
 export interface ActorsRustBinding {
-  connect(endpoint: string, token: string, signal?: AbortSignal): Promise<ActorsRustClient>;
+  connect(endpoint: string, token: string, signal?: AbortSignal, caCertificate?: Uint8Array): Promise<ActorsRustClient>;
 }
 
 export interface ActorsCallOptions {
@@ -34,6 +34,8 @@ export interface ActorsCallOptions {
 export interface ActorsOptions {
   readonly endpoint: string;
   readonly token: string;
+  /** Optional native trust root for private or test endpoints. */
+  readonly caCertificate?: Uint8Array;
   /** Native callers may inject the built N-API binding. */
   readonly binding?: ActorsRustBinding;
   /** Optional secret-free per-operation observer. */
@@ -64,6 +66,7 @@ export class ActorsTransportError extends Error {
 export class ActorsClient {
   readonly #endpoint: string;
   readonly #token: string;
+  readonly #caCertificate: Uint8Array | undefined;
   readonly #binding: ActorsRustBinding;
   #client: Promise<ActorsRustClient> | undefined;
   #connectAbort: AbortController | undefined;
@@ -74,6 +77,7 @@ export class ActorsClient {
     this.#observer = resolveObserver(options.observer);
     this.#endpoint = options.endpoint;
     this.#token = options.token;
+    this.#caCertificate = options.caCertificate;
     this.#binding = options.binding ?? defaultBinding();
   }
 
@@ -104,7 +108,7 @@ export class ActorsClient {
     if (this.#client === undefined) {
       const controller = new AbortController();
       let pending!: Promise<ActorsRustClient>;
-      pending = this.#binding.connect(this.#endpoint, this.#token, controller.signal)
+      pending = this.#binding.connect(this.#endpoint, this.#token, controller.signal, this.#caCertificate)
         .then(client => {
           if (this.#client === pending) this.#connectAbort = undefined;
           return client;
@@ -172,7 +176,17 @@ function defaultBinding(): ActorsRustBinding {
 
 function nativeBinding(): ActorsRustBinding {
   return {
-    async connect(endpoint, token, signal) {
+    async connect(endpoint, token, signal, caCertificate) {
+      // The staged metadata identifies the exact native artifacts present in
+      // this package. Select WASM before evaluating the generated loader when
+      // the package was installed on another supported platform; the loader's
+      // generic missing-binding error otherwise hides its requested paths.
+      // @ts-ignore generated native metadata is intentionally untracked
+      const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as { default?: NativeTargetMetadata } & NativeTargetMetadata;
+      const metadata = metadataModule.default ?? metadataModule;
+      if (!hasNativeArtifactForRuntime(metadata)) {
+        return wasmBinding().connect(endpoint, token, signal, caCertificate);
+      }
       let module: NativeActorsModule;
       try {
         // The native build script stages this generated loader and its exact
@@ -185,7 +199,7 @@ function nativeBinding(): ActorsRustBinding {
         // native artifact is preferred on Node, but a package install remains
         // usable when its optional platform artifact is not present.
         if (isMissingNativeArtifact(error)) {
-          return wasmBinding().connect(endpoint, token, signal);
+          return wasmBinding().connect(endpoint, token, signal, caCertificate);
         }
         throw error;
       }
@@ -196,7 +210,9 @@ function nativeBinding(): ActorsRustBinding {
       const cancellation = nativeCancellation(module, signal);
       let inner: NativeActorsClient;
       try {
-        inner = await Client.connect(endpoint, token, cancellation?.handle);
+        inner = caCertificate === undefined
+          ? await Client.connect(endpoint, token, cancellation?.handle)
+          : await Client.connectWithCa(endpoint, token, Buffer.from(caCertificate), cancellation?.handle);
       } finally {
         cancellation?.cleanup();
       }
@@ -228,9 +244,29 @@ interface NativeActorsClient extends NativeActorsMethods {
 }
 
 interface NativeActorsModule {
-  readonly NativeActorsClient?: { connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient> };
+  readonly NativeActorsClient?: {
+    connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+    connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+  };
   readonly NativeActorsCancellation?: new () => { cancel(): void };
-  readonly default?: { readonly NativeActorsClient?: { connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient> }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+  readonly default?: { readonly NativeActorsClient?: {
+    connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+    connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+  }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+}
+
+interface NativeTargetMetadata {
+  readonly artifacts?: readonly { readonly path?: string }[];
+}
+
+function hasNativeArtifactForRuntime(metadata: NativeTargetMetadata): boolean {
+  const artifacts = metadata.artifacts ?? [];
+  const names = artifacts.map(artifact => artifact.path?.split(/[\\/]/).pop() ?? "");
+  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  if (process.platform === "darwin") {
+    return names.some(name => name === "index.darwin-universal.node" || name === `index.darwin-${arch}.node`);
+  }
+  return names.some(name => name.startsWith(`index.${process.platform}-${arch}-`) && name.endsWith(".node"));
 }
 
 function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
@@ -303,11 +339,16 @@ function normalizeModulePath(path: string): string {
   if (value.startsWith("file:")) {
     try { value = new URL(value).pathname; } catch { return ""; }
   }
-  return value
+  try { value = decodeURIComponent(value); } catch { /* keep the original path */ }
+  const normalized = value
     .replace(/^[/\\]+(?=[A-Za-z]:)/, "")
     .replaceAll("\\", "/")
     .replace(/\/+/g, "/")
-    .toLowerCase();
+    .replace(/\/$/, "");
+  // Windows module paths are case-insensitive; POSIX paths are not. Keeping
+  // POSIX case prevents an unrelated transitive module from being treated as
+  // this package's optional loader.
+  return /^(?:[A-Za-z]:\/|\/\/)/.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
