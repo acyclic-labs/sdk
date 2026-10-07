@@ -385,7 +385,7 @@ pub fn children_from_wire(
 pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
-    Ok(crate::ChildrenPageRequest {
+    let request = crate::ChildrenPageRequest {
         parent: value.parent.map(path).transpose()?,
         after: value.after.map(path).transpose()?,
         hierarchy_version: value
@@ -399,7 +399,9 @@ pub fn children_page_from_wire(
             })
             .transpose()?,
         limit: value.limit,
-    })
+    };
+    validate_children_page_request(&request)?;
+    Ok(request)
 }
 
 /// Converts a validated children page into its protobuf response.

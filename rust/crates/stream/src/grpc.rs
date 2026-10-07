@@ -1249,6 +1249,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grpc_rejects_an_invalid_children_page_request_before_transport()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([unavailable_channel()]),
+            "fixture",
+        )?;
+        assert_eq!(
+            transport
+                .children_page(ChildrenPageRequest {
+                    parent: None,
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 0,
+                })
+                .await,
+            Err(StreamError::LimitExceeded)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn service_rejects_oversized_wire_commands_before_provider_dispatch() {
         let service = Service::new(Arc::new(MemoryStream::default()));
         let request = wire::AppendRequest {
@@ -1757,4 +1778,3 @@ mod tests {
         Ok(())
     }
 }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
