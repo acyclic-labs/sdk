@@ -23,6 +23,7 @@ pub const HARNESS_SUITE: &[u8] = include_bytes!("../vectors/harness.json");
 
 /// Canonical language-neutral Machines conformance inventory.
 pub const MACHINES_SUITE: &[u8] = include_bytes!("../vectors/machines.json");
+const _: () = assert!(!MACHINES_SUITE.is_empty(), "conformance inventory is empty");
 
 /// Canonical language-neutral Stream conformance inventory.
 pub const STREAM_SUITE: &[u8] = acyclic_stream::conformance::SUITE;
@@ -71,9 +72,6 @@ pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
               local state, and splitting it would only move the same checks behind indirection"
 )]
 pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
-    if MACHINES_SUITE.is_empty() {
-        return Err("Machines conformance inventory is empty".into());
-    }
     let key = |suffix: u8| {
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
             .map_err(|error| error.to_string())
