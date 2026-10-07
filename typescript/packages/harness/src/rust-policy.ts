@@ -4,16 +4,8 @@ import {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureHarnessWasm } from "./wasm-runtime.js";
 
-// Start package-owned initialization without turning one transient fetch
-// failure into a permanently rejected ESM module. Async public factories call
-// `ensureHarnessWasm()` again and surface their own failure for retry.
-try {
+export async function validateAuthorityPathSegment(value: string): Promise<string> {
   await ensureHarnessWasm();
-} catch {
-  // The next Rust-backed async operation owns retry and error reporting.
-}
-
-export function validateAuthorityPathSegment(value: string): string {
   try {
     return validateAuthorityPathSegmentWasm(value);
   } catch {
@@ -21,7 +13,8 @@ export function validateAuthorityPathSegment(value: string): string {
   }
 }
 
-export function isSafeAuthorityId(value: string): boolean {
+export async function isSafeAuthorityId(value: string): Promise<boolean> {
+  await ensureHarnessWasm();
   try {
     validateAuthorityPathSegmentWasm(value);
     return true;
@@ -30,7 +23,8 @@ export function isSafeAuthorityId(value: string): boolean {
   }
 }
 
-export function validateComponentLabel(value: string, field: string): void {
+export async function validateComponentLabel(value: string, field: string): Promise<void> {
+  await ensureHarnessWasm();
   try {
     validateComponentLabelWasm(value);
   } catch {

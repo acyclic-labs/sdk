@@ -26,15 +26,23 @@ try {
   };
   let rejected = false;
   try {
-    await harness.Harness.create(options);
+    await harness.validateComponentLabel("browser-retry", "component");
   } catch (error) {
     rejected = String(error?.message ?? error).includes("simulated first WASM fetch failure");
   }
   if (!rejected) throw new Error("failed WASM operation did not reject");
+  let clientRejected = false;
+  try {
+    await new harness.HarnessClient({ connect: async () => { throw new Error("unused"); } }).agent("browser-retry");
+  } catch (error) {
+    clientRejected = String(error?.message ?? error).includes("simulated first WASM fetch failure");
+  }
+  if (!clientRejected) throw new Error("failed client authority operation did not reject");
   globalThis.fetch = originalFetch;
+  await harness.validateComponentLabel("browser-retry", "component");
+  await new harness.HarnessClient({ connect: async () => { throw new Error("unused"); } }).agent("browser-retry");
   const runtime = await harness.Harness.create(options);
   runtime.free();
-  harness.validateComponentLabel("browser-retry", "component");
   document.body.dataset.result = failuresRemaining === 0 ? "passed" : "failed: fetch was not intercepted twice";
 } catch (error) {
   document.body.dataset.result = `failed: ${error.message}`;

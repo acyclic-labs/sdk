@@ -104,9 +104,9 @@ export interface RuntimeSchema<Value> {
   parse(value: unknown): Value;
   readonly [runtimeSchemaBrand]: (value: Value) => Value;
 }
-export function defineRuntimeSchema<Value>(id: string,
-  document: Readonly<{ [key: string]: JsonSchemaValue }>, parse: (value: unknown) => Value): RuntimeSchema<Value> {
-  validateComponentLabel(id, "task schema identity");
+export async function defineRuntimeSchema<Value>(id: string,
+  document: Readonly<{ [key: string]: JsonSchemaValue }>, parse: (value: unknown) => Value): Promise<RuntimeSchema<Value>> {
+  await validateComponentLabel(id, "task schema identity");
   if (document === null || typeof document !== "object" || Array.isArray(document)
     || Object.keys(document).length === 0 || typeof parse !== "function") {
     throw new TypeError("task schema must be a non-vacuous JSON Schema document and parser");
@@ -161,8 +161,6 @@ export class TaskDefinition<Input, Output> {
     readonly implementation: TaskImplementation<Input, Output>,
     options: TaskDefinitionOptions<Input, Output>,
   ) {
-    validateComponentLabel(name, "task name");
-    validateComponentLabel(revision, "task revision");
     taskKey(name, revision);
     if ((options.implementationDigest !== undefined && !/^[0-9a-f]{64}$/.test(options.implementationDigest))
       || (implementation.kind === "resumable" && (!options.implementationDigest || !options.input || !options.output
@@ -180,14 +178,18 @@ export class TaskDefinition<Input, Output> {
     this.options = Object.freeze({ ...options, ...(options.requirements ? { requirements: Object.freeze([...options.requirements]) } : {}) });
     Object.freeze(this);
   }
-  static live<Input, Output>(name: string, revision: string, handler: LiveTask<Input, Output>, options: TaskDefinitionOptions<Input, Output> = {}): TaskDefinition<Input, Output> {
+  static async live<Input, Output>(name: string, revision: string, handler: LiveTask<Input, Output>, options: TaskDefinitionOptions<Input, Output> = {}): Promise<TaskDefinition<Input, Output>> {
+    await validateComponentLabel(name, "task name");
+    await validateComponentLabel(revision, "task revision");
     return new TaskDefinition(name, revision, { kind: "live", handler }, options);
   }
-  static resumable<Input, Output, State>(name: string, revision: string, component: ResumableTask<Input, Output, State>, options: ResumableTaskOptions<Input, Output>): TaskDefinition<Input, Output> {
+  static async resumable<Input, Output, State>(name: string, revision: string, component: ResumableTask<Input, Output, State>, options: ResumableTaskOptions<Input, Output>): Promise<TaskDefinition<Input, Output>> {
+    await validateComponentLabel(name, "task name");
+    await validateComponentLabel(revision, "task revision");
     if (component.state === null || typeof component.state !== "object" || !(runtimeSchemaBrand in component.state)) {
       throw new TypeError("resumable tasks require a pinned state schema");
     }
-    const state = defineRuntimeSchema<unknown>(component.state.id, component.state.document,
+    const state = await defineRuntimeSchema<unknown>(component.state.id, component.state.document,
       value => component.state.parse(value));
     const erased: ResumableTask<Input, Output> = Object.freeze({
       state,
@@ -209,7 +211,7 @@ export class TaskDefinition<Input, Output> {
         if (next.kind === "continue") return { kind: "continue", state: restored };
         const operationId = contracts.validateIdentity("operation", next.operationId);
         if (next.kind === "effect") {
-          validateComponentLabel(next.effect.kind, "effect kind");
+          await validateComponentLabel(next.effect.kind, "effect kind");
           return { kind: "effect", state: restored, operationId,
             effect: { kind: next.effect.kind, payload: contracts.validate("file_ref", next.effect.payload) } };
         }
@@ -420,9 +422,9 @@ export interface ComponentIdentity {
 }
 /** A scoped policy retains both pinned implementations instead of claiming either one alone. */
 export type PolicyIdentity = ComponentIdentity | Readonly<{ composition: readonly [PolicyIdentity, PolicyIdentity] }>;
-export function policyIdentity(name: string, version: string, digest: Uint8Array): ComponentIdentity {
-  validateComponentLabel(name, "policy name");
-  validateComponentLabel(version, "policy version");
+export async function policyIdentity(name: string, version: string, digest: Uint8Array): Promise<ComponentIdentity> {
+  await validateComponentLabel(name, "policy name");
+  await validateComponentLabel(version, "policy version");
   if (digest.length !== 32 || !digest.some(byte => byte !== 0)) {
     throw new TypeError("policy implementation digest must be a nonzero 32-byte value");
   }
@@ -657,7 +659,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         // immutable admission boundary.  Check the pinned policy before
         // consulting either one so a drifted runtime cannot turn into a
         // provider-specific replay or publication error.
-        this.#harness.assertPolicyIdentity();
+        await this.#harness.assertPolicyIdentity();
         // Validate and canonicalize every member before consulting the owner
         // manifest. Invalid input must be rejected locally and must never be
         // turned into an unsupported-provider result (or partially admitted).
@@ -666,7 +668,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
           throw new Error("durable batch requires an owner-retained manifest provider");
         }
         const retainedValue = await this.#harness.spawner.loadBatch(batch.id, this.#harness);
-        this.#harness.assertPolicyIdentity();
+        await this.#harness.assertPolicyIdentity();
         const retained = retainedValue === null ? null : this.#harness.contracts.validate("durable_batch_request", retainedValue);
         // A retained batch already has an immutable execution placement. Load
         // it before qualification so replay still works if the provider is
@@ -695,7 +697,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       }
       const spawner = this.#harness.spawner;
       if (!spawner?.admitBatch) throw new Error("durable batch spawner disappeared after validation");
-      this.#harness.assertPolicyIdentity();
+      await this.#harness.assertPolicyIdentity();
       let replay: HostBatchReplay;
       try { replay = await spawner.admitBatch(request, this.#harness); }
       catch (error) {
@@ -705,7 +707,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
           entries: request.members.map((member, index) => ({ key: { batchId: batch.id, index },
             admission: { kind: "indeterminate", operationId: member.operation_id } })) };
       }
-      this.#harness.assertPolicyIdentity();
+      await this.#harness.assertPolicyIdentity();
       return this.#acceptBatchReplay(definition, batch, request, replay);
     }
     const entries = await Promise.all(batch.inputs.map(async (input, index): Promise<GroupEntry<Output>> => {
@@ -741,7 +743,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     this.#harness.task(definition);
     // Report a changed policy before provider-shape errors. Reconciliation is
     // itself a durable operation and must never run under a drifted policy.
-    this.#harness.assertPolicyIdentity();
+    await this.#harness.assertPolicyIdentity();
     const registration = registrationKey(definition);
     const spawner = this.#harness.spawner;
     const host = this.#harness.state;
@@ -761,9 +763,9 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       if (local.length === batch.inputs.length && local.every(entry => entry.admission.kind !== "indeterminate"
         && entry.outcome?.kind !== "indeterminate")) return local;
     }
-    this.#harness.assertPolicyIdentity();
+    await this.#harness.assertPolicyIdentity();
     const recovered = await spawner.reconcileBatch(request, this.#harness);
-    this.#harness.assertPolicyIdentity();
+    await this.#harness.assertPolicyIdentity();
     return this.#acceptBatchReplay(definition, batch, request, recovered);
   }
   /** Reattach by the caller-retained ID after losing the original input vector. */
@@ -776,7 +778,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     if (!spawner?.loadBatch || !spawner.reconcileBatch || !this.#harness.state) {
       throw new Error("batch ID reconciliation requires spawner and state bindings");
     }
-    this.#harness.assertPolicyIdentity();
+    await this.#harness.assertPolicyIdentity();
     const loaded = await spawner.loadBatch(batchId, this.#harness);
     if (loaded === null) return null;
     const retained = this.#harness.contracts.validate("durable_batch_request", loaded);
@@ -789,7 +791,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       throw new Error("retained batch differs from its pinned task, inputs, or scope");
     }
     const recovered = await spawner.reconcileBatch(expected, this.#harness);
-    this.#harness.assertPolicyIdentity();
+    await this.#harness.assertPolicyIdentity();
     return this.#acceptBatchReplay(definition, batch, expected, recovered);
   }
   /** Reconciles a retained batch, then asks its owner to retain one
@@ -853,7 +855,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
             throw new Error("spawner and state host batch bindings differ");
           }
           if (this.#harness.components.spawner || this.#harness.components.state) {
-            this.#harness.attestAdmission(observed, request.members[entry.key.index]!);
+            await this.#harness.attestAdmission(observed, request.members[entry.key.index]!);
           }
           admission = { kind: "accepted", task: validatedHostTask(observed.task, operationId, outputSchema, this.#harness.contracts) };
         }
@@ -918,7 +920,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
           throw new ExecutionQualificationError(error instanceof Error ? error.message : String(error));
         }
       }
-      this.#harness.validateExecutionPlacement(execution);
+      await this.#harness.validateExecutionPlacement(execution);
       request = execution === null
         ? base
         : contracts.admitBatchRequest({ ...baseInput(), execution });
@@ -1099,11 +1101,11 @@ export class TaskContext {
     this.#harness = harness;
   }
   /** Narrows descendant authority and optionally selects new live-task bindings. */
-  scoped(scope: ExecutionScope): TaskContext {
+  async scoped(scope: ExecutionScope): Promise<TaskContext> {
     if (this.durable && (scope.executionProvider || scope.modelBinding || scope.contextBuilder)) {
       throw new Error("durable provider transition requires a recorded effect");
     }
-    return new TaskContext(this.#harness.scoped(scope), this.signal, this.taskId, this.durable);
+    return new TaskContext(await this.#harness.scoped(scope), this.signal, this.taskId, this.durable);
   }
   task<Input, Output>(definition: TaskDefinition<Input, Output>): TaskRef<Input, Output>;
   task(name: string): TaskRef<unknown, unknown>;
@@ -1707,8 +1709,6 @@ export class HarnessBuilder {
     return this.#registerTool(definition, undefined, pinned);
   }
   #registerTool<Input, Output>(definition: ToolDefinition<Input, Output>, executor?: ToolExecutor<Input, Output>, machine?: MachineIdentityWire): this {
-    validateComponentLabel(definition.name, "tool name");
-    validateComponentLabel(definition.revision, "tool revision");
     if (typeof definition.parseInput !== "function" || typeof definition.parseOutput !== "function") {
       throw new TypeError("typed tool parsers are required");
     }
@@ -1734,7 +1734,7 @@ export class HarnessBuilder {
     this.#selectedTools.set(name, revision);
     return this;
   }
-  build(): AgentHarness { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
+  async build(): Promise<AgentHarness> { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
     if (!this.#grants.includes("fork:publish") && !this.#grants.includes("project:merge")) throw new TypeError("project workspaces require fork:publish or project:merge");
     components.workspaces = this.#workspaces;
   } if (this.#forkPreparer) {
@@ -1748,7 +1748,21 @@ export class HarnessBuilder {
     components.forkPublisher = this.#forkPublisher;
   } if ([...this.#tools.values()].some(tool => tool.machine) && !components.state?.executeTool) {
     throw new TypeError("resumable tools require owner-host durable tool execution");
-  } validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants); return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction); }
+  } validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants);
+    const policy = await validatePolicyIdentity((components.policy)?.identity() ?? null);
+    if (components.host && !samePolicyIdentity(policy, await validatePolicyIdentity(components.host.policyIdentity()))) throw new Error("runtime policy identity differs from durable host policy");
+    if (components.state && !samePolicyIdentity(policy, await validatePolicyIdentity(components.state.policyIdentity()))) throw new Error("runtime policy identity differs from durable state policy");
+    if (components.spawner && !components.state && !components.host) throw new Error("durable spawner requires a state binding");
+    if (components.spawner && !samePolicyIdentity(policy, await validatePolicyIdentity(components.spawner.policyIdentity()))) throw new Error("runtime policy identity differs from durable spawner policy");
+    if (components.execution) {
+      const selected = await validatePolicyIdentity(components.execution.identity());
+      if (selected === null || "composition" in selected
+        || !samePolicyIdentity(selected, await validatePolicyIdentity(components.state?.executionIdentity?.() ?? null))
+        || !samePolicyIdentity(selected, await validatePolicyIdentity(components.spawner?.executionIdentity?.() ?? null))) {
+        throw new Error("execution provider, state, and spawner routes differ");
+      }
+    }
+    return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction, policy); }
 }
 
 interface AgentHarnessComponents { inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
@@ -1760,7 +1774,7 @@ export class AgentHarness {
   readonly #policyIdentity: PolicyIdentity | null;
   readonly components: Readonly<AgentHarnessComponents>;
   readonly #contentLimits: Limits;
-  constructor(tasks: ReadonlyMap<string, ErasedTaskDefinition>, tools: ReadonlyMap<string, ErasedRegisteredTool>, components: AgentHarnessComponents, readonly scope: ExecutionScope, readonly running: Map<RuntimeTaskId, Task<unknown>>, selectedTools: ReadonlyMap<string, string>, toolSources: ReadonlyMap<string, ErasedToolDefinition>, readonly contracts: NativeContracts, construction: typeof harnessConstruction) {
+  constructor(tasks: ReadonlyMap<string, ErasedTaskDefinition>, tools: ReadonlyMap<string, ErasedRegisteredTool>, components: AgentHarnessComponents, readonly scope: ExecutionScope, readonly running: Map<RuntimeTaskId, Task<unknown>>, selectedTools: ReadonlyMap<string, string>, toolSources: ReadonlyMap<string, ErasedToolDefinition>, readonly contracts: NativeContracts, construction: typeof harnessConstruction, policyIdentity: PolicyIdentity | null) {
     if (construction !== harnessConstruction) throw new TypeError("AgentHarness must be created through HarnessBuilder or scoped()");
     this.#tasks = new Map(tasks);
     this.#tools = new Map(tools);
@@ -1768,21 +1782,7 @@ export class AgentHarness {
     this.#toolSources = new Map(toolSources);
     this.#contentLimits = contracts.validate("limits", components.limits ?? DEFAULT_LIMITS);
     this.components = Object.freeze({ ...components, limits: this.#contentLimits });
-    this.#policyIdentity = validatePolicyIdentity((scope.policyProvider ?? components.policy)?.identity() ?? null);
-    if (components.host && !samePolicyIdentity(this.#policyIdentity,
-      validatePolicyIdentity(components.host.policyIdentity()))) {
-      throw new Error("runtime policy identity differs from durable host policy");
-    }
-    if (components.state && !samePolicyIdentity(this.#policyIdentity,
-      validatePolicyIdentity(components.state.policyIdentity()))) {
-      throw new Error("runtime policy identity differs from durable state policy");
-    }
-    if (components.spawner && !components.state && !components.host) throw new Error("durable spawner requires a state binding");
-    if (components.spawner && !samePolicyIdentity(this.#policyIdentity,
-      validatePolicyIdentity(components.spawner.policyIdentity()))) {
-      throw new Error("runtime policy identity differs from durable spawner policy");
-    }
-    this.#assertExecutionIdentity();
+    this.#policyIdentity = policyIdentity;
   }
   get interactions(): InteractionHandler | undefined { return this.scope.interactionHandler ?? this.components.interactions; }
   projectWorkspaces(): ProjectWorkspaceProvider {
@@ -1846,7 +1846,7 @@ export class AgentHarness {
     } else throw new Error("parent fork control is not bound");
     return new AgentHarness(this.#tasks, this.#tools,
       { ...this.components, forkPreparer: pinForkPreparer(this.contracts, preparer) },
-      this.scope, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction);
+      this.scope, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction, this.#policyIdentity);
   }
   #checkedFork(request: ForkRequest): { preparer: ForkPreparer; checked: ForkRequest } {
     if (!this.scope.grants.includes("fork:publish")) throw new Error("runtime scope lacks fork:publish");
@@ -1913,13 +1913,13 @@ export class AgentHarness {
     return admitted;
   }
   /** Check that a durable operation still uses the policy pinned at construction. */
-  assertPolicyIdentity(): void { this.#assertPolicyIdentity(); }
+  async assertPolicyIdentity(): Promise<void> { await this.#assertPolicyIdentity(); }
   /** Canonical, owner-attestable inputs and authority for one durable task. */
-  admissionRecord<Input, Output>(operationId: string, definition: TaskDefinition<Input, Output>,
-    input: Input, parentTaskId?: RuntimeTaskId, execution: ExecutionPlacementWire | null = null): TaskAdmissionRecord {
+  async admissionRecord<Input, Output>(operationId: string, definition: TaskDefinition<Input, Output>,
+    input: Input, parentTaskId?: RuntimeTaskId, execution: ExecutionPlacementWire | null = null): Promise<TaskAdmissionRecord> {
     if (definition.implementation.kind !== "resumable" || !definition.options.input || !definition.options.output
       || !definition.options.implementationDigest) throw new TypeError("durable admission requires a pinned resumable task");
-    if (execution !== null) this.validateExecutionPlacement(execution);
+    if (execution !== null) await this.validateExecutionPlacement(execution);
     const machineDigest = durableMachineDigest(definition);
     const projection: TaskAdmissionProjectionInput = {
       operation_id: operationId,
@@ -1940,7 +1940,7 @@ export class AgentHarness {
     };
     return freezeSchema(this.contracts.admitTask(projection));
   }
-  validateExecutionPlacement(value: ExecutionPlacementWire | null): void {
+  async validateExecutionPlacement(value: ExecutionPlacementWire | null): Promise<void> {
     const selected = this.components.execution;
     if (!selected) {
       if (value !== null) throw new Error("retained admission selected an unbound execution route");
@@ -1949,20 +1949,20 @@ export class AgentHarness {
     // Qualification and replay must observe one provider composition. A
     // route that changes its state/spawner identity between calls cannot
     // safely consume the placement it just qualified.
-    this.#assertExecutionIdentity();
+    await this.#assertExecutionIdentity();
     if (value === null) throw new Error("qualified execution route is missing");
     const checked = this.contracts.validate("execution_placement", value);
     if (!this.contracts.canonicalEqual(checked.provider, selected.identity())) {
       throw new Error("execution qualifier returned another provider");
     }
   }
-  attestAdmission(observed: HostTaskAttachment, expected: TaskAdmissionRecord): void {
+  async attestAdmission(observed: HostTaskAttachment, expected: TaskAdmissionRecord): Promise<void> {
     if (observed.admission === undefined || !this.contracts.canonicalEqual(observed.admission, expected)) {
       throw new Error("state owner admission differs from the exact spawner request");
     }
-    this.#validateObservedAdmission(observed.admission);
+    await this.#validateObservedAdmission(observed.admission);
   }
-  #validateObservedAdmission(record: TaskAdmissionRecord): void {
+  async #validateObservedAdmission(record: TaskAdmissionRecord): Promise<void> {
     this.contracts.validate("task_admission", record);
     const definition = this.#tasks.get(taskKey(record.task.name, record.task.version));
     const identities = definition ? durableWireIdentities(definition, this.contracts) : null;
@@ -1974,8 +1974,8 @@ export class AgentHarness {
       throw new Error("state owner retained an unregistered task machine or schema");
     }
     this.contracts.validateToolValue(record.input_schema, record.input);
-    this.validateExecutionPlacement(record.execution);
-    if (!samePolicyIdentity(this.#policyIdentity, validatePolicyIdentity(record.policy)) || record.extensions !== null
+    await this.validateExecutionPlacement(record.execution);
+    if (!samePolicyIdentity(this.#policyIdentity, await validatePolicyIdentity(record.policy)) || record.extensions !== null
       || record.grants.some(grant => !this.scope.grants.includes(grant))
       || !this.contracts.canonicalEqual(record.limits, nativeLimits(this.#contentLimits))) {
       throw new Error("state owner retained widened or changed task authority");
@@ -1988,32 +1988,32 @@ export class AgentHarness {
       throw new Error("state owner retained widened task limits");
     }
   }
-  #assertPolicyIdentity(): void {
-    this.#assertExecutionIdentity();
+  async #assertPolicyIdentity(): Promise<void> {
+    await this.#assertExecutionIdentity();
     const policy = this.scope.policyProvider ?? this.components.policy;
-    if (!samePolicyIdentity(this.#policyIdentity, validatePolicyIdentity(policy?.identity() ?? null))) {
+    if (!samePolicyIdentity(this.#policyIdentity, await validatePolicyIdentity(policy?.identity() ?? null))) {
       throw new Error("runtime policy implementation changed after admission");
     }
     if (this.host && !samePolicyIdentity(this.#policyIdentity,
-      validatePolicyIdentity(this.host.policyIdentity()))) {
+      await validatePolicyIdentity(this.host.policyIdentity()))) {
       throw new Error("durable host policy implementation changed after admission");
     }
     if (this.state && !samePolicyIdentity(this.#policyIdentity,
-      validatePolicyIdentity(this.state.policyIdentity()))) {
+      await validatePolicyIdentity(this.state.policyIdentity()))) {
       throw new Error("durable state policy implementation changed after admission");
     }
     if (this.spawner && !samePolicyIdentity(this.#policyIdentity,
-      validatePolicyIdentity(this.spawner.policyIdentity()))) {
+      await validatePolicyIdentity(this.spawner.policyIdentity()))) {
       throw new Error("durable spawner policy implementation changed after admission");
     }
   }
-  #assertExecutionIdentity(): void {
+  async #assertExecutionIdentity(): Promise<void> {
     const route = this.components.execution;
     if (!route) return;
-    const selected = validatePolicyIdentity(route.identity());
+    const selected = await validatePolicyIdentity(route.identity());
     if (selected === null || "composition" in selected
-      || !samePolicyIdentity(selected, validatePolicyIdentity(this.components.state?.executionIdentity?.() ?? null))
-      || !samePolicyIdentity(selected, validatePolicyIdentity(this.components.spawner?.executionIdentity?.() ?? null))) {
+      || !samePolicyIdentity(selected, await validatePolicyIdentity(this.components.state?.executionIdentity?.() ?? null))
+      || !samePolicyIdentity(selected, await validatePolicyIdentity(this.components.spawner?.executionIdentity?.() ?? null))) {
       throw new Error("execution provider, state, and spawner routes differ");
     }
   }
@@ -2070,7 +2070,7 @@ export class AgentHarness {
     return task;
   }
   async admit<Input, Output>(definition: TaskDefinition<Input, Output>, input: Input, operationId: string, parentTaskId?: RuntimeTaskId): Promise<Admission<Output>> {
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     this.contracts.validateIdentity("operation", operationId);
     if (this.#tasks.get(taskKey(definition.name, definition.revision)) !== eraseTaskDefinition(definition)) return { kind: "rejected", reason: { code: "unregistered", message: "task definition is not registered or no longer active" } };
     if (definition.implementation.kind === "live") return { kind: "rejected", reason: { code: "unsupported", message: "live tasks are local-only; use spawn without a durable operation ID" } };
@@ -2085,11 +2085,11 @@ export class AgentHarness {
       this.contracts.validateToolValue(inputSchema.document, parsed);
     }
     catch (error) { return { kind: "rejected", reason: { code: "invalid_input", message: error instanceof Error ? error.message : String(error) } }; }
-    let expected = this.admissionRecord(operationId, definition, parsed, parentTaskId);
+    let expected = await this.admissionRecord(operationId, definition, parsed, parentTaskId);
     if (this.components.execution) {
       if (!spawner.reconcileAdmission) throw new Error("execution route requires admission reconciliation");
       const existing = await spawner.reconcileAdmission(operationId, this);
-      this.#assertPolicyIdentity();
+      await this.#assertPolicyIdentity();
       if (existing !== null) {
         const observed = await observeAdmittedTask(host, existing.task.id(), this, operationId);
         if (observed === null) return { kind: "indeterminate", operationId };
@@ -2101,15 +2101,15 @@ export class AgentHarness {
           throw new Error("operation belongs to another admission request");
         }
         if (existing.admission === undefined) throw new Error("spawner omitted the retained admission request");
-        this.attestAdmission(observed, existing.admission);
+        await this.attestAdmission(observed, existing.admission);
         const task = validatedHostTask<Output>(observed.task, operationId, pinnedOutputSchema(definition), this.contracts);
         this.running.set(task.id(), task as Task<unknown>);
         return { kind: "accepted", task };
       }
       const placement = this.contracts.validate("execution_placement",
         await this.components.execution.qualifyTask(expected));
-      this.validateExecutionPlacement(placement);
-      this.#assertPolicyIdentity();
+      await this.validateExecutionPlacement(placement);
+      await this.#assertPolicyIdentity();
       // Re-admit the complete envelope after adding the placement. Native
       // validation owns the canonical numeric/byte representation of nested
       // execution fields; spreading the already validated pieces directly
@@ -2124,7 +2124,7 @@ export class AgentHarness {
       }
       throw error;
     }
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     if (admission.kind !== "accepted") return admission;
     const task = validatedHostTask<Output>(admission.task, operationId, pinnedOutputSchema(definition), this.contracts);
     const observed = await observeAdmittedTask(host, task.id(), this, operationId);
@@ -2134,7 +2134,7 @@ export class AgentHarness {
       || observed.implementationDigest !== definition.options.implementationDigest) {
       throw new Error("spawner and state host task bindings differ");
     }
-    if (this.components.spawner || this.components.state) this.attestAdmission(observed, expected);
+    if (this.components.spawner || this.components.state) await this.attestAdmission(observed, expected);
     const authenticated = validatedHostTask<Output>(observed.task, operationId, pinnedOutputSchema(definition), this.contracts);
     this.running.set(authenticated.id(), authenticated as Task<unknown>);
     return { kind: "accepted", task: authenticated };
@@ -2144,9 +2144,9 @@ export class AgentHarness {
     const spawner = this.spawner;
     const host = this.state;
     if (!spawner?.reconcileAdmission || !host) throw new Error("durable admission reconciliation is not bound");
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     const attachment = await spawner.reconcileAdmission(operationId, this);
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     if (attachment === null) return null;
     if (attachment.operationId !== operationId) throw new Error("host reconciled another operation identity");
     const observed = await observeAdmittedTask(host, attachment.task.id(), this, operationId);
@@ -2158,12 +2158,12 @@ export class AgentHarness {
     }
     if (this.components.spawner || this.components.state) {
       if (attachment.admission === undefined) throw new Error("spawner did not retain the full admission request");
-      this.attestAdmission(observed, attachment.admission);
+      await this.attestAdmission(observed, attachment.admission);
     }
-    return this.#validatedHostAttachment(observed);
+    return await this.#validatedHostAttachment(observed);
   }
   group<Output>(policy: GroupPolicy, id?: GroupId): TaskGroup<Output> { return new TaskGroup(this, policy, id); }
-  scoped(scope: ExecutionScope): AgentHarness {
+  async scoped(scope: ExecutionScope): Promise<AgentHarness> {
     if (scope.modelBinding) this.contracts.encodeCanonicalJson(scope.modelBinding.identity.options);
     const parentPolicy = this.scope.policyProvider ?? this.components.policy;
     const grants = narrowGrants(this.scope.grants, scope.grants, scope.grantsExplicit || scope.grants.length > 0);
@@ -2189,7 +2189,8 @@ export class AgentHarness {
       components.state = scope.executionProvider.state();
       components.spawner = scope.executionProvider.spawner();
     }
-    return new AgentHarness(this.#tasks, this.#tools, components, narrowed, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction);
+    const policyIdentity = await validatePolicyIdentity((narrowed.policyProvider ?? components.policy)?.identity() ?? null);
+    return new AgentHarness(this.#tasks, this.#tools, components, narrowed, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction, policyIdentity);
   }
   async #prepareToolCall<Input, Output>(tool: ToolRef<Input, Output>, input: Input,
     signal: AbortSignal, operationId?: string, providerCallId?: string) {
@@ -2219,13 +2220,13 @@ export class AgentHarness {
       name: invocation.name,
       arguments: admittedInput,
     });
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     const policy = this.scope.policyProvider ?? this.components.policy;
     const decision = await policy?.evaluate(
       { kind: "tool", tool: invocation.name, arguments: admittedInput },
       { grants: this.scope.grants, limits: this.scope.limits },
     ) ?? { kind: "allow" as const };
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     if (decision.kind === "deny") throw new Error(decision.reason);
     const approvals = policyApprovals(decision, policy?.identity() ?? null);
     return { admittedInput, parsedInput, publishOutput, callId, invocation, approvals };
@@ -2296,9 +2297,9 @@ export class AgentHarness {
     if (this.host?.executeSelectedTurn !== undefined) {
       if (operationId === undefined) throw new TypeError("durable selected turns require a stable operation ID");
       validateSelectedContext(selectedContext, this.limits);
-      this.#assertPolicyIdentity();
+      await this.#assertPolicyIdentity();
       const outcome = await this.host.executeSelectedTurn(operationId, selectedContext, this);
-      this.#assertPolicyIdentity();
+      await this.#assertPolicyIdentity();
       if (outcome.kind === "indeterminate") {
         if (outcome.operationId !== operationId) throw new Error("host returned an unrelated model operation");
         throw new IndeterminateModelTurnError(operationId);
@@ -2344,7 +2345,7 @@ export class AgentHarness {
       validateModelContent(userContent, this.limits);
     }
     const receipts: RunReceipt[] = [];
-    const definition = TaskDefinition.live<RuntimeAgentInput, AgentOutput>("acyclic.default-agent", "1", async (context, input) => {
+    const definition = await TaskDefinition.live<RuntimeAgentInput, AgentOutput>("acyclic.default-agent", "1", async (context, input) => {
       const loop = this.components.loop;
       if (loop) return loop.run(context, input);
       const model = this.scope.modelBinding ?? this.components.model;
@@ -2425,7 +2426,7 @@ export class AgentHarness {
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);
     });
     const tasks = new Map(this.#tasks); tasks.set(taskKey(definition.name, definition.revision), eraseTaskDefinition(definition));
-    const runtime = new AgentHarness(tasks, this.#tools, this.components, this.scope, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction);
+    const runtime = new AgentHarness(tasks, this.#tools, this.components, this.scope, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction, this.#policyIdentity);
     const task = runtime.spawn(definition, input);
     const outcome = await task.result();
     if (outcome.kind !== "succeeded") throw new TaskRunError(task.id(), outcome);
@@ -2443,11 +2444,11 @@ export class AgentHarness {
       return restoreTask<Output>(local);
     }
     if (this.state) {
-      this.#assertPolicyIdentity();
+      await this.#assertPolicyIdentity();
       const attachment = await this.state.attach(id, this);
-      this.#assertPolicyIdentity();
+      await this.#assertPolicyIdentity();
       if (attachment.task.id() !== id) throw new Error("host attached a different task identity");
-      return restoreTask<Output>(this.#validatedHostAttachment(attachment, requested));
+      return restoreTask<Output>(await this.#validatedHostAttachment(attachment, requested));
     }
     throw new Error("task identity is not retained locally and no durable harness host is bound");
   }
@@ -2465,9 +2466,9 @@ export class AgentHarness {
     }
     const state = this.state;
     if (!state?.children) throw new Error("durable task hierarchy is not bound");
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     const page = await state.children(parent, expectedRevision, afterSlot, maximum, this);
-    this.#assertPolicyIdentity();
+    await this.#assertPolicyIdentity();
     try {
       return this.contracts.validateTaskChildrenPage(parent, expectedRevision, afterSlot, maximum, page);
     } catch (error) {
@@ -2476,7 +2477,7 @@ export class AgentHarness {
     }
   }
 
-  #validatedHostAttachment(attachment: HostTaskAttachment, requested?: ErasedTaskDefinition): Task<unknown> {
+  async #validatedHostAttachment(attachment: HostTaskAttachment, requested?: ErasedTaskDefinition): Promise<Task<unknown>> {
     const definition = this.#tasks.get(taskKey(attachment.taskName, attachment.revision));
     if (!definition || (requested !== undefined && requested !== definition)
       || definition.revision !== attachment.revision
@@ -2488,7 +2489,7 @@ export class AgentHarness {
       if (attachment.admission === undefined || attachment.admission.operation_id !== attachment.operationId) {
         throw new Error("state owner did not retain the task admission");
       }
-      this.#validateObservedAdmission(attachment.admission);
+      await this.#validateObservedAdmission(attachment.admission);
     }
     return validatedHostTask(attachment.task, attachment.operationId, pinnedOutputSchema(definition), this.contracts);
   }
@@ -2657,7 +2658,7 @@ function composePolicies(parent: EffectivePolicy | undefined, child: EffectivePo
   if (!child) return parent;
   return {
     identity: () => Object.freeze({ composition: Object.freeze([
-      validatePolicyIdentity(parent.identity())!, validatePolicyIdentity(child.identity())!,
+      parent.identity(), child.identity(),
     ] as const) }),
     async evaluate(invocation, scope) {
       const inherited = await parent.evaluate(invocation, scope);
@@ -2678,7 +2679,7 @@ function policyApprovals(decision: EffectivePolicyDecision, identity: PolicyIden
   if (identity === null) throw new TypeError("approval policy has no pinned identity");
   return [{ prompt: decision.prompt, policy: identity }];
 }
-function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentityWire | null, ancestors = new Set<object>()): PolicyIdentity | null {
+async function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentityWire | null, ancestors = new Set<object>()): Promise<PolicyIdentity | null> {
   if (identity === null) return null;
   if (ancestors.has(identity)) throw new TypeError("policy identity contains a cycle");
   ancestors.add(identity);
@@ -2688,9 +2689,10 @@ function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentityWire |
         || identity.composition.length !== 2) throw new TypeError("policy composition is invalid");
       const [parent, child] = identity.composition;
       if (!parent || !child) throw new TypeError("policy composition is incomplete");
-      return Object.freeze({ composition: Object.freeze([
-        validatePolicyIdentity(parent, ancestors)!, validatePolicyIdentity(child, ancestors)!,
-      ] as const) });
+      const checkedParent = await validatePolicyIdentity(parent, ancestors);
+      const checkedChild = await validatePolicyIdentity(child, ancestors);
+      if (checkedParent === null || checkedChild === null) throw new TypeError("policy composition is incomplete");
+      return Object.freeze({ composition: Object.freeze([checkedParent, checkedChild] as const) });
     }
     if (Object.keys(identity).sort().join("\0") !== "digest\0name\0version") {
       throw new TypeError("policy identity has unexpected fields");
@@ -2700,7 +2702,7 @@ function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentityWire |
       || identity.digest.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
       throw new TypeError("policy implementation digest must be a nonzero 32-byte value");
     }
-    return policyIdentity(identity.name, identity.version, Uint8Array.from(identity.digest));
+    return await policyIdentity(identity.name, identity.version, Uint8Array.from(identity.digest));
   } finally {
     ancestors.delete(identity);
   }
