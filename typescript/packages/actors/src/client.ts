@@ -1,4 +1,4 @@
-import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import {
   AddSubscriptionRequestSchema, AddSubscriptionResponseSchema,
   CheckpointActorRequestSchema, CheckpointActorResponseSchema,
@@ -79,11 +79,11 @@ export class ActorsClient {
   async #call<I extends DescMessage, O extends DescMessage, Request, Response>(operation: Operation, input: I, request: Request, output: O): Promise<Response> {
     const client = await this.#client;
     return observed(this.#observer, "actors", operation, async sizes => {
-      const encoded = toBinary(input, request as MessageShape<I>);
+      const encoded = toBinary(input, create(input, request as MessageShape<I>));
       if (sizes) sizes.requestBytes = encoded.byteLength;
       const response = await client[operation](encoded);
       if (sizes) sizes.responseBytes = response.byteLength;
-      return normalizeSemantic(fromBinary(output, response)) as Response;
+      return normalizeSemantic(fromBinary(output, response), output) as Response;
     }) as Promise<Response>;
   }
 }
@@ -91,12 +91,23 @@ export class ActorsClient {
 /** Buf's message objects are the wire boundary; Rust has already validated the
  * response before this exposes the generated semantic shape. Presence remains
  * `undefined` when the Rust declaration marks an optional field as absent. */
-function normalizeSemantic(value: unknown): unknown {
+function normalizeSemantic(value: unknown, schema?: DescMessage): unknown {
   if (value === undefined) return undefined;
   if (value === null || typeof value !== "object") return value;
   if (value instanceof Uint8Array) return value;
-  if (Array.isArray(value)) return value.map(normalizeSemantic);
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeSemantic(item)]));
+  if (Array.isArray(value)) return value.map(item => normalizeSemantic(item, schema));
+  const fields = schema?.fields ?? [];
+  const byName = new Map(fields.map(field => [field.localName, field]));
+  const result = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$typeName").map(([key, item]) => {
+    const field = byName.get(key);
+    return [key, normalizeSemantic(item, field?.message)];
+  }));
+  // Buf omits absent message fields. The Rust Option<T> declarations expose
+  // those values as null, while optional scalar presence remains undefined.
+  for (const field of fields) {
+    if (field.fieldKind === "message" && !(field.localName in result)) result[field.localName] = null;
+  }
+  return result;
 }
 
 /** Compatibility name retained while callers migrate to `ActorsClient`. */
