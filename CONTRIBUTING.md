@@ -63,11 +63,13 @@ Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 
 `.github/workflows/qualification.yml` is the only authored qualification graph.
 Its seven Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy lanes
-run on Blacksmith and form a bounded graph. Every lane caps Cargo, CMake, Make,
-Rayon, and test parallelism at four processes. The macOS runner is Blacksmith's
-smallest six-vCPU image but still uses only four processes. Blacksmith's colocated
-dependency/tool cache and sccache make cold and warm runs fast without archiving
-Cargo target directories.
+run on Blacksmith and form a bounded graph of at most four concurrent matrix
+lanes. Every lane caps Cargo, CMake, Make, Rayon, and test parallelism at four
+processes. The macOS runner is Blacksmith's smallest six-vCPU image but still uses
+only four processes. Blacksmith's colocated dependency/tool cache and sccache make
+cold and warm runs fast; Cargo target directories are never cached. Only `main`
+saves compiler caches (main pushes run the core lanes; a manual run on `main`
+warms the full lanes), and every other run restores main's newest entry.
 Successful jobs and their declared outputs may be reused only for the identical
 source tree, manifest semantics, toolchain, lockfile, operating system, and
 architecture.

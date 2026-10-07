@@ -34,7 +34,7 @@ publish = true
 
 [workspace.dependencies]
 async-trait = "0.1.89"
-axum = { version = "0.8.9", features = ["ws"] }
+axum = "0.8.9"
 blake3 = "1.8.2"
 clap = { version = "4", features = ["derive", "env"] }
 diffy = "0.5.2"
@@ -69,12 +69,12 @@ s3s = "0.17.0"
 schemars = "1"
 serde-wasm-bindgen = "0.6.5"
 serde_urlencoded = "0.7.1"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 thiserror = "2.0.17"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
-toml = "0.8"
+toml = "1.1.6"
 tracing = "0.1.44"
 tsify = { version = "0.5.8", features = ["js"] }
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

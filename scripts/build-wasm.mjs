@@ -49,13 +49,20 @@ const narrowMachinesDecoder = output => {
 };
 
 // TypeScript package -> cargo package selection, built artifact, bindgen
-// output name, and optional post-processing of the generated directory.
+// output name, optional target directory, and optional post-processing of the
+// generated directory. acyclic-stream is itself a cdylib, so Cargo gives its
+// library no per-configuration filename: the stream build (with `wasm`), the
+// filesystem build and the harness build (each unifying stream's dependencies
+// differently) would overwrite one artifact and recompile it and every
+// dependent crate under fat LTO on each later run. Separate target
+// directories keep each configuration warm.
 const packages = {
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm", outName: "acyclic_fs_wasm" },
   stream: {
     cargo: ["-p", "acyclic-stream", "--no-default-features", "--features", "wasm"],
     artifact: "acyclic_stream",
     outName: "acyclic_stream_wasm",
+    targetDirectory: "stream-wasm",
   },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm", outName: "acyclic_objects_wasm" },
   machines: {
@@ -70,6 +77,7 @@ const packages = {
     artifact: "acyclic_harness",
     outName: "acyclic_harness_wasm",
     postprocess: stripHarnessClosureShims,
+    targetDirectory: "harness-wasm",
   },
 };
 
@@ -111,15 +119,19 @@ if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
 
 const metadata = capture(cargo, ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
 if (!metadata) throw new Error("cargo metadata failed");
-const releaseDirectory = resolve(JSON.parse(metadata).target_directory, "wasm32-unknown-unknown", "wasm-release");
+const targetRoot = JSON.parse(metadata).target_directory;
 
 for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
-  const { cargo: selection, artifact, outName, postprocess } = packages[name];
+  const { cargo: selection, artifact, outName, postprocess, targetDirectory } = packages[name];
   const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
-  run(cargo, ["build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked"]);
+  const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
+  run(cargo, [
+    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
+    "--target-dir", target,
+  ]);
   mkdirSync(output, { recursive: true });
   run(wasmBindgen, [
-    resolve(releaseDirectory, `${artifact}.wasm`),
+    resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`),
     "--target", "web", "--out-dir", output, "--out-name", outName,
   ]);
   postprocess?.(output);

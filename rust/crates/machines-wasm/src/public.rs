@@ -180,7 +180,6 @@ fn digest_out(value: [u8; 32]) -> String {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ImageIn {
     ManagedOci {
@@ -244,7 +243,6 @@ fn image_out(value: &Image) -> ImageOut {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CompatibilityIn {
     BestEffort {},
@@ -323,7 +321,6 @@ fn compatibility_out(value: &CompatibilityPolicy) -> CompatibilityOut {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SuspensionIn {
     Manual {},
@@ -347,7 +344,6 @@ fn suspension_in(value: SuspensionIn) -> Result<SuspensionPolicy, JsValue> {
     }
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ExpirationIn {
     Never {},
@@ -442,7 +438,6 @@ fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
     }
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 pub struct BudgetsIn {
@@ -469,7 +464,6 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
     }
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
@@ -834,21 +828,18 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineKey {
     machine_id: String,
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointKey {
     checkpoint_id: String,
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForkIn {
     checkpoint_id: String,
@@ -857,7 +848,6 @@ pub struct ForkIn {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineForkIn {
     machine_id: String,
@@ -865,7 +855,6 @@ pub struct MachineForkIn {
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyIn {
     machine_id: String,
@@ -873,7 +862,6 @@ pub struct PolicyIn {
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct ListIn {
     #[tsify(type = "string | null")]
@@ -881,7 +869,6 @@ pub struct ListIn {
     limit: u32,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct EventsIn {
     machine_id: String,
@@ -890,7 +877,6 @@ pub struct EventsIn {
     limit: u32,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageIn {
     machine_id: String,
