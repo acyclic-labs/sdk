@@ -149,7 +149,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     empty,
                     entries,
                     maximum,
-                    decode_limits(config),
+                    DecodeLimits::for_volume(config),
                     remaining(work, budget).map_err(WorkspaceError::engine)?,
                     cancellation,
                 )
@@ -185,7 +185,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &self.inner.objects,
                     root.file_table,
                     id,
-                    decode_limits(config),
+                    DecodeLimits::for_volume(config),
                     remaining(work, budget).map_err(WorkspaceError::engine)?,
                     cancellation,
                 )
@@ -203,7 +203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         entries,
                         cursor.as_ref(),
                         config.limits.maximum_directory_page_entries,
-                        decode_limits(config),
+                        DecodeLimits::for_volume(config),
                         remaining(work, budget).map_err(WorkspaceError::engine)?,
                         cancellation,
                     )
@@ -254,7 +254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             empty,
             mutations,
             maximum,
-            decode_limits(config),
+            DecodeLimits::for_volume(config),
             remaining(work, budget).map_err(WorkspaceError::engine)?,
             cancellation,
         )
