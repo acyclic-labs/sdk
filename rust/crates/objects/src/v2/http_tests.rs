@@ -419,7 +419,11 @@ fn customer_credentials_and_endpoint_configuration_are_bounded() {
     ] {
         assert!(HttpObjects::new(endpoint, "token", 1024).is_err());
     }
-    for token in [String::new(), "\nsecret".into(), "x".repeat(8193)] {
+    for token in [
+        String::new(),
+        "\nsecret".into(),
+        "x".repeat(super::MAX_BEARER_TOKEN_BYTES + 1),
+    ] {
         assert!(HttpObjects::new("https://example.com", &token, 1024).is_err());
     }
     assert!(

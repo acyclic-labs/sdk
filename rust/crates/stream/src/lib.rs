@@ -43,6 +43,10 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
+pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+
 /// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 

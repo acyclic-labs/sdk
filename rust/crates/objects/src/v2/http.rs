@@ -161,7 +161,7 @@ impl HttpObjects {
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
             || token.trim().is_empty()
-            || token.len() > 8192
+            || token.len() > super::MAX_BEARER_TOKEN_BYTES
             || maximum_response_bytes == 0
         {
             return Err(invalid());

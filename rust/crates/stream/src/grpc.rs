@@ -44,8 +44,7 @@ const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 pub const MAX_ENDPOINTS: usize = 16;
 /// Maximum canonical URI bytes accepted for one endpoint.
 pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
-/// Maximum bearer credential bytes accepted by the native transport.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 8 * 1024;
+pub use crate::MAX_BEARER_TOKEN_BYTES;
 pub use crate::MAX_CA_CERTIFICATE_BYTES;
 
 /// Connection configuration failure.
@@ -1570,7 +1569,7 @@ mod tests {
             Client::connect_endpoints([oversized], "fixture").await,
             Err(ConnectError::EndpointLimit)
         ));
-        let long = "t".repeat(8193);
+        let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
         for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
             assert!(matches!(
                 Client::connect_endpoints(["https://data.invalid"], token).await,

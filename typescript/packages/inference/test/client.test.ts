@@ -465,7 +465,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
-  const oversized = new HttpInferenceTransport("https://example.test", () => ({ authorization: `Bearer ${"x".repeat(8192)}` }), fetcher);
+  const oversized = new HttpInferenceTransport("https://example.test", () => ({ authorization: `Bearer ${"x".repeat(12 * 1024 + 1)}` }), fetcher);
   await expect(oversized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
 });
 

@@ -207,7 +207,7 @@ impl GrpcObjects {
             || endpoint.uri().query().is_some()
             || endpoint.uri().path() != "/"
             || token.trim().is_empty()
-            || token.len() > 8192
+            || token.len() > super::MAX_BEARER_TOKEN_BYTES
         {
             return Err(ConnectError::InvalidConfiguration);
         }
