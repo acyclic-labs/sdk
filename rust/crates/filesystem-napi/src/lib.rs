@@ -1,6 +1,5 @@
 //! Generated-language native embedding boundary for the canonical Rust engine.
 
-use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
     FileMetadata, FilePayload, FileRecord, LogicalName, NameEncoding, NamespacePath,
@@ -49,76 +48,6 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Encodes a merge-plan payload in the versioned compatibility envelope.
-pub fn encode_merge_plan_json(value_json: String) -> Result<String> {
-    compat_wire::encode_merge_plan_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Decodes a versioned merge-plan envelope to its canonical payload.
-pub fn decode_merge_plan_json(value_json: String) -> Result<String> {
-    compat_wire::decode_merge_plan_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Encodes a merge-candidate payload in the versioned compatibility envelope.
-pub fn encode_merge_candidate_json(value_json: String) -> Result<String> {
-    compat_wire::encode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Decodes a versioned merge-candidate envelope to its canonical payload.
-pub fn decode_merge_candidate_json(value_json: String) -> Result<String> {
-    compat_wire::decode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Encodes a multi-root plan payload in the versioned compatibility envelope.
-pub fn encode_multi_root_plan_json(value_json: String) -> Result<String> {
-    compat_wire::encode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Decodes a versioned multi-root plan envelope to its canonical payload.
-pub fn decode_multi_root_plan_json(value_json: String) -> Result<String> {
-    compat_wire::decode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Encodes a multi-root candidate payload in the compatibility envelope.
-pub fn encode_multi_root_candidate_json(value_json: String) -> Result<String> {
-    compat_wire::encode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Decodes a multi-root candidate envelope to its canonical payload.
-pub fn decode_multi_root_candidate_json(value_json: String) -> Result<String> {
-    compat_wire::decode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Encodes a publication payload in the versioned compatibility envelope.
-pub fn encode_publication_json(value_json: String) -> Result<String> {
-    compat_wire::encode_publication_payload(&value_json).map_err(napi_wire_error)
-}
-
-#[napi]
-#[allow(clippy::needless_pass_by_value)]
-/// Decodes a versioned publication envelope to its canonical payload.
-pub fn decode_publication_json(value_json: String) -> Result<String> {
-    compat_wire::decode_publication_payload(&value_json).map_err(napi_wire_error)
-}
 
 /// Exact native companion capabilities returned before any filesystem work.
 #[napi(object)]
