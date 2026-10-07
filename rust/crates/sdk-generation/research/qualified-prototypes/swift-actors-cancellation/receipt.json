@@ -67,7 +67,7 @@
   },
   "typedAll8": {
     "generatedConsumerBuild": "PASS",
-    "ordinaryAndEightOperationRuntime": "not rerun: the retained 60389 gate is pending-only and rejects ordinary actor operations; previous maintained all8 runtime receipt remains at Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-rust-owned-automatic-cancellation-current-20261007g-receipt.json",
+    "ordinaryAndEightOperationRuntime": "pending standard-fixture rerun: Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json at https://localhost:55755; the 60389 gate is general all-eight with an optional pending hook",
     "serviceErrorShape": "Generated BindingError.Service and u64 cursor remain compile-qualified in fresh output"
   },
   "generatedOutputsExcluded": true,
