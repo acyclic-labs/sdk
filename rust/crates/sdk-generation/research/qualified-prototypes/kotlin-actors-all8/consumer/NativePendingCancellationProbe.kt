@@ -8,7 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import uniffi.acyclic_actors_uniffi.ActorId
+import uniffi.acyclic_actors.InspectActorRequest
 import uniffi.acyclic_actors_uniffi.uniffiEnsureInitialized
 import java.net.HttpURLConnection
 import java.net.URL
@@ -49,7 +49,7 @@ fun main() = runBlocking {
     try {
         val pending = launch {
             try {
-                client.inspectActor(ActorId("pending-kotlin"))
+                client.inspectActor(InspectActorRequest("pending-kotlin"))
                 error("pending inspect unexpectedly completed")
             } catch (_: CancellationException) {
                 println("OBSERVED native_pending coroutine_cancelled=true")

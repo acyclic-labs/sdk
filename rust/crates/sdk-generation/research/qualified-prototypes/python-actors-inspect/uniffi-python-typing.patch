@@ -124,6 +124,21 @@
          namespace.visit(|i: &Interface| {
 --- a/src/bindings/python/templates/EnumTemplate.py
 +++ b/src/bindings/python/templates/EnumTemplate.py
+@@ -38,7 +38,10 @@ class {{ type_name }}:
+         {{ variant.docstring|docstring(8) -}}
+     {%-  if variant.has_unnamed_fields() %}
+-        def __init__(self, *values):
+-            if len(values) != {{ variant.fields.len() }}:
+-                raise TypeError(f"Expected {{ variant.fields.len() }} arguments, found {len(values)}")
+-            self._values = values
++        if typing.TYPE_CHECKING:
++            def __init__(self, {% for field in variant.fields %}value{{ loop.index }}: {{ field.ty.type_name }}{% if !loop.last %}, {% endif %}{% endfor %}): ...
++        else:
++            def __init__(self, *values):
++                if len(values) != {{ variant.fields.len() }}:
++                    raise TypeError(f"Expected {{ variant.fields.len() }} arguments, found {len(values)}")
++                self._values = values
+ 
 @@ -142,3 +142,24 @@
 -{% for variant in e.variants -%}
 -{{ type_name }}.{{ variant.name }} = type("{{ type_name }}.{{ variant.name }}", ({{ type_name }}.{{variant.name}}, {{ type_name }},), {})  # type: ignore
@@ -139,7 +154,7 @@
 +{% for variant in e.variants %}
 +    class _{{ type_name }}_{{ variant.name }}({{ type_name }}):
 +{% if variant.has_unnamed_fields() %}
-+        def __init__(self, *values: typing.Any): ...
++        def __init__(self, {% for field in variant.fields %}value{{ loop.index }}: {{ field.ty.type_name }}{% if !loop.last %}, {% endif %}{% endfor %}): ...
 +{% else %}
 +        def __init__(self, {% for field in variant.fields %}{{ field.name }}: {{ field.ty.type_name }}{% if let Some(default) = field.default %} = {{ default.arg_literal }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}): ...
 +{% endif %}

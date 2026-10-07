@@ -7,7 +7,11 @@
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +156,342 @@ pub fn catalog(sources: &[ScenarioSource]) -> ScenarioCatalog {
             })
             .collect(),
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioExecutionRecord {
+    pub id: String,
+    pub source_sha256: String,
+    pub mode: ScenarioMode,
+    pub status: &'static str,
+    pub stdout_sha256: String,
+    pub stderr_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeScriptProjectionRecord {
+    pub scenario_id: &'static str,
+    pub language: &'static str,
+    pub package: &'static str,
+    pub path: &'static str,
+    pub source_sha256: String,
+    pub rust_output_sha256: String,
+    pub snippet_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeScriptProjectionCatalog {
+    pub schema: &'static str,
+    pub projections: Vec<TypeScriptProjectionRecord>,
+}
+
+pub const PROJECTION_CATALOG_SCHEMA: &str = "acyclic.sdk.scenario-projections.v1";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScenarioExecution {
+    pub scenario: Scenario,
+    pub source_sha256: String,
+    pub stdout: String,
+    pub stdout_sha256: String,
+    pub stderr_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeScriptSnippet {
+    pub scenario_id: &'static str,
+    pub package: &'static str,
+    pub path: &'static str,
+    pub source_sha256: String,
+    pub rust_output_sha256: String,
+    pub source: String,
+}
+
+pub fn execution_catalog(executions: &[ScenarioExecution]) -> Vec<ScenarioExecutionRecord> {
+    executions
+        .iter()
+        .map(|execution| ScenarioExecutionRecord {
+            id: execution.scenario.id.to_owned(),
+            source_sha256: execution.source_sha256.clone(),
+            mode: execution.scenario.mode,
+            status: "passed",
+            stdout_sha256: execution.stdout_sha256.clone(),
+            stderr_sha256: execution.stderr_sha256.clone(),
+        })
+        .collect()
+}
+
+pub fn projection_catalog(
+    snippets: &[TypeScriptSnippet],
+    snippet_hashes: impl Fn(&TypeScriptSnippet) -> String,
+) -> TypeScriptProjectionCatalog {
+    TypeScriptProjectionCatalog {
+        schema: PROJECTION_CATALOG_SCHEMA,
+        projections: snippets
+            .iter()
+            .map(|snippet| TypeScriptProjectionRecord {
+                scenario_id: snippet.scenario_id,
+                language: "typescript",
+                package: snippet.package,
+                path: snippet.path,
+                source_sha256: snippet.source_sha256.clone(),
+                rust_output_sha256: snippet.rust_output_sha256.clone(),
+                snippet_sha256: snippet_hashes(snippet),
+            })
+            .collect(),
+    }
+}
+
+/// Execute local examples with a structured Cargo invocation. Endpoint-backed
+/// examples deliberately remain receipt-only until their declared service is
+/// available.
+pub fn execute_local(
+    root: &Path,
+    sources: &[ScenarioSource],
+    cargo_path: Option<&Path>,
+) -> Result<Vec<ScenarioExecution>, Error> {
+    let mut executions = Vec::new();
+    for source in sources {
+        if source.scenario.mode != ScenarioMode::ExecuteLocal {
+            continue;
+        }
+        let manifest = root
+            .join("rust/crates")
+            .join(package_directory(&source.scenario))
+            .join("Cargo.toml");
+        let cargo = cargo_path.unwrap_or_else(|| Path::new("cargo"));
+        let mut command = Command::new(cargo);
+        command
+            .current_dir(root)
+            .args(["run", "--quiet", "--locked", "--manifest-path"])
+            .arg(&manifest)
+            .args(["--example", source.scenario.example]);
+        if !source.scenario.features.is_empty() {
+            command
+                .arg("--features")
+                .arg(source.scenario.features.join(","));
+        }
+        sanitize_compiler_environment(&mut command);
+        let output = command
+            .output()
+            .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
+        if !output.status.success() {
+            return Err(Error::Invalid(format!(
+                "scenario {} failed: {}",
+                source.scenario.id,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8(output.stdout).map_err(|error| {
+            Error::Invalid(format!(
+                "scenario {} stdout is not UTF-8: {error}",
+                source.scenario.id
+            ))
+        })?;
+        executions.push(ScenarioExecution {
+            scenario: source.scenario,
+            source_sha256: source.source_sha256.clone(),
+            stdout_sha256: digest_bytes(stdout.as_bytes()),
+            stderr_sha256: digest_bytes(&output.stderr),
+            stdout,
+        });
+    }
+    Ok(executions)
+}
+
+fn sanitize_compiler_environment(command: &mut Command) {
+    for (key, _) in env::vars_os() {
+        let uppercase = key.to_string_lossy().to_ascii_uppercase();
+        let remove = matches!(
+            uppercase.as_str(),
+            "RUSTC"
+                | "RUSTDOC"
+                | "RUSTFLAGS"
+                | "RUSTDOCFLAGS"
+                | "CARGO_ENCODED_RUSTFLAGS"
+                | "CARGO_ENCODED_RUSTDOCFLAGS"
+                | "RUSTC_WRAPPER"
+                | "RUSTC_WORKSPACE_WRAPPER"
+                | "CARGO_BUILD_TARGET"
+                | "RUSTUP_TOOLCHAIN"
+        ) || uppercase.starts_with("CARGO_CFG_")
+            || (uppercase.starts_with("CARGO_BUILD_") && uppercase != "CARGO_BUILD_JOBS")
+            || uppercase.starts_with("CARGO_TARGET_")
+            || uppercase.starts_with("RUSTC_")
+            || uppercase.starts_with("RUSTDOC_");
+        if remove {
+            command.env_remove(&key);
+        }
+    }
+}
+
+/// Render the TypeScript consumer from the JSON emitted by the Rust example.
+/// The wrapper is deliberately small; every request value comes from the
+/// executable output and the installed package remains the runtime authority.
+pub fn render_typescript(
+    executions: &[ScenarioExecution],
+) -> Result<Vec<TypeScriptSnippet>, Error> {
+    executions
+        .iter()
+        .filter(|execution| execution.scenario.kind == ScenarioKind::MachinesTypescriptConsumer)
+        .map(render_machines_typescript)
+        .collect()
+}
+
+fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
+    let value: serde_json::Value =
+        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
+            Error::Invalid(format!(
+                "scenario {} did not emit JSON: {error}",
+                execution.scenario.id
+            ))
+        })?;
+    let request = value
+        .get("request")
+        .ok_or_else(|| Error::Invalid("Machines scenario output has no request".into()))?;
+    let idempotency_key = string_field(request, "idempotency_key")?;
+    let compatibility = policy_kind(request, "compatibility", "BestEffort", "best-effort")?;
+    let expiration = policy_kind(request, "expiration", "Never", "never")?;
+    let image = request
+        .get("image")
+        .and_then(|image| image.get("ManagedOci"))
+        .ok_or_else(|| Error::Invalid("Machines request has no ManagedOci image".into()))?;
+    let image_hex = bytes_hex(image)?;
+    let network_hex =
+        bytes_hex(request.get("network_policy_digest").ok_or_else(|| {
+            Error::Invalid("Machines request has no network policy digest".into())
+        })?)?;
+    let suspension_policy = request
+        .get("suspension")
+        .ok_or_else(|| Error::Invalid("Machines request has no suspension policy".into()))?;
+    let suspension_kind = nested_policy_kind(suspension_policy, "AfterIdle", "after-idle")?;
+    let suspension = suspension_policy
+        .get("AfterIdle")
+        .ok_or_else(|| Error::Invalid("Machines request has no AfterIdle policy".into()))?;
+    let seconds = number_field(suspension, "secs")?;
+    let nanos = number_field(suspension, "nanos")?;
+    let milliseconds = seconds * 1_000 + nanos / 1_000_000;
+    let budgets = request
+        .get("budgets")
+        .ok_or_else(|| Error::Invalid("Machines request has no budgets".into()))?;
+    let spend_micros = number_field(budgets, "spend_micros")?;
+    let concurrency = number_field(budgets, "concurrency")?;
+    if value
+        .get("outcome")
+        .and_then(|outcome| outcome.get("Created"))
+        .is_none()
+    {
+        return Err(Error::Invalid(
+            "Machines scenario did not create a Created outcome".into(),
+        ));
+    }
+    let page_machines = value
+        .get("page")
+        .and_then(|page| page.get("machines"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Invalid("Machines scenario has no page machines".into()))?;
+    let page_limit = value
+        .get("page_size")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| Error::Invalid("Machines scenario has no page size".into()))?;
+    let page_size = page_machines.len();
+    let page_suspension = page_machines
+        .first()
+        .and_then(|machine| machine.get("contract"))
+        .and_then(|contract| contract.get("suspension"))
+        .and_then(|suspension| suspension.get("AfterIdle"))
+        .map(|_| "after-idle")
+        .ok_or_else(|| Error::Invalid("Machines page has no AfterIdle policy".into()))?;
+    let idempotency_literal = serde_json::to_string(&idempotency_key)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let image_literal =
+        serde_json::to_string(&format!("registry.example/generated@sha256:{image_hex}"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let source = format!(
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ SimulatedMachines, idempotencyKey, managedOci, type CreateMachine }} from \"@acyclic-labs/machines\";\n\nconst request = {{\n  idempotencyKey: idempotencyKey({idempotency_literal}),\n  image: managedOci({image_literal}),\n  compatibility: {{ kind: \"{compatibility}\" }},\n  suspension: {{ kind: \"{suspension_kind}\", milliseconds: {milliseconds} }},\n  expiration: {{ kind: \"{expiration}\" }},\n  networkPolicyDigestHex: \"{network_hex}\",\n  budgets: {{ spendMicros: BigInt(\"{spend_micros}\"), concurrency: {concurrency} }},\n}} satisfies CreateMachine;\n\nconst provider = new SimulatedMachines();\nconst outcome = await provider.create(request);\nif (outcome.kind !== \"created\") throw new Error(`expected created outcome, received ${{outcome.kind}}`);\nconst page = await provider.listMachines(null, {page_limit});\nif (page.machines.length !== {page_size} || page.machines[0].contract.suspension.kind !== \"{page_suspension}\") throw new Error(\"Rust scenario parity failed\");\nconsole.log(JSON.stringify({{ kind: outcome.kind, pageSize: page.machines.length, suspension: page.machines[0].contract.suspension.kind }}));\n",
+        execution.scenario.id, execution.stdout_sha256,
+    );
+    Ok(TypeScriptSnippet {
+        scenario_id: execution.scenario.id,
+        package: "@acyclic-labs/machines",
+        path: "generated/scenarios/machines/typescript-consumer.ts",
+        source_sha256: execution.source_sha256.clone(),
+        rust_output_sha256: execution.stdout_sha256.clone(),
+        source,
+    })
+}
+
+fn nested_policy_kind(
+    value: &serde_json::Value,
+    rust_variant: &str,
+    typescript_kind: &'static str,
+) -> Result<&'static str, Error> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| Error::Invalid("Machines policy is not a Rust enum object".into()))?;
+    match object.len() {
+        1 if object.contains_key(rust_variant) => Ok(typescript_kind),
+        _ => Err(Error::Invalid(format!(
+            "unsupported Machines policy variant; expected {rust_variant}"
+        ))),
+    }
+}
+
+fn policy_kind(
+    value: &serde_json::Value,
+    field: &str,
+    rust_variant: &str,
+    typescript_kind: &'static str,
+) -> Result<&'static str, Error> {
+    match value.get(field).and_then(serde_json::Value::as_str) {
+        Some(value) if value == rust_variant => Ok(typescript_kind),
+        Some(value) => Err(Error::Invalid(format!(
+            "unsupported Machines {field} policy variant {value}"
+        ))),
+        None => Err(Error::Invalid(format!(
+            "Machines request field {field} is not a Rust enum variant"
+        ))),
+    }
+}
+
+fn string_field(value: &serde_json::Value, name: &str) -> Result<String, Error> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Invalid(format!("scenario request field {name} is not a string")))
+}
+
+fn number_field(value: &serde_json::Value, name: &str) -> Result<u64, Error> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| Error::Invalid(format!("scenario request field {name} is not a u64")))
+}
+
+fn bytes_hex(value: &serde_json::Value) -> Result<String, Error> {
+    let bytes = value
+        .as_array()
+        .ok_or_else(|| Error::Invalid("scenario byte field is not an array".into()))?;
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let byte = byte
+            .as_u64()
+            .filter(|byte| *byte <= u8::MAX as u64)
+            .ok_or_else(|| {
+                Error::Invalid("scenario byte field contains an invalid value".into())
+            })?;
+        result.push_str(&format!("{byte:02x}"));
+    }
+    Ok(result)
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// Return the repository-relative paths that must be present in the fixed
@@ -307,5 +647,26 @@ mod tests {
                 .all(|source| source.source_sha256.starts_with("sha256:")
                     && source.source_files.len() == 3)
         );
+    }
+
+    #[test]
+    fn machines_projection_is_rendered_from_rust_output() {
+        let output = include_str!(
+            "../../../../research/machines-typescript-scenario-20261007/machines-typescript-consumer.output.json"
+        );
+        let execution = ScenarioExecution {
+            scenario: SCENARIOS[3],
+            source_sha256: "sha256:test-source".into(),
+            stdout_sha256: digest_bytes(output.as_bytes()),
+            stderr_sha256: digest_bytes(&[]),
+            stdout: output.into(),
+        };
+        let snippets = render_typescript(&[execution]).expect("Rust output should render");
+        assert_eq!(snippets.len(), 1);
+        assert!(snippets[0].source.contains("satisfies CreateMachine"));
+        assert!(snippets[0].source.contains("milliseconds: 15000"));
+        if let Some(path) = std::env::var_os("SCENARIO_SNIPPET_OUTPUT") {
+            std::fs::write(path, snippets[0].source.as_bytes()).expect("write snippet receipt");
+        }
     }
 }

@@ -1,6 +1,6 @@
 use language_package_model::{
-    build_record_from_source, GeneratorIdentity, Language, QualificationMetadata,
-    QualificationStatus,
+    build_record_from_source, validate_language_metadata, GeneratorIdentity, Language,
+    QualificationMetadata, QualificationStatus,
 };
 use std::{env, path::PathBuf};
 
@@ -43,6 +43,11 @@ fn main() {
     );
     let receipt_marker = value(&args, "receipt-marker");
     let source_root = PathBuf::from(value(&args, "source-root"));
+    if args.iter().any(|arg| arg == "--language-metadata") {
+        let metadata_path = PathBuf::from(value(&args, "language-metadata"));
+        let patch_sha256 = value(&args, "generator-patch-sha256");
+        validate_language_metadata(&metadata_path, language, &patch_sha256).unwrap();
+    }
     let record = build_record_from_source(
         &source_root,
         &manifest,

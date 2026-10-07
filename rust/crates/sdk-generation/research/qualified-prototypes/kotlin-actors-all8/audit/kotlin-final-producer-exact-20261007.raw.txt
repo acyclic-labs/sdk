@@ -1,0 +1,51 @@
+Kotlin UniFFI 0.31.0 exact current producer qualification receipt
+Date: 2026-10-07
+
+Production source/workspace:
+- checkout: Q:\sdk\work\sdkgen-main-actual03bb
+- facade Cargo.toml SHA-256: 03F3A7B92277A06FB9C544B711571840DBD6625F55D2D457CF1B3129586C5EBD
+- facade src/lib.rs SHA-256: 8B9BB7E87C76D69103EA022E712A857F8152263142B77A63520C6644E835B36A
+- bindgen bin source SHA-256: F7A2DD11FB370E9595BDFA6C32FC41A9B67A60BBAB06EC711CB7A03EB873FFA6
+- Kotlin config SHA-256: 436799E3AD737A6975FFF566EB7033FFBE178A261117015114E5D52B088FB17A
+- domain.rs SHA-256: 76711505544154445218DA385556A649A317FAE9221552EE913AB4355549F8B8
+- Windows/Linux shared Cargo.lock SHA-256: B7186EB4D99F8EFFF2A121EA404764ABD15F0295DC79F7A01DA2D5A74F4FCA2A
+- UniFFI maintained patch SHA-256: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
+
+Generation:
+- patched bindgen: Q:\sdk\work\actors-uniffi-template-patched-target\debug\actors-uniffi-bindgen.exe, version 0.31.0, SHA-256 A7445B306A9140D6F5C4883766D09FB10C3E9EA55F70545469F930EDC8F3A7E6
+- generated semantic Kotlin SHA-256: B015681D7DF5A04CE79BF2B2C84F62D422C75A6281DEAAD36B035AD90A19A961
+- generated facade Kotlin SHA-256: 33192D07378A399C44A92C7EE486DB9DA7F25E6C230BCF2A06949B1AE8F951F3
+- config generate_immutable_records=true produced exported record val properties; no generated source edits
+- SubscriptionStart is Record(start: Start), with Start.Cursor(ULong) and Start.CurrentHead(Boolean); full-u64 boundary 9007199254740993uL constructed and encoded in probe
+- aliases derive actual Rust custom types: ActorId String, CodeSha256 ByteArray, PositiveU64 ULong
+
+Native provenance:
+- Windows DLL SHA-256 60D18EC410CA5F344C7AB2F58A7C160208271E5F2752AC391A79825A47EE3710; built from current Q source with Cargo.lock above using Rust 1.98.1
+- Linux x86_64 SO SHA-256 FFB2AA87C7AE0DA129D2995D163DDD4207BC8EBD0EAB02580E3C304938A6976D; built from current Q source with Cargo.lock above using WSL Rust 1.98.1
+- macOS arm64 dylib SHA-256 DE9A9A2C212BC50D41C0B5159EE729A01646EC4F661F15CEC86028ACE061E5C0; built from the same current actors/actors-uniffi source closure on ivar with Rust 1.98.1; platform task-local lock SHA-256 B7186EB4D99F8EFFF2A121EA404764ABD15F0295DC79F7A01DA2D5A74F4FCA2A (same current lock; no retagging)
+
+Installed package:
+- JAR: Q:\sdk\work\actors-uniffi-final-producer-kotlin-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar
+- JAR SHA-256: 266F9A27D0CDD10D2A4BCD67604E1CC9CF558E9398BEB6EC30DCD49A01715840
+- resources: standard JNA paths linux-x86-64/libacyclic_actors_uniffi.so, win32-x86-64/acyclic_actors_uniffi.dll, darwin-aarch64/libacyclic_actors_uniffi.dylib
+- Maven offline package: PASS; JVM target 17; Kotlin 1.9.21; coroutines 1.8.0; JNA 5.15.0
+
+Live Windows fixture all-eight:
+- endpoint generated task-locally at runtime; actor-a, token conformance
+- all8_request_constructors=8
+- task_cancellation_forwarded=true
+- inspect/create/update/add/remove/resume/checkpoint returned ACTIVE, epoch=9
+- invoke returned status=201, one location header
+- wrong token returned typed BindingException.Service grpcCode=16
+- pre-cancelled connect and inspect returned BindingException.Cancelled
+- terminal: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS
+
+Live Windows pending cancellation:
+- root-pending fixture control started=0; endpoint/control/CA from Q:\sdk\work\root-pending-actors-fixture-options.json and root-pending-actors-fixture-ca.pem
+- generated-null pending operation observed started=true, coroutine_cancelled=true, aborted=1, active=0
+- terminal: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS
+- repeated continuation map probe: baseline=0, during=1, after=0 over 3 cancellations; fixture states ended started=5, aborted=4, active=0
+- terminal: KOTLIN_NATIVE_PENDING_CONTINUATION_MAP_PASS
+
+Caveat:
+- The maintained UniFFI Kotlin surface uses typealiases for custom scalar types and exposes CurrentHead(Boolean), so Kotlin cannot enforce nominal constructors or reject false at compile time; wire/domain Rust validation remains authoritative. No handwritten semantic mirror was added.

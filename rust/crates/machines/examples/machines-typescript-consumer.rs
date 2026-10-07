@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "{}",
         serde_json::to_string(&serde_json::json!({
             "request": request,
+            "page_size": MAX_PAGE_SIZE,
             "outcome": outcome,
             "page": page,
         }))?

@@ -9,12 +9,14 @@ The pinned official UniFFI 0.31.0 backend list is Kotlin, Swift, Python, and Rub
 The maintained options investigated for PHP were:
 
 - Mozilla `cbindgen` 0.29.4 (MPL-2.0): a Rust-to-C header generator. It produced only standard includes from the Actors UniFFI crate because the exported ABI is proc-macro generated.
-- [`xberg-io/alef`](https://github.com/xberg-io/alef) 0.107.0 (MIT): a source-driven polyglot generator with PHP native-extension and C-FFI targets. Its documented input is an Alef-configured Rust API surface, not UniFFI metadata or an existing UniFFI cdylib. A task-local Windows build was started from the pinned crate source but did not complete in the shared build window, so no PHP output is claimed.
+- [`xberg-io/alef`](https://github.com/xberg-io/alef) 0.107.0 (MIT): a source-driven polyglot generator with PHP native-extension and C-FFI targets. Against the exact Actors source it successfully extracted IR and emitted a PHP native-extension adapter, but that adapter directly depends on `acyclic-actors-uniffi` source and does not consume UniFFI metadata or an existing cdylib. Windows compilation is blocked by `ext-php-rs`'s stable-channel `abi_vectorcall` feature; WSL compilation reaches the producer and then fails with 88 generated Arc/semantic-type/PHP argument mismatches (raw output hash is in the receipt).
 - [`ext-php-rs`](https://github.com/extphprs/ext-php-rs) (MIT/Apache-2.0): a Rust-to-native-PHP-extension framework using PHP-specific Rust attributes. It requires a producer-side adapter and does not consume an existing UniFFI metadata contract.
 - [`FFIMe`](https://github.com/ircmaxell/FFIMe) and [`klitsche/ffigen`](https://packagist.org/packages/klitsche/ffigen) (MIT / package WIP): PHP FFI wrapper generators that require a C header as input; neither emits a header from UniFFI metadata.
 - [`ant-ffi`](https://github.com/maidsafe/ant-ffi) (archived, domain-specific): demonstrates PHP FFI usage but maintains a custom C ABI and is not a reusable UniFFI PHP backend.
 
 This leaves a precise prototype boundary: no maintained option tested here can consume the existing Actors UniFFI metadata and emit a PHP consumer without adding a producer-side adapter or handwritten ABI mirror. That is a current pipeline gap, not an exclusion of PHP itself.
+
+Remote protobuf coverage is a separate viable path. The canonical rendered Actors `.proto` was passed to pinned `protoc` 31.1 with `--php_out`, producing typed PHP message classes for `NestedActor`, `RegisterActor`, and `SubscriptionStart`. The source contract has no `service` declaration, so this does not generate an ActorsClient or cancellation path; official gRPC PHP generation requires a `.proto` service and `grpc_php_plugin` ([PHP gRPC basics](https://grpc.io/docs/languages/php/basics/)). The generated messages demonstrate remote schema coverage, while the embedded UniFFI metadata gap remains.
 ## Ruby: executable unary/type path
 
 - Generator: Mozilla `uniffi_bindgen` 0.31.0 from the locked `uniffi = 0.31.0` source, MPL-2.0, repository `https://github.com/mozilla/uniffi-rs`; Cargo.lock registry checksum for `uniffi_bindgen` is `4ed0150801958d4825da56a41c71f000a457ac3a4613fa9647df78ac4b6b6881`.
@@ -35,6 +37,6 @@ The generated Ruby source exposes the typed `ActorsClient` methods and `Cancella
 - Exact official generator checks against the same producer and `uniffi-bindgen 0.31.0` binary (SHA256 `79E3D19ADCE7A8E6A81805769E0A85B7A26B429EDD9604445EDAC5CDF2D91A0`):
   - `--language c`: exit 2, `invalid value 'c'`, possible values Kotlin/Swift/Python/Ruby.
   - `--language php`: exit 2, `invalid value 'php'`, possible values Kotlin/Swift/Python/Ruby.
-- Local Windows PHP 8.5.11 reports `PHP_FFI_EXTENSION=absent`. A task-owned WSL install attempt (`sudo apt-get update && sudo apt-get install -y php-cli php8.1-common`) hung before package installation completed, so no WSL runtime qualification is claimed. The runtime gap is environment evidence; it does not replace the generator-capability result.
+- Task-owned WSL runtime is now installed from pinned Ubuntu Jammy packages: PHP 8.1.2 with `FFI` enabled and `php-config` 8.1.2; a libc `strlen` FFI smoke call returned `6`. The Alef adapter reached compilation against the exact producer before failing on generated adapter type/signature mismatches. Local Windows PHP 8.5.11 still reports `PHP_FFI_EXTENSION=absent`.
 
 No package or producer files are modified by this evidence.

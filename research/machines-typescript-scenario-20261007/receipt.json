@@ -2,11 +2,11 @@
   "schema": 1,
   "scenario": "machines/typescript-consumer",
   "source": "rust/crates/machines/examples/machines-typescript-consumer.rs",
-  "sourceSha256": "13F730C1A5A626CD86B9A4C1D0915340F2C13DFC19D6985EE9E72B0E704261A7",
+  "sourceSha256": "915882F9BE80F9CBC9201606F02519128DF9D56A6AE1BC02DE62791BE0AC22DC",
   "command": "cargo run --manifest-path Cargo.toml -p acyclic-machines --example machines-typescript-consumer --locked",
   "mode": "execute-local",
   "output": "machines-typescript-consumer.output.json",
-  "outputSha256": "171F70B33B314988C6BAF45E574F5ABC2A6A008E7BA033A04245D16B3F80C69C",
+  "outputSha256": "DA352173C5E5A3795DC8BC41EF0A712C99992531E557B81046A43331A222FE6E",
   "generator": "scripts/build-machines-wasm.mjs",
   "generatedDeclaration": "acyclic_machines_wasm.generated.d.ts",
   "generatedDeclarationSha256": "2ABEB8E10D3F664429AE6002FC47F1436CFD64CDA158C84E7B702F65E52CE4D5",
@@ -30,5 +30,14 @@
     "runtime": "bun runtime.mjs",
     "runtimeResult": "installed-machines-runtime-ok",
     "readonlyPolicyBrands": "positive and @ts-expect-error negative fixtures passed"
+  },
+  "generatedSnippet": {
+    "path": "generated-typescript-consumer.ts",
+    "sourceSha256": "1D9A71691A3AD474623CF913860DCC495D474A3BC5B43CBFE37B906B5AC37F38",
+    "rustOutputSha256": "DA352173C5E5A3795DC8BC41EF0A712C99992531E557B81046A43331A222FE6E",
+    "package": "@acyclic-labs/machines@0.2.0",
+    "typecheck": "PASS",
+    "runtime": "PASS",
+    "assertion": "created outcome, one page machine, after-idle suspension"
   }
 }

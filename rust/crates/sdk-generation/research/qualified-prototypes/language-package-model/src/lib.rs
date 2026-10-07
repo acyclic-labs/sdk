@@ -38,6 +38,22 @@ pub struct GeneratorIdentity {
     pub source_sha256: String,
 }
 
+/// Source-owned language recipe emitted by the producer crate and consumed by
+/// the SDK generation runner. The recipe describes generic generator hooks;
+/// it does not contain handwritten operation wrappers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageGenerationMetadata {
+    pub schema: String,
+    pub language: Language,
+    pub uniffi_version: String,
+    pub generator_patch_path: String,
+    pub generator_patch_sha256: String,
+    pub async_future_hooks: Vec<String>,
+    pub async_exports: Vec<String>,
+    pub required_checks: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RustPackageIdentity {
     pub package_name: String,
@@ -163,6 +179,60 @@ pub enum Error {
         expected: String,
         actual: String,
     },
+    #[error("language metadata {0} is malformed")]
+    LanguageMetadataMalformed(PathBuf),
+    #[error(
+        "language metadata {path} does not match expected {field}: expected {expected}, got {actual}"
+    )]
+    LanguageMetadataMismatch {
+        path: PathBuf,
+        field: String,
+        expected: String,
+        actual: String,
+    },
+}
+
+/// Read and bind producer-owned language metadata before package generation.
+/// This is intentionally separate from the artifact receipt: the receipt
+/// proves execution, while this recipe proves that the consumer used the
+/// maintained generator boundary and generic async hooks.
+pub fn read_language_metadata(path: &Path) -> Result<LanguageGenerationMetadata, Error> {
+    let bytes = fs::read(path)?;
+    let metadata: LanguageGenerationMetadata = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::LanguageMetadataMalformed(path.to_owned()))?;
+    if metadata.schema != "acyclic.uniffi.language-metadata.v1"
+        || metadata.async_future_hooks.is_empty()
+        || metadata.async_exports.is_empty()
+        || metadata.required_checks.is_empty()
+    {
+        return Err(Error::LanguageMetadataMalformed(path.to_owned()));
+    }
+    Ok(metadata)
+}
+
+pub fn validate_language_metadata(
+    path: &Path,
+    language: Language,
+    generator_patch_sha256: &str,
+) -> Result<LanguageGenerationMetadata, Error> {
+    let metadata = read_language_metadata(path)?;
+    if metadata.language != language {
+        return Err(Error::LanguageMetadataMismatch {
+            path: path.to_owned(),
+            field: "language".into(),
+            expected: format!("{language:?}"),
+            actual: format!("{:?}", metadata.language),
+        });
+    }
+    if metadata.generator_patch_sha256 != generator_patch_sha256 {
+        return Err(Error::LanguageMetadataMismatch {
+            path: path.to_owned(),
+            field: "generatorPatchSha256".into(),
+            expected: generator_patch_sha256.into(),
+            actual: metadata.generator_patch_sha256.clone(),
+        });
+    }
+    Ok(metadata)
 }
 
 pub fn source_revision(root: &Path) -> Result<String, Error> {

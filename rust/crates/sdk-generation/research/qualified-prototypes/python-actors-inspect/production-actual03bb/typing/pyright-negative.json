@@ -1,0 +1,142 @@
+{
+    "version": "1.1.404",
+    "time": "1791380571793",
+    "generalDiagnostics": [
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['wrong']\" cannot be assigned to parameter \"value1\" of type \"int\" in function \"__init__\"\n  \"Literal['wrong']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 11,
+                    "character": 38
+                },
+                "end": {
+                    "line": 11,
+                    "character": 45
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal[1]\" cannot be assigned to parameter \"value1\" of type \"bool\" in function \"__init__\"\n  \"Literal[1]\" is not assignable to \"bool\"",
+            "range": {
+                "start": {
+                    "line": 12,
+                    "character": 42
+                },
+                "end": {
+                    "line": 12,
+                    "character": 43
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['wrong']\" cannot be assigned to parameter \"value1\" of type \"int\" in function \"__init__\"\n  \"Literal['wrong']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 13,
+                    "character": 68
+                },
+                "end": {
+                    "line": 13,
+                    "character": 75
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['wrong']\" cannot be assigned to parameter \"memory_bytes\" of type \"PositiveU64\" in function \"__init__\"\n  \"Literal['wrong']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 14,
+                    "character": 77
+                },
+                "end": {
+                    "line": 14,
+                    "character": 84
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['ACTIVE']\" cannot be assigned to parameter \"state\" of type \"SubscriptionState\" in function \"__init__\"\n  \"Literal['ACTIVE']\" is not assignable to \"SubscriptionState\"",
+            "range": {
+                "start": {
+                    "line": 18,
+                    "character": 10
+                },
+                "end": {
+                    "line": 18,
+                    "character": 18
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['wrong']\" cannot be assigned to parameter \"delivered_cursor\" of type \"int\" in function \"__init__\"\n  \"Literal['wrong']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 19,
+                    "character": 21
+                },
+                "end": {
+                    "line": 19,
+                    "character": 28
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['ACTIVE']\" cannot be assigned to parameter \"state\" of type \"ActorState\" in function \"__init__\"\n  \"Literal['ACTIVE']\" is not assignable to \"ActorState\"",
+            "range": {
+                "start": {
+                    "line": 31,
+                    "character": 10
+                },
+                "end": {
+                    "line": 31,
+                    "character": 18
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-actual03bb/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['wrong']\" cannot be assigned to parameter \"checkpoint_epoch\" of type \"int\" in function \"__init__\"\n  \"Literal['wrong']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 34,
+                    "character": 21
+                },
+                "end": {
+                    "line": 34,
+                    "character": 28
+                }
+            },
+            "rule": "reportArgumentType"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 1,
+        "errorCount": 8,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 8.98
+    }
+}
+

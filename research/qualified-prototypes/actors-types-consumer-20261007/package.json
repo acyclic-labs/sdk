@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@acyclic-labs/actors": "file:../../../../typescript/packages/actors",
+    "typescript": "7.0.2"
+  }
+}

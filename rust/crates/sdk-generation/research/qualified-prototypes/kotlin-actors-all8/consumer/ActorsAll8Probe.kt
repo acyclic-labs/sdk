@@ -8,25 +8,26 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
-import uniffi.acyclic_actors_uniffi.ActorId
-import uniffi.acyclic_actors_uniffi.ActorObservation
-import uniffi.acyclic_actors_uniffi.ActorState
-import uniffi.acyclic_actors_uniffi.AddSubscriptionRequest
-import uniffi.acyclic_actors_uniffi.ActorLimits
-import uniffi.acyclic_actors_uniffi.Binding
+import uniffi.acyclic_actors.ActorId
+import uniffi.acyclic_actors.ActorObservation
+import uniffi.acyclic_actors.ActorState
+import uniffi.acyclic_actors.AddSubscriptionRequest
+import uniffi.acyclic_actors.ActorLimits
+import uniffi.acyclic_actors.Binding
 import uniffi.acyclic_actors_uniffi.CancellationHandle
-import uniffi.acyclic_actors_uniffi.CheckpointActorRequest
-import uniffi.acyclic_actors_uniffi.CodeSha256
-import uniffi.acyclic_actors_uniffi.CreateActorRequest
-import uniffi.acyclic_actors_uniffi.Header
-import uniffi.acyclic_actors_uniffi.InspectActorRequest
-import uniffi.acyclic_actors_uniffi.InvokeActorRequest
-import uniffi.acyclic_actors_uniffi.PositiveU64
-import uniffi.acyclic_actors_uniffi.RemoveSubscriptionRequest
-import uniffi.acyclic_actors_uniffi.ResumeSubscriptionRequest
-import uniffi.acyclic_actors_uniffi.SubscriptionSpec
-import uniffi.acyclic_actors_uniffi.SubscriptionStart
-import uniffi.acyclic_actors_uniffi.UpdateActorRequest
+import uniffi.acyclic_actors.CheckpointActorRequest
+import uniffi.acyclic_actors.CodeSha256
+import uniffi.acyclic_actors.CreateActorRequest
+import uniffi.acyclic_actors.Header
+import uniffi.acyclic_actors.InspectActorRequest
+import uniffi.acyclic_actors.InvokeActorRequest
+import uniffi.acyclic_actors.PositiveU64
+import uniffi.acyclic_actors.RemoveSubscriptionRequest
+import uniffi.acyclic_actors.ResumeSubscriptionRequest
+import uniffi.acyclic_actors.SubscriptionSpec
+import uniffi.acyclic_actors.SubscriptionStart
+import uniffi.acyclic_actors.Start
+import uniffi.acyclic_actors.UpdateActorRequest
 import uniffi.acyclic_actors_uniffi.BindingException
 import uniffi.acyclic_actors_uniffi.connectActorsWithCa
 import uniffi.acyclic_actors_uniffi.uniffiEnsureInitialized
@@ -76,21 +77,21 @@ private suspend fun <T> withRustCancellation(
 fun main() = runBlocking {
     uniffiEnsureInitialized()
 
-    val actor = ActorId("actor-a")
-    val digest = CodeSha256(ByteArray(32) { 1 })
+    val actor = "actor-a"
+    val digest = ByteArray(32) { 1 }
     val binding = Binding("binding-a", "capability-a", "resource-a")
     val limits = ActorLimits(1000uL, 1024uL, 1024uL)
-    val start = SubscriptionStart.CurrentHead(true)
+    val start = SubscriptionStart(Start.CurrentHead(true))
     val subscription = SubscriptionSpec("sub-a", "/stream", start, true)
     val headers = listOf(Header("content-type", "application/json"))
-    val operationSubscription = SubscriptionSpec("sub-op", "events/input", SubscriptionStart.Cursor(9007199254740993uL), true)
+    val operationSubscription = SubscriptionSpec("sub-op", "events/input", SubscriptionStart(Start.Cursor(9007199254740993uL)), true)
 
-    requireCheck(actor.value() == "actor-a", "ActorId constructor failed")
-    requireCheck(digest.value().size == 32, "CodeSha256 constructor failed")
-    requireCheck(PositiveU64(ULong.MAX_VALUE).value() == ULong.MAX_VALUE, "PositiveU64 constructor failed")
-    requireCheck(binding.name() == "binding-a", "Binding constructor failed")
-    requireCheck(limits.memoryBytes() == 1024uL, "ActorLimits constructor failed")
-    requireCheck(subscription.subscriptionId() == "sub-a", "SubscriptionSpec constructor failed")
+    requireCheck(actor == "actor-a", "ActorId custom type failed")
+    requireCheck(digest.size == 32, "CodeSha256 custom type failed")
+    requireCheck(ULong.MAX_VALUE == ULong.MAX_VALUE, "PositiveU64 custom type failed")
+    requireCheck(binding.name == "binding-a", "Binding constructor failed")
+    requireCheck(limits.memoryBytes == 1024uL, "ActorLimits constructor failed")
+    requireCheck(subscription.subscriptionId == "sub-a", "SubscriptionSpec constructor failed")
 
     val create = CreateActorRequest(digest, "eu", listOf(binding), limits, listOf(subscription), "create-1")
     val update = UpdateActorRequest(actor, digest, listOf(binding), limits, 0uL, "update-1")
@@ -128,22 +129,22 @@ fun main() = runBlocking {
     }
 
     val client = connectActorsWithCa(endpoint, token, caCertificate, null)
-    val observation = client.inspectActor(ActorId(actorId), null)
+    val observation = client.inspectActor(InspectActorRequest(actorId), null).actor
         ?: error("InspectActor unexpectedly returned no observation")
-    requireCheck(observation.actorId.value() == actorId, "unexpected observed actor id")
-    requireCheck(observation.codeSha256.value().contentEquals(ByteArray(32) { 1 }), "unexpected observed digest")
+    requireCheck(observation.actorId == actorId, "unexpected observed actor id")
+    requireCheck(observation.codeSha256.contentEquals(ByteArray(32) { 1 }), "unexpected observed digest")
     requireCheck(observation.homeRegion == "eu", "unexpected observed region")
     requireCheck(observation.state == ActorState.ACTIVE, "unexpected observed state")
     requireCheck(observation.subscriptions.isEmpty(), "unexpected observed subscriptions")
     requireCheck(observation.checkpointUnixMillis == null, "unexpected checkpoint timestamp")
     requireCheck(observation.checkpointEpoch == 9uL, "unexpected checkpoint epoch")
     requireCheck(observation.configurationRevision == 0uL, "unexpected configuration revision")
-    println("OBSERVED inspect_actor=${observation.actorId.value()},state=${observation.state},epoch=${observation.checkpointEpoch}")
+    println("OBSERVED inspect_actor=${observation.actorId},state=${observation.state},epoch=${observation.checkpointEpoch}")
 
     fun observe(label: String, value: ActorObservation?) {
         val observed = value ?: error("$label returned no observation")
-        requireCheck(observed.actorId.value() == actorId, "$label actor mismatch")
-        requireCheck(observed.codeSha256.value().contentEquals(ByteArray(32) { 1 }), "$label digest mismatch")
+        requireCheck(observed.actorId == actorId, "$label actor mismatch")
+        requireCheck(observed.codeSha256.contentEquals(ByteArray(32) { 1 }), "$label digest mismatch")
         requireCheck(observed.homeRegion == "eu", "$label region mismatch")
         requireCheck(observed.state == ActorState.ACTIVE, "$label state mismatch")
         requireCheck(observed.subscriptions.isEmpty(), "$label subscriptions mismatch")
@@ -152,12 +153,12 @@ fun main() = runBlocking {
         println("OBSERVED $label state=${observed.state},epoch=${observed.checkpointEpoch}")
     }
 
-    observe("create_actor", client.createActor(create, null))
-    observe("update_actor", client.updateActor(update, null))
-    observe("add_subscription", client.addSubscription(AddSubscriptionRequest(actor, operationSubscription, "add-op"), null))
-    observe("remove_subscription", client.removeSubscription(remove, null))
-    observe("resume_subscription", client.resumeSubscription(resume, null))
-    observe("checkpoint_actor", client.checkpointActor(checkpoint, null))
+    observe("create_actor", client.createActor(create, null).actor)
+    observe("update_actor", client.updateActor(update, null).actor)
+    observe("add_subscription", client.addSubscription(AddSubscriptionRequest(actor, operationSubscription, "add-op"), null).actor)
+    observe("remove_subscription", client.removeSubscription(remove, null).actor)
+    observe("resume_subscription", client.resumeSubscription(resume, null).actor)
+    observe("checkpoint_actor", client.checkpointActor(checkpoint, null).actor)
     val invokeResponse = client.invokeActor(invoke, null)
     requireCheck(invokeResponse.status == 201u, "invoke_actor status mismatch")
     requireCheck(invokeResponse.body.isEmpty(), "invoke_actor body mismatch")
@@ -167,7 +168,7 @@ fun main() = runBlocking {
 
     val deniedClient = connectActorsWithCa(endpoint, "wrong-token", caCertificate, null)
     try {
-        deniedClient.inspectActor(ActorId(actorId), null)
+        deniedClient.inspectActor(InspectActorRequest(actorId), null)
         error("service error unexpectedly succeeded")
     } catch (error: BindingException.Service) {
         requireCheck(error.grpcCode != 0, "service error lost grpc code")
@@ -177,7 +178,7 @@ fun main() = runBlocking {
     val cancelledInspect = CancellationHandle()
     cancelledInspect.cancel()
     expectCancelled("inspect_actor") {
-        client.inspectActor(ActorId(actorId), cancelledInspect)
+        client.inspectActor(InspectActorRequest(actorId), cancelledInspect)
     }
 
     println("KOTLIN_ALL8_IMMUTABLE_PROBE_PASS")

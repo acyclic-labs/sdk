@@ -1,0 +1,7 @@
+Generated snippet SHA256: 1D9A71691A3AD474623CF913860DCC495D474A3BC5B43CBFE37B906B5AC37F38
+Source Rust output SHA256: sha256:da352173c5e5a3795dc8bc41ef0a712c99992531e557b81046a43331a222fe6e
+Installed package: @acyclic-labs/machines@0.2.0
+Package tarball SHA256: 2065DDA2022A0311C5F6B150EECB0CD327A07E65064411270390EA165CA05972
+TypeScript compile: PASS
+Runtime: PASS
+Runtime assertion: kind=created; pageSize=1; suspension=after-idle

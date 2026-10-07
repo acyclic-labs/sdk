@@ -1,0 +1,44 @@
+{
+  "artifact": "kani-exact-u32-f64-latest265-20261007",
+  "purpose": "source-bound Kani verification manifest for the filesystem numeric admission function",
+  "source_checkout": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/work/filesystem-main-port-latest265",
+  "source_revision": "f775b8465d836cf69b358f9fa9ebd8edbfa819db",
+  "production_package": "acyclic-fs",
+  "production_source": "rust/crates/filesystem/src/numeric.rs",
+  "production_symbol": "acyclic_fs::exact_u32_from_f64",
+  "proof_crate": "Cargo.toml",
+  "proof_harness": "exact_u32_from_f64_all_bit_patterns",
+  "negative_control": "negative_control_wrongly_accepts_fraction",
+  "pinned_toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21"
+  },
+  "run": {
+    "environment": [
+      "RUSTC_WRAPPER=",
+      "CARGO_BUILD_JOBS=1",
+      "CARGO_NET_OFFLINE=true",
+      "CARGO_TARGET_DIR=<task-local-linux-ext4-target>",
+      "RUSTUP_TOOLCHAIN=nightly-2026-08-21"
+    ],
+    "positive": "cargo-kani --manifest-path Cargo.toml --package kani-exact-u32-f64-latest265-20261007 --exact --default-unwind 2 -j1 --harness exact_u32_from_f64_all_bit_patterns",
+    "negative": "cargo-kani --manifest-path Cargo.toml --package kani-exact-u32-f64-latest265-20261007 --exact --default-unwind 2 -j1 --harness negative_control_wrongly_accepts_fraction"
+  },
+  "theorem": {
+    "domain": "all u64 IEEE-754 bit patterns interpreted by f64::from_bits",
+    "acceptance": "finite, integral, nonnegative, and <= u32::MAX",
+    "accepted_result": "f64::from(returned_u32) equals the input numerically",
+    "rejection": "every other bit pattern returns Err"
+  },
+  "source_binding": {
+    "copied_production_function": false,
+    "proof_calls_exported_symbol": true,
+    "source_hashes": {
+      "numeric.rs": "51276AA1FF76487DF226F6C6000F951842DBF0F2FEE7948796B4FBDE8FF05551",
+      "lib.rs": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB"
+    }
+  },
+  "accepted_receipt": "receipt.json",
+  "negative_receipt": "receipt.negative-control.json"
+}

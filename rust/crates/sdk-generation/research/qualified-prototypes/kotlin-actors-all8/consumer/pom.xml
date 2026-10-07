@@ -3,9 +3,9 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>dev.acyclic.qualification</groupId>
-  <artifactId>actors-uniffi-kotlin-consumer</artifactId>
-  <version>0.0.0-qualification</version>
+  <groupId>dev.acyclic</groupId>
+  <artifactId>acyclic-actors-uniffi-kotlin</artifactId>
+  <version>0.2.0</version>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

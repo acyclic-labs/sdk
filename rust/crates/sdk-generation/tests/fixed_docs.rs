@@ -135,12 +135,51 @@ fn write_fixture_scenario_sources(root: &Path) {
         "rust/crates/actors/examples/transport-conformance.rs",
         "rust/crates/stream/examples/http-conformance.rs",
         "rust/crates/filesystem/examples/embedded_workspace.rs",
-        "rust/crates/machines/examples/machines-typescript-consumer.rs",
     ] {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "fn main() {}\n").unwrap();
     }
+    let path = root.join("rust/crates/machines/examples/machines-typescript-consumer.rs");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        r#"
+fn main() {
+    let image = (0..32).map(|_| "17").collect::<Vec<_>>().join(",");
+    let network = (0..32).map(|_| "34").collect::<Vec<_>>().join(",");
+    println!(
+        "{}",
+        [
+            "{\"page_size\":256,\"request\":{\"idempotency_key\":\"11111111-1111-4111-8111-111111111111\",\"image\":{\"ManagedOci\":[",
+            &image,
+            "]},\"compatibility\":\"BestEffort\",\"expiration\":\"Never\",\"network_policy_digest\":[",
+            &network,
+            "],\"suspension\":{\"AfterIdle\":{\"nanos\":0,\"secs\":15}},\"budgets\":{\"spend_micros\":0,\"concurrency\":0}},\"outcome\":{\"Created\":{}},\"page\":{\"machines\":[{\"contract\":{\"suspension\":{\"AfterIdle\":{}}}}]}}",
+        ]
+        .concat()
+    );
+}
+"#,
+    )
+    .unwrap();
+}
+
+fn refresh_fixture_lock(root: &Path) {
+    let output = Command::new("cargo")
+        .args([
+            "generate-lockfile",
+            "--manifest-path",
+            root.join("Cargo.toml").to_str().unwrap(),
+            "--offline",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cargo generate-lockfile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -282,7 +321,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     write_fixture_private_packages(&root);
     write_fixture_scenario_sources(&root);
     copy_compiled_generator_sources(&root);
-    fs::copy(source_root.join("Cargo.lock"), root.join("Cargo.lock")).unwrap();
+    refresh_fixture_lock(&root);
     let actors_lib_path = root.join("rust/crates/actors/src/lib.rs");
     let actors_lib = fs::read(&actors_lib_path).unwrap();
     fs::write(root.join(".gitignore"), "rust/crates/sdk-docs/target/\n").unwrap();
@@ -786,6 +825,17 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
             .iter()
             .any(|scenario| scenario["id"] == "machines/typescript-consumer")
     );
+    let snippet = output.join("generated/scenarios/machines/typescript-consumer.ts");
+    assert!(snippet.is_file());
+    let snippet_source = fs::read_to_string(snippet).unwrap();
+    assert!(snippet_source.contains("satisfies CreateMachine"));
+    assert!(snippet_source.contains("after-idle"));
+    let projections: serde_json::Value = serde_json::from_slice(
+        &fs::read(output.join("sdk-docs-scenario-projections.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projections["schema"], "acyclic.sdk.scenario-projections.v1");
+    assert_eq!(projections["projections"][0]["language"], "typescript");
     let generated_source = output.join("generated/acyclic_actors/rust/acyclic.actors.v1.rs");
     let generated_source_bytes = fs::read(&generated_source).unwrap();
     fs::write(&generated_source, b"tampered generated source\n").unwrap();

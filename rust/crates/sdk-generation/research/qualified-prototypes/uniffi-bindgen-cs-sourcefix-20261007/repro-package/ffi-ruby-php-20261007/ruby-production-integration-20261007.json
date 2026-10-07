@@ -1,0 +1,50 @@
+{
+  "schema": "acyclic.ruby-production-generator-integration.v1",
+  "status": "PASS",
+  "sourceRevision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "cargoPackage": "acyclic-actors-uniffi",
+  "cargoVersion": "0.2.0",
+  "manifestSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB737",
+  "lockSha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5",
+  "producer": {
+    "path": "rust/crates/actors-uniffi/target/debug/deps/acyclic_actors_uniffi.dll",
+    "sha256": "21CE3EC176FB9758F63382C14C21EED808C8D5B0CB42A07A83DD3742CA7C5342",
+    "bytes": 8952832,
+    "scope": "current production actor-uniffi Windows producer used for source-regenerated Ruby output"
+  },
+  "generator": {
+    "uniffiVersion": "0.31.0",
+    "binarySha256": "E46814AEF975CE51750E42F41C0DD32C48DC8B94455FEE7FD654CFF124F9763F",
+    "patchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC"
+  },
+  "metadataConsumer": {
+    "producerBinary": "actors-uniffi-ruby-metadata",
+    "metadataSha256": "72980879515868CAED875BA81377F87CB5AA7A213606DFC52BD4D39C5BBAD1BD",
+    "consumerMarker": "RUBY_LANGUAGE_METADATA_CONSUMER_PASS"
+  },
+  "generated": {
+    "path": "production-current-generated/acyclic_actors_uniffi.rb",
+    "sha256": "8B55C6E1C5126DD3BB4AA7EAEA2C1A22D9D75519F4A746343609578F41C17F13",
+    "syntax": "PASS: ruby -c returned Syntax OK",
+    "operationGeneration": "metadata-driven async future poll/complete/cancel/free for all async exports; no handwritten operation methods"
+  },
+  "terminalReceipt": {
+    "path": "ruby-production-integration-terminal.txt",
+    "sha256": "534DC662443C96452DBF8DC1EA885400C229FB31D4623F497CBED8ED794809D6"
+  },
+  "runtime": {
+    "macosArm64ProducerSha256": "35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04",
+    "qualificationReceipt": "ruby-async-sourcefix-20261007-receipt.json",
+    "allEight": "PASS",
+    "fullU64": "PASS",
+    "typedErrors": "PASS",
+    "pendingCancellationCleanup": "PASS",
+    "installedPackage": "PASS"
+  },
+  "platformScope": {
+    "windowsGeneration": "QUALIFIED_FOR_GENERATION_ONLY: current actor-uniffi DLL was consumed by the maintained Ruby generator",
+    "windowsRubyRuntime": "UNQUALIFIED: no task-owned Windows Ruby/ffi runtime was available",
+    "wslRubyRuntime": "UNQUALIFIED: WSL Ruby/ffi runtime was not available in this integration run",
+    "macosRubyRuntime": "QUALIFIED: Ruby 2.6.10 arm64e with ffi 1.17.2"
+  }
+}

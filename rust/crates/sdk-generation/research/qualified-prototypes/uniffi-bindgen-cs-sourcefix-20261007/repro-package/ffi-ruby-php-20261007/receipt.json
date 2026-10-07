@@ -49,9 +49,18 @@
         "license": "MIT",
         "repository": "https://github.com/xberg-io/alef",
         "source_cargo_toml_sha256": "AA583121016B1AC46881DD4C5E31124D8A7D1909518DC440A4A81E11A4D33B78",
-        "status": "BUILD_STARTED_NO_OUTPUT_CLAIM",
+        "release_binary_sha256": "B048883827D3E35673059B5E19BA10EB044762D7EA9C436CD3EB915253790398",
+        "config_sha256": "4EC9B14DA2ACAB95ADF0E6E98D94DD212AB48923A50F592A3B1D2FC9894AD432",
+        "ir_sha256": "838813B59A243EDDF675DD5A5FDB5500117D0F1CBAB8092494FE35B1EFFE30F5",
+        "generated_adapter_sha256": "6300F6D15B0F504A47D565FA17538CDA7F68AB43A45D5E3A8A678B863D1DA8E8",
+        "status": "SOURCE_ADAPTER_GENERATED_BUT_NOT_COMPILABLE",
         "targets": ["php_native_extension", "c_ffi"],
-        "input": "source-driven Alef configuration; not UniFFI metadata"
+        "input": "source-driven Alef configuration; not UniFFI metadata",
+        "generated_contract": "direct acyclic-actors-uniffi Rust source dependency",
+        "windows_compile": "BLOCKED_EXT_PHP_RS_ABI_VECTORCALL_ON_STABLE",
+        "wsl_compile": "BLOCKED_GENERATED_ARC_SEMANTIC_AND_PHP_ARGUMENT_MISMATCHES",
+        "wsl_compile_error_count": 88,
+        "wsl_compile_raw_sha256": "DC52E68B6853739EFCA76142B77FDE7AF7CBC305CF543026E07E3D9BF4D93CCB"
       },
       "ext_php_rs": {
         "repository": "https://github.com/extphprs/ext-php-rs",
@@ -70,9 +79,43 @@
       }
     },
     "wsl_php_install": {
-      "command": "sudo apt-get update && sudo apt-get install -y php-cli php8.1-common",
-      "status": "HUNG_BEFORE_PACKAGE_COMPLETION",
-      "qualification": "not_claimed"
+      "packages": [
+        "php8.1-cli_8.1.2-1ubuntu2.26_amd64.deb",
+        "php8.1-common_8.1.2-1ubuntu2.26_amd64.deb",
+        "php8.1-dev_8.1.2-1ubuntu2.26_amd64.deb",
+        "php8.1-opcache_8.1.2-1ubuntu2.26_amd64.deb",
+        "php8.1-readline_8.1.2-1ubuntu2.26_amd64.deb",
+        "php-common_92ubuntu1_all.deb",
+        "mime-support_3.66_all.deb",
+        "mailcap_3.70+nmu1ubuntu1.22.04.1_all.deb",
+        "shtool_2.0.8-10_all.deb"
+      ],
+      "php_version": "8.1.2-1ubuntu2.26",
+      "php_config_version": "8.1.2-1ubuntu2.26",
+      "ffi_extension": "present",
+      "ffi_smoke": "PASS_FFI_STRLEN_6",
+      "qualification": "runtime_present; generated_adapter_compile_failed"
+    },
+    "remote_protobuf": {
+      "generator": "protoc",
+      "version": "31.1",
+      "binary_sha256": "128705333700EF804992656829B558E919686944D948BDEAD6CAEDF011FC238B",
+      "input": "canonical rendered actors.proto",
+      "input_sha256": "CCC4D8BE78714403CD34B1D7A35547A0BC2B511196F97CFA2EF7315E7C54FD1A",
+      "command_exit_code": 0,
+      "generated": [
+        "Acyclic/Actors/V1/NestedActor.php",
+        "Acyclic/Actors/V1/RegisterActor.php",
+        "Acyclic/Actors/V1/SubscriptionStart.php",
+        "GPBMetadata/Actors.php"
+      ],
+      "generated_sha256": {
+        "Acyclic/Actors/V1/NestedActor.php": "97E6D10062835A4324DFA46DCE2A2B0B9CE731C0E49BF685B5FD465C88361C95",
+        "Acyclic/Actors/V1/RegisterActor.php": "98CE0D56FC80F20324018CBFC420B6E9AC9E179AD2E9E8A1F2BB4522D5FE3EAE",
+        "Acyclic/Actors/V1/SubscriptionStart.php": "349014B9064DB5860269C35DCC7B79859D28654826476335671B1BE0532976CB",
+        "GPBMetadata/Actors.php": "B64EBAE678E10EAAE837BC52527C2A8FD152F0874D9526509FE81E56C6D1FACE"
+      },
+      "scope": "protobuf messages only; no service declaration, UniFFI cdylib consumer, or cancellation contract"
     }
   },
   "scope": "source-only; no producer/package mutation; no publish/merge/deploy"

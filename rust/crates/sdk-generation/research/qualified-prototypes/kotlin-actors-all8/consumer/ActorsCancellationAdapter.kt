@@ -1,39 +1,45 @@
 package adapter
 
-import uniffi.acyclic_actors_uniffi.ActorId
-import uniffi.acyclic_actors_uniffi.ActorObservation
+import uniffi.acyclic_actors.ActorObservation
+import uniffi.acyclic_actors.AddSubscriptionRequest
+import uniffi.acyclic_actors.CheckpointActorRequest
+import uniffi.acyclic_actors.CreateActorRequest
+import uniffi.acyclic_actors.InspectActorRequest
+import uniffi.acyclic_actors.InvokeActorRequest
+import uniffi.acyclic_actors.InvokeActorResponse
+import uniffi.acyclic_actors.RemoveSubscriptionRequest
+import uniffi.acyclic_actors.ResumeSubscriptionRequest
+import uniffi.acyclic_actors.UpdateActorRequest
 import uniffi.acyclic_actors_uniffi.ActorsClient
-import uniffi.acyclic_actors_uniffi.AddSubscriptionRequest
-import uniffi.acyclic_actors_uniffi.CheckpointActorRequest
-import uniffi.acyclic_actors_uniffi.CreateActorRequest
-import uniffi.acyclic_actors_uniffi.InspectActorRequest
-import uniffi.acyclic_actors_uniffi.InvokeActorRequest
-import uniffi.acyclic_actors_uniffi.InvokeActorResponse
-import uniffi.acyclic_actors_uniffi.RemoveSubscriptionRequest
-import uniffi.acyclic_actors_uniffi.ResumeSubscriptionRequest
-import uniffi.acyclic_actors_uniffi.UpdateActorRequest
+import uniffi.acyclic_actors_uniffi.CancellationHandle
 import uniffi.acyclic_actors_uniffi.connectActors as generatedConnectActors
 import uniffi.acyclic_actors_uniffi.connectActorsWithCa as generatedConnectActorsWithCa
 
 suspend fun connectActors(endpoint: String, token: String): ActorsClient = generatedConnectActors(endpoint, token, null)
 
-suspend fun connectActorsWithCa(endpoint: String, token: String, caCertificate: ByteArray?): ActorsClient = generatedConnectActorsWithCa(endpoint, token, caCertificate, null)
+suspend fun connectActorsWithCa(endpoint: String, token: String, caCertificate: ByteArray?): ActorsClient =
+    generatedConnectActorsWithCa(endpoint, token, caCertificate, null)
 
-suspend fun ActorsClient.addSubscription(request: AddSubscriptionRequest): ActorObservation? = addSubscription(request, null)
+suspend fun ActorsClient.addSubscription(request: AddSubscriptionRequest, handle: CancellationHandle? = null): ActorObservation? =
+    addSubscription(request, handle).actor
 
-suspend fun ActorsClient.checkpointActor(request: CheckpointActorRequest): ActorObservation? = checkpointActor(request, null)
+suspend fun ActorsClient.checkpointActor(request: CheckpointActorRequest, handle: CancellationHandle? = null): ActorObservation? =
+    checkpointActor(request, handle).actor
 
-suspend fun ActorsClient.createActor(request: CreateActorRequest): ActorObservation? = createActor(request, null)
+suspend fun ActorsClient.createActor(request: CreateActorRequest, handle: CancellationHandle? = null): ActorObservation? =
+    createActor(request, handle).actor
 
-suspend fun ActorsClient.inspectActor(actorId: ActorId): ActorObservation? = inspectActor(actorId, null)
+suspend fun ActorsClient.inspectActor(request: InspectActorRequest, handle: CancellationHandle? = null): ActorObservation? =
+    inspectActor(request, handle).actor
 
-suspend fun ActorsClient.inspectActor(request: InspectActorRequest): ActorObservation? = inspectActorRequest(request, null)
+suspend fun ActorsClient.invokeActor(request: InvokeActorRequest, handle: CancellationHandle? = null): InvokeActorResponse =
+    invokeActor(request, handle)
 
-suspend fun ActorsClient.invokeActor(request: InvokeActorRequest): InvokeActorResponse = invokeActor(request, null)
+suspend fun ActorsClient.removeSubscription(request: RemoveSubscriptionRequest, handle: CancellationHandle? = null): ActorObservation? =
+    removeSubscription(request, handle).actor
 
-suspend fun ActorsClient.removeSubscription(request: RemoveSubscriptionRequest): ActorObservation? = removeSubscription(request, null)
+suspend fun ActorsClient.resumeSubscription(request: ResumeSubscriptionRequest, handle: CancellationHandle? = null): ActorObservation? =
+    resumeSubscription(request, handle).actor
 
-suspend fun ActorsClient.resumeSubscription(request: ResumeSubscriptionRequest): ActorObservation? = resumeSubscription(request, null)
-
-suspend fun ActorsClient.updateActor(request: UpdateActorRequest): ActorObservation? = updateActor(request, null)
-
+suspend fun ActorsClient.updateActor(request: UpdateActorRequest, handle: CancellationHandle? = null): ActorObservation? =
+    updateActor(request, handle).actor

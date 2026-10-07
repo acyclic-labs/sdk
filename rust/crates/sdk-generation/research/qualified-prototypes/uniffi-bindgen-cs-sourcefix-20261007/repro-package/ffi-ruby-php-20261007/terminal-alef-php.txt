@@ -1,0 +1,47 @@
+$ alef --version
+alef 0.107.0
+commit: 761ec0e4df19
+release binary SHA256=B048883827D3E35673059B5E19BA10EB044762D7EA9C436CD3EB915253790398
+
+$ alef extract --output ir.json --jobs 1 -vv
+exit=0
+IR SHA256=838813B59A243EDDF675DD5A5FDB5500117D0F1CBAB8092494FE35B1EFFE30F5
+
+$ alef generate --lang php --skip-compile --jobs 1 -vv
+exit=0
+Generated source adapter: crates/acyclic_actors_uniffi-php/src/lib.rs
+generated lib.rs SHA256=6300F6D15B0F504A47D565FA17538CDA7F68AB43A45D5E3A8A678B863D1DA8E8
+Generated adapter contains ext_php_rs #[php_class] wrappers for ActorId, ActorsClient, all eight async operations, and CancellationHandle.
+It directly depends on acyclic-actors-uniffi source; it does not consume the UniFFI cdylib or metadata.
+
+$ Windows cargo check --manifest-path crates/actors-uniffi-php/Cargo.toml --no-default-features
+exit=1
+ext-php-rs 0.16.0 rejected stable Windows Rust because cfg(windows) enables feature(abi_vectorcall).
+
+$ WSL PHP installation
+PHP_VERSION=8.1.2-1ubuntu2.26
+PHP_FFI_EXTENSION=present
+php-config=8.1.2-1ubuntu2.26
+
+$ WSL cargo check --manifest-path crates/actors-uniffi-php/Cargo.toml --no-default-features
+exit=1
+The ext-php-rs build completed far enough to inspect the exact producer, then Alef-generated adapter compilation failed with generated-source contract mismatches: Arc ownership/signature mismatches, missing Default/Deserialize implementations for semantic opaque types, and Vec<Binding> PHP argument conversion errors. This is generated adapter incompatibility, not a PHP runtime absence.
+Raw WSL cargo output: task-local `.tmp-alef-actors-php/cargo-check-wsl.txt`, SHA256 `DC52E68B6853739EFCA76142B77FDE7AF7CBC305CF543026E07E3D9BF4D93CCB`; terminal reports 88 compilation errors.
+
+$ php ffi smoke test against libc.so.6
+PHP_VERSION=8.1.2-1ubuntu2.26
+PHP_FFI_EXTENSION=present
+FFI_STRLEN=6
+
+$ protoc 31.1 --proto_path=rendered --php_out=. rendered/actors.proto
+libprotoc 31.1
+exit=0
+Generated PHP protobuf message classes from the canonical rendered Actors proto:
+  Acyclic/Actors/V1/NestedActor.php
+  Acyclic/Actors/V1/RegisterActor.php
+  Acyclic/Actors/V1/SubscriptionStart.php
+  GPBMetadata/Actors.php
+protoc SHA256=128705333700EF804992656829B558E919686944D948BDEAD6CAEDF011FC238B
+This is remote protobuf message coverage only. The Actors proto has no service declaration, and this path cannot consume the embedded UniFFI cdylib/metadata or provide the ActorsClient cancellation contract.
+$ php -l generated protobuf files (PHP 8.1.2)
+No syntax errors detected for NestedActor.php, RegisterActor.php, SubscriptionStart.php, and GPBMetadata/Actors.php

@@ -53,3 +53,13 @@ production port is therefore to move that adapter and receipt binding into the
 existing generator module, while keeping Cargo metadata as the sole package and
 target identity source. No separate TypeScript or JSON authority is needed.
 
+The `LanguageGenerationMetadata` adapter also consumes the source-owned recipe
+emitted by `actors-uniffi-ruby-metadata`. For Ruby, it binds the maintained
+UniFFI 0.31.0 patch digest and requires the generic future poll/complete/cancel/
+free hooks plus the producer's all-eight/full-u64/error/cancellation/package
+checks. Run the source-only consumer with:
+
+    cargo run --manifest-path Cargo.toml --example consume_metadata -- \
+      <ruby-generation-metadata.json> \
+      CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC
+

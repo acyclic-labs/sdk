@@ -8,7 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import uniffi.acyclic_actors_uniffi.ActorId
+import uniffi.acyclic_actors.InspectActorRequest
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
@@ -69,7 +69,7 @@ fun main() = runBlocking {
             val before = uniffiContinuationHandleMap.size
             val pending = launch {
                 try {
-                    client.inspectActor(ActorId("pending-kotlin-map-$attempt"))
+                    client.inspectActor(InspectActorRequest("pending-kotlin-map-$attempt"))
                     error("pending inspect unexpectedly completed")
                 } catch (_: CancellationException) {
                     println("OBSERVED continuation_map coroutine_cancelled attempt=${attempt + 1}")

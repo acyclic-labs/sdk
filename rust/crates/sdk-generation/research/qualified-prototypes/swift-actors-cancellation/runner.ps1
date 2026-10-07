@@ -93,18 +93,28 @@ New-Item -ItemType Directory -Force "$package\Sources\ActorsConformanceConsumer"
 Copy-Item (Join-Path $artifact 'consumer\Package.swift') $package -Force
 Copy-Item (Join-Path $artifact 'consumer\Sources\ActorsConformanceConsumer\main.swift') "$package\Sources\ActorsConformanceConsumer\main.swift" -Force
 Copy-Item (Join-Path $artifact 'consumer\Sources\ActorsAll8ConformanceConsumer\main.swift') "$package\Sources\ActorsAll8ConformanceConsumer\main.swift" -Force
-cargo run --manifest-path (Join-Path $UniFFISource 'runner\Cargo.toml') --target-dir (Join-Path $WorkRoot 'bindgen-target') -- $RustDll $generated acyclic_actors_uniffi
+cargo run --manifest-path (Join-Path $UniFFISource 'runner\Cargo.toml') --target-dir (Join-Path $WorkRoot 'bindgen-target') -- $RustDll $generated acyclic_actors_uniffi (Join-Path $ProducerSource 'uniffi.toml')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (!(Test-Path -LiteralPath (Join-Path $generated 'acyclic_actors_uniffi.swift'))) {
     throw 'Pinned Swift bindgen did not emit the generated Swift source'
 }
-if ((Get-Content (Join-Path $generated 'acyclic_actors_uniffi.swift') -Raw) -notmatch 'public protocol ActorIdProtocol') {
+$generatedSwift = Get-Content (Join-Path $generated 'acyclic_actors_uniffi.swift') -Raw
+if ($generatedSwift -notmatch 'public protocol ActorIdProtocol') {
+    if ($generatedSwift -match 'public typealias ActorId = String') {
+        throw 'Final producer emitted ActorId as String; opaque validated ActorId qualification is blocked'
+    }
     throw 'Generated Swift is missing the Rust-owned ActorId semantic object'
 }
-if ((Get-Content (Join-Path $generated 'acyclic_actors_uniffi.swift') -Raw) -notmatch 'public protocol CodeSha256Protocol') {
+if ($generatedSwift -notmatch 'public protocol CodeSha256Protocol') {
+    if ($generatedSwift -match 'public typealias CodeSha256 = Data') {
+        throw 'Final producer emitted CodeSha256 as Data; opaque validated CodeSha256 qualification is blocked'
+    }
     throw 'Generated Swift is missing the Rust-owned CodeSha256 semantic object'
 }
-if ((Get-Content (Join-Path $generated 'acyclic_actors_uniffi.swift') -Raw) -notmatch 'public protocol ActorLimitsProtocol') {
+if ($generatedSwift -notmatch 'public protocol ActorLimitsProtocol') {
+    if ($generatedSwift -match 'public struct ActorLimits') {
+        throw 'Final producer emitted ActorLimits as a mutable Swift record; opaque validated ActorLimits qualification is blocked'
+    }
     throw 'Generated Swift is missing the Rust-owned ActorLimits semantic object'
 }
 Copy-Item "$generated\acyclic_actors_uniffi.swift" "$package\Generated\AcyclicActors\Actors.swift" -Force

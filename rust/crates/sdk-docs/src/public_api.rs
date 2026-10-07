@@ -152,7 +152,9 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
             // signature qualifier, not part of the exported path. Preserve
             // the path so binding-only getters and cancellation helpers are
             // projected with their exact rendered signature.
-            Token::Symbol(qualifier) if need_component && (qualifier == "&" || qualifier == "*") => {
+            Token::Symbol(qualifier)
+                if need_component && (qualifier == "&" || qualifier == "*") =>
+            {
                 index += 1;
             }
             Token::Keyword(qualifier) if need_component && qualifier == "mut" => {
@@ -219,7 +221,27 @@ fn exported_path_for_item<'a>(
     tokens: impl Iterator<Item = &'a Token>,
     is_impl: bool,
 ) -> Result<Vec<String>, String> {
-    match exported_path(tokens) {
+    let tokens = tokens.collect::<Vec<_>>();
+    // Compound receiver impls (for example `impl &'a crate::Type`) are
+    // public-api occurrences without a stable exported item path. They were
+    // intentionally retained as signature occurrences but must not be
+    // mistaken for the ordinary `crate::Type` path when the reference
+    // qualifier support below is enabled for binding methods.
+    if is_impl {
+        let mut index = 1;
+        if matches!(tokens.first(), Some(Token::Keyword(kind)) if kind == "impl") {
+            while matches!(tokens.get(index), Some(Token::Whitespace)) {
+                index += 1;
+            }
+            let target = tokens.get(index).copied();
+            if matches!(target, Some(Token::Symbol(symbol)) if symbol == "&" || symbol == "(")
+                || matches!(target, Some(Token::Keyword(kind)) if kind == "dyn")
+            {
+                return Ok(Vec::new());
+            }
+        }
+    }
+    match exported_path(tokens.into_iter()) {
         Ok(path) => Ok(path),
         Err(_) if is_impl => Ok(Vec::new()),
         Err(reason) => Err(reason),

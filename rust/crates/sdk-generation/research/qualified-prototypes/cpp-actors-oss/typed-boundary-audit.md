@@ -81,8 +81,10 @@ preserves a coarse category and human-readable message, but loses:
 * unknown semantic enum numbers, which become a generic `Semantic` message;
 * structured domain error data beyond its formatted text.
 
-The `ActorsError` opaque type keeps the Rust-owned message and category, but
-this is typed-error categorization rather than full typed-error parity.
+The Diplomat `ActorsError` opaque type keeps the Rust-owned message and
+category and exposes the numeric detail for contract and unknown-enum domain
+errors. This is typed construction-error coverage; transport error parity is
+still a separate gap.
 
 ## Maintained generator options
 
@@ -100,16 +102,6 @@ this is typed-error categorization rather than full typed-error parity.
   foundation-port coordination so the same annotated Rust source can remain
   authoritative for every SDK generator.
 
-The practical next step is a foundation-port-owned metadata pipeline that
-derives C++/Diplomat declarations from the existing semantic Rust types and
-their accessors. This prototype should then consume that generated output and
-re-run the installed package matrix. Until that exists, the honest status is
-“qualified opaque conformance bridge”, not “strongly typed full C++ SDK”.
+The practical next step remains a foundation-port-owned metadata pipeline that derives C++/Diplomat declarations from the existing semantic Rust types and their accessors. The isolated Diplomat prototype now covers all eight caller request families with canonical Rust domain storage, seven full actor-observation result wrappers, and typed construction/transport error accessors. Its installed package also proves authenticated TLS invoke, maintained callback completion, and Rust-owned in-flight cancellation with server abort observation.
 
-The isolated Diplomat result is a typed create/invoke/output/error proof, not a
-full eight-operation transport SDK. Its precise remaining gaps are the six
-other request families, authenticated async transport, and cancellation/server
-abort mapping. Transport `client::Error` variants need a foundation-owned
-policy before they can be exposed as a complete Diplomat error hierarchy.
-
-No production Actors annotations or domain cutover were made by this audit.
+The prototype still does not claim a complete eight-operation transport SDK. The six non-invoke operations have generated typed request/result surfaces but no `ActorsClient` transport methods yet. Diplomat 0.16.1 rejects a callback parameter constrained by both `Fn` and `Send`, so completion is caller-polled; automatic cross-thread callback dispatch remains unclaimed. These are explicit maintained-tool gaps. No production Actors annotations or domain cutover were made by this audit.

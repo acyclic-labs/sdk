@@ -434,6 +434,8 @@ dependencies = [
  "acyclic-actors",
  "diplomat",
  "diplomat-runtime",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

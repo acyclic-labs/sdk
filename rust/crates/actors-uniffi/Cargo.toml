@@ -25,6 +25,10 @@ required-features = ["bindgen"]
 name = "actors-uniffi-cancellation-adapter"
 path = "src/bin/actors-uniffi-cancellation-adapter.rs"
 required-features = ["bindgen"]
+
+[[bin]]
+name = "actors-uniffi-ruby-metadata"
+path = "src/bin/actors-uniffi-ruby-metadata.rs"
 [dependencies]
 acyclic-actors = { path = "../actors", default-features = true }
 thiserror = "2.0.17"

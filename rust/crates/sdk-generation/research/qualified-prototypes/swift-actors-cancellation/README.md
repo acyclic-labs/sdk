@@ -12,6 +12,8 @@ The patch has three generator-owned pieces:
 
 The source consumer in `consumer/` passes `cancellation: nil` to both `connectActorsWithCa` and `inspectActor`. It does not construct or manage a public/manual cancellation handle. `runner.ps1` verifies the three pinned template hashes, runs the maintained UniFFI runner against a Rust cdylib, stages the generated output into a temporary SwiftPM package, builds it with Swift 6.4, and runs the live pending-operation probe.
 
+The final producer checkout was separately pinned in `producer-source-final-20261007.lock.json` at `Q:\\sdk\\work\\sdkgen-main-actual03bb`; this lock is a new source identity and does not relabel the historical `producer-source.lock.json`. The runner accepts `-ProducerWorkspace` and `-ProducerLockPath` for this external checkout. Its build and bindgen pass, then stop at the existing semantic-object assertion because UniFFI emits the final producer's `ActorId`, `CodeSha256`, and `PositiveU64` custom types as Swift aliases. See `swift-final-producer-20261007-receipt.json` and `swift-final-type-verification-20261007.md`; the strongest-type qualification remains blocked until that producer surface is corrected.
+
 Use a patched pinned source checkout whose three template hashes match `receipt.json`, then run the lane from the repository root:
 
 ```powershell
