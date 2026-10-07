@@ -250,6 +250,18 @@ describe("website Stream contract", () => {
       .rejects.toMatchObject({ code: "invalid_argument" });
   });
 
+  test("rejects forged absence conditions before provider dispatch", async () => {
+    let dispatches = 0;
+    const provider = { commit: async () => { dispatches += 1; throw new Error("provider must not be called"); } } as unknown as StreamProvider;
+    const client = new StreamClient(provider);
+    const mutation = { append: { path: "forged", values: [new Uint8Array([1])] } };
+    await expect(client.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-false") }))
+      .rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(client.commit({ conditions: [{ path: "forged" } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-missing") }))
+      .rejects.toMatchObject({ code: "invalid_argument" });
+    expect(dispatches).toBe(0);
+  });
+
   test("distinguishes a missing tail from zero and materializes ancestor paths", async () => {
     const client = StreamClient.memory();
     const missing = client.bytes("missing");
@@ -693,11 +705,13 @@ describe("website Stream contract", () => {
 
   test("public stream handles snapshot commit and iterator inputs at call time", async () => {
     const provider = new MemoryStreamProvider();
+    let seenCommitRequest: unknown;
     let seenCommitOptions: unknown;
     let seenReadOptions: unknown;
     let seenFollowOptions: unknown;
     const commit = provider.commit.bind(provider);
     provider.commit = async (request, options) => {
+      seenCommitRequest = structuredClone(request);
       seenCommitOptions = options;
       return commit(request, options);
     };
@@ -713,9 +727,12 @@ describe("website Stream contract", () => {
     const client = new StreamClient(provider);
     const stream = client.bytes("events");
     const commitOptions = { idempotencyKey: key("public-commit") };
-    const commitPending = client.commit({ conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }] }, commitOptions);
+    const commitRequest = { conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }] } as const;
+    const commitPending = client.commit(commitRequest, commitOptions);
+    (commitRequest.conditions[0] as { ifAbsent: boolean }).ifAbsent = false;
     commitOptions.idempotencyKey[0] = 9;
     await commitPending;
+    expect(seenCommitRequest).toMatchObject({ conditions: [{ path: "events", ifAbsent: true }] });
     expect((seenCommitOptions as { idempotencyKey: Uint8Array }).idempotencyKey).toEqual(key("public-commit"));
 
     const readOptions = { from: 0n, limit: 1 };

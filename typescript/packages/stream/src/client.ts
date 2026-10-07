@@ -136,6 +136,7 @@ export class StreamClient {
         return { path: condition.stream.path, ifTail: sequence(condition.ifTail) };
       }
       pathValue(condition.path);
+      if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
       return { path: condition.path, ifAbsent: true as const };
     });
     const mutations = request.mutations.map(mutation => {
