@@ -5,6 +5,7 @@ import type {
 } from "./index.js";
 import { HttpMachinesProvider } from "./http.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
+import { validatePageSize } from "../generated/wasm/acyclic_machines_wasm.js";
 
 export interface MachinesEnvironment {
   readonly endpoint: string;
@@ -37,6 +38,8 @@ export class Machines {
   async *list(options: MachineListOptions = {}): AsyncIterable<Machine> {
     const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
     const maximum = options.maximum ?? 1024;
+    try { validatePageSize(pageSize); }
+    catch (error) { throw new RangeError(error instanceof Error ? error.message : String(error)); }
     if (!Number.isSafeInteger(maximum) || maximum < 0) throw new RangeError("maximum must be a nonnegative safe integer");
     let cursor = options.after ?? null;
     let yielded = 0;

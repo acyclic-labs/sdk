@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
-import { normalize_identity as rustNormalizeIdentity, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { normalize_identity as rustNormalizeIdentity, validatePageSize, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -311,23 +311,43 @@ describe("Machines simulation", () => {
     await expect(invalidUtf8.inspectMachine("machine" as never)).rejects.toThrow("valid UTF-8");
   });
 
+  test("Rust transport validators reject coerced JavaScript values", () => {
+    const validateTransport = validateTransportOptions as unknown as (token: unknown, maximum: unknown) => void;
+    const validatePage = validatePageSize as unknown as (pageSize: unknown) => void;
+    for (const maximum of ["1", true, new Number(1), 1n, Symbol("maximum"), null, undefined]) {
+      expect(() => validateTransport("x", maximum)).toThrow();
+    }
+    for (const token of [null, true, new String("x"), 1n, Symbol("token"), undefined]) {
+      expect(() => validateTransport(token, 1)).toThrow();
+    }
+    expect(() => validateTransport("\uFEFF", 1)).toThrow();
+    expect(() => validateTransport(" \uFEFF ", 1)).toThrow();
+    validateTransport("x", 1);
+    for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, 257, 1.5]) {
+      expect(() => validatePage(pageSize)).toThrow();
+    }
+    validatePage(1);
+  });
+
   test("delegates machine page limits to the Rust provider boundary", async () => {
     const machines = new Machines(new SimulatedMachines());
     await expect(machines.list({ pageSize: 0, maximum: 1 }).next()).rejects.toThrow("machine page limit must be 1..=256");
     await expect(machines.list({ pageSize: 257, maximum: 257 }).next()).rejects.toThrow("machine page limit must be 1..=256");
   });
 
-  test("leaves page-size policy to custom provider implementations", async () => {
+  test("validates page size before custom providers are called", async () => {
     class RecordingProvider extends SimulatedMachines {
-      requestedLimit: number | undefined;
+      calls = 0;
       override listMachines(after: ReturnType<typeof machineId> | null, limit: number) {
-        this.requestedLimit = limit;
+        this.calls += 1;
         return Promise.resolve({ machines: [], next: after });
       }
     }
     const provider = new RecordingProvider();
-    await new Machines(provider).list({ pageSize: 0, maximum: 1 }).next();
-    expect(provider.requestedLimit).toBe(0);
+    for (const pageSize of [0, 257, 1.5]) {
+      await expect(new Machines(provider).list({ pageSize, maximum: 1 }).next()).rejects.toThrow(RangeError);
+    }
+    expect(provider.calls).toBe(0);
   });
 
   test("managed transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
