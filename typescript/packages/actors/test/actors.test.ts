@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { fromBinary, type MessageShape } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { ActorId, CodeSha256, CurrentHeadMarker, PositiveU64, ActorsClient, type ActorsRustBinding, type OperationEvent, type semantic } from "../src/index.js";
-import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema } from "../generated/proto/actors/v1/actors_pb.js";
+import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema, InspectActorResponseSchema } from "../generated/proto/actors/v1/actors_pb.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
 describe("Rust-backed Actors client", () => {
@@ -53,6 +53,33 @@ describe("Rust-backed Actors client", () => {
     expect(subscribed?.subscription?.start?.start.value).toBe(true);
     expect(events.map(event => event.op)).toEqual(["inspectActor", "addSubscription"]);
     expect(events.every(event => event.requestBytes !== undefined)).toBe(true);
+  });
+
+  test("materializes absent optional scalar response properties", async () => {
+    const client = new ActorsClient({
+      endpoint: "https://actors.example.test",
+      token: "secret",
+      binding: {
+        connect: async () => ({
+          transport: "test",
+          inspectActor: async () => toBinary(InspectActorResponseSchema, create(InspectActorResponseSchema, {
+            actor: {
+              actorId: "actor-a",
+              codeSha256: new Uint8Array([1, ...new Uint8Array(31)]),
+              homeRegion: "eu",
+              state: 0,
+              subscriptions: [],
+              checkpointEpoch: 0n,
+              configurationRevision: 0n,
+            },
+          })),
+        }),
+      },
+    });
+
+    const response = await client.inspectActor({ actorId: "actor-a" as semantic.ActorId });
+    expect(Object.hasOwn(response.actor!, "checkpointUnixMillis")).toBe(true);
+    expect(response.actor?.checkpointUnixMillis).toBeUndefined();
   });
 
   test("snapshots requests before connecting and exposes AbortSignal cancellation", async () => {

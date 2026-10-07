@@ -1,4 +1,5 @@
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { FeatureSet_FieldPresence } from "@bufbuild/protobuf/wkt";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
 import {
   ACTORS_OPERATION_NAMES,
@@ -143,10 +144,16 @@ function normalizeSemantic(value: unknown, schema?: DescMessage): unknown {
     const field = byName.get(key);
     return [key, normalizeSemantic(item, field?.message)];
   }));
-  // Buf omits absent message fields. The Rust Option<T> declarations expose
-  // those values as null, while optional scalar presence remains undefined.
+  // Buf omits absent fields. The Rust Option<T> declarations expose absent
+  // messages as null and explicit scalar presence as undefined, keeping the
+  // generated semantic property required while preserving wire presence.
   for (const field of fields) {
-    if (field.fieldKind === "message" && !(field.localName in result)) result[field.localName] = null;
+    if (field.localName in result) continue;
+    if (field.fieldKind === "message") {
+      result[field.localName] = null;
+    } else if (field.presence === FeatureSet_FieldPresence.EXPLICIT || field.presence === FeatureSet_FieldPresence.LEGACY_REQUIRED) {
+      result[field.localName] = undefined;
+    }
   }
   return result;
 }
@@ -185,6 +192,7 @@ function nativeBinding(): ActorsRustBinding {
       if (module === undefined) {
         return wasmBinding().connect(endpoint, token, signal, caCertificate);
       }
+      nativeNominalBinding(module);
       const Client = module.NativeActorsClient ?? module.default?.NativeActorsClient;
       if (Client === undefined) {
         throw new ActorsTransportError("native Actors companion did not export NativeActorsClient", "configuration");
@@ -393,12 +401,22 @@ async function loadWasmModule(): Promise<WasmActorsModule> {
 async function defaultNominalBinding(): Promise<ActorsNominalBinding> {
   if (isNodeRuntime()) {
     const native = await loadNativeModule();
-    const candidate = native?.default ?? native;
-    if (candidate?.ActorId && candidate.CodeSha256 && candidate.PositiveU64 && candidate.CurrentHeadMarker) {
-      return candidate as ActorsNominalBinding;
-    }
+    if (native !== undefined) return nativeNominalBinding(native);
   }
   return loadWasmModule();
+}
+
+function nativeNominalBinding(module: NativeActorsModule): ActorsNominalBinding {
+  const candidate = typeof module.default?.ActorId === "function" ? module.default : module;
+  if (
+    typeof candidate.ActorId === "function"
+    && typeof candidate.CodeSha256 === "function"
+    && typeof candidate.PositiveU64 === "function"
+    && typeof candidate.CurrentHeadMarker === "function"
+  ) {
+    return candidate as ActorsNominalBinding;
+  }
+  throw new ActorsTransportError("native Actors companion did not export the Rust nominal constructors", "configuration");
 }
 
 configureActorsNominalBinding(defaultNominalBinding);
