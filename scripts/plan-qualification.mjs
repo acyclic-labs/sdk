@@ -41,6 +41,7 @@ export const qualificationEventKinds = Object.freeze({
   other: "other",
 });
 
+/** @param {{ eventName?: string, ref?: string, force?: boolean }} event */
 export function classifyQualificationEvent({ eventName, ref, force = false }) {
   // Reusable release callers inherit the caller's push/tag event.  An explicit
   // force input is the authoritative signal that this invocation is a full
