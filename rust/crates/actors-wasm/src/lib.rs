@@ -8,6 +8,10 @@
 use acyclic_actors::{client, domain, wire};
 use prost::Message;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
+use js_sys::{Function, Reflect};
+use tokio_util::sync::CancellationToken;
 
 fn js_error(code: &str, message: impl std::fmt::Display) -> JsValue {
     let error = js_sys::Error::new(&message.to_string());
@@ -45,6 +49,57 @@ fn encode<T: Message>(message: T) -> Vec<u8> {
     message.encode_to_vec()
 }
 
+struct AbortRegistration {
+    signal: JsValue,
+    callback: Closure<dyn FnMut(JsValue)>,
+    token: CancellationToken,
+}
+
+impl AbortRegistration {
+    fn new(signal: Option<JsValue>) -> Result<Option<Self>, JsValue> {
+        let Some(signal) = signal.filter(|value| !value.is_undefined() && !value.is_null()) else {
+            return Ok(None);
+        };
+        let token = CancellationToken::new();
+        let callback_token = token.clone();
+        let callback = Closure::wrap(Box::new(move |_event: JsValue| {
+            callback_token.cancel();
+        }) as Box<dyn FnMut(JsValue)>);
+        let add = Reflect::get(&signal, &JsValue::from_str("addEventListener"))?
+            .dyn_into::<Function>()?;
+        add.call2(
+            &signal,
+            &JsValue::from_str("abort"),
+            callback.as_ref().unchecked_ref(),
+        )?;
+        let aborted = Reflect::get(&signal, &JsValue::from_str("aborted"))?
+            .as_bool()
+            .unwrap_or(false);
+        if aborted {
+            token.cancel();
+        }
+        Ok(Some(Self { signal, callback, token }))
+    }
+
+    fn token(&self) -> CancellationToken {
+        self.token.clone()
+    }
+}
+
+impl Drop for AbortRegistration {
+    fn drop(&mut self) {
+        if let Ok(remove) = Reflect::get(&self.signal, &JsValue::from_str("removeEventListener"))
+            .and_then(|value| value.dyn_into::<Function>().map_err(Into::into))
+        {
+            let _ = remove.call2(
+                &self.signal,
+                &JsValue::from_str("abort"),
+                self.callback.as_ref().unchecked_ref(),
+            );
+        }
+    }
+}
+
 /// Connected browser Actors client. Transport and validation are implemented
 /// by the shared Rust client; this object only provides the JS ABI.
 #[wasm_bindgen]
@@ -63,6 +118,21 @@ impl ActorsClient {
             .map_err(map_error)
     }
 
+    async fn run<T, F>(
+        &self,
+        signal: Option<JsValue>,
+        operation: F,
+    ) -> Result<T, JsValue>
+    where
+        F: std::future::Future<Output = Result<T, client::Error>>,
+    {
+        let registration = AbortRegistration::new(signal)?;
+        let cancellation = registration.as_ref().map(AbortRegistration::token);
+        let result = client::run_with_cancellation(operation, cancellation).await;
+        drop(registration);
+        result.map_err(map_error)
+    }
+
     /// Returns the transport selected by the Rust client.
     #[wasm_bindgen(getter)]
     pub fn transport(&self) -> String {
@@ -70,98 +140,82 @@ impl ActorsClient {
     }
 
     /// Execute `CreateActor` with an encoded protobuf request.
-    pub async fn create_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn create_actor(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request =
             decode_semantic::<wire::CreateActorRequest, domain::CreateActorRequest>(request)?;
-        self.inner
-            .create_actor(&request)
+        self.run(signal, self.inner.create_actor(&request))
             .await
             .map(|value| encode(wire::CreateActorResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `UpdateActor` with an encoded protobuf request.
-    pub async fn update_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn update_actor(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request =
             decode_semantic::<wire::UpdateActorRequest, domain::UpdateActorRequest>(request)?;
-        self.inner
-            .update_actor(&request)
+        self.run(signal, self.inner.update_actor(&request))
             .await
             .map(|value| encode(wire::UpdateActorResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `InspectActor` with an encoded protobuf request.
-    pub async fn inspect_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn inspect_actor(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request =
             decode_semantic::<wire::InspectActorRequest, domain::InspectActorRequest>(request)?;
-        self.inner
-            .inspect_actor(&request)
+        self.run(signal, self.inner.inspect_actor(&request))
             .await
             .map(|value| encode(wire::InspectActorResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `AddSubscription` with an encoded protobuf request.
-    pub async fn add_subscription(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn add_subscription(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request = decode_semantic::<
             wire::AddSubscriptionRequest,
             domain::AddSubscriptionRequest,
         >(request)?;
-        self.inner
-            .add_subscription(&request)
+        self.run(signal, self.inner.add_subscription(&request))
             .await
             .map(|value| encode(wire::AddSubscriptionResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `RemoveSubscription` with an encoded protobuf request.
-    pub async fn remove_subscription(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn remove_subscription(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request = decode_semantic::<
             wire::RemoveSubscriptionRequest,
             domain::RemoveSubscriptionRequest,
         >(request)?;
-        self.inner
-            .remove_subscription(&request)
+        self.run(signal, self.inner.remove_subscription(&request))
             .await
             .map(|value| encode(wire::RemoveSubscriptionResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `ResumeSubscription` with an encoded protobuf request.
-    pub async fn resume_subscription(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn resume_subscription(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request = decode_semantic::<
             wire::ResumeSubscriptionRequest,
             domain::ResumeSubscriptionRequest,
         >(request)?;
-        self.inner
-            .resume_subscription(&request)
+        self.run(signal, self.inner.resume_subscription(&request))
             .await
             .map(|value| encode(wire::ResumeSubscriptionResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `CheckpointActor` with an encoded protobuf request.
-    pub async fn checkpoint_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn checkpoint_actor(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request = decode_semantic::<
             wire::CheckpointActorRequest,
             domain::CheckpointActorRequest,
         >(request)?;
-        self.inner
-            .checkpoint_actor(&request)
+        self.run(signal, self.inner.checkpoint_actor(&request))
             .await
             .map(|value| encode(wire::CheckpointActorResponse::from(value)))
-            .map_err(map_error)
     }
 
     /// Execute `InvokeActor` with an encoded protobuf request.
-    pub async fn invoke_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
+    pub async fn invoke_actor(&self, request: &[u8], signal: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
         let request =
             decode_semantic::<wire::InvokeActorRequest, domain::InvokeActorRequest>(request)?;
-        self.inner
-            .invoke_actor(&request)
+        self.run(signal, self.inner.invoke_actor(&request))
             .await
             .map(|value| encode(wire::InvokeActorResponse::from(value)))
-            .map_err(map_error)
     }
 }

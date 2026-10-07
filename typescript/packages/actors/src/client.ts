@@ -211,7 +211,8 @@ function wasmBinding(): ActorsRustBinding {
         return [operation, async (request: Uint8Array, signal?: AbortSignal) => {
           const invoke = (wasm as unknown as Record<string, unknown>)[method];
           if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
-          return abortable(invoke.call(wasm, request) as Promise<Uint8Array>, signal);
+          throwIfAborted(signal);
+          return abortable(invoke.call(wasm, request, signal) as Promise<Uint8Array>, signal);
         }];
       }));
       return { ...client, transport: wasm.transport } as ActorsRustClient;
