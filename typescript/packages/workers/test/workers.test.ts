@@ -7,6 +7,18 @@ describe("Workers v1 generated transport", () => {
     expect(() => new HttpWorkersClient({ endpoint: "http://127.0.0.1:8787", token: "local" })).not.toThrow();
     expect(() => new HttpWorkersClient({ endpoint: "http://workers.example.test", token: "remote" })).toThrow(TypeError);
   });
+  test("refuses redirects and header-unsafe or oversized bearer tokens", async () => {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+      expect(() => new HttpWorkersClient({ endpoint: "https://workers.example.test", token })).toThrow(TypeError);
+    }
+    let redirect: RequestRedirect | undefined;
+    const client = new HttpWorkersClient({ endpoint: "https://workers.example.test", token: "secret", fetcher: async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response(JSON.stringify({ status: 200, resolvedSha256: "AQ==", resolvedRevision: "4" }));
+    } });
+    await client.invokeDeployment(create(InvokeDeploymentRequestSchema, { alias: "current", method: "GET", url: "https://example.test/" }));
+    expect(redirect).toBe("error");
+  });
   test("rejects path-like deployment aliases before sending a request", async () => {
     const client = new HttpWorkersClient({ endpoint: "https://workers.example.test", token: "secret", fetcher: async () => { throw new Error("unexpected fetch"); } });
     await expect(client.invokeDeployment(create(InvokeDeploymentRequestSchema, { alias: ".." }))).rejects.toThrow(TypeError);

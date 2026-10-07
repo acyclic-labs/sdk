@@ -6,7 +6,7 @@ use super::{
     decode_attribute_page, decode_blob_page, decode_extent_page, decode_file_metadata,
     decode_file_table_page, decode_generation_root, decode_tree_page,
 };
-use crate::foundation::{FileId, GenerationId};
+use crate::foundation::{FileId, GenerationId, usize_to_u64};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
@@ -189,7 +189,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let root = decode_generation_root(&root_bytes, self.limits.decode)?;
         let generation_id = GenerationId::new(generation_root.digest);
         let records = self.prove_file_table(root.file_table).await?;
-        let file_count = u64::try_from(records.len()).unwrap_or(u64::MAX);
+        let file_count = usize_to_u64(records.len());
         if file_count > self.limits.maximum_files {
             return Err(ClosureError::TooManyFiles {
                 observed: file_count,
@@ -215,16 +215,14 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .cmp(&right.kind.canonical_tag())
                 .then_with(|| left.digest.as_bytes().cmp(right.digest.as_bytes()))
         });
-        let object_bytes = u64::try_from(objects.capacity())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX));
+        let object_bytes =
+            usize_to_u64(objects.capacity()).saturating_mul(usize_to_u64(size_of::<ObjectId>()));
         self.work = self
             .work
             .checked_add(WorkCounters {
-                items_examined: u64::try_from(objects.len()).unwrap_or(u64::MAX),
-                bytes_copied: u64::try_from(objects.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX)),
+                items_examined: usize_to_u64(objects.len()),
+                bytes_copied: usize_to_u64(objects.len())
+                    .saturating_mul(usize_to_u64(size_of::<ObjectId>())),
                 allocation_operations: u64::from(!objects.is_empty()),
                 peak_allocation_bytes: object_bytes,
                 ..WorkCounters::default()
@@ -234,7 +232,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Ok(GenerationProof {
             root,
             generation_id,
-            object_count: u64::try_from(self.objects.len()).unwrap_or(u64::MAX),
+            object_count: usize_to_u64(self.objects.len()),
             file_count,
             logical_file_bytes,
             objects,
@@ -244,7 +242,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     async fn read_object(&mut self, object: ObjectId, page: bool) -> Result<Bytes, ClosureError> {
         self.objects.insert(object);
-        let count = u64::try_from(self.objects.len()).unwrap_or(u64::MAX);
+        let count = usize_to_u64(self.objects.len());
         if count > self.limits.maximum_objects {
             return Err(ClosureError::TooManyObjects {
                 observed: count,
@@ -513,7 +511,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         let expected = chunk.end_offset - chunk.first_offset;
                         Self::require_kind(chunk.chunk, ObjectKind::BlobChunk)?;
                         let value = self.read_object(chunk.chunk, false).await?;
-                        if u64::try_from(value.len()).unwrap_or(u64::MAX) != expected {
+                        if usize_to_u64(value.len()) != expected {
                             return Err(ClosureError::BlobLengthMismatch);
                         }
                     }

@@ -1,5 +1,6 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
+use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
     Outcome, Result, TaskId,
@@ -47,7 +48,7 @@ pub const MAX_CHILD_PAGE: usize = 1_024;
 /// Default number of direct children requested by the SDK facade.
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Maximum UTF-8 byte length of a parent-local child slot.
-pub const MAX_CHILD_SLOT_BYTES: usize = 255;
+pub const MAX_CHILD_SLOT_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Default number of entries requested by the private-directory SDK facade.
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
@@ -258,8 +259,7 @@ pub fn task_admission_identities(
 
 pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
     for (name, schema) in [("input", input), ("output", output)] {
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid task {name} schema: {error}")))?;
+        crate::contract::compile_json_schema(schema, &format!("task {name}"))?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))
@@ -1293,7 +1293,7 @@ pub struct TaskRunLimits {
 impl TaskRunLimits {
     /// Rejects zero, nonportable, or nonrepresentable runtime bounds.
     pub fn validate(&self) -> Result<()> {
-        const MAX_JS_INTEGER: u64 = (1_u64 << 53) - 1;
+        use crate::conversation::MAX_EXACT_JS_INTEGER as MAX_JS_INTEGER;
         if self
             .concurrency
             .is_some_and(|value| value == 0 || value as u64 > MAX_JS_INTEGER)
@@ -2039,7 +2039,7 @@ impl Bindings {
 
     /// Validates all dependency edges and seals the runtime composition.
     pub fn build(self) -> Result<Arc<AgentHarness>> {
-        if self.fork_preparer.is_some() && !self.scope.grants().contains("fork:publish") {
+        if self.fork_preparer.is_some() && !self.scope.grants().contains(capability::FORK_PUBLISH) {
             return Err(Error::Unauthorized(
                 "fork preparer requires fork:publish in the root scope".into(),
             ));
@@ -2113,16 +2113,7 @@ pub(crate) fn validate_children_request(
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
-    if parent.into_bytes() == [0; 16]
-        || maximum == 0
-        || maximum > MAX_CHILD_PAGE
-        || after_slot.is_some_and(|slot| {
-            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
-        })
-    {
-        return Err(Error::Invalid("task child page request is invalid".into()));
-    }
-    Ok(())
+    validate_child_page_request("task child", parent.into_bytes(), after_slot, maximum)
 }
 
 pub(crate) fn validate_children_page(
@@ -2131,32 +2122,70 @@ pub(crate) fn validate_children_page(
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
-    if expected_revision.is_some_and(|revision| revision != page.revision)
-        || page.entries.len() > maximum
-        || page
-            .next_after
-            .as_ref()
-            .is_some_and(|next| page.entries.last().is_none_or(|last| &last.slot != next))
+    validate_child_page(
+        "task child",
+        (page.revision, page.next_after.as_deref()),
+        page.entries
+            .iter()
+            .map(|child| (child.slot.as_str(), child.task_id.into_bytes())),
+        (expected_revision, after_slot, maximum),
+    )
+}
+
+/// Bounds one direct-child page request of a task or operation hierarchy.
+pub(crate) fn validate_child_page_request(
+    label: &str,
+    parent: [u8; 16],
+    after_slot: Option<&str>,
+    maximum: usize,
+) -> Result<()> {
+    if parent == [0; 16]
+        || maximum == 0
+        || maximum > MAX_CHILD_PAGE
+        || after_slot.is_some_and(|slot| {
+            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
+        })
     {
-        return Err(Error::Invalid(
-            "task child page does not match its request".into(),
-        ));
+        return Err(Error::Invalid(format!("{label} page request is invalid")));
     }
+    Ok(())
+}
+
+/// Checks one `(revision, next_after)` page of `(slot, id)` children against
+/// its `(expected_revision, after_slot, maximum)` request: unique non-nil
+/// identities in strictly increasing valid slot order, continuing from the
+/// last returned slot.
+pub(crate) fn validate_child_page<'a>(
+    label: &str,
+    (revision, next_after): (u64, Option<&str>),
+    entries: impl Iterator<Item = (&'a str, [u8; 16])>,
+    (expected_revision, after_slot, maximum): (Option<u64>, Option<&str>, usize),
+) -> Result<()> {
     let mut previous = after_slot;
+    let mut last = None;
     let mut ids = BTreeSet::new();
-    for child in &page.entries {
-        if child.task_id.into_bytes() == [0; 16]
-            || child.slot.trim().is_empty()
-            || child.slot.len() > MAX_CHILD_SLOT_BYTES
-            || child.slot.chars().any(char::is_control)
-            || previous.is_some_and(|slot| child.slot.as_str() <= slot)
-            || !ids.insert(child.task_id)
+    for (slot, id) in entries {
+        if id == [0; 16]
+            || slot.trim().is_empty()
+            || slot.len() > MAX_CHILD_SLOT_BYTES
+            || slot.chars().any(char::is_control)
+            || previous.is_some_and(|previous| slot <= previous)
+            || !ids.insert(id)
         {
-            return Err(Error::Invalid(
-                "task children are not in stable slot order".into(),
-            ));
+            return Err(Error::Invalid(format!(
+                "{label} entries are not in stable slot order"
+            )));
         }
-        previous = Some(&child.slot);
+        previous = Some(slot);
+        last = Some(slot);
+    }
+    if expected_revision.is_some_and(|expected| expected != revision)
+        || ids.len() > maximum
+        || next_after.is_some_and(|next| last != Some(next))
+    {
+        return Err(Error::Invalid(format!(
+            "{label} page does not match its request"
+        )));
     }
     Ok(())
 }
@@ -2368,8 +2397,8 @@ impl AgentHarness {
         self: &Arc<Self>,
         workspaces: Arc<dyn crate::merge::ProjectWorkspaceProvider>,
     ) -> Result<Arc<Self>> {
-        if !self.scope.grants().contains("fork:publish")
-            && !self.scope.grants().contains("project:merge")
+        if !self.scope.grants().contains(capability::FORK_PUBLISH)
+            && !self.scope.grants().contains(capability::PROJECT_MERGE)
         {
             return Err(Error::Unauthorized(
                 "project workspaces require fork:publish or project:merge".into(),
@@ -2390,8 +2419,8 @@ impl AgentHarness {
     /// Returns the parent-authorized workspace boundary only while this
     /// immutable runtime scope retains project fork or merge authority.
     pub fn workspaces(&self) -> Result<Arc<dyn crate::merge::ProjectWorkspaceProvider>> {
-        if !self.scope.grants().contains("fork:publish")
-            && !self.scope.grants().contains("project:merge")
+        if !self.scope.grants().contains(capability::FORK_PUBLISH)
+            && !self.scope.grants().contains(capability::PROJECT_MERGE)
         {
             return Err(Error::Unauthorized(
                 "runtime scope lacks project authority".into(),
@@ -2409,7 +2438,7 @@ impl AgentHarness {
         self: &Arc<Self>,
         preparer: Arc<dyn crate::fork::ForkPreparer>,
     ) -> Result<Arc<Self>> {
-        if !self.scope.grants().contains("fork:publish") {
+        if !self.scope.grants().contains(capability::FORK_PUBLISH) {
             return Err(Error::Unauthorized(
                 "runtime scope lacks fork:publish".into(),
             ));
@@ -2767,7 +2796,7 @@ impl AgentHarness {
     }
 
     fn fork_binding(&self, request: &crate::fork::ForkRequest) -> Result<&ForkBinding> {
-        if !self.scope.grants().contains("fork:publish") {
+        if !self.scope.grants().contains(capability::FORK_PUBLISH) {
             return Err(Error::Unauthorized(
                 "runtime scope lacks fork:publish".into(),
             ));
@@ -3329,9 +3358,10 @@ fn validate_task_dependencies(
         })
         .unwrap_or_default();
     let environment = TaskDependencyEnvironment {
-        model: scope.grants.contains("model:generate"),
-        context: scope.grants.contains("context:build"),
-        interactions: (has_interactions || has_host) && scope.grants.contains("interaction:route"),
+        model: scope.grants.contains(capability::MODEL_GENERATE),
+        context: scope.grants.contains(capability::CONTEXT_BUILD),
+        interactions: (has_interactions || has_host)
+            && scope.grants.contains(capability::INTERACTION_ROUTE),
         policy: has_policy,
         host: has_host,
         state: has_state,
@@ -3507,7 +3537,7 @@ impl TaskContext {
                 "durable model request requires a recorded effect".into(),
             ));
         }
-        if !self.scope.grants().contains("model:generate") {
+        if !self.scope.grants().contains(capability::MODEL_GENERATE) {
             return Err(Error::Unauthorized(
                 "task scope lacks model:generate".into(),
             ));
@@ -3536,7 +3566,7 @@ impl TaskContext {
             .filter(|tool| {
                 self.scope
                     .grants()
-                    .contains(&format!("tool:call:{}", tool.name))
+                    .contains(&capability::tool_call(&tool.name))
             })
             .collect();
         let step_bound = self
@@ -3899,7 +3929,7 @@ impl TaskContext {
                 "tool definition changed after lookup".into(),
             ));
         }
-        let required = format!("tool:call:{}", tool.definition.name);
+        let required = capability::tool_call(&tool.definition.name);
         if !self.scope.grants.contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
@@ -3953,7 +3983,7 @@ impl TaskContext {
                 "tool definition changed after lookup".into(),
             ));
         }
-        let required = format!("tool:call:{}", tool.definition.name);
+        let required = capability::tool_call(&tool.definition.name);
         if !self.scope.grants.contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
@@ -4188,7 +4218,7 @@ impl TaskContext {
         interaction: Interaction,
     ) -> Result<InteractionOutcome> {
         interaction.validate()?;
-        if !self.scope.grants.contains("interaction:route") {
+        if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }
         if let Some(task) = self.durable_task {
@@ -4229,7 +4259,7 @@ impl TaskContext {
         payload: FileRef,
     ) -> Result<()> {
         payload.validate()?;
-        if !self.scope.grants.contains("mail:send") {
+        if !self.scope.grants.contains(capability::MAIL_SEND) {
             return Err(Error::Unauthorized("task scope lacks mail:send".into()));
         }
         let sender = self
@@ -4248,7 +4278,7 @@ impl TaskContext {
         if limit == 0 || limit > 1_024 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
         }
-        if !self.scope.grants.contains("mail:read") {
+        if !self.scope.grants.contains(capability::MAIL_READ) {
             return Err(Error::Unauthorized("task scope lacks mail:read".into()));
         }
         let task = self
@@ -4271,7 +4301,7 @@ impl TaskContext {
         if deadline_unix_ms == 0 {
             return Err(Error::Invalid("timer deadline is invalid".into()));
         }
-        if !self.scope.grants.contains("timer:wait") {
+        if !self.scope.grants.contains(capability::TIMER_WAIT) {
             return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
         }
         if let Some(task) = self.durable_task {

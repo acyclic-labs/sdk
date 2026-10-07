@@ -19,6 +19,12 @@ pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.
 pub const MAX_BINDINGS: usize = 64;
 
+/// Bearer credentials must be nonblank and at most 8 KiB; the HTTP and gRPC
+/// header parsers additionally reject control characters such as CR, LF, and NUL.
+fn valid_token(token: &str) -> bool {
+    !token.trim().is_empty() && token.len() <= 8192
+}
+
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("createActor", "v1/actors/create"),
@@ -49,6 +55,11 @@ fn digest(value: &[u8]) -> bool {
     value.len() == 32 && value.iter().any(|byte| *byte != 0)
 }
 
+/// Idempotency keys share the 1..=256 byte bound used by the other families.
+fn idempotency_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256
+}
+
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
     !value.subscription_id.is_empty()
         && !value.stream_path.is_empty()
@@ -63,7 +74,7 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
 pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
     if !digest(&request.code_sha256)
         || request.home_region.is_empty()
-        || request.idempotency_key.is_empty()
+        || !idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -106,7 +117,7 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
         || !digest(&request.code_sha256)
-        || request.idempotency_key.is_empty()
+        || !idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -135,7 +146,7 @@ pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
-        || request.idempotency_key.is_empty()
+        || !idempotency_key(&request.idempotency_key)
         || !request.subscription.as_ref().is_some_and(subscription)
     {
         return Err(ContractError::InvalidArgument);
@@ -182,8 +193,41 @@ mod tests {
             idempotency_key: "create-a".into(),
         };
         assert_eq!(validate_create(&create), Ok(()));
+        create.idempotency_key = "k".repeat(257);
+        assert_eq!(
+            validate_create(&create),
+            Err(ContractError::InvalidArgument)
+        );
+        create.idempotency_key = "k".repeat(256);
+        assert_eq!(validate_create(&create), Ok(()));
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
+    }
+
+    #[test]
+    fn clients_share_endpoint_and_credential_policy() {
+        let long = "t".repeat(8193);
+        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+            assert!(matches!(
+                http::Client::new("https://example.test", token, 1),
+                Err(http::Error::InvalidArgument)
+            ));
+        }
+        for endpoint in [
+            "http://localhost:1",
+            "http://127.0.0.2:1",
+            "http://[::1]:1",
+            "https://example.test",
+        ] {
+            assert!(http::Client::new(endpoint, &"t".repeat(8192), 1).is_ok());
+        }
+        for endpoint in [
+            "http://example.test",
+            "http://10.0.0.1",
+            "https://u@example.test",
+        ] {
+            assert!(http::Client::new(endpoint, "t", 1).is_err());
+        }
     }
 }

@@ -1230,7 +1230,7 @@ fn mark_sparse(file: &File) -> std::io::Result<()> {
 
     let handle = HANDLE(file.as_raw_handle());
     let mut overlapped = OVERLAPPED::default();
-    // This runs as the first sequenced control operation, before the native
+    // SAFETY: This runs as the first sequenced control operation, before the native
     // completion owner attaches the overlapped file handle to an IOCP. The
     // FSCTL has no payload buffers; its OVERLAPPED must nevertheless remain
     // live until terminal completion, including when DeviceIoControl pends.

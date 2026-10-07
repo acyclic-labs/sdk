@@ -5,7 +5,9 @@ use super::{
     prove_generation_closure, prove_generation_closure_async, volume_authority_id,
 };
 use crate::cancellation::CancellationToken;
-use crate::foundation::{AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId};
+use crate::foundation::{
+    AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId, usize_to_u64,
+};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{AppendOutcome, AuthorityStoreError, ObjectId, ObjectKind, PublicationPermit};
 use bytes::Bytes;
@@ -425,9 +427,8 @@ fn prepare_publication(
             work,
         ));
     }
-    let payload_bytes = u64::try_from(publication_payload_length()).unwrap_or(u64::MAX);
-    let fingerprint_bytes =
-        u64::try_from(fingerprint_input_length(operation_context)).unwrap_or(u64::MAX);
+    let payload_bytes = usize_to_u64(publication_payload_length());
+    let fingerprint_bytes = usize_to_u64(fingerprint_input_length(operation_context));
     let fingerprint_domain = fingerprint_domain(operation_context);
     let peak_allocation_bytes = payload_bytes
         .checked_add(fingerprint_bytes)
@@ -436,8 +437,7 @@ fn prepare_publication(
         bytes_encoded: payload_bytes
             .checked_add(fingerprint_bytes)
             .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?,
-        bytes_hashed: u64::try_from(fingerprint_domain.len())
-            .unwrap_or(u64::MAX)
+        bytes_hashed: usize_to_u64(fingerprint_domain.len())
             .checked_add(fingerprint_bytes)
             .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?,
         bytes_copied: payload_bytes,

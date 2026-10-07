@@ -21,18 +21,12 @@ export type EventKind = PublicEnum<typeof WireEventKind> extends infer Kind exte
   : never;
 
 type AssertNever<Value extends never> = Value;
-type ImageKindsExpected = "managed-oci" | "custom" | "checkpoint";
-type CompatibilityModesExpected = "best-effort" | "require";
-type ExpirationKindsExpected = "never" | "max-age" | "at" | "idle";
-type EventKindsExpected = "state" | "pressure" | "capacity-changed";
-type _ImageWireExtras = AssertNever<Exclude<PublicEnum<typeof WireImageKind>, ImageKindsExpected>>;
-type _ImagePublicExtras = AssertNever<Exclude<ImageKindsExpected, PublicEnum<typeof WireImageKind>>>;
-type _CompatibilityWireExtras = AssertNever<Exclude<PublicEnum<typeof WireCompatibilityMode>, CompatibilityModesExpected>>;
-type _CompatibilityPublicExtras = AssertNever<Exclude<CompatibilityModesExpected, PublicEnum<typeof WireCompatibilityMode>>>;
-type _ExpirationWireExtras = AssertNever<Exclude<PublicEnum<typeof WireExpirationKind>, ExpirationKindsExpected>>;
-type _ExpirationPublicExtras = AssertNever<Exclude<ExpirationKindsExpected, PublicEnum<typeof WireExpirationKind>>>;
-type _EventWireExtras = AssertNever<Exclude<EventKind, EventKindsExpected>>;
-type _EventPublicExtras = AssertNever<Exclude<EventKindsExpected, EventKind>>;
+/** Members present in only one of two unions; `never` when they match exactly. */
+type Mismatch<Actual, Expected> = Exclude<Actual, Expected> | Exclude<Expected, Actual>;
+type _ImageKinds = AssertNever<Mismatch<PublicEnum<typeof WireImageKind>, "managed-oci" | "custom" | "checkpoint">>;
+type _CompatibilityModes = AssertNever<Mismatch<PublicEnum<typeof WireCompatibilityMode>, "best-effort" | "require">>;
+type _ExpirationKinds = AssertNever<Mismatch<PublicEnum<typeof WireExpirationKind>, "never" | "max-age" | "at" | "idle">>;
+type _EventKinds = AssertNever<Mismatch<EventKind, "state" | "pressure" | "capacity-changed">>;
 
 function values<Wire extends object>(schema: DescEnum): readonly PublicEnum<Wire>[] {
   return schema.values

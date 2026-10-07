@@ -51,6 +51,7 @@ reqwest = { workspace = true, optional = true }
 workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 axum.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"

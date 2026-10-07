@@ -8,7 +8,7 @@ use super::persistent_point;
 use super::types::{FileKind, digest_object};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::foundation::FileId;
+use crate::foundation::{FileId, usize_to_u64};
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
@@ -518,7 +518,7 @@ pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDe
         bytes,
         RECORD_DOMAIN,
         RECORD_VERSION,
-        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        usize_to_u64(bytes.len()),
     )?;
     let record = decode_record(&mut decoder)?;
     decoder.finish()?;

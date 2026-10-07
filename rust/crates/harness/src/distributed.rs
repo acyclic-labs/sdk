@@ -1,16 +1,19 @@
 //! Customer-hostable Stream-backed coordinator and pull-worker admission.
 
+use crate::contract::capability;
+use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
-    runtime::{MAX_CHILD_PAGE, MAX_CHILD_SLOT_BYTES},
+    runtime,
     scheduler::{
-        AssemblyKind, DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
+        AssemblyKind, EntrypointRef, LeaseFence, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
         assembly_invocation_digest, reduction_invocation_digest,
     },
     wire,
+    wire_codec::validate_protocol,
 };
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
@@ -35,18 +38,12 @@ fn validate_child_page_request(
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
-    if parent.into_bytes() == [0; 16]
-        || maximum == 0
-        || maximum > MAX_CHILD_PAGE
-        || after_slot.is_some_and(|slot| {
-            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
-        })
-    {
-        return Err(Error::Invalid(
-            "child hierarchy page request is invalid".into(),
-        ));
-    }
-    Ok(())
+    runtime::validate_child_page_request(
+        "child hierarchy",
+        parent.into_bytes(),
+        after_slot,
+        maximum,
+    )
 }
 
 fn validate_child_page(
@@ -55,34 +52,14 @@ fn validate_child_page(
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
-    if expected_revision.is_some_and(|revision| revision != page.revision)
-        || page.entries.len() > maximum
-        || page
-            .next_after
-            .as_ref()
-            .is_some_and(|next| page.entries.last().is_none_or(|last| &last.slot != next))
-    {
-        return Err(Error::Invalid(
-            "child hierarchy page does not match its request".into(),
-        ));
-    }
-    let mut previous = after_slot;
-    let mut ids = std::collections::BTreeSet::new();
-    for entry in &page.entries {
-        if entry.operation_id.into_bytes() == [0; 16]
-            || entry.slot.trim().is_empty()
-            || entry.slot.len() > MAX_CHILD_SLOT_BYTES
-            || entry.slot.chars().any(char::is_control)
-            || previous.is_some_and(|slot| entry.slot.as_str() <= slot)
-            || !ids.insert(entry.operation_id)
-        {
-            return Err(Error::Invalid(
-                "child hierarchy entries are not in stable slot order".into(),
-            ));
-        }
-        previous = Some(&entry.slot);
-    }
-    Ok(())
+    runtime::validate_child_page(
+        "child hierarchy",
+        (page.revision, page.next_after.as_deref()),
+        page.entries
+            .iter()
+            .map(|entry| (entry.slot.as_str(), entry.operation_id.into_bytes())),
+        (expected_revision, after_slot, maximum),
+    )
 }
 
 /// One direct, same-owner child in stable declared-slot order.
@@ -180,8 +157,7 @@ impl ReducerRegistry {
     /// Registers one exact reducer without ambiguous replacement.
     pub fn register(&mut self, reducer: Arc<dyn DurableReducer>) -> Result<()> {
         let entrypoint = reducer.entrypoint();
-        jsonschema::validator_for(&entrypoint.result_schema)
-            .map_err(|error| Error::Invalid(format!("invalid reducer result schema: {error}")))?;
+        crate::contract::compile_json_schema(&entrypoint.result_schema, "reducer result")?;
         let key = (
             entrypoint.name.clone(),
             entrypoint.version.clone(),
@@ -266,9 +242,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
         }
         let (revision, operation_id, _, event_digest, committed_at_ms, event) =
             decode(&record.value)?;
-        if revision != expected.saturating_add(1)
-            || scheduler_event_operation(&event) != operation_id
-        {
+        if revision != expected.saturating_add(1) || event.operation_id() != operation_id {
             return Err(Error::Storage(
                 "coordinator event page has invalid identity".into(),
             ));
@@ -327,7 +301,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             for record in page {
                 let (revision, operation_id, key, digest, committed_at_ms, event) =
                     decode(&record.value)?;
-                if revision != record.sequence + 1 {
+                if revision != next_revision(record.sequence)? {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
                 }
                 if let SchedulerEvent::Declared { spec } = &event {
@@ -391,14 +365,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .into_iter()
         .flatten()
         {
-            jsonschema::validator_for(schema)
-                .map_err(|error| {
-                    Error::Invalid(format!("invalid scheduler result schema: {error}"))
-                })?
-                .validate(&value)
-                .map_err(|error| {
-                    Error::Invalid(format!("scheduler result failed validation: {error}"))
-                })?;
+            crate::contract::validate_json_schema_value(schema, &value, "scheduler result")?;
         }
         Ok(())
     }
@@ -417,8 +384,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         verifier: &AuthorityVerifier,
         operation_id: OperationId,
     ) -> Result<OperationState> {
-        self.authorize_operation(owner, scope, verifier, operation_id, "operation:observe")
-            .cloned()
+        self.authorize_operation(
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            capability::OPERATION_OBSERVE,
+        )
+        .cloned()
     }
 
     /// Discovers direct children without fork lineage or an arbitrary graph
@@ -433,7 +406,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<ChildOperationPage> {
         validate_child_page_request(parent, request.after_slot, request.maximum)?;
         self.refresh().await?;
-        self.authorize_operation(owner, scope, verifier, parent, "operation:observe")?;
+        self.authorize_operation(
+            owner,
+            scope,
+            verifier,
+            parent,
+            capability::OPERATION_OBSERVE,
+        )?;
         if request
             .expected_revision
             .is_some_and(|revision| revision != self.revision)
@@ -487,7 +466,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         recursive: bool,
     ) -> Result<(CoordinatorApply, OperationState)> {
         self.refresh().await?;
-        self.authorize_operation(owner, scope, verifier, operation_id, "operation:cancel")?;
+        self.authorize_operation(
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            capability::OPERATION_CANCEL,
+        )?;
         let applied = self
             .apply(
                 operation_id,
@@ -526,11 +511,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .scheduler
             .operation(operation_id)
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
-        let declared_owner = match &operation.spec.owner {
-            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
-                authority
-            }
-        };
+        let declared_owner = operation.spec.owner.authority();
         if declared_owner != owner {
             return Err(Error::NotFound(format!("operation {operation_id}")));
         }
@@ -569,14 +550,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<CoordinatorApply> {
         verifier.verify_audience(owner)?;
         verifier.verify(scope)?;
-        if !scope.capabilities().contains("operation:declare") {
+        if !scope.capabilities().contains(capability::OPERATION_DECLARE) {
             return Err(Error::Unauthorized("scope lacks operation:declare".into()));
         }
-        let declared_owner = match &spec.owner {
-            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
-                authority
-            }
-        };
+        let declared_owner = spec.owner.authority();
         if declared_owner != owner {
             return Err(Error::Unauthorized(
                 "declaration owner does not match authenticated owner".into(),
@@ -589,7 +566,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 scope,
                 verifier,
                 parent.operation_id,
-                "operation:declare",
+                capability::OPERATION_DECLARE,
             )?;
         }
         let operation_id = spec.operation_id;
@@ -609,7 +586,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.refresh().await?;
         IdempotencyKey::new(idempotency_key.0.clone())?;
         let key = idempotency_key.as_str();
-        if scheduler_event_operation(&event) != operation_id {
+        if event.operation_id() != operation_id {
             return Err(Error::Invalid(
                 "scheduler event belongs to another operation".into(),
             ));
@@ -629,7 +606,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.verify_published_result(&event).await?;
         let mut projected = self.scheduler.clone();
         projected.apply(event.clone())?;
-        let revision = self.next_revision()?;
+        let revision = next_revision(self.revision)?;
         let committed_at_ms = self.next_committed_at_ms()?;
         let bytes = encode(
             revision,
@@ -640,34 +617,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             committed_at_ms,
         );
         let stream_key = stream_key(key)?;
-        let outcome = match self
-            .stream
-            .append_batch(
-                vec![Bytes::copy_from_slice(&bytes)],
-                Some(self.revision),
-                Some(stream_key.clone()),
-            )
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
-                match self.client.inspect_idempotency(stream_key).await {
-                    Ok(Some(observation)) => match observation.outcome {
-                        IdempotencyOutcome::Append(outcome) => outcome,
-                        _ => {
-                            return Err(Error::Conflict(
-                                "coordinator retry identity has another operation kind".into(),
-                            ));
-                        }
-                    },
-                    Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
-                }
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict("coordinator retry identity reused".into()));
-            }
-            Err(error) => return Err(Error::Storage(error.to_string())),
-        };
+        let outcome = append_keyed(
+            (&self.stream, &self.client),
+            Bytes::copy_from_slice(&bytes),
+            Some(self.revision),
+            stream_key,
+            operation_id,
+            "coordinator retry identity",
+        )
+        .await?;
         match outcome {
             AppendOutcome::Committed(receipt) => {
                 if receipt.end.checked_sub(receipt.start) != Some(1) || receipt.tail < receipt.end {
@@ -704,12 +662,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 }
             }
         }
-    }
-
-    fn next_revision(&self) -> Result<u64> {
-        self.revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))
     }
 
     fn next_committed_at_ms(&self) -> Result<u64> {
@@ -753,18 +705,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
             .clone();
         let operation = state.spec.clone();
+        let revision = next_revision(self.revision)?;
         let reservation = Reservation {
-            id: format!("{}:{operation_id}:{}", worker.id, self.revision + 1),
+            id: format!("{}:{operation_id}:{revision}", worker.id),
             placement: worker.id.clone(),
             admitted: operation.resources.clone(),
         };
         self.apply(
             operation_id,
-            IdempotencyKey::new(format!(
-                "pull:{}:{operation_id}:{}",
-                worker.id,
-                self.revision + 1
-            ))?,
+            IdempotencyKey::new(format!("pull:{}:{operation_id}:{revision}", worker.id))?,
             SchedulerEvent::Admitted {
                 operation_id,
                 reservation: reservation.clone(),
@@ -992,7 +941,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         committed_at_ms: u64,
         event: SchedulerEvent,
     ) -> Result<()> {
-        if revision != self.revision + 1 || scheduler_event_operation(&event) != operation_id {
+        if revision != next_revision(self.revision)? || event.operation_id() != operation_id {
             return Err(Error::Conflict(
                 "invalid committed coordinator event".into(),
             ));
@@ -1013,23 +962,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.last_committed_at_ms = committed_at_ms;
         self.intents.insert(key, (digest, event));
         Ok(())
-    }
-}
-
-fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
-    match event {
-        SchedulerEvent::Declared { spec } => spec.operation_id,
-        SchedulerEvent::WaitingForCapacity { operation_id }
-        | SchedulerEvent::Admitted { operation_id, .. }
-        | SchedulerEvent::PartiallyAdmitted { operation_id, .. }
-        | SchedulerEvent::Rejected { operation_id, .. }
-        | SchedulerEvent::Started { operation_id, .. }
-        | SchedulerEvent::Checkpointed { operation_id, .. }
-        | SchedulerEvent::WaitingForChildren { operation_id, .. }
-        | SchedulerEvent::LeaseReleased { operation_id, .. }
-        | SchedulerEvent::CancellationRequested { operation_id, .. }
-        | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
     }
 }
 
@@ -1056,7 +988,11 @@ fn encode(
 fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    validate_coordinator_protocol(envelope.protocol.as_ref())?;
+    validate_protocol(
+        envelope.protocol.as_ref(),
+        &coordinator_protocol_identity(),
+        Error::Storage,
+    )?;
     let digest: [u8; 32] = envelope
         .event_digest
         .try_into()
@@ -1096,16 +1032,34 @@ fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
     }
 }
 
-fn validate_coordinator_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    let actual =
-        protocol.ok_or_else(|| Error::Storage("coordinator event protocol is missing".into()))?;
-    let current = coordinator_protocol_identity();
-    if actual == &current {
-        Ok(())
-    } else {
-        Err(Error::Unsupported(
-            "unsupported coordinator event wire version".into(),
-        ))
+/// Appends one keyed record. An unavailable reply is resolved from the
+/// Stream's retained idempotency outcome, or reported as indeterminate.
+pub(crate) async fn append_keyed<P: StreamProvider>(
+    (stream, client): (&Stream<P>, &StreamClient<P>),
+    record: Bytes,
+    if_tail: Option<u64>,
+    key: StreamIdempotencyKey,
+    operation_id: OperationId,
+    identity: &str,
+) -> Result<AppendOutcome> {
+    match stream
+        .append_batch(vec![record], if_tail, Some(key.clone()))
+        .await
+    {
+        Ok(outcome) => Ok(outcome),
+        Err(StreamError::Unavailable) => match client.inspect_idempotency(key).await {
+            Ok(Some(observation)) => match observation.outcome {
+                IdempotencyOutcome::Append(outcome) => Ok(outcome),
+                _ => Err(Error::Conflict(format!(
+                    "{identity} has another operation kind"
+                ))),
+            },
+            Ok(None) | Err(_) => Err(Error::Indeterminate(operation_id)),
+        },
+        Err(StreamError::IdempotencyMismatch) => {
+            Err(Error::Conflict(format!("{identity} was reused")))
+        }
+        Err(error) => Err(Error::Storage(error.to_string())),
     }
 }
 
@@ -1226,11 +1180,7 @@ mod tests {
         spec: OperationSpec,
         key: &str,
     ) -> Result<CoordinatorApply> {
-        let owner = match &spec.owner {
-            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
-                authority.clone()
-            }
-        };
+        let owner = spec.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root("declare", Capabilities::new(["operation:declare"]));
         coordinator
@@ -1472,11 +1422,15 @@ mod tests {
         let parent = OperationId::from_bytes([1; 16]);
         assert!(validate_child_page_request(OperationId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_child_page_request(parent, None, 0).is_err());
-        assert!(validate_child_page_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
+        assert!(validate_child_page_request(parent, None, runtime::MAX_CHILD_PAGE + 1).is_err());
         assert!(validate_child_page_request(parent, Some("\u{7f}"), 1).is_err());
         assert!(
-            validate_child_page_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
-                .is_err()
+            validate_child_page_request(
+                parent,
+                Some(&"x".repeat(runtime::MAX_CHILD_SLOT_BYTES + 1)),
+                1
+            )
+            .is_err()
         );
         validate_child_page_request(parent, Some("résumé"), 1)?;
 

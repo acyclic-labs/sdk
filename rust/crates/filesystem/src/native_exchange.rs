@@ -600,6 +600,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
         .map_err(|_| NativeExchangeError::InvalidLayout)?;
     let prepared = std::ffi::CString::new(prepared.as_os_str().as_bytes())
         .map_err(|_| NativeExchangeError::InvalidLayout)?;
+    // SAFETY: both paths are NUL-terminated `CString`s that outlive the call.
     if unsafe { libc::renamex_np(live.as_ptr(), prepared.as_ptr(), libc::RENAME_SWAP) } == 0 {
         Ok(())
     } else {
@@ -615,6 +616,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
         .map_err(|_| NativeExchangeError::InvalidLayout)?;
     let prepared = std::ffi::CString::new(prepared.as_os_str().as_bytes())
         .map_err(|_| NativeExchangeError::InvalidLayout)?;
+    // SAFETY: both paths are NUL-terminated `CString`s that outlive the syscall.
     let result = unsafe {
         libc::syscall(
             libc::SYS_renameat2,

@@ -13,13 +13,14 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     StreamPath::new(value)
 }
 
+#[cfg(any(
+    feature = "grpc",
+    feature = "local",
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
     value.map(IdempotencyKey::new).transpose()
-}
-
-#[cfg(any(feature = "grpc", feature = "local"))]
-pub(crate) fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
-    optional_key(value)?.ok_or(StreamError::InvalidArgument)
 }
 
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
@@ -41,6 +42,12 @@ pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     }
 }
 
+#[cfg(any(
+    feature = "grpc",
+    feature = "local",
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn condition_from_wire(
     value: wire::CommitCondition,
 ) -> Result<CommitCondition, StreamError> {
@@ -80,6 +87,12 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
     }
 }
 
+#[cfg(any(
+    feature = "grpc",
+    feature = "local",
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn mutation_from_wire(
     value: wire::CommitMutation,
 ) -> Result<CommitMutation, StreamError> {
@@ -256,6 +269,10 @@ pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     }
 }
 
+#[cfg(any(
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn append_from_wire(
     value: wire::AppendRequest,
 ) -> Result<crate::AppendRequest, StreamError> {
@@ -267,6 +284,10 @@ pub(crate) fn append_from_wire(
     })
 }
 
+#[cfg(any(
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
         source: path(value.source)?,
@@ -276,6 +297,10 @@ pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequ
     })
 }
 
+#[cfg(any(
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         path: path(value.path)?,
@@ -284,12 +309,17 @@ pub(crate) fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequ
     })
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn follow_from_wire(
     value: wire::FollowRequest,
 ) -> Result<(StreamPath, u64), StreamError> {
     Ok((path(value.path)?, value.from))
 }
 
+#[cfg(any(
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn children_from_wire(
     value: wire::ChildrenRequest,
 ) -> Result<crate::ChildrenRequest, StreamError> {
@@ -299,6 +329,10 @@ pub(crate) fn children_from_wire(
     })
 }
 
+#[cfg(any(
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
@@ -319,6 +353,7 @@ pub(crate) fn children_page_from_wire(
     })
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
         hierarchy_version: Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
@@ -333,6 +368,10 @@ pub(crate) fn children_page_to_wire(value: crate::ChildrenPage) -> wire::Childre
     }
 }
 
+#[cfg(any(
+    all(feature = "http", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn commit_from_wire(
     value: wire::CommitRequest,
 ) -> Result<crate::CommitRequest, StreamError> {
@@ -365,6 +404,7 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
     let outcome = match value {
         crate::AppendOutcome::Committed(receipt) => {
@@ -384,6 +424,7 @@ pub(crate) fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::Appen
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
@@ -418,6 +459,7 @@ pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
         crate::CommitOutcome::Committed(envelope) => {
@@ -434,6 +476,7 @@ pub(crate) fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::Commi
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
@@ -504,6 +547,7 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 fn record_to_wire(value: crate::Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
@@ -513,6 +557,7 @@ fn record_to_wire(value: crate::Record) -> wire::Record {
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 fn committed_mutation_to_wire(value: crate::CommittedMutation) -> wire::CommittedMutation {
     let mutation = match value {
         crate::CommittedMutation::Append(value) => {
@@ -576,6 +621,7 @@ pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 fn conflict_to_wire(value: crate::CommitConflict) -> wire::CommitConflict {
     let conflict = match value {
         crate::CommitConflict::Tail {
@@ -598,6 +644,7 @@ fn conflict_to_wire(value: crate::CommitConflict) -> wire::CommitConflict {
     }
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn observation_to_wire(
     value: crate::IdempotencyObservation,
 ) -> wire::InspectIdempotencyResponse {

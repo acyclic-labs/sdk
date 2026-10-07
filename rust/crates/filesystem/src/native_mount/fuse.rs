@@ -4511,13 +4511,7 @@ fn native_device_number(major: u32, minor: u32) -> Result<u32, i32> {
 
 /// Splits a non-root path into its parent directory and final name.
 fn split_parent(path: &MountPath) -> Option<(MountPath, &[u8])> {
-    let (name, components) = path.components().split_last()?;
-    let parent = components
-        .iter()
-        .fold(MountPath::root(), |parent, component| {
-            parent.child(component.clone())
-        });
-    Some((parent, name))
+    Some((path.parent()?, path.components().last()?))
 }
 
 #[allow(clippy::needless_pass_by_value)]

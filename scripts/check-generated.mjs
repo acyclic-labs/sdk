@@ -66,16 +66,16 @@ const wasmSmoke = {
   },
 };
 const wasmPackages = [
-  ["filesystem", "build-filesystem-wasm.mjs", "acyclic_fs_wasm"],
-  ["harness", "build-harness-wasm.mjs", "acyclic_harness_wasm"],
-  ["inference", "build-inference-wasm.mjs", "acyclic_inference_wasm"],
-  ["machines", "build-machines-wasm.mjs", "acyclic_machines_wasm"],
-  ["objects", "build-objects-wasm.mjs", "acyclic_objects_wasm"],
-  ["stream", "build-stream-wasm.mjs", "acyclic_stream_wasm"],
+  ["filesystem", "acyclic_fs_wasm"],
+  ["harness", "acyclic_harness_wasm"],
+  ["inference", "acyclic_inference_wasm"],
+  ["machines", "acyclic_machines_wasm"],
+  ["objects", "acyclic_objects_wasm"],
+  ["stream", "acyclic_stream_wasm"],
 ];
-const checkWasmPackage = async ([packageName, buildScript, basename]) => {
+const checkWasmPackage = async ([packageName, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);
-  const built = spawnSync(process.execPath, [join(root, "scripts", buildScript), output], {
+  const built = spawnSync(process.execPath, [join(root, "scripts", "build-wasm.mjs"), packageName, output], {
     cwd: root,
     encoding: "utf8",
   });
@@ -156,16 +156,6 @@ try {
     throw new Error(`Buf generation failed with status ${generated.status ?? "unknown"}`);
   }
   const freshTypeScript = join(temporary, "generated/typescript");
-  const committedTypeScript = join(root, "generated/typescript");
-  const freshFiles = generatedFiles(freshTypeScript);
-  if (JSON.stringify(freshFiles) !== JSON.stringify(generatedFiles(committedTypeScript))) {
-    throw new Error("generated TypeScript file set drift; run bun run generate");
-  }
-  for (const relative of freshFiles) {
-    const fresh = normalizeGeneratedTypeScript(readFileSync(join(freshTypeScript, relative), "utf8"));
-    const committed = readFileSync(join(committedTypeScript, relative), "utf8");
-    if (fresh !== committed) throw new Error(`generated TypeScript drift: ${relative}`);
-  }
   const freshRust = join(temporary, "generated/rust");
   const committedRust = join(root, "generated/rust");
   const freshRustFiles = generatedFiles(freshRust);
@@ -212,10 +202,10 @@ try {
   for (const [stem, packages] of packagedTypeScriptBindings) {
     for (const extension of [".js", ".d.ts"]) {
       const relative = `${stem}${extension}`;
-      const canonical = readFileSync(join(committedTypeScript, relative));
+      const fresh = normalizeGeneratedTypeScript(readFileSync(join(freshTypeScript, relative), "utf8"));
       for (const name of packages) {
-        const packaged = readFileSync(join(root, "typescript/packages", name, "generated/proto", relative));
-        if (!canonical.equals(packaged)) throw new Error(`packaged ${name} TypeScript drift: ${relative}`);
+        const packaged = readFileSync(join(root, "typescript/packages", name, "generated/proto", relative), "utf8");
+        if (fresh !== packaged) throw new Error(`packaged ${name} TypeScript drift: ${relative}`);
       }
     }
   }

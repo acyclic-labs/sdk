@@ -179,9 +179,9 @@ impl GrpcObjects {
         private_key_pem: &[u8],
     ) -> Result<Self, ConnectError> {
         if certificate_pem.is_empty()
-            || certificate_pem.len() > 64 * 1024
+            || certificate_pem.len() > super::MAX_PEM_BYTES
             || private_key_pem.is_empty()
-            || private_key_pem.len() > 64 * 1024
+            || private_key_pem.len() > super::MAX_PEM_BYTES
         {
             return Err(ConnectError::InvalidConfiguration);
         }
@@ -218,7 +218,7 @@ impl GrpcObjects {
         authorization.set_sensitive(true);
         let mut tls = ClientTlsConfig::new().with_webpki_roots();
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > 64 * 1024 {
+            if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
                 return Err(ConnectError::InvalidConfiguration);
             }
             tls = tls.ca_certificate(Certificate::from_pem(ca));

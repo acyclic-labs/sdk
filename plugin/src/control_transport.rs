@@ -482,6 +482,7 @@ pub(crate) fn unix_control_socket_path(data: &Path) -> PathBuf {
     reason = "geteuid has no preconditions and reads no memory"
 )]
 pub(crate) fn unix_control_runtime_directory() -> PathBuf {
+    // SAFETY: geteuid has no preconditions and reads no memory.
     let uid = unsafe { libc::geteuid() };
     PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
 }
@@ -526,6 +527,7 @@ pub(crate) fn prepare_unix_control_runtime_directory() -> Result<PathBuf, String
         Err(error) => return Err(display(error)),
     }
     let metadata = fs::symlink_metadata(&directory).map_err(display)?;
+    // SAFETY: geteuid has no preconditions and reads no memory.
     let uid = unsafe { libc::geteuid() };
     if !metadata.file_type().is_dir() || metadata.uid() != uid {
         return Err("Acyclic workspace directory is not owned by the current user".to_owned());

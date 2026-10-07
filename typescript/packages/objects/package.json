@@ -54,7 +54,7 @@
   ],
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-objects-wasm.mjs",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs objects",
     "test": "bun run build && bun test test"
   },
   "dependencies": {

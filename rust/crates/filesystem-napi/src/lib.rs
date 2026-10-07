@@ -20,18 +20,17 @@ use acyclic_fs::{
     JoinPlan, LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
     LocalObjectBackend, LocalOperationWindowStore, LocalOptions, LocalVolume, MergeConflict,
     MergePreparation, NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions,
-    ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId,
+    ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency, OperationId,
     OperationLeaseId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
     OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
-    PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint,
-    ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
-    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
-    TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-    TransactionRebase, TransactionSparseSeek, VolumeId, WatchBatch, WatchChange,
-    WatchInvalidationReason, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRegistry,
-    WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
-    WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
+    PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
+    ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
+    StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionConflict,
+    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase, TransactionSparseSeek,
+    VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
+    WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     decode_generation_export_manifest, encode_generation_export_manifest,
     native_watch_capabilities as sdk_native_watch_capabilities, parse_git_public_command,
@@ -1133,9 +1132,11 @@ impl NativeSpeculation {
         let hint = ResidencyHint {
             request: ObjectReadRequest {
                 object_id: decode_object_id(&observation.object_id)?,
-                maximum_bytes: bigint_u64(&observation.maximum_bytes)?,
+                maximum_bytes: bigint_u64(&observation.maximum_bytes, "maximumBytes")?,
             },
-            reason: native_residency_reason(&observation.reason)?,
+            reason: ResidencyReason::from_public_str(&observation.reason).ok_or_else(|| {
+                Error::new(Status::InvalidArg, "unknown residency speculation reason")
+            })?,
         };
         let admission = self
             .controller
@@ -1145,7 +1146,7 @@ impl NativeSpeculation {
                 operation_id,
                 volume_id,
                 generation_id,
-                bigint_u64(&observation.foreground_bytes)?,
+                bigint_u64(&observation.foreground_bytes, "foregroundBytes")?,
                 hint,
             )
             .map_err(napi_error)?;
@@ -1156,7 +1157,7 @@ impl NativeSpeculation {
             },
             ResidencyAdmission::Rejected(rejection) => NativeResidencyAdmission {
                 status: "rejected".to_owned(),
-                rejection: Some(native_residency_rejection(rejection).to_owned()),
+                rejection: Some(rejection.as_str().to_owned()),
             },
         })
     }
@@ -1277,7 +1278,7 @@ impl NativeSpeculation {
             .controller
             .lock()
             .await
-            .preempt_for_foreground(bigint_u64(&foreground_bytes)?)
+            .preempt_for_foreground(bigint_u64(&foreground_bytes, "foregroundBytes")?)
             .map_err(napi_error)?;
         Ok(native_speculation_preemption(preemption))
     }
@@ -1485,8 +1486,8 @@ impl NativeResolvedFile {
             .inner
             .read_range(
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 boundary_budget(),
                 &self.cancellation,
@@ -1919,18 +1920,22 @@ impl NativeWorkspace {
     /// Returns path, kind, bound, authentication, or storage failures.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read(&path, bigint_u64(&maximum_bytes)?))
-            .await
-            .map(|bytes| Buffer::from(bytes.to_vec()))
-            .map_err(napi_error)
+        Box::pin(
+            self.inner
+                .read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?),
+        )
+        .await
+        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map_err(napi_error)
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(
-            self.inner
-                .read_range(&path, bigint_u64(&offset)?, bigint_u64(&length)?),
-        )
+        Box::pin(self.inner.read_range(
+            &path,
+            bigint_u64(&offset, "offset")?,
+            bigint_u64(&length, "length")?,
+        ))
         .await
         .map(|bytes| Buffer::from(bytes.to_vec()))
         .map_err(napi_error)
@@ -1962,8 +1967,8 @@ impl NativeWorkspace {
     ) -> Result<NativeWorkspaceExtentPlan> {
         Box::pin(self.inner.plan_extents(
             &path,
-            bigint_u64(&offset)?,
-            bigint_u64(&length)?,
+            bigint_u64(&offset, "offset")?,
+            bigint_u64(&length, "length")?,
             maximum_spans,
         ))
         .await
@@ -2331,18 +2336,22 @@ impl NativeGeneration {
     /// Returns path, kind, bound, authentication, or storage failures.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read(&path, bigint_u64(&maximum_bytes)?))
-            .await
-            .map(|bytes| Buffer::from(bytes.to_vec()))
-            .map_err(napi_error)
+        Box::pin(
+            self.inner
+                .read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?),
+        )
+        .await
+        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map_err(napi_error)
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(
-            self.inner
-                .read_range(&path, bigint_u64(&offset)?, bigint_u64(&length)?),
-        )
+        Box::pin(self.inner.read_range(
+            &path,
+            bigint_u64(&offset, "offset")?,
+            bigint_u64(&length, "length")?,
+        ))
         .await
         .map(|bytes| Buffer::from(bytes.to_vec()))
         .map_err(napi_error)
@@ -2391,8 +2400,8 @@ impl NativeGeneration {
     ) -> Result<NativeWorkspaceExtentPlan> {
         Box::pin(self.inner.plan_extents(
             &path,
-            bigint_u64(&offset)?,
-            bigint_u64(&length)?,
+            bigint_u64(&offset, "offset")?,
+            bigint_u64(&length, "length")?,
             maximum_spans,
         ))
         .await
@@ -2639,10 +2648,7 @@ impl Task for NativeWorkspaceMountSyncTask {
     type JsValue = ();
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| Error::new(Status::GenericFailure, "workspace mount lock is poisoned"))?;
+        let guard = lock_state(&self.inner, "workspace mount lock")?;
         guard
             .as_ref()
             .ok_or_else(|| Error::new(Status::InvalidArg, "workspace mount is detached"))?
@@ -2660,10 +2666,7 @@ impl Task for NativeWorkspaceUnmountTask {
     type JsValue = bool;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| Error::new(Status::GenericFailure, "workspace mount lock is poisoned"))?;
+        let mut guard = lock_state(&self.inner, "workspace mount lock")?;
         let Some(mount) = guard.as_mut() else {
             return Ok(false);
         };
@@ -2811,7 +2814,7 @@ impl NativeWorkspaceTransaction {
             .await
             .write_range(
                 &path,
-                bigint_u64(&offset)?,
+                bigint_u64(&offset, "offset")?,
                 bytes::Bytes::from(bytes.to_vec()),
             )
             .await
@@ -2828,7 +2831,7 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .resize(&path, bigint_u64(&logical_bytes)?)
+            .resize(&path, bigint_u64(&logical_bytes, "logicalBytes")?)
             .await
             .map_err(napi_error)
     }
@@ -2853,8 +2856,8 @@ impl NativeWorkspaceTransaction {
             .zero_range(
                 &path,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 allocated,
                 extend,
@@ -2882,8 +2885,8 @@ impl NativeWorkspaceTransaction {
             .preallocate(
                 &path,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 keep_size,
             )
@@ -2910,10 +2913,10 @@ impl NativeWorkspaceTransaction {
             .await
             .clone_range(
                 &source,
-                bigint_u64(&source_offset)?,
+                bigint_u64(&source_offset, "sourceOffset")?,
                 &destination,
-                bigint_u64(&destination_offset)?,
-                bigint_u64(&length)?,
+                bigint_u64(&destination_offset, "destinationOffset")?,
+                bigint_u64(&length, "length")?,
             )
             .await
             .map_err(napi_error)
@@ -3043,7 +3046,7 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
             result.name = Some(NativeWorkspaceName {
-                encoding: native_name_encoding(name.encoding()).to_owned(),
+                encoding: name.encoding().as_str().to_owned(),
                 bytes: Buffer::from(name.as_bytes().to_vec()),
             });
         }
@@ -3055,7 +3058,7 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
             "directory-range".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
             result.name = after.map(|name| NativeWorkspaceName {
-                encoding: native_name_encoding(name.encoding()).to_owned(),
+                encoding: name.encoding().as_str().to_owned(),
                 bytes: Buffer::from(name.as_bytes().to_vec()),
             });
             result.maximum_entries = Some(maximum_entries);
@@ -3554,8 +3557,8 @@ impl NativeOperationWindowCoordinator {
                 WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
                 generation_id(&parent)?,
                 owner,
-                bigint_u64(&now_millis)?,
-                bigint_u64(&expires_at_millis)?,
+                bigint_u64(&now_millis, "nowMillis")?,
+                bigint_u64(&expires_at_millis, "expiresAtMillis")?,
             )
             .await
             .map(|lease| native_operation_window_lease(&lease))
@@ -3582,7 +3585,10 @@ impl NativeOperationWindowCoordinator {
         now_millis: BigInt,
     ) -> Result<NativeOperationWindowClose> {
         self.inner
-            .finish(&operation_window_lease(&lease)?, bigint_u64(&now_millis)?)
+            .finish(
+                &operation_window_lease(&lease)?,
+                bigint_u64(&now_millis, "nowMillis")?,
+            )
             .await
             .map(native_operation_window_close)
             .map_err(napi_error)
@@ -3601,7 +3607,7 @@ impl NativeOperationWindowCoordinator {
             .finish_workspace(
                 &workspace.inner,
                 &operation_window_lease(&lease)?,
-                bigint_u64(&now_millis)?,
+                bigint_u64(&now_millis, "nowMillis")?,
                 operation_reconcile_limits(options),
             )
             .await
@@ -3620,7 +3626,7 @@ impl NativeOperationWindowCoordinator {
         self.inner
             .recover_workspace(
                 &workspace.inner,
-                bigint_u64(&now_millis)?,
+                bigint_u64(&now_millis, "nowMillis")?,
                 operation_reconcile_limits(options),
             )
             .await
@@ -3921,7 +3927,7 @@ impl NativeFs {
             .inner
             .export_object(
                 decode_object_id(&object_id)?,
-                bigint_u64(&maximum_bytes)?,
+                bigint_u64(&maximum_bytes, "maximumBytes")?,
                 boundary_budget(),
                 &self.cancellation,
             )
@@ -3977,9 +3983,9 @@ impl NativeFs {
             .inner
             .export_generation_batch(
                 &manifest,
-                TransferCursor::new(bigint_u64(&cursor)?),
+                TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 maximum_objects,
-                bigint_u64(&maximum_object_bytes)?,
+                bigint_u64(&maximum_object_bytes, "maximumObjectBytes")?,
                 boundary_budget(),
                 &self.cancellation,
             )
@@ -4024,7 +4030,7 @@ impl NativeFs {
             .inner
             .import_generation_batch(
                 &manifest,
-                TransferCursor::new(bigint_u64(&cursor)?),
+                TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 &objects,
                 maximum_objects,
                 boundary_budget(),
@@ -4132,34 +4138,12 @@ impl NativeVolume {
     /// cancellation, storage failure, or bounded-work exhaustion.
     #[napi]
     pub async fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeCheckout> {
-        let consistency = match options.consistency.as_str() {
-            "pinned" => ConsistencyMode::Pinned,
-            "tracking-safe" => ConsistencyMode::TrackingSafe,
-            "live" => ConsistencyMode::Live,
-            "manual" => ConsistencyMode::Manual,
-            _ => {
-                return Err(Error::new(
-                    Status::InvalidArg,
-                    "invalid checkout consistency",
-                ));
-            }
-        };
-        let access = match options.access.as_str() {
-            "read-only" => AccessMode::ReadOnly,
-            "read-write" => AccessMode::ReadWrite,
-            _ => return Err(Error::new(Status::InvalidArg, "invalid checkout access")),
-        };
-        let mutations = match options.mutation_mode.as_str() {
-            "none" => MutationMode::None,
-            "private-cow" => MutationMode::PrivateOverlay,
-            "direct-live" => MutationMode::DirectLive,
-            _ => {
-                return Err(Error::new(
-                    Status::InvalidArg,
-                    "invalid checkout mutation mode",
-                ));
-            }
-        };
+        let consistency = ConsistencyMode::from_public_str(&options.consistency)
+            .ok_or_else(|| Error::new(Status::InvalidArg, "invalid checkout consistency"))?;
+        let access = AccessMode::from_public_str(&options.access)
+            .ok_or_else(|| Error::new(Status::InvalidArg, "invalid checkout access"))?;
+        let mutations = MutationMode::from_public_str(&options.mutation_mode)
+            .ok_or_else(|| Error::new(Status::InvalidArg, "invalid checkout mutation mode"))?;
         let mode = CheckoutMode {
             access,
             consistency,
@@ -4382,7 +4366,7 @@ impl NativeCheckout {
                 destination: options.destination.into(),
                 maximum_directory_entries: options.maximum_directory_entries,
                 maximum_extent_spans: options.maximum_extent_spans,
-                transfer_bytes: bigint_u64(&options.transfer_bytes)?,
+                transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
             },
             boundary_budget(),
             &self.cancellation,
@@ -4765,7 +4749,10 @@ impl NativeCheckout {
             native_decode_limits(self.config.limits),
         )
         .map_err(napi_error)?;
-        let logical_bytes = logical_bytes.as_ref().map(bigint_u64).transpose()?;
+        let logical_bytes = logical_bytes
+            .as_ref()
+            .map(|value| bigint_u64(value, "logicalBytes"))
+            .transpose()?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -4800,7 +4787,10 @@ impl NativeCheckout {
             native_decode_limits(self.config.limits),
         )
         .map_err(napi_error)?;
-        let logical_bytes = logical_bytes.as_ref().map(bigint_u64).transpose()?;
+        let logical_bytes = logical_bytes
+            .as_ref()
+            .map(|value| bigint_u64(value, "logicalBytes"))
+            .transpose()?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5046,8 +5036,8 @@ impl NativeCheckout {
             .read_file_range(
                 &path,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 boundary_budget(),
                 &self.cancellation,
@@ -5079,8 +5069,8 @@ impl NativeCheckout {
             .read_file_range_by_id(
                 file_id,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 boundary_budget(),
                 &self.cancellation,
@@ -5113,8 +5103,8 @@ impl NativeCheckout {
             .plan_file_extents(
                 &path,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 maximum_spans,
                 boundary_budget(),
@@ -5145,8 +5135,8 @@ impl NativeCheckout {
             .plan_file_extents_by_id(
                 file_id,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 maximum_spans,
                 boundary_budget(),
@@ -5176,7 +5166,7 @@ impl NativeCheckout {
         let receipt = checkout
             .seek_file_extent(
                 &path,
-                bigint_u64(&offset)?,
+                bigint_u64(&offset, "offset")?,
                 target,
                 boundary_budget(),
                 &self.cancellation,
@@ -5208,7 +5198,7 @@ impl NativeCheckout {
         let receipt = checkout
             .seek_file_extent_by_id(
                 file_id,
-                bigint_u64(&offset)?,
+                bigint_u64(&offset, "offset")?,
                 target,
                 boundary_budget(),
                 &self.cancellation,
@@ -5537,7 +5527,7 @@ impl NativeCheckout {
         let receipt = checkout
             .write_file(
                 path,
-                bigint_u64(&offset)?,
+                bigint_u64(&offset, "offset")?,
                 bytes::Bytes::from(bytes.to_vec()),
                 boundary_budget(),
                 &self.cancellation,
@@ -5569,7 +5559,7 @@ impl NativeCheckout {
         let receipt = checkout
             .write_file_by_id(
                 file_id,
-                bigint_u64(&offset)?,
+                bigint_u64(&offset, "offset")?,
                 bytes::Bytes::from(bytes.to_vec()),
                 boundary_budget(),
                 &self.cancellation,
@@ -5681,7 +5671,7 @@ impl NativeCheckout {
         let receipt = checkout
             .resize_file(
                 path,
-                bigint_u64(&logical_bytes)?,
+                bigint_u64(&logical_bytes, "logicalBytes")?,
                 boundary_budget(),
                 &self.cancellation,
             )
@@ -5708,7 +5698,7 @@ impl NativeCheckout {
         let receipt = checkout
             .resize_file_by_id(
                 file_id,
-                bigint_u64(&logical_bytes)?,
+                bigint_u64(&logical_bytes, "logicalBytes")?,
                 boundary_budget(),
                 &self.cancellation,
             )
@@ -5739,8 +5729,8 @@ impl NativeCheckout {
             .zero_file_range(
                 path,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 allocated,
                 extend,
@@ -5774,8 +5764,8 @@ impl NativeCheckout {
             .zero_file_range_by_id(
                 file_id,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 allocated,
                 extend,
@@ -5808,8 +5798,8 @@ impl NativeCheckout {
             .preallocate_file(
                 path,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 keep_size,
                 boundary_budget(),
@@ -5841,8 +5831,8 @@ impl NativeCheckout {
             .preallocate_file_by_id(
                 file_id,
                 ByteRange {
-                    offset: bigint_u64(&offset)?,
-                    length: bigint_u64(&length)?,
+                    offset: bigint_u64(&offset, "offset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 keep_size,
                 boundary_budget(),
@@ -5870,10 +5860,10 @@ impl NativeCheckout {
     ) -> Result<NativeMutationResult> {
         let request = FileCloneRequest {
             source: native_path(&source, self.config)?,
-            source_offset: bigint_u64(&source_offset)?,
+            source_offset: bigint_u64(&source_offset, "sourceOffset")?,
             destination: native_path(&destination, self.config)?,
-            destination_offset: bigint_u64(&destination_offset)?,
-            length: bigint_u64(&length)?,
+            destination_offset: bigint_u64(&destination_offset, "destinationOffset")?,
+            length: bigint_u64(&length, "length")?,
         };
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -5906,10 +5896,10 @@ impl NativeCheckout {
         let receipt = checkout
             .clone_file_range_by_id(
                 source_file_id,
-                bigint_u64(&source_offset)?,
+                bigint_u64(&source_offset, "sourceOffset")?,
                 destination_file_id,
-                bigint_u64(&destination_offset)?,
-                bigint_u64(&length)?,
+                bigint_u64(&destination_offset, "destinationOffset")?,
+                bigint_u64(&length, "length")?,
                 boundary_budget(),
                 &self.cancellation,
             )
@@ -6125,9 +6115,7 @@ impl NativeCheckout {
 impl NativeWatcher {
     fn verify_capture_root(&self) -> Result<()> {
         let root_identity = capture_root_identity(&self.source_root).map_err(napi_error)?;
-        self.inner
-            .lock()
-            .map_err(|_| watcher_poisoned())?
+        lock_state(&self.inner, "native watcher state")?
             .verify_root_identity(root_identity)
             .map_err(napi_error)
     }
@@ -6143,7 +6131,7 @@ impl NativeWatcher {
             .retain_operation_id(operation_id)
             .map_err(napi_error)?;
         let (epoch, expected_root_identity) = {
-            let mut watcher = self.inner.lock().map_err(|_| watcher_poisoned())?;
+            let mut watcher = lock_state(&self.inner, "native watcher state")?;
             let expected_root_identity = watcher.root_identity();
             match watcher.begin_rescan() {
                 Ok(epoch) => (epoch, expected_root_identity),
@@ -6169,9 +6157,7 @@ impl NativeWatcher {
             Ok(receipt) => receipt,
             Err(error) => {
                 checkout.clear_retained_operation(operation_id);
-                self.inner
-                    .lock()
-                    .map_err(|_| watcher_poisoned())?
+                lock_state(&self.inner, "native watcher state")?
                     .abort_rescan(WatchInvalidationReason::NativeRescanRequired)
                     .map_err(napi_error)?;
                 return Err(napi_error(error));
@@ -6206,20 +6192,14 @@ impl NativeWatcher {
         let _operation = self.operation.lock().await;
         ensure_no_pending_interval(&self.pending)?;
         self.verify_capture_root()?;
-        let existing = *self
-            .pending_reconcile
-            .lock()
-            .map_err(|_| watcher_poisoned())?;
+        let existing = *lock_state(&self.pending_reconcile, "native watcher state")?;
         let pending = if let Some(pending) = existing {
             pending
         } else {
             let pending =
                 Box::pin(self.capture_reconcile_baseline(maximum_paths, maximum_extent_spans))
                     .await?;
-            *self
-                .pending_reconcile
-                .lock()
-                .map_err(|_| watcher_poisoned())? = Some(pending);
+            *lock_state(&self.pending_reconcile, "native watcher state")? = Some(pending);
             pending
         };
         {
@@ -6237,18 +6217,12 @@ impl NativeWatcher {
             .map_err(napi_error)?;
             checkout.clear_retained_operation(pending.operation_id);
         }
-        *self
-            .pending_reconcile
-            .lock()
-            .map_err(|_| watcher_poisoned())? = None;
-        let batch = self
-            .inner
-            .lock()
-            .map_err(|_| watcher_poisoned())?
+        *lock_state(&self.pending_reconcile, "native watcher state")? = None;
+        let batch = lock_state(&self.inner, "native watcher state")?
             .finish_rescan()
             .map_err(napi_error)?;
         let post_baseline = encode_watch_batch(batch.clone(), acyclic_fs::WorkCounters::default())?;
-        *self.pending.lock().map_err(|_| watcher_poisoned())? = Some(PendingWatchBatch {
+        *lock_state(&self.pending, "native watcher state")? = Some(PendingWatchBatch {
             batch,
             poll_work: acyclic_fs::WorkCounters::default(),
             capture: None,
@@ -6283,16 +6257,13 @@ impl NativeWatcher {
         let _operation = self.operation.lock().await;
         self.verify_capture_root()?;
         let pending = {
-            let pending = self.pending.lock().map_err(|_| watcher_poisoned())?;
+            let pending = lock_state(&self.pending, "native watcher state")?;
             pending.clone()
         };
         let pending = if let Some(pending) = pending {
             pending
         } else {
-            let receipt = self
-                .inner
-                .lock()
-                .map_err(|_| watcher_poisoned())?
+            let receipt = lock_state(&self.inner, "native watcher state")?
                 .poll(maximum_changes, boundary_budget(), &self.cancellation)
                 .map_err(napi_error)?;
             let pending = PendingWatchBatch {
@@ -6301,7 +6272,7 @@ impl NativeWatcher {
                 capture: None,
                 operation_id: OperationId::new(),
             };
-            *self.pending.lock().map_err(|_| watcher_poisoned())? = Some(pending.clone());
+            *lock_state(&self.pending, "native watcher state")? = Some(pending.clone());
             pending
         };
         {
@@ -6316,11 +6287,8 @@ impl NativeWatcher {
                 work: capture.capture.work,
             }
         } else {
-            let expected_root_identity = self
-                .inner
-                .lock()
-                .map_err(|_| watcher_poisoned())?
-                .root_identity();
+            let expected_root_identity =
+                lock_state(&self.inner, "native watcher state")?.root_identity();
             let mut checkout = self.checkout.lock().await;
             let receipt = Box::pin(capture_watch_batch(
                 &mut checkout,
@@ -6336,12 +6304,7 @@ impl NativeWatcher {
             ))
             .await
             .map_err(napi_error)?;
-            if let Some(retained) = self
-                .pending
-                .lock()
-                .map_err(|_| watcher_poisoned())?
-                .as_mut()
-            {
+            if let Some(retained) = lock_state(&self.pending, "native watcher state")?.as_mut() {
                 retained.capture = Some(receipt.value);
             }
             receipt
@@ -6361,7 +6324,7 @@ impl NativeWatcher {
             .map_err(napi_error)?;
             checkout.clear_retained_operation(pending.operation_id);
         }
-        *self.pending.lock().map_err(|_| watcher_poisoned())? = None;
+        *lock_state(&self.pending, "native watcher state")? = None;
         let work = pending
             .poll_work
             .checked_add(receipt.work)
@@ -6423,6 +6386,8 @@ impl NativeMount {
     /// Returns a native driver teardown failure.
     #[napi]
     pub fn stop(&self) -> Result<bool> {
+        // Unlike `lock_state`, teardown must still run after a panic elsewhere,
+        // so the guard is recovered rather than failing closed.
         let mut session = self
             .inner
             .lock()
@@ -6463,12 +6428,18 @@ fn napi_wire_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::InvalidArg, error.to_string())
 }
 
-fn watcher_poisoned() -> Error {
-    Error::new(Status::GenericFailure, "native watcher state poisoned")
+/// Locks shared binding state, failing closed if a holder panicked mid-update.
+fn lock_state<'a, T>(
+    mutex: &'a std::sync::Mutex<T>,
+    state: &str,
+) -> Result<std::sync::MutexGuard<'a, T>> {
+    mutex
+        .lock()
+        .map_err(|_| Error::new(Status::GenericFailure, format!("{state} is poisoned")))
 }
 
 fn ensure_no_pending_interval(pending: &std::sync::Mutex<Option<PendingWatchBatch>>) -> Result<()> {
-    if pending.lock().map_err(|_| watcher_poisoned())?.is_some() {
+    if lock_state(pending, "native watcher state")?.is_some() {
         return Err(napi_error(
             "watch interval must be durably acknowledged before reconciliation",
         ));
@@ -6533,17 +6504,12 @@ fn native_merge_selection_conflict(selection: &NativeMergeSelection) -> Result<M
                 .name
                 .as_ref()
                 .ok_or_else(|| Error::new(Status::InvalidArg, "binding selection lacks name"))?;
-            let encoding = match name.encoding.as_str() {
-                "utf8" => NameEncoding::Utf8,
-                "posix-bytes" => NameEncoding::PosixBytes,
-                "windows-utf16le" => NameEncoding::WindowsUtf16Le,
-                _ => {
-                    return Err(Error::new(
-                        Status::InvalidArg,
-                        "binding selection has an invalid name encoding",
-                    ));
-                }
-            };
+            let encoding = NameEncoding::from_public_str(&name.encoding).ok_or_else(|| {
+                Error::new(
+                    Status::InvalidArg,
+                    "binding selection has an invalid name encoding",
+                )
+            })?;
             let name =
                 LogicalName::new(encoding, name.bytes.to_vec(), u32::MAX).map_err(napi_error)?;
             Ok(MergeConflict::Binding { directory_id, name })
@@ -6569,7 +6535,7 @@ fn operation_window_lease(lease: &NativeOperationWindowLease) -> Result<Operatio
         workspace_id: WorkspaceId::from_bytes(fixed_16(&lease.workspace_id)?),
         lease_id: OperationLeaseId::from_bytes(fixed_16(&lease.lease_id)?),
         pinned_parent: generation_id(&lease.pinned_parent)?,
-        expires_at_millis: bigint_u64(&lease.expires_at_millis)?,
+        expires_at_millis: bigint_u64(&lease.expires_at_millis, "expiresAtMillis")?,
     })
 }
 
@@ -6646,10 +6612,7 @@ fn commit_id(bytes: &[u8]) -> Result<GitCommitId> {
 }
 
 fn encode_object_id(value: ObjectId) -> Buffer {
-    let mut bytes = Vec::with_capacity(33);
-    bytes.push(value.kind.canonical_tag());
-    bytes.extend_from_slice(value.digest.as_bytes());
-    Buffer::from(bytes)
+    Buffer::from(value.to_bytes().to_vec())
 }
 
 fn native_extent_span(span: &acyclic_fs::kernel::ExtentSlice) -> NativeExtentSpan {
@@ -6791,12 +6754,7 @@ fn encode_tree_entry(entry: &TreeEntry) -> NativeTreeEntry {
 
 fn encode_name_component(name: &LogicalName) -> NativePathComponent {
     NativePathComponent {
-        encoding: match name.encoding() {
-            NameEncoding::Utf8 => "utf8",
-            NameEncoding::PosixBytes => "posix-bytes",
-            NameEncoding::WindowsUtf16Le => "windows-utf16le",
-        }
-        .to_owned(),
+        encoding: name.encoding().as_str().to_owned(),
         bytes: Buffer::from(name.as_bytes().to_vec()),
     }
 }
@@ -6845,30 +6803,17 @@ fn encode_merge_conflict(conflict: MergeConflict) -> NativeMergeConflict {
 }
 
 fn decode_object_id(bytes: &[u8]) -> Result<ObjectId> {
-    if bytes.len() != 33 {
-        return Err(Error::new(
-            Status::InvalidArg,
-            "object identity must be exactly 33 bytes",
-        ));
-    }
-    let (&tag, digest_bytes) = bytes.split_first().ok_or_else(|| {
-        Error::new(
-            Status::InvalidArg,
-            "object identity must be exactly 33 bytes",
-        )
-    })?;
-    let kind = ObjectKind::from_canonical_tag(tag).map_err(napi_error)?;
-    Ok(ObjectId {
-        kind,
-        digest: Digest::from_bytes(fixed_32(digest_bytes, "object digest")?),
-    })
+    ObjectId::try_from(bytes).map_err(napi_wire_error)
 }
 
 fn native_speculation_options(options: &NativeSpeculationOptions) -> Result<SpeculationOptions> {
     Ok(SpeculationOptions {
         residency: ResidencySpeculatorOptions {
             maximum_active_operations: options.residency.maximum_active_operations,
-            maximum_active_bytes: bigint_u64(&options.residency.maximum_active_bytes)?,
+            maximum_active_bytes: bigint_u64(
+                &options.residency.maximum_active_bytes,
+                "maximumActiveBytes",
+            )?,
             outcome_window: options.residency.outcome_window,
             traffic_window: options.residency.traffic_window,
             speculative_cost_basis_points: u16_from_u32(
@@ -6883,8 +6828,14 @@ fn native_speculation_options(options: &NativeSpeculationOptions) -> Result<Spec
         },
         promotion: PromotionSpeculatorOptions {
             maximum_active_operations: options.promotion.maximum_active_operations,
-            maximum_active_bytes: bigint_u64(&options.promotion.maximum_active_bytes)?,
-            maximum_active_cost_units: bigint_u64(&options.promotion.maximum_active_cost_units)?,
+            maximum_active_bytes: bigint_u64(
+                &options.promotion.maximum_active_bytes,
+                "maximumActiveBytes",
+            )?,
+            maximum_active_cost_units: bigint_u64(
+                &options.promotion.maximum_active_cost_units,
+                "maximumActiveCostUnits",
+            )?,
             maximum_residency_facts: options.promotion.maximum_residency_facts,
             maximum_destinations: options.promotion.maximum_destinations,
             maximum_accepted_tiers: options.promotion.maximum_accepted_tiers,
@@ -6898,44 +6849,9 @@ fn native_speculation_options(options: &NativeSpeculationOptions) -> Result<Spec
     })
 }
 
-fn native_residency_reason(value: &str) -> Result<ResidencyReason> {
-    match value {
-        "directory-successor" => Ok(ResidencyReason::DirectorySuccessor),
-        "sequential-range" => Ok(ResidencyReason::SequentialRange),
-        "metadata-successor" => Ok(ResidencyReason::MetadataSuccessor),
-        "consumer-hint" => Ok(ResidencyReason::ConsumerHint),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown residency speculation reason",
-        )),
-    }
-}
-
-const fn native_residency_rejection(value: ResidencyRejection) -> &'static str {
-    match value {
-        ResidencyRejection::WrongVolume => "wrong-volume",
-        ResidencyRejection::StaleGeneration => "stale-generation",
-        ResidencyRejection::InvalidRequest => "invalid-request",
-        ResidencyRejection::DuplicateObject => "duplicate-object",
-        ResidencyRejection::DuplicateOperation => "duplicate-operation",
-        ResidencyRejection::OperationCapacity => "operation-capacity",
-        ResidencyRejection::ByteCapacity => "byte-capacity",
-        ResidencyRejection::CostBudget => "cost-budget",
-        ResidencyRejection::LowUsefulness => "low-usefulness",
-    }
-}
-
 fn native_storage_tier(value: &str) -> Result<StorageTier> {
-    match value {
-        "process-memory" => Ok(StorageTier::ProcessMemory),
-        "node-local" => Ok(StorageTier::NodeLocal),
-        "shared-cache" => Ok(StorageTier::SharedCache),
-        "durable-origin" => Ok(StorageTier::DurableOrigin),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown speculation storage tier",
-        )),
-    }
+    StorageTier::from_public_str(value)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "unknown speculation storage tier"))
 }
 
 fn native_object_residency(value: &NativeObjectResidency) -> Result<ObjectResidency> {
@@ -6954,9 +6870,9 @@ fn native_promotion_destination(
         location_id: StorageLocationId::from_bytes(fixed_16(&value.location_id)?),
         tier: native_storage_tier(&value.tier)?,
         writable: value.writable,
-        maximum_object_bytes: bigint_u64(&value.maximum_object_bytes)?,
+        maximum_object_bytes: bigint_u64(&value.maximum_object_bytes, "maximumObjectBytes")?,
         priority: u16_from_u32(value.priority, "promotion priority")?,
-        cost_units_per_byte: bigint_u64(&value.cost_units_per_byte)?,
+        cost_units_per_byte: bigint_u64(&value.cost_units_per_byte, "costUnitsPerByte")?,
     })
 }
 
@@ -6986,28 +6902,13 @@ fn native_promotion_admission(value: PromotionAdmission) -> NativePromotionAdmis
         },
         PromotionAdmission::Rejected(rejection) => NativePromotionAdmission {
             status: "rejected".to_owned(),
-            rejection: Some(native_promotion_rejection(rejection).to_owned()),
+            rejection: Some(rejection.as_str().to_owned()),
             operation_id: None,
             object_id: None,
             source_location_id: None,
             destination_location_id: None,
             estimated_cost_units: None,
         },
-    }
-}
-
-const fn native_promotion_rejection(value: PromotionRejection) -> &'static str {
-    match value {
-        PromotionRejection::WrongVolume => "wrong-volume",
-        PromotionRejection::StaleGeneration => "stale-generation",
-        PromotionRejection::InvalidRequest => "invalid-request",
-        PromotionRejection::InputCapacity => "input-capacity",
-        PromotionRejection::MissingSource => "missing-source",
-        PromotionRejection::DuplicateObject => "duplicate-object",
-        PromotionRejection::DuplicateOperation => "duplicate-operation",
-        PromotionRejection::ActiveCapacity => "active-capacity",
-        PromotionRejection::NoDestination => "no-destination",
-        PromotionRejection::LowUsefulness => "low-usefulness",
     }
 }
 
@@ -7105,12 +7006,7 @@ fn encode_namespace_path(path: &NamespacePath) -> NativeNamespacePath {
             .components()
             .iter()
             .map(|component| NativePathComponent {
-                encoding: match component.encoding() {
-                    NameEncoding::Utf8 => "utf8",
-                    NameEncoding::PosixBytes => "posix-bytes",
-                    NameEncoding::WindowsUtf16Le => "windows-utf16le",
-                }
-                .to_owned(),
+                encoding: component.encoding().as_str().to_owned(),
                 bytes: Buffer::from(component.as_bytes().to_vec()),
             })
             .collect(),
@@ -7333,7 +7229,7 @@ fn required<T>(value: Option<T>, field: &str) -> Result<T> {
 }
 
 fn required_bigint(value: Option<BigInt>, field: &str) -> Result<u64> {
-    bigint_u64(&required(value, field)?)
+    bigint_u64(&required(value, field)?, field)
 }
 
 fn native_decode_limits(limits: VolumeLimits) -> DecodeLimits {
@@ -7403,12 +7299,12 @@ fn native_mutation(
     })
 }
 
-fn bigint_u64(value: &BigInt) -> Result<u64> {
+fn bigint_u64(value: &BigInt, field: &str) -> Result<u64> {
     let (negative, value, lossless) = value.get_u64();
     if negative || !lossless {
         return Err(Error::new(
             Status::InvalidArg,
-            "filesystem offset and length must be lossless unsigned 64-bit integers",
+            format!("{field} must be a lossless unsigned 64-bit integer"),
         ));
     }
     Ok(value)
@@ -7424,39 +7320,19 @@ fn u16_from_u32(value: u32, field: &str) -> Result<u16> {
 }
 
 fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
-    let profile = match options.profile.as_str() {
-        "portable" => FilesystemProfile::Portable,
-        "posix" => FilesystemProfile::Posix,
-        "windows" => FilesystemProfile::Windows,
-        "browser" => FilesystemProfile::Browser,
-        _ => return Err(Error::new(Status::InvalidArg, "invalid filesystem profile")),
-    };
-    let concurrency = match options.concurrency.as_str() {
-        "exclusive-writer" => ConcurrencyMode::ExclusiveWriter,
-        "optimistic" => ConcurrencyMode::Optimistic,
-        "serialized-authority" => ConcurrencyMode::SerializedAuthority,
-        _ => return Err(Error::new(Status::InvalidArg, "invalid concurrency mode")),
-    };
-    let lifecycle = match options.lifecycle.as_str() {
-        "ephemeral" => Lifecycle::Ephemeral,
-        "durable" => Lifecycle::Durable,
-        _ => return Err(Error::new(Status::InvalidArg, "invalid lifecycle")),
-    };
-    let case_sensitivity = match options.case_sensitivity.as_str() {
-        "sensitive" => CaseSensitivity::Sensitive,
-        "profile-folded" => CaseSensitivity::ProfileFolded,
-        _ => return Err(Error::new(Status::InvalidArg, "invalid case sensitivity")),
-    };
-    let unicode = match options.unicode.as_str() {
-        "preserve" => UnicodePolicy::Preserve,
-        "require-nfc" => UnicodePolicy::RequireNfc,
-        _ => return Err(Error::new(Status::InvalidArg, "invalid Unicode policy")),
-    };
+    let profile = FilesystemProfile::from_public_str(&options.profile)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "invalid filesystem profile"))?;
+    let concurrency = ConcurrencyMode::from_public_str(&options.concurrency)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "invalid concurrency mode"))?;
+    let lifecycle = Lifecycle::from_public_str(&options.lifecycle)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "invalid lifecycle"))?;
+    let case_sensitivity = CaseSensitivity::from_public_str(&options.case_sensitivity)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "invalid case sensitivity"))?;
+    let unicode = UnicodePolicy::from_public_str(&options.unicode)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "invalid Unicode policy"))?;
     let limits = options.limits;
-    let maximum_path_depth = u16::try_from(limits.maximum_path_depth)
-        .map_err(|_| Error::new(Status::InvalidArg, "maximum path depth exceeds u16"))?;
-    let maximum_page_height = u16::try_from(limits.maximum_page_height)
-        .map_err(|_| Error::new(Status::InvalidArg, "maximum page height exceeds u16"))?;
+    let maximum_path_depth = u16_from_u32(limits.maximum_path_depth, "maximumPathDepth")?;
+    let maximum_page_height = u16_from_u32(limits.maximum_page_height, "maximumPageHeight")?;
     VolumeConfig {
         profile,
         concurrency,
@@ -7470,16 +7346,25 @@ fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
             maximum_path_bytes: limits.maximum_path_bytes,
             maximum_component_bytes: limits.maximum_component_bytes,
             maximum_path_depth,
-            maximum_object_bytes: bigint_u64(&limits.maximum_object_bytes)?,
+            maximum_object_bytes: bigint_u64(&limits.maximum_object_bytes, "maximumObjectBytes")?,
             maximum_mutations_per_batch: limits.maximum_mutations_per_batch,
             maximum_paths_per_batch: limits.maximum_paths_per_batch,
             maximum_checkout_dependencies: limits.maximum_checkout_dependencies,
             maximum_directory_page_entries: limits.maximum_directory_page_entries,
             maximum_page_height,
-            maximum_read_bytes: bigint_u64(&limits.maximum_read_bytes)?,
-            maximum_files_per_generation: bigint_u64(&limits.maximum_files_per_generation)?,
-            maximum_objects_per_generation: bigint_u64(&limits.maximum_objects_per_generation)?,
-            maximum_generation_bytes: bigint_u64(&limits.maximum_generation_bytes)?,
+            maximum_read_bytes: bigint_u64(&limits.maximum_read_bytes, "maximumReadBytes")?,
+            maximum_files_per_generation: bigint_u64(
+                &limits.maximum_files_per_generation,
+                "maximumFilesPerGeneration",
+            )?,
+            maximum_objects_per_generation: bigint_u64(
+                &limits.maximum_objects_per_generation,
+                "maximumObjectsPerGeneration",
+            )?,
+            maximum_generation_bytes: bigint_u64(
+                &limits.maximum_generation_bytes,
+                "maximumGenerationBytes",
+            )?,
         },
     }
     .validate()
@@ -7503,7 +7388,7 @@ fn bigint(value: u64) -> BigInt {
 fn native_object_cache_options(options: NativeObjectCacheOptions) -> Result<ObjectCacheOptions> {
     let converted = ObjectCacheOptions {
         maximum_entries: options.maximum_entries,
-        maximum_bytes: bigint_u64(&options.maximum_bytes)?,
+        maximum_bytes: bigint_u64(&options.maximum_bytes, "maximumBytes")?,
         maximum_in_flight: options.maximum_in_flight,
         maximum_waiters_per_object: options.maximum_waiters_per_object,
     };
@@ -7708,22 +7593,10 @@ fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     }
 }
 
-fn native_name_encoding(value: NameEncoding) -> &'static str {
-    match value {
-        NameEncoding::Utf8 => "utf8",
-        NameEncoding::PosixBytes => "posix-bytes",
-        NameEncoding::WindowsUtf16Le => "windows-utf16le",
-    }
-}
-
 #[allow(clippy::needless_pass_by_value)]
 fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
-    let encoding = match value.encoding.as_str() {
-        "utf8" => NameEncoding::Utf8,
-        "posix-bytes" => NameEncoding::PosixBytes,
-        "windows-utf16le" => NameEncoding::WindowsUtf16Le,
-        _ => return Err(Error::new(Status::InvalidArg, "unknown name encoding")),
-    };
+    let encoding = NameEncoding::from_public_str(&value.encoding)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
@@ -7734,7 +7607,7 @@ fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorks
             .into_iter()
             .map(|entry| NativeWorkspaceDirectoryEntry {
                 name: NativeWorkspaceName {
-                    encoding: native_name_encoding(entry.name.encoding()).to_owned(),
+                    encoding: entry.name.encoding().as_str().to_owned(),
                     bytes: Buffer::from(entry.name.as_bytes().to_vec()),
                 },
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
@@ -7999,7 +7872,7 @@ mod tests {
         )?;
         let operation_id = OperationId::new();
         let object_id = ObjectId {
-            kind: ObjectKind::Blob,
+            kind: acyclic_fs::ObjectKind::Blob,
             digest: Digest::from_bytes([9_u8; 32]),
         };
         let admission = speculation
@@ -8138,7 +8011,7 @@ mod tests {
         );
         let source_stat = workspace.stat("/shapes/source".to_owned()).await?;
         let hard_link_stat = workspace.stat("/shapes/hard-link".to_owned()).await?;
-        assert_eq!(bigint_u64(&source_stat.link_count)?, 2);
+        assert_eq!(bigint_u64(&source_stat.link_count, "linkCount")?, 2);
         assert_eq!(
             source_stat.file_id.as_ref(),
             hard_link_stat.file_id.as_ref()

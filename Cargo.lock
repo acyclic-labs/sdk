@@ -81,6 +81,7 @@ dependencies = [
  "http",
  "libc",
  "notify",
+ "proptest",
  "prost",
  "prost-types",
  "rcgen",
@@ -161,6 +162,7 @@ dependencies = [
  "hex",
  "js-sys",
  "jsonschema",
+ "proptest",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
@@ -221,23 +223,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-inference-contract"
-version = "0.2.0"
-dependencies = [
- "prost",
- "prost-build",
- "prost-types",
- "sha2 0.10.9",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
 name = "acyclic-inference-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-inference",
- "acyclic-inference-contract",
  "js-sys",
  "prost",
  "prost-reflect",
@@ -289,6 +278,7 @@ name = "acyclic-machines-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-machines",
+ "base64 0.22.1",
  "futures",
  "hex",
  "js-sys",
@@ -332,6 +322,7 @@ dependencies = [
  "imbl",
  "js-sys",
  "libc",
+ "proptest",
  "prost",
  "prost-reflect",
  "prost-types",
@@ -403,6 +394,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "libc",
+ "proptest",
  "prost",
  "protoc-bin-vendored",
  "rcgen",
@@ -421,20 +413,6 @@ dependencies = [
  "tower",
  "tsify-next",
  "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "acyclic-stream-wasm"
-version = "0.2.0"
-dependencies = [
- "acyclic-stream",
- "bytes",
- "futures",
- "js-sys",
- "prost",
- "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
@@ -2939,6 +2917,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
+dependencies = [
+ "bitflags 2.13.2",
+ "num-traits",
+ "rand 0.9.5",
+ "rand_chacha",
+ "rand_xorshift",
+ "regex-syntax",
+ "unarray",
+]
+
+[[package]]
 name = "prost"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3260,6 +3253,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rand_xorshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+dependencies = [
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -4577,6 +4579,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5281,9 +5289,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",

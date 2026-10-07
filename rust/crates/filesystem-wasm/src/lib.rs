@@ -37,19 +37,18 @@ mod bindings {
         ForkOptions, Fs, Generation, GenerationExportManifest, GitCommand, GitCompatRepository,
         IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome,
         LogicalObjectStore, MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict,
-        MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind,
-        ObjectReadRequest, ObjectResidency, OperationId, PromotionAdmission, PromotionDestination,
-        PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint,
-        ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
-        SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
-        StreamAuthorityStore, Transaction, TransactionCommit, TransactionConflict,
-        TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
-        TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceContextId,
-        WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
-        WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase, WorkspaceRootId,
-        WorkspaceStat, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
-        decode_generation_export_manifest, encode_generation_export_manifest,
-        parse_git_public_command,
+        MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectReadRequest,
+        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination,
+        PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
+        ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
+        StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
+        TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
+        TransactionRebase, TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace,
+        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+        WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
+        WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
+        canonicalize_git_pending_transition_json, decode_generation_export_manifest,
+        encode_generation_export_manifest, parse_git_public_command,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -713,7 +712,7 @@ mod bindings {
         pub async fn delete(&self, idempotency_key: Option<Vec<u8>>) -> Result<String, JsValue> {
             let key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
-                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+                |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
             let outcome = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => value.delete(key).await,
@@ -878,7 +877,7 @@ mod bindings {
         ) -> Result<BrowserWorkspace, JsValue> {
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
-                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+                |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
@@ -928,7 +927,7 @@ mod bindings {
         ) -> Result<BrowserWorkspace, JsValue> {
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
-                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+                |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
             let engine = match (&self.engine, &generation.engine) {
                 (
@@ -965,9 +964,7 @@ mod bindings {
                     .map_err(js_error)?,
                 ),
                 _ => {
-                    return Err(JsValue::from_str(
-                        "generation belongs to another filesystem",
-                    ));
+                    return Err(js_error("generation belongs to another filesystem"));
                 }
             };
             Ok(BrowserWorkspace { engine })
@@ -981,7 +978,7 @@ mod bindings {
         ) -> Result<BrowserTransaction, JsValue> {
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
-                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+                |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserTransactionEngine::IndexedDb(
@@ -1016,7 +1013,7 @@ mod bindings {
         ) -> Result<BrowserWorkspaceRebaseResult, JsValue> {
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
-                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+                |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
             let outcome = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => value
@@ -1091,9 +1088,7 @@ mod bindings {
                         .map_err(js_error)?,
                 ),
                 _ => {
-                    return Err(JsValue::from_str(
-                        "generation belongs to another filesystem",
-                    ));
+                    return Err(js_error("generation belongs to another filesystem"));
                 }
             };
             Ok(BrowserChangeSet { engine })
@@ -1158,7 +1153,7 @@ mod bindings {
                         .await
                         .map_err(js_error)?,
                 ),
-                _ => return Err(JsValue::from_str("workspace belongs to another filesystem")),
+                _ => return Err(js_error("workspace belongs to another filesystem")),
             };
             Ok(BrowserJoinPlan { engine })
         }
@@ -1247,9 +1242,7 @@ mod bindings {
                     )
                 }
                 _ => {
-                    return Err(JsValue::from_str(
-                        "change set belongs to another filesystem",
-                    ));
+                    return Err(js_error("change set belongs to another filesystem"));
                 }
             };
             Ok(BrowserChangeSet { engine })
@@ -1297,7 +1290,7 @@ mod bindings {
             )?));
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
-                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+                |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
             let options = ApplyOptions {
                 if_target,
@@ -1945,12 +1938,7 @@ mod bindings {
     #[allow(clippy::needless_pass_by_value)]
     fn browser_workspace_name_value(name: LogicalName) -> BrowserWorkspaceName {
         BrowserWorkspaceName {
-            encoding: match name.encoding() {
-                NameEncoding::Utf8 => "utf8",
-                NameEncoding::PosixBytes => "posix-bytes",
-                NameEncoding::WindowsUtf16Le => "windows-utf16le",
-            }
-            .to_owned(),
+            encoding: name.encoding().as_str().to_owned(),
             bytes: name.as_bytes().to_vec(),
         }
     }
@@ -1958,12 +1946,8 @@ mod bindings {
     fn browser_workspace_name(value: JsValue) -> Result<LogicalName, JsValue> {
         let value: BrowserWorkspaceName =
             serde_wasm_bindgen::from_value(value).map_err(js_error)?;
-        let encoding = match value.encoding.as_str() {
-            "utf8" => NameEncoding::Utf8,
-            "posix-bytes" => NameEncoding::PosixBytes,
-            "windows-utf16le" => NameEncoding::WindowsUtf16Le,
-            _ => return Err(JsValue::from_str("unknown name encoding")),
-        };
+        let encoding = NameEncoding::from_public_str(&value.encoding)
+            .ok_or_else(|| js_error("unknown name encoding"))?;
         LogicalName::new(encoding, value.bytes, u32::MAX).map_err(js_error)
     }
 
@@ -2004,12 +1988,7 @@ mod bindings {
                 .into_iter()
                 .map(|entry| BrowserWorkspaceDirectoryEntry {
                     name: BrowserWorkspaceName {
-                        encoding: match entry.name.encoding() {
-                            NameEncoding::Utf8 => "utf8",
-                            NameEncoding::PosixBytes => "posix-bytes",
-                            NameEncoding::WindowsUtf16Le => "windows-utf16le",
-                        }
-                        .to_owned(),
+                        encoding: entry.name.encoding().as_str().to_owned(),
                         bytes: entry.name.as_bytes().to_vec(),
                     },
                     file_id: entry.file_id.into_bytes().to_vec(),
@@ -3315,16 +3294,16 @@ mod bindings {
         #[wasm_bindgen(js_name = createSpeculation)]
         pub fn create_speculation(
             &self,
-            volume_id: Vec<u8>,
-            generation_id: Vec<u8>,
+            volume_id: &[u8],
+            generation_id: &[u8],
             options: JsValue,
         ) -> Result<BrowserSpeculation, JsValue> {
             let options: BrowserSpeculationOptions =
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let controller = SpeculationController::new(
                 browser_speculation_options(&options),
-                VolumeId::from_bytes(fixed_16_owned(volume_id)?),
-                acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32_owned(
+                VolumeId::from_bytes(fixed_16(volume_id)?),
+                acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                     generation_id,
                     "generation identity",
                 )?)),
@@ -3426,11 +3405,7 @@ mod bindings {
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let config = browser_volume_config(options).map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let (engine, acquisition_work) = match self
-                .engine
-                .as_ref()
-                .ok_or_else(|| JsValue::from_str("browser filesystem is closed"))?
-            {
+            let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => {
                     let receipt = match volume_id {
                         Some(volume_id) => {
@@ -3825,7 +3800,8 @@ mod bindings {
                             object_id: decode_object_id(&observation.object_id)?,
                             maximum_bytes: observation.maximum_bytes,
                         },
-                        reason: browser_residency_reason(&observation.reason)?,
+                        reason: ResidencyReason::from_public_str(&observation.reason)
+                            .ok_or_else(|| js_error("unknown residency speculation reason"))?,
                     },
                 )
                 .map_err(js_error)?;
@@ -3836,7 +3812,7 @@ mod bindings {
                 },
                 ResidencyAdmission::Rejected(rejection) => BrowserAdmissionResult {
                     status: "rejected",
-                    rejection: Some(browser_residency_rejection(rejection)),
+                    rejection: Some(rejection.as_str()),
                 },
             };
             Ok(result)
@@ -3862,7 +3838,7 @@ mod bindings {
                 .clone();
             let permit = controller
                 .active_residency_permit(operation_id)
-                .ok_or_else(|| JsValue::from_str("residency operation is not active"))?;
+                .ok_or_else(|| js_error("residency operation is not active"))?;
             let receipt = match &self.engine {
                 BrowserEngine::IndexedDb(fs) => {
                     fs.execute_residency(
@@ -3905,14 +3881,11 @@ mod bindings {
         ///
         /// Returns a JavaScript error for malformed or inactive operation identities.
         #[wasm_bindgen(js_name = finishResidency)]
-        pub fn finish_residency(&self, operation_id: Vec<u8>, useful: bool) -> Result<(), JsValue> {
+        pub fn finish_residency(&self, operation_id: &[u8], useful: bool) -> Result<(), JsValue> {
             self.controller
                 .try_borrow_mut()
                 .map_err(|_| speculation_busy())?
-                .finish_residency(
-                    OperationId::from_bytes(fixed_16_owned(operation_id)?),
-                    useful,
-                )
+                .finish_residency(OperationId::from_bytes(fixed_16(operation_id)?), useful)
                 .map_err(js_error)
         }
 
@@ -3936,11 +3909,11 @@ mod bindings {
                 .map_err(|_| speculation_busy())?;
             let permit = controller
                 .active_residency_permit(operation_id)
-                .ok_or_else(|| JsValue::from_str("residency operation is not active"))?;
+                .ok_or_else(|| js_error("residency operation is not active"))?;
             let accepted_tiers = request
                 .accepted_tiers
                 .iter()
-                .map(|tier| browser_storage_tier(tier))
+                .map(|tier| storage_tier(tier))
                 .collect::<Result<Vec<_>, _>>()?;
             let residency = request
                 .residency
@@ -3964,14 +3937,11 @@ mod bindings {
         ///
         /// Returns a JavaScript error for malformed or inactive operation identities.
         #[wasm_bindgen(js_name = finishPromotion)]
-        pub fn finish_promotion(&self, operation_id: Vec<u8>, useful: bool) -> Result<(), JsValue> {
+        pub fn finish_promotion(&self, operation_id: &[u8], useful: bool) -> Result<(), JsValue> {
             self.controller
                 .try_borrow_mut()
                 .map_err(|_| speculation_busy())?
-                .finish_promotion(
-                    OperationId::from_bytes(fixed_16_owned(operation_id)?),
-                    useful,
-                )
+                .finish_promotion(OperationId::from_bytes(fixed_16(operation_id)?), useful)
                 .map_err(js_error)
         }
 
@@ -4002,16 +3972,16 @@ mod bindings {
         #[wasm_bindgen(js_name = replaceGeneration)]
         pub fn replace_generation(
             &self,
-            generation_id: Vec<u8>,
+            generation_id: &[u8],
         ) -> Result<BrowserSpeculationPreemption, JsValue> {
-            let value = self
-                .controller
-                .try_borrow_mut()
-                .map_err(|_| speculation_busy())?
-                .replace_generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                    fixed_32_owned(generation_id, "generation identity")?,
-                )))
-                .map_err(js_error)?;
+            let value =
+                self.controller
+                    .try_borrow_mut()
+                    .map_err(|_| speculation_busy())?
+                    .replace_generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                        fixed_32(generation_id, "generation identity")?,
+                    )))
+                    .map_err(js_error)?;
             Ok(browser_speculation_preemption(value))
         }
 
@@ -4197,7 +4167,7 @@ mod bindings {
         pub fn take(&mut self, index: usize) -> Result<Option<BrowserResolvedFile>, JsValue> {
             self.files
                 .get_mut(index)
-                .ok_or_else(|| JsValue::from_str("resolved file index is out of bounds"))
+                .ok_or_else(|| js_error("resolved file index is out of bounds"))
                 .map(Option::take)
         }
     }
@@ -4852,7 +4822,7 @@ mod bindings {
                 (Some(class), Some(name)) => {
                     Some(browser_attribute_name(&class, name, self.limits)?)
                 }
-                _ => return Err(JsValue::from_str("named-attribute cursor is incomplete")),
+                _ => return Err(js_error("named-attribute cursor is incomplete")),
             };
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -6346,7 +6316,7 @@ mod bindings {
     pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         let options: BrowserOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
         if options.database_name.is_empty() || options.maximum_object_bytes == 0 {
-            return Err(JsValue::from_str("browser filesystem options are invalid"));
+            return Err(js_error("browser filesystem options are invalid"));
         }
         let authority =
             IndexedDbAuthorityStore::open(&options.database_name, options.maximum_object_bytes)
@@ -6417,7 +6387,7 @@ mod bindings {
         if options.maximum_object_bytes == 0
             || options.maximum_memory_bytes < options.maximum_object_bytes
         {
-            return Err(JsValue::from_str("memory filesystem options are invalid"));
+            return Err(js_error("memory filesystem options are invalid"));
         }
         Ok(BrowserFs {
             engine: Some(BrowserEngine::Memory(memory_engine(
@@ -6486,47 +6456,13 @@ mod bindings {
         }
     }
 
-    fn browser_residency_reason(value: &str) -> Result<ResidencyReason, JsValue> {
-        match value {
-            "directory-successor" => Ok(ResidencyReason::DirectorySuccessor),
-            "sequential-range" => Ok(ResidencyReason::SequentialRange),
-            "metadata-successor" => Ok(ResidencyReason::MetadataSuccessor),
-            "consumer-hint" => Ok(ResidencyReason::ConsumerHint),
-            _ => Err(JsValue::from_str("unknown residency speculation reason")),
-        }
-    }
-
-    const fn browser_residency_rejection(value: ResidencyRejection) -> &'static str {
-        match value {
-            ResidencyRejection::WrongVolume => "wrong-volume",
-            ResidencyRejection::StaleGeneration => "stale-generation",
-            ResidencyRejection::InvalidRequest => "invalid-request",
-            ResidencyRejection::DuplicateObject => "duplicate-object",
-            ResidencyRejection::DuplicateOperation => "duplicate-operation",
-            ResidencyRejection::OperationCapacity => "operation-capacity",
-            ResidencyRejection::ByteCapacity => "byte-capacity",
-            ResidencyRejection::CostBudget => "cost-budget",
-            ResidencyRejection::LowUsefulness => "low-usefulness",
-        }
-    }
-
-    fn browser_storage_tier(value: &str) -> Result<StorageTier, JsValue> {
-        match value {
-            "process-memory" => Ok(StorageTier::ProcessMemory),
-            "node-local" => Ok(StorageTier::NodeLocal),
-            "shared-cache" => Ok(StorageTier::SharedCache),
-            "durable-origin" => Ok(StorageTier::DurableOrigin),
-            _ => Err(JsValue::from_str("unknown speculation storage tier")),
-        }
-    }
-
     fn browser_object_residency(
         value: &BrowserObjectResidency,
     ) -> Result<ObjectResidency, JsValue> {
         Ok(ObjectResidency {
             object_id: decode_object_id(&value.object_id)?,
             location_id: StorageLocationId::from_bytes(fixed_16(&value.location_id)?),
-            tier: browser_storage_tier(&value.tier)?,
+            tier: storage_tier(&value.tier)?,
             source_priority: value.source_priority,
         })
     }
@@ -6536,7 +6472,7 @@ mod bindings {
     ) -> Result<PromotionDestination, JsValue> {
         Ok(PromotionDestination {
             location_id: StorageLocationId::from_bytes(fixed_16(&value.location_id)?),
-            tier: browser_storage_tier(&value.tier)?,
+            tier: storage_tier(&value.tier)?,
             writable: value.writable,
             maximum_object_bytes: value.maximum_object_bytes,
             priority: value.priority,
@@ -6568,28 +6504,13 @@ mod bindings {
             },
             PromotionAdmission::Rejected(rejection) => BrowserPromotionAdmission {
                 status: "rejected",
-                rejection: Some(browser_promotion_rejection(rejection)),
+                rejection: Some(rejection.as_str()),
                 operation_id: None,
                 object_id: None,
                 source_location_id: None,
                 destination_location_id: None,
                 estimated_cost_units: None,
             },
-        }
-    }
-
-    const fn browser_promotion_rejection(value: PromotionRejection) -> &'static str {
-        match value {
-            PromotionRejection::WrongVolume => "wrong-volume",
-            PromotionRejection::StaleGeneration => "stale-generation",
-            PromotionRejection::InvalidRequest => "invalid-request",
-            PromotionRejection::InputCapacity => "input-capacity",
-            PromotionRejection::MissingSource => "missing-source",
-            PromotionRejection::DuplicateObject => "duplicate-object",
-            PromotionRejection::DuplicateOperation => "duplicate-operation",
-            PromotionRejection::ActiveCapacity => "active-capacity",
-            PromotionRejection::NoDestination => "no-destination",
-            PromotionRejection::LowUsefulness => "low-usefulness",
         }
     }
 
@@ -6734,7 +6655,7 @@ mod bindings {
             "posix-xattr" => Ok(AttributeClass::PosixXattr),
             "windows-stream" => Ok(AttributeClass::WindowsStream),
             "mac-resource-fork" => Ok(AttributeClass::MacResourceFork),
-            _ => Err(JsValue::from_str("unknown named-attribute class")),
+            _ => Err(js_error("unknown named-attribute class")),
         }
     }
 
@@ -6764,7 +6685,7 @@ mod bindings {
             "upsert" => Ok(NamedAttributeWriteMode::Upsert),
             "create" => Ok(NamedAttributeWriteMode::Create),
             "replace" => Ok(NamedAttributeWriteMode::Replace),
-            _ => Err(JsValue::from_str("unknown named-attribute write mode")),
+            _ => Err(js_error("unknown named-attribute write mode")),
         }
     }
 
@@ -6941,36 +6862,26 @@ mod bindings {
     fn fixed_16(bytes: &[u8]) -> Result<[u8; 16], JsValue> {
         bytes
             .try_into()
-            .map_err(|_| JsValue::from_str("identity must be exactly 16 bytes"))
-    }
-
-    fn fixed_16_owned(bytes: Vec<u8>) -> Result<[u8; 16], JsValue> {
-        bytes
-            .try_into()
-            .map_err(|_| JsValue::from_str("identity must be exactly 16 bytes"))
+            .map_err(|_| js_error("identity must be exactly 16 bytes"))
     }
 
     fn fixed_32(bytes: &[u8], label: &str) -> Result<[u8; 32], JsValue> {
         bytes
             .try_into()
-            .map_err(|_| JsValue::from_str(&format!("{label} must be exactly 32 bytes")))
-    }
-
-    fn fixed_32_owned(bytes: Vec<u8>, label: &str) -> Result<[u8; 32], JsValue> {
-        bytes
-            .try_into()
-            .map_err(|_| JsValue::from_str(&format!("{label} must be exactly 32 bytes")))
+            .map_err(|_| js_error(format_args!("{label} must be exactly 32 bytes")))
     }
 
     fn closed_error() -> JsValue {
-        JsValue::from_str("browser filesystem is closed")
+        js_error("browser filesystem is closed")
     }
 
     fn encode_object_id(value: ObjectId) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(33);
-        bytes.push(value.kind.canonical_tag());
-        bytes.extend_from_slice(value.digest.as_bytes());
-        bytes
+        value.to_bytes().to_vec()
+    }
+
+    fn storage_tier(value: &str) -> Result<StorageTier, JsValue> {
+        StorageTier::from_public_str(value)
+            .ok_or_else(|| js_error("unknown speculation storage tier"))
     }
 
     fn encode_extent_span(
@@ -6999,19 +6910,7 @@ mod bindings {
     }
 
     fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, JsValue> {
-        if bytes.len() != 33 {
-            return Err(JsValue::from_str(
-                "object identity must be exactly 33 bytes",
-            ));
-        }
-        let (tag, digest) = bytes
-            .split_first()
-            .ok_or_else(|| JsValue::from_str("object identity is empty"))?;
-        let kind = ObjectKind::from_canonical_tag(*tag).map_err(js_error)?;
-        Ok(ObjectId {
-            kind,
-            digest: Digest::from_bytes(fixed_32(digest, "object digest")?),
-        })
+        ObjectId::try_from(bytes).map_err(js_error)
     }
 
     fn encode_export_manifest(
@@ -7074,7 +6973,7 @@ mod bindings {
             "rebase" => Ok(JoinHistory::Rebase),
             "squash" => Ok(JoinHistory::Squash),
             "cherry-pick" => Ok(JoinHistory::CherryPick),
-            _ => Err(JsValue::from_str(
+            _ => Err(js_error(
                 "join history must be merge, rebase, squash, or cherry-pick",
             )),
         }
@@ -7228,11 +7127,7 @@ mod bindings {
 
     fn encode_name_component(name: &LogicalName) -> NameComponentResult {
         NameComponentResult {
-            encoding: match name.encoding() {
-                NameEncoding::Utf8 => "utf8",
-                NameEncoding::PosixBytes => "posix-bytes",
-                NameEncoding::WindowsUtf16Le => "windows-utf16le",
-            },
+            encoding: name.encoding().as_str(),
             bytes: name.as_bytes().to_vec(),
         }
     }
@@ -7294,13 +7189,13 @@ mod bindings {
         )
         .map_err(js_error)?;
         if manifest.objects.len() != decoded.objects.len() {
-            return Err(JsValue::from_str(
+            return Err(js_error(
                 "manifest object list does not match canonical manifest",
             ));
         }
         for (encoded, expected) in manifest.objects.iter().zip(&decoded.objects) {
             if decode_object_id(encoded)? != *expected {
-                return Err(JsValue::from_str(
+                return Err(js_error(
                     "manifest object list does not match canonical manifest",
                 ));
             }
@@ -7572,7 +7467,7 @@ mod bindings {
             "fifo" => Ok(FileKind::Fifo),
             "socket" => Ok(FileKind::Socket),
             "mount-boundary" => Ok(FileKind::MountBoundary),
-            _ => Err(JsValue::from_str("unknown empty special-file kind")),
+            _ => Err(js_error("unknown empty special-file kind")),
         }
     }
 
@@ -7580,7 +7475,7 @@ mod bindings {
         match kind {
             "character-device" => Ok(FileKind::CharacterDevice),
             "block-device" => Ok(FileKind::BlockDevice),
-            _ => Err(JsValue::from_str("unknown device kind")),
+            _ => Err(js_error("unknown device kind")),
         }
     }
 
@@ -7588,7 +7483,7 @@ mod bindings {
         match target {
             "data" => Ok(ExtentSeekTarget::Data),
             "hole" => Ok(ExtentSeekTarget::Hole),
-            _ => Err(JsValue::from_str("unknown sparse seek target")),
+            _ => Err(js_error("unknown sparse seek target")),
         }
     }
 
@@ -7740,12 +7635,12 @@ mod bindings {
             let generation_id = acyclic_fs::GenerationId::new(Digest::from_bytes([2; 32]));
             let operation_id = OperationId::from_bytes([3; 16]);
             let object_id = ObjectId {
-                kind: ObjectKind::Blob,
+                kind: acyclic_fs::ObjectKind::Blob,
                 digest: Digest::from_bytes([4; 32]),
             };
             let speculation = fs.create_speculation(
-                volume_id.into_bytes().to_vec(),
-                generation_id.digest().into_bytes().to_vec(),
+                &volume_id.into_bytes(),
+                &generation_id.digest().into_bytes(),
                 serde_wasm_bindgen::to_value(&test_speculation_options())?,
             )?;
             observe_residency(
@@ -7756,8 +7651,8 @@ mod bindings {
                 object_id,
             )?;
             plan_promotion(&speculation, operation_id, object_id)?;
-            speculation.finish_promotion(operation_id.into_bytes().to_vec(), true)?;
-            speculation.finish_residency(operation_id.into_bytes().to_vec(), true)?;
+            speculation.finish_promotion(&operation_id.into_bytes(), true)?;
+            speculation.finish_residency(&operation_id.into_bytes(), true)?;
             speculation.metrics()?;
             Ok(())
         }

@@ -667,3 +667,150 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
     assert_eq!(store.stats()?.decoded_hits, 4);
     Ok(())
 }
+
+mod model {
+    use super::{diff, entry, name, put};
+    use crate::cancellation::CancellationToken;
+    use crate::foundation::FileId;
+    use crate::kernel::persistent_pagination::paginate;
+    use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, apply_tree_mutations};
+    use crate::kernel::{DecodeLimits, TreeEntry, TreePage};
+    use crate::memory::MemoryObjectStore;
+    use crate::performance::WorkBudget;
+    use crate::storage::ObjectId;
+    use proptest::prelude::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type Model = BTreeMap<u8, u8>;
+    type Outcome = Result<(), Box<dyn std::error::Error>>;
+
+    /// Four items per page, so a few dozen entries span several levels.
+    const LIMITS: DecodeLimits = DecodeLimits {
+        maximum_object_bytes: 64 * 1024,
+        maximum_name_bytes: 255,
+        maximum_page_items: 4,
+        maximum_page_bytes: 64 * 1024,
+        maximum_page_height: 16,
+        maximum_visited_pages: 4_096,
+    };
+
+    fn key(byte: u8) -> String {
+        format!("k{byte:03}")
+    }
+
+    fn entries(model: &Model) -> Result<Vec<TreeEntry>, Box<dyn std::error::Error>> {
+        model
+            .iter()
+            .map(|(byte, id)| entry(&key(*byte), *id))
+            .collect()
+    }
+
+    /// Path-copies `from` into `to` and returns the new root.
+    fn rewrite(
+        store: &MemoryObjectStore,
+        root: ObjectId,
+        from: &Model,
+        to: &Model,
+    ) -> Result<ObjectId, Box<dyn std::error::Error>> {
+        let mut mutations = Vec::new();
+        for byte in from.keys().chain(to.keys()).collect::<BTreeSet<_>>() {
+            mutations.push(match (from.get(byte), to.get(byte)) {
+                (None, Some(id)) => TreeMutation::Insert(entry(&key(*byte), *id)?),
+                (Some(_), None) => TreeMutation::Remove {
+                    name: name(&key(*byte))?,
+                    expected_file_id: None,
+                },
+                (Some(old), Some(id)) if old != id => TreeMutation::Replace {
+                    entry: entry(&key(*byte), *id)?,
+                    expected_file_id: FileId::from_bytes([*old; 16]),
+                },
+                _ => continue,
+            });
+        }
+        if mutations.is_empty() {
+            return Ok(root);
+        }
+        let receipt =
+            apply_tree_mutations(store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED)?;
+        Ok(receipt.root)
+    }
+
+    fn paginate_all(
+        store: &MemoryObjectStore,
+        root: ObjectId,
+        page: u32,
+    ) -> Result<Vec<TreeEntry>, Box<dyn std::error::Error>> {
+        let mut values = Vec::new();
+        let mut after = None;
+        for _ in 0..=256 {
+            let receipt = paginate::<_, TreeFormat>(
+                store,
+                root,
+                after.as_ref(),
+                page,
+                LIMITS,
+                WorkBudget::UNBOUNDED,
+            )?;
+            if receipt.values.len() > usize::try_from(page)? {
+                return Err("page exceeded its bound".into());
+            }
+            after = receipt.values.last().map(|entry| entry.name.clone());
+            values.extend(receipt.values);
+            if !receipt.has_more {
+                return Ok(values);
+            }
+        }
+        Err("pagination did not terminate".into())
+    }
+
+    fn check(before: &Model, after: &Model, page: u32) -> Outcome {
+        let store = MemoryObjectStore::new(1 << 20)?;
+        let empty = put(&store, &TreePage::Leaf(Vec::new()))?;
+        let old = rewrite(&store, empty, &Model::new(), before)?;
+        let new = rewrite(&store, old, before, after)?;
+        assert_eq!(paginate_all(&store, old, page)?, entries(before)?);
+        assert_eq!(paginate_all(&store, new, page)?, entries(after)?);
+
+        let changes = diff(
+            &store,
+            Some(old),
+            Some(new),
+            1_024,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .ok_or("diff suspended on an immediate store")??
+        .changes
+        .into_iter()
+        .map(|change| (change.key, change.before, change.after))
+        .collect::<Vec<_>>();
+        let mut expected = Vec::new();
+        for byte in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
+            let side = |model: &Model| {
+                model
+                    .get(byte)
+                    .map(|id| entry(&key(*byte), *id))
+                    .transpose()
+            };
+            let (old, new) = (side(before)?, side(after)?);
+            if old != new {
+                expected.push((name(&key(*byte))?, old, new));
+            }
+        }
+        assert_eq!(changes, expected);
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn pagination_and_diff_match_a_sorted_map(
+            before in prop::collection::btree_map(0_u8..48, 1_u8..4, 0..32),
+            after in prop::collection::btree_map(0_u8..48, 1_u8..4, 0..32),
+            page in 1_u32..6,
+        ) {
+            check(&before, &after, page).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        }
+    }
+}

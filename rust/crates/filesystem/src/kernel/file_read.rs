@@ -6,6 +6,7 @@ use super::{
 };
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
@@ -81,7 +82,7 @@ fn read_inline(
         .offset
         .checked_add(request.range.length)
         .ok_or_else(|| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
-    if end > u64::try_from(bytes.len()).unwrap_or(u64::MAX) {
+    if end > usize_to_u64(bytes.len()) {
         return Err(failed(
             FileRangeReadError::InvalidRange,
             WorkCounters::default(),
@@ -91,7 +92,7 @@ fn read_inline(
         .map_err(|_| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
     let end = usize::try_from(end)
         .map_err(|_| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
-    let length = u64::try_from(end - start).unwrap_or(u64::MAX);
+    let length = usize_to_u64(end - start);
     let work = WorkCounters {
         bytes_copied: length,
         output_bytes: length,
@@ -215,14 +216,11 @@ async fn copy_content_span<S: AsyncObjectStore>(
     )
     .await
     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    let simultaneous = initial_peak
-        .checked_add(nested.work.peak_allocation_bytes)
-        .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
     let mut nested_work = nested.work;
-    nested_work.peak_allocation_bytes = 0;
     nested_work.output_bytes = 0;
-    work = add(work, nested_work)?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous);
+    work = work
+        .with_backend(nested_work, initial_peak)
+        .map_err(|error| failed(error.into(), work))?;
     let destination = usize::try_from(span.offset - request.range.offset)
         .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
     let end = destination

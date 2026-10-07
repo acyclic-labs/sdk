@@ -16,6 +16,7 @@ use std::{
     time::Duration,
 };
 
+pub use acyclic_machines::intent_digest;
 use acyclic_machines::{
     CheckpointId, CheckpointObservation, EventFact, IdempotencyKey, MachineEvent, MachineId,
     MachineObservation, MachineState, MutationOutcome, OperationId, OperationObservation,
@@ -101,58 +102,7 @@ pub fn operation_id(key: IdempotencyKey) -> OperationId {
     let mut hash = Sha256::new();
     hash.update(b"acyclic-machines-daytona/operation");
     hash.update(key.as_bytes());
-    let digest: [u8; 32] = hash.finalize().into();
-    let [
-        a,
-        b,
-        c,
-        d,
-        e,
-        f,
-        g,
-        h,
-        i,
-        j,
-        rest @ ..,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-    ] = digest;
-    // Stamp version 5 and the RFC 4122 variant so the result parses as a UUID.
-    let (g, i) = ((g & 0x0f) | 0x50, (i & 0x3f) | 0x80);
-    let text = format!(
-        "{}-{}-{}-{}-{}",
-        crate::map::hex(&[a, b, c, d]),
-        crate::map::hex(&[e, f]),
-        crate::map::hex(&[g, h]),
-        crate::map::hex(&[i, j]),
-        crate::map::hex(&rest)
-    );
-    // A version-5-shaped UUID built from a SHA-256 prefix is never nil.
-    OperationId::parse(&text).unwrap_or_default()
-}
-
-/// Canonical digest of an intent value.
-///
-/// # Errors
-/// Returns [`ProviderError::Invalid`] when the intent cannot be encoded.
-pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError> {
-    let encoded = serde_json::to_vec(intent)
-        .map_err(|error| ProviderError::Invalid(format!("intent cannot be encoded: {error}")))?;
-    Ok(Sha256::digest(encoded).into())
+    OperationId::from_digest(hash.finalize().into())
 }
 
 impl OperationRegistry {
@@ -504,6 +454,11 @@ mod tests {
         assert_eq!(*outcome, MutationOutcome::Suspended(machine));
         assert_eq!(operation_id(key(1)), id);
         assert_ne!(operation_id(key(1)), operation_id(key(2)));
+        // Pinned so recovery keeps finding operations admitted by earlier releases.
+        assert_eq!(
+            operation_id(key(1)).to_string(),
+            "5826b47d-5e02-5c80-a94c-145737646d7f"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@
 
 use crate::kernel::{FileKind, NamespacePath};
 use crate::model::{CheckoutMode, GenerationSelector, VolumeLimits};
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
 use crate::storage::ByteRange;
 use crate::workspace::customer_path;
 use crate::{
@@ -18,13 +19,12 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::sync::Mutex;
 use thiserror::Error;
+use uuid::Uuid;
 
 const STATE_VERSION: u32 = 9;
 const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
 const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
-const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
 const GREP_READ_CONCURRENCY: usize = 32;
 const MAXIMUM_PATCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -518,34 +518,16 @@ impl GitCompatState {
     }
 }
 
-/// Stable identity for one prepared compatibility filesystem transition.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GitTransitionId(OperationId);
+uuid_identity!(
+    GitTransitionId,
+    "Stable identity for one prepared compatibility filesystem transition."
+);
 
 impl GitTransitionId {
-    /// Creates a fresh transition identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(OperationId::new())
-    }
-
-    /// Restores a transition identity from canonical bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(OperationId::from_bytes(bytes))
-    }
-
-    /// Returns canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-
     /// Returns the underlying operation identity.
     #[must_use]
     pub const fn operation_id(self) -> OperationId {
-        self.0
+        OperationId::from_bytes(self.into_bytes())
     }
 }
 
@@ -608,12 +590,6 @@ pub const GIT_COMPAT_PENDING_WIRE_FIELDS: &[&str] = &["id", "action", "mutation"
 
 /// Width of the UUID encoded by `GitTransitionId` in compatibility JSON.
 pub const GIT_COMPAT_TRANSITION_ID_BYTES: usize = std::mem::size_of::<GitTransitionId>();
-
-impl Default for GitTransitionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// State mutation committed only after its filesystem action succeeds.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2201,8 +2177,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             if state == before {
                 return Ok(output);
             }
-            let expected = state.revision;
-            state.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(output);
             }
@@ -2272,8 +2247,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 Err(error) => return Err(error),
             };
             state.pending = None;
-            let expected = state.revision;
-            state.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return output.ok_or(GitCompatError::NothingToCommit);
             }
@@ -2293,8 +2267,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 return Err(GitCompatError::StaleTransition);
             }
             state.pending = None;
-            let expected = state.revision;
-            state.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(());
             }
@@ -2338,8 +2311,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 head,
                 switch,
             )?;
-            let expected = state.revision;
-            state.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(output);
             }
@@ -2443,8 +2415,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .map_err(|_| GitCompatError::InvalidState)?;
             branch.head = Some(commit.id);
             branch.tracked_paths = tracked_paths.clone();
-            let expected = state.revision;
-            state.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(GitCommandOutput::Committed(commit));
             }
@@ -2481,8 +2452,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                     authored_at_seconds,
                 },
             )?;
-            let expected = state.revision;
-            state.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(output);
             }
@@ -4874,13 +4844,7 @@ fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String>, GitPatch
         .or_else(|| value.strip_prefix("b/"))
         .unwrap_or(value)
         .trim_matches('/');
-    if value.is_empty()
-        || value.contains('\\')
-        || value.contains(':')
-        || value
-            .split('/')
-            .any(|component| component.is_empty() || component == "." || component == "..")
-    {
+    if value.contains(':') || !crate::path::is_canonical_relative(value) {
         return Err(GitPatchError::Invalid(
             "patch path escapes its root".to_owned(),
         ));
@@ -5686,7 +5650,7 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
 /// Process-local compatibility state adapter for tests and embedded callers.
 #[derive(Default)]
 pub struct MemoryGitCompatStore {
-    states: Mutex<BTreeMap<WorkspaceId, GitCompatState>>,
+    states: MemoryRecords<WorkspaceId, GitCompatState>,
 }
 
 impl MemoryGitCompatStore {
@@ -5707,9 +5671,8 @@ impl GitCompatStore for MemoryGitCompatStore {
 
     async fn load(&self, workspace_id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
         self.states
-            .lock()
+            .load(&workspace_id)
             .map_err(|_| MemoryGitCompatStoreError)
-            .map(|states| states.get(&workspace_id).cloned())
     }
 
     async fn compare_and_swap(
@@ -5718,13 +5681,9 @@ impl GitCompatStore for MemoryGitCompatStore {
         expected_revision: u64,
         replacement: GitCompatState,
     ) -> Result<bool, Self::Error> {
-        let mut states = self.states.lock().map_err(|_| MemoryGitCompatStoreError)?;
-        let revision = states.get(&workspace_id).map_or(0, |state| state.revision);
-        if revision != expected_revision {
-            return Ok(false);
-        }
-        states.insert(workspace_id, replacement);
-        Ok(true)
+        self.states
+            .compare_and_swap(workspace_id, expected_revision, replacement)
+            .map_err(|_| MemoryGitCompatStoreError)
     }
 
     async fn compare_and_delete(
@@ -5732,13 +5691,9 @@ impl GitCompatStore for MemoryGitCompatStore {
         workspace_id: WorkspaceId,
         expected_revision: u64,
     ) -> Result<bool, Self::Error> {
-        let mut states = self.states.lock().map_err(|_| MemoryGitCompatStoreError)?;
-        let revision = states.get(&workspace_id).map_or(0, |state| state.revision);
-        if revision != expected_revision {
-            return Ok(false);
-        }
-        states.remove(&workspace_id);
-        Ok(true)
+        self.states
+            .compare_and_delete(&workspace_id, expected_revision)
+            .map_err(|_| MemoryGitCompatStoreError)
     }
 }
 
@@ -5748,6 +5703,7 @@ mod tests {
     use super::*;
     use crate::kernel::{FileMetadata, MetadataField};
     use crate::{Digest, Fs, WorkspaceName};
+    use std::sync::Mutex;
 
     #[derive(Debug, Error)]
     #[error("test executor failure")]
@@ -6644,7 +6600,8 @@ mod tests {
         })));
         let tree = GitTreeRef::exact(WorkspaceId::from_bytes(operation.into_bytes()), generation);
         assert_eq!(
-            serde_json::to_value(GitTransitionId(operation)).expect("transition JSON"),
+            serde_json::to_value(GitTransitionId::from_bytes(operation.into_bytes()))
+                .expect("transition JSON"),
             serde_json::json!("00010203-0405-0607-0809-0a0b0c0d0e0f")
         );
         assert_eq!(
@@ -6755,7 +6712,7 @@ mod tests {
         state.commits.insert(commit.id, commit.clone());
         state.branches.get_mut("main").expect("main branch").head = Some(commit.id);
         {
-            let mut states = store.states.lock().expect("state lock");
+            let mut states = store.states.0.lock().expect("state lock");
             states.insert(workspace(), state);
         }
         let repository = GitCompatRepository::new(workspace(), store);
@@ -6792,6 +6749,7 @@ mod tests {
         state.commits.insert(commit.id, commit);
         store
             .states
+            .0
             .lock()
             .expect("state lock")
             .insert(workspace(), state);

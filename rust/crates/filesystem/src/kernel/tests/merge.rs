@@ -1129,3 +1129,91 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
     assert_eq!(record.payload, FilePayload::Directory { entries: both });
     Ok(())
 }
+
+mod laws {
+    use super::{FileMetadata, MetadataField, merge_metadata_fields, resolve_three};
+    use crate::foundation::Digest;
+    use crate::storage::{ObjectId, ObjectKind};
+    use proptest::prelude::*;
+
+    // Tiny domains so sides often agree with the base or each other.
+    fn field_of<T: Clone + std::fmt::Debug>(
+        value: impl Strategy<Value = T>,
+    ) -> impl Strategy<Value = MetadataField<T>> {
+        prop::option::of(value)
+            .prop_map(|value| value.map_or(MetadataField::Unavailable, MetadataField::Value))
+    }
+
+    fn object_of(kind: ObjectKind) -> impl Strategy<Value = MetadataField<ObjectId>> {
+        field_of((0_u8..2).prop_map(move |byte| ObjectId {
+            kind,
+            digest: Digest::from_bytes([byte; 32]),
+        }))
+    }
+
+    fn metadata() -> impl Strategy<Value = FileMetadata> {
+        let small = || field_of(0_u32..2);
+        let times = prop::array::uniform4(field_of(0_i64..3));
+        let objects = (
+            object_of(ObjectKind::AttributePage),
+            object_of(ObjectKind::Blob),
+            object_of(ObjectKind::Blob),
+        );
+        (
+            (small(), small(), small(), field_of(0_u64..2), small()),
+            times,
+            objects,
+        )
+            .prop_map(
+                |(
+                    (posix_mode, posix_uid, posix_gid, posix_flags, windows_attributes),
+                    [created_ns, modified_ns, accessed_ns, changed_ns],
+                    (named_attributes, acl, security_descriptor),
+                )| FileMetadata {
+                    posix_mode,
+                    posix_uid,
+                    posix_gid,
+                    posix_flags,
+                    windows_attributes,
+                    created_ns,
+                    modified_ns,
+                    accessed_ns,
+                    changed_ns,
+                    named_attributes,
+                    acl,
+                    security_descriptor,
+                },
+            )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn resolve_three_keeps_one_sided_and_identical_changes(
+            base in 0_u8..3,
+            ours in 0_u8..3,
+            theirs in 0_u8..3,
+        ) {
+            prop_assert_eq!(resolve_three(&base, &base, &theirs), Some(theirs));
+            prop_assert_eq!(resolve_three(&base, &ours, &base), Some(ours));
+            prop_assert_eq!(resolve_three(&base, &ours, &ours), Some(ours));
+            prop_assert_eq!(resolve_three(&base, &ours, &theirs), resolve_three(&base, &theirs, &ours));
+        }
+
+        #[test]
+        fn metadata_merge_keeps_one_sided_and_identical_changes(
+            base in metadata(),
+            ours in metadata(),
+            theirs in metadata(),
+        ) {
+            prop_assert_eq!(merge_metadata_fields(base, base, theirs), Some(theirs));
+            prop_assert_eq!(merge_metadata_fields(base, ours, base), Some(ours));
+            prop_assert_eq!(merge_metadata_fields(base, ours, ours), Some(ours));
+            prop_assert_eq!(
+                merge_metadata_fields(base, ours, theirs),
+                merge_metadata_fields(base, theirs, ours)
+            );
+        }
+    }
+}

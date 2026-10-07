@@ -37,7 +37,7 @@ export const ignored = {
     path.startsWith("generated/typescript/") ||
     path.startsWith("languages/") ||
     path.startsWith("ffi/") ||
-    ["bun.lock", "package.json", "tsconfig.json"].includes(path),
+    ["bun.lock", "package.json", "tsconfig.json", "tsconfig.base.json"].includes(path),
   // Rust plus the TypeScript workspace.
   product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path),
   // Repository-wide metadata, boundary, and license checks.

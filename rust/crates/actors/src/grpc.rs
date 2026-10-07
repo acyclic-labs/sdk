@@ -71,7 +71,7 @@ pub async fn connect_with_ca_certificate(
     if !valid_endpoint {
         return Err(ConnectError::InsecureEndpoint);
     }
-    if token.trim().is_empty() {
+    if !crate::valid_token(token) {
         return Err(ConnectError::InvalidCredential);
     }
     let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")

@@ -35,7 +35,7 @@ pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u
             agent_id: agent.map_or_else(String::new, |value| value.to_string()),
         }),
         causal_parent: event.causal_parent.as_ref().map(encode_reference),
-        event_type: event_type(&event.payload).into(),
+        event_type: event.payload.tag().into(),
         canonical_payload_json: payload,
         attestation: event.attestation.to_vec(),
     }
@@ -45,11 +45,16 @@ pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u
 pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
     let envelope =
         wire::EventEnvelope::decode(bytes).map_err(|error| Error::Storage(error.to_string()))?;
-    validate_protocol(envelope.protocol.as_ref())?;
+    validate_protocol(
+        envelope.protocol.as_ref(),
+        &protocol_identity(),
+        Error::Storage,
+    )?;
     let authority = decode_authority(
         envelope
             .authority
             .ok_or_else(|| Error::Storage("event authority is missing".into()))?,
+        Error::Storage,
     )?;
     let operation_id = OperationId::parse(&envelope.operation_id)?;
     let intent_digest: [u8; 32] = envelope
@@ -61,7 +66,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
         .ok_or_else(|| Error::Storage("event scope is missing".into()))?;
     let payload: EventPayload = serde_json::from_slice(&envelope.canonical_payload_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    if envelope.event_type != event_type(&payload) {
+    if envelope.event_type != payload.tag() {
         return Err(Error::Storage(
             "event type disagrees with its payload".into(),
         ));
@@ -81,7 +86,10 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
             parse_scope_agent(&scope.agent_id)?,
         ),
         attestation,
-        causal_parent: envelope.causal_parent.map(decode_reference).transpose()?,
+        causal_parent: envelope
+            .causal_parent
+            .map(|reference| decode_reference(reference, Error::Storage))
+            .transpose()?,
         payload,
     };
     if encode_event(&authority, &event)?.as_slice() != bytes {
@@ -97,7 +105,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
 pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
     let payload: EventPayload =
         serde_json::from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))?;
-    if event_type_name != event_type(&payload) {
+    if event_type_name != payload.tag() {
         return Err(Error::Storage(
             "event type disagrees with its payload".into(),
         ));
@@ -109,11 +117,16 @@ pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Resul
 pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     let envelope =
         wire::CommandEnvelope::decode(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
-    validate_protocol(envelope.protocol.as_ref())?;
+    validate_protocol(
+        envelope.protocol.as_ref(),
+        &protocol_identity(),
+        Error::Invalid,
+    )?;
     let authority = decode_authority(
         envelope
             .authority
             .ok_or_else(|| Error::Invalid("command authority is missing".into()))?,
+        Error::Invalid,
     )?;
     let operation = envelope
         .operation
@@ -125,7 +138,7 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
             "command action is not canonical JSON".into(),
         ));
     }
-    if envelope.action_type != action_type(&action) {
+    if envelope.action_type != action.tag() {
         return Err(Error::Invalid(
             "command action type disagrees with its payload".into(),
         ));
@@ -139,7 +152,10 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
                 .scope
                 .ok_or_else(|| Error::Invalid("command scope is missing".into()))?,
         )?,
-        causal_parent: envelope.causal_parent.map(decode_reference).transpose()?,
+        causal_parent: envelope
+            .causal_parent
+            .map(|reference| decode_reference(reference, Error::Invalid))
+            .transpose()?,
         action,
     };
     if !envelope.intent_digest.is_empty()
@@ -177,82 +193,30 @@ pub(crate) fn protocol_identity() -> wire::ProtocolIdentity {
 /// Converts a semantic error without losing storage or indeterminate state.
 #[must_use]
 pub fn encode_error(error: &Error) -> wire::Error {
-    let (code, operation_id) = match error {
-        Error::NotFound(_) => (wire::ErrorCode::NotFound, String::new()),
-        Error::Conflict(_) => (wire::ErrorCode::Conflict, String::new()),
-        Error::Unsupported(_) => (wire::ErrorCode::Unsupported, String::new()),
-        Error::Invalid(_) => (wire::ErrorCode::Invalid, String::new()),
-        Error::Unauthorized(_) => (wire::ErrorCode::Unauthorized, String::new()),
-        Error::InteractionRejected(reason) => (
-            match reason {
-                crate::InteractionRejection::Declined => wire::ErrorCode::InteractionDeclined,
-                crate::InteractionRejection::Cancelled => wire::ErrorCode::InteractionCancelled,
-                crate::InteractionRejection::Expired => wire::ErrorCode::InteractionExpired,
-                crate::InteractionRejection::Denied => wire::ErrorCode::InteractionDenied,
-            },
-            String::new(),
-        ),
-        Error::Storage(_) => (wire::ErrorCode::Storage, String::new()),
-        Error::Indeterminate(operation_id) => {
-            (wire::ErrorCode::Indeterminate, operation_id.to_string())
-        }
-    };
     wire::Error {
-        code: code as i32,
+        code: error.code() as i32,
         message: error.to_string(),
-        operation_id,
+        operation_id: match error {
+            Error::Indeterminate(operation_id) => operation_id.to_string(),
+            _ => String::new(),
+        },
     }
 }
 
-pub(crate) fn validate_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    let actual = protocol.ok_or_else(|| Error::Storage("event protocol is missing".into()))?;
-    let expected = protocol_identity();
-    if actual.version != EVENT_WIRE_VERSION
-        || actual.descriptor_digest != expected.descriptor_digest
-    {
-        return Err(Error::Unsupported("unsupported event wire version".into()));
-    }
-    Ok(())
-}
+/// Classifies malformed input: [`Error::Storage`] for persisted events,
+/// [`Error::Invalid`] for client requests.
+pub(crate) type Fault = fn(String) -> Error;
 
-fn event_type(payload: &EventPayload) -> &'static str {
-    match payload {
-        EventPayload::LifecycleTransitioned { .. } => "lifecycle_transitioned",
-        EventPayload::Custom { .. } => "custom",
-        EventPayload::ExtensionStateMigrated { .. } => "extension_state_migrated",
-        EventPayload::ExtensionsSelected { .. } => "extensions_selected",
-        EventPayload::ExtensionConfigured { .. } => "extension_configured",
-        EventPayload::EffectPlanned { .. } => "effect_planned",
-        EventPayload::EffectDispatched { .. } => "effect_dispatched",
-        EventPayload::EffectResolved { .. } => "effect_resolved",
-        EventPayload::ForkPublished { .. } => "fork_published",
-        EventPayload::ProjectMergePublished { .. } => "project_merge_published",
-        EventPayload::ConversationBound { .. } => "conversation_bound",
-        EventPayload::ConversationMessageAppended { .. } => "conversation_message_appended",
-        EventPayload::ModelContextSelected { .. } => "model_context_selected",
-        EventPayload::InteractionOpened { .. } => "interaction_opened",
-        EventPayload::InteractionResolved { .. } => "interaction_resolved",
-    }
-}
-
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-fn action_type(action: &Action) -> &'static str {
-    match action {
-        Action::TransitionLifecycle { .. } => "transition_lifecycle",
-        Action::AppendCustom { .. } => "append_custom",
-        Action::MigrateExtensionState { .. } => "migrate_extension_state",
-        Action::SelectExtensions { .. } => "select_extensions",
-        Action::ConfigureExtension { .. } => "configure_extension",
-        Action::PlanEffect { .. } => "plan_effect",
-        Action::MarkEffectDispatched { .. } => "mark_effect_dispatched",
-        Action::ResolveEffect { .. } => "resolve_effect",
-        Action::PublishFork { .. } => "publish_fork",
-        Action::PublishProjectMerge { .. } => "publish_project_merge",
-        Action::BindConversation { .. } => "bind_conversation",
-        Action::AppendConversationMessage { .. } => "append_conversation_message",
-        Action::SelectModelContext { .. } => "select_model_context",
-        Action::OpenInteraction { .. } => "open_interaction",
-        Action::ResolveInteraction { .. } => "resolve_interaction",
+/// Requires the exact `expected` protocol identity; `missing` classifies its absence.
+pub(crate) fn validate_protocol(
+    protocol: Option<&wire::ProtocolIdentity>,
+    expected: &wire::ProtocolIdentity,
+    missing: Fault,
+) -> Result<()> {
+    match protocol {
+        None => Err(missing("protocol identity is missing".into())),
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => Err(Error::Unsupported("protocol identity mismatch".into())),
     }
 }
 
@@ -269,21 +233,23 @@ pub(crate) fn encode_authority(authority: &Authority) -> wire::Authority {
     }
 }
 
-pub(crate) fn decode_authority(authority: wire::Authority) -> Result<Authority> {
-    let kind = match wire::AggregateKind::try_from(authority.kind)
-        .map_err(|_| Error::Storage("event aggregate kind is invalid".into()))?
+pub(crate) fn decode_aggregate_kind(kind: i32, fault: Fault) -> Result<AggregateKind> {
+    match wire::AggregateKind::try_from(kind)
+        .map_err(|_| fault("aggregate kind is invalid".into()))?
     {
-        wire::AggregateKind::Agent => AggregateKind::Agent,
-        wire::AggregateKind::Conversation => AggregateKind::Conversation,
-        wire::AggregateKind::Session => AggregateKind::Session,
-        wire::AggregateKind::Turn => AggregateKind::Turn,
-        wire::AggregateKind::Task => AggregateKind::Task,
-        wire::AggregateKind::Unspecified => {
-            return Err(Error::Storage("event aggregate kind is unspecified".into()));
-        }
-    };
+        wire::AggregateKind::Agent => Ok(AggregateKind::Agent),
+        wire::AggregateKind::Conversation => Ok(AggregateKind::Conversation),
+        wire::AggregateKind::Session => Ok(AggregateKind::Session),
+        wire::AggregateKind::Turn => Ok(AggregateKind::Turn),
+        wire::AggregateKind::Task => Ok(AggregateKind::Task),
+        wire::AggregateKind::Unspecified => Err(fault("aggregate kind is unspecified".into())),
+    }
+}
+
+pub(crate) fn decode_authority(authority: wire::Authority, fault: Fault) -> Result<Authority> {
+    let kind = decode_aggregate_kind(authority.kind, fault)?;
     if authority.id.is_empty() {
-        return Err(Error::Storage("event authority identity is empty".into()));
+        return Err(fault("authority identity is empty".into()));
     }
     Ok(Authority {
         kind,
@@ -298,12 +264,13 @@ fn encode_reference(reference: &EventReference) -> wire::EventReference {
     }
 }
 
-fn decode_reference(reference: wire::EventReference) -> Result<EventReference> {
+fn decode_reference(reference: wire::EventReference, fault: Fault) -> Result<EventReference> {
     Ok(EventReference {
         authority: decode_authority(
             reference
                 .authority
-                .ok_or_else(|| Error::Storage("causal authority is missing".into()))?,
+                .ok_or_else(|| fault("causal authority is missing".into()))?,
+            fault,
         )?,
         revision: reference.revision,
     })

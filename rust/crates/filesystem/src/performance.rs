@@ -268,6 +268,25 @@ impl WorkCounters {
         self.checked_add(*delta)?.exceeded(budget)
     }
 
+    /// Adds a backend receipt spent while this operation held `live_bytes`:
+    /// the backend's peak allocation coexisted with them, so the combined
+    /// peak is their sum rather than the larger of the two.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
+    pub(crate) fn with_backend(
+        self,
+        mut backend: Self,
+        live_bytes: u64,
+    ) -> Result<Self, WorkError> {
+        let simultaneous_peak = add(live_bytes, backend.peak_allocation_bytes)?;
+        backend.peak_allocation_bytes = 0;
+        let mut merged = self.checked_add(backend)?;
+        merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
+        Ok(merged)
+    }
+
     /// Adds `delta` in place once [`Self::admit`] accepts it: exactly
     /// `*self = self.checked_add(*delta)?` after that sum verifies against
     /// `budget`, but copies neither counter set. On failure `self` is

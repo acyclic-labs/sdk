@@ -417,5 +417,7 @@ fn customer_credentials_and_endpoint_configuration_are_bounded() {
     assert!(
         HttpObjects::with_ca_certificate("https://example.com", "token", 1024, Some(&[])).is_err()
     );
-    assert!(HttpObjects::new("http://127.0.0.1:1", "token", 1024).is_ok());
+    for endpoint in ["http://127.0.0.2:1", "http://[::1]:1", "http://localhost:1"] {
+        assert!(HttpObjects::new(endpoint, "token", 1024).is_ok());
+    }
 }

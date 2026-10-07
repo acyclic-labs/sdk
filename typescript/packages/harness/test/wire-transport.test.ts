@@ -487,6 +487,46 @@ test("HTTP operation-control errors retain their canonical code", async () => {
   await expect(observed).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
 });
 
+test("HTTP SSE validates its endpoint, refuses redirects, and bounds bodies and events", async () => {
+  for (const endpoint of ["http://example.test", "ftp://example.test", "https://user:pw@example.test", "https://example.test?x=1", "relative"]) {
+    expect(() => new HttpSseWireTransport(endpoint, negotiation)).toThrow(TypeError);
+  }
+  expect(() => new HttpSseWireTransport("http://127.0.0.1:8080/base", negotiation)).not.toThrow();
+  expect(() => new HttpSseWireTransport("https://example.test", negotiation, fetch, 0)).toThrow(RangeError);
+  const redirects: (RequestRedirect | undefined)[] = [];
+  const handshakeText = toJsonString(HandshakeResponseSchema, handshake);
+  const serve = (replay: () => Response): HttpFetcher => async (input, init) => {
+    redirects.push(init?.redirect);
+    const url = String(input);
+    if (url.endsWith("/handshake")) return new Response(handshakeText);
+    if (url.endsWith("/replay")) return replay();
+    return new Response("x".repeat(handshakeText.length + 1));
+  };
+  const maximum = new TextEncoder().encode(handshakeText).byteLength;
+  const connection = await new HttpSseWireTransport("https://example.test", negotiation, serve(() => new Response(new ReadableStream())), maximum).connect(resume);
+  await expect(connection.observe(create(ObserveRequestSchema, {
+    owner: { kind: 5, id: "owner" },
+    operationId: "01010101-0101-0101-0101-010101010101",
+    scope: { id: "control", capabilities: ["operation:observe"], issuer: "runtime", proof: new Uint8Array(32) },
+  }))).rejects.toThrow("response exceeds configured bound");
+  expect(redirects.length).toBe(3);
+  expect(redirects.every(redirect => redirect === "error")).toBeTrue();
+  const flood = await new HttpSseWireTransport("https://example.test", negotiation,
+    serve(() => new Response(`data: ${"x".repeat(maximum)}`)), maximum).connect(resume);
+  await expect((async () => { for await (const _ of flood) { /* drain */ } })()).rejects.toThrow("exceeds configured bound");
+  for (const body of [`data: ${"x".repeat(maximum)}
+
+`, `data: ${"é".repeat(maximum - 6)}
+
+`]) {
+    const complete = await new HttpSseWireTransport("https://example.test", negotiation,
+      serve(() => new Response(body)), maximum).connect(resume);
+    await expect((async () => { for await (const _ of complete) { /* drain */ } })()).rejects.toThrow("server event exceeds configured bound");
+  }
+  await expect(new HttpSseWireTransport("https://example.test", negotiation, serve(() => new Response("")), maximum - 1).connect(resume))
+    .rejects.toThrow("exceeds configured bound");
+});
+
 for (const code of [ErrorCode.INTERACTION_DECLINED, ErrorCode.INTERACTION_CANCELLED,
   ErrorCode.INTERACTION_EXPIRED, ErrorCode.INTERACTION_DENIED] as const) {
   test(`HTTP interaction rejection retains distinct code ${code}`, async () => {
@@ -524,6 +564,27 @@ test("clean JSONL EOF makes an unanswered command indeterminate", async () => {
   const pending = connection.send(validCommand());
   finish();
   await expect(pending).rejects.toBeInstanceOf(WireError);
+});
+
+test("requests after the server stream ended fail instead of waiting forever", async () => {
+  const channel: JsonlChannel = {
+    async write() {},
+    close() {},
+    async *[Symbol.asyncIterator]() {
+      yield `${toJsonString(ServerFrameSchema, create(ServerFrameSchema, {
+        frame: { case: "handshake", value: handshake },
+      }))}
+`;
+    },
+  };
+  const connection = await new JsonlWireTransport(async () => channel, negotiation).connect(resume);
+  expect(await collect(connection)).toEqual([]);
+  await expect(connection.send(validCommand())).rejects.toBeInstanceOf(WireError);
+  await expect(connection.observe(create(ObserveRequestSchema, {
+    owner: { kind: 5, id: "owner" },
+    operationId: "01010101-0101-0101-0101-010101010101",
+    scope: { id: "control", capabilities: ["operation:observe"], issuer: "runtime", proof: new Uint8Array(32) },
+  }))).rejects.toBeInstanceOf(WireError);
 });
 
 async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {

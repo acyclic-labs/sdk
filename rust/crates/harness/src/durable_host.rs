@@ -1,5 +1,6 @@
 //! Owner-bound Stream coordinator adapter for typed durable task admission.
 
+use crate::contract::capability;
 use crate::{
     Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
@@ -25,8 +26,8 @@ use crate::{
     workflow::MachineRegistry,
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, IdempotencyOutcome, StreamClient, StreamError,
-    StreamProvider, UnixMillisClock,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    UnixMillisClock,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -117,7 +118,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Self> {
         verifier.verify_audience(&owner)?;
         verifier.verify(&owner_scope)?;
-        for capability in ["operation:declare", "operation:observe", "operation:cancel"] {
+        for capability in [
+            capability::OPERATION_DECLARE,
+            capability::OPERATION_OBSERVE,
+            capability::OPERATION_CANCEL,
+        ] {
             if !owner_scope.capabilities().contains(capability) {
                 return Err(Error::Unauthorized(format!(
                     "owner scope lacks {capability}"
@@ -441,8 +446,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
-        let input = jsonschema::validator_for(&request.input_schema)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input")?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))
@@ -474,29 +478,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         bytes: &[u8],
     ) -> Result<()> {
         let key = Self::event_key(kind, task_id, operation_id)?;
-        let outcome = match stream
-            .append_batch(vec![Bytes::copy_from_slice(bytes)], None, Some(key.clone()))
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => match self.stream.inspect_idempotency(key).await {
-                Ok(Some(observation)) => match observation.outcome {
-                    IdempotencyOutcome::Append(outcome) => outcome,
-                    _ => {
-                        return Err(Error::Conflict(
-                            "control identity has another operation kind".into(),
-                        ));
-                    }
-                },
-                Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
-            },
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict(
-                    "control identity reused with different content".into(),
-                ));
-            }
-            Err(error) => return Err(Error::Storage(error.to_string())),
-        };
+        let outcome = crate::distributed::append_keyed(
+            (stream, &self.stream),
+            Bytes::copy_from_slice(bytes),
+            None,
+            key,
+            operation_id,
+            "control identity",
+        )
+        .await?;
         match outcome {
             AppendOutcome::Committed(receipt) if receipt.end == receipt.start + 1 => {
                 let records = stream
@@ -827,8 +817,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 &output_schema,
                 Some(&admission.input),
             )?;
-            jsonschema::validator_for(&output_schema)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            crate::contract::compile_json_schema(&output_schema, "output")?;
             admission.validate()?;
             let canonical = admission.canonical_value();
             let bytes = crate::contract::canonical_json_bytes(&canonical)?;
@@ -950,7 +939,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let admission = self
                 .admission(OperationId::from_bytes(task_id.into_bytes()))
                 .await?;
-            if !admission.grants.contains("interaction:route") {
+            if !admission.grants.contains(capability::INTERACTION_ROUTE) {
                 return Err(Error::Unauthorized(
                     "task scope lacks interaction:route".into(),
                 ));
@@ -982,7 +971,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let sender_admission = self
                 .admission(OperationId::from_bytes(sender.into_bytes()))
                 .await?;
-            if !sender_admission.grants.contains("mail:send") {
+            if !sender_admission.grants.contains(capability::MAIL_SEND) {
                 return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
             }
             let recipient_admission = self
@@ -1020,7 +1009,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let recipient_admission = self
                 .admission(OperationId::from_bytes(task_id.into_bytes()))
                 .await?;
-            if !recipient_admission.grants.contains("mail:read") {
+            if !recipient_admission.grants.contains(capability::MAIL_READ) {
                 return Err(Error::Unauthorized(
                     "recipient scope lacks mail:read".into(),
                 ));
@@ -1086,7 +1075,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let admission = self
                 .admission(OperationId::from_bytes(task_id.into_bytes()))
                 .await?;
-            if !admission.grants.contains("timer:wait") {
+            if !admission.grants.contains(capability::TIMER_WAIT) {
                 return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
             }
             let event = TimerEvent {
@@ -1142,7 +1131,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     "tool context does not match the admitted task".into(),
                 ));
             }
-            let capability = format!("tool:call:{}", definition.name);
+            let capability = capability::tool_call(&definition.name);
             if !scope.grants().contains(&capability) {
                 return Err(Error::Unauthorized(format!(
                     "task scope lacks {capability}"
@@ -1195,7 +1184,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let admission = self
                 .admission(OperationId::from_bytes(task_id.into_bytes()))
                 .await?;
-            if !admission.grants.contains("effect:run") {
+            if !admission.grants.contains(capability::EFFECT_RUN) {
                 return Err(Error::Unauthorized("task scope lacks effect:run".into()));
             }
             let effects = self

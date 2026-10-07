@@ -25,9 +25,10 @@ export abstract class ObjectsV2Provider {
       const bytes = toBinary(input, value);
       validate_objects_v2_request(route, bytes, BigInt(body.byteLength));
       const frames = await this.invoke(route, bytes, body, 0n);
-      if (frames.length !== 1) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-      validate_objects_v2_response(route, bytes, frames[0], BigInt(body.byteLength));
-      return fromBinary(output, frames[0]);
+      const [frame] = frames;
+      if (frames.length !== 1 || frame === undefined) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+      validate_objects_v2_response(route, bytes, frame, BigInt(body.byteLength));
+      return fromBinary(output, frame);
     } catch (error) { throw objectsV2Error(error); }
   }
   createBucket(value: wire.CreateBucketRequest) { return this.call("buckets/create", wire.CreateBucketRequestSchema, wire.BucketSchema, value); }

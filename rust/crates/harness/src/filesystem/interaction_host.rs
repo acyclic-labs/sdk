@@ -1,6 +1,8 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
+use crate::contract::capability;
+use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
@@ -309,7 +311,10 @@ where
         expected_version: u64,
     ) -> Result<InteractionTicket> {
         self.verifier.verify(scope)?;
-        if !scope.capabilities().contains("interaction:resolve") {
+        if !scope
+            .capabilities()
+            .contains(capability::INTERACTION_RESOLVE)
+        {
             return Err(Error::Unauthorized(
                 "scope lacks interaction:resolve".into(),
             ));
@@ -325,10 +330,7 @@ where
         }
         let next = match &prior {
             Some(prior) if prior.outcome.is_terminal() => prior.expected_version,
-            Some(prior) => prior
-                .expected_version
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("interaction revision exhausted".into()))?,
+            Some(prior) => next_revision(prior.expected_version)?,
             None => 1,
         };
         if expected_version != next {

@@ -10,7 +10,6 @@ members = [
   "rust/crates/harness",
   "rust/crates/harness-codex",
   "rust/crates/inference",
-  "rust/crates/inference-contract",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
   "rust/crates/machines-wasm",
@@ -20,7 +19,6 @@ members = [
   "rust/crates/objects-wasm",
   "rust/crates/proto-codegen",
   "rust/crates/stream",
-  "rust/crates/stream-wasm",
   "rust/crates/workers",
   "plugin",
 ]
@@ -54,6 +52,7 @@ napi-derive = "3.3.3"
 # The macOS FSEvents backend links CoreServices, which would load it into every
 # process at start; acyclic-fs loads FSEvents itself when a watch starts.
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
@@ -144,6 +143,7 @@ dbg_macro = "warn"
 missing_panics_doc = "warn"
 semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
+undocumented_unsafe_blocks = "deny"
 
 # The CLI hashes its own executable to name its service. Unoptimized, that
 # takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.
