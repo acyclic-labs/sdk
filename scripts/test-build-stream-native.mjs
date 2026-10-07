@@ -71,6 +71,7 @@ function validBuildInputs() {
         js_package_name: "@acyclic-labs/stream",
         js_binding: "binding.cjs",
         dts: "binding.d.ts",
+        cargo_options: ["--locked"],
       },
     },
     linker: {
@@ -87,7 +88,7 @@ function validBuildInputs() {
     profile: {
       name: "release",
       cargo_incremental: "0",
-      release_incremental: "false",
+      release_incremental: "0",
       manifest_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       config_sha256: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     },
@@ -142,6 +143,8 @@ test("native qualification rejects build input identity mutations", () => {
     ["linker", value => { value.linker.actual.linker = "C:/Program Files/LLVM/lld-link.exe"; }, /build input attestation differs/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
+    ["incremental policy", value => { value.profile.cargo_incremental = null; }, /incremental policy is not pinned to zero/],
+    ["generator cargo options", value => { value.generator.options.cargo_options = ["--offline"]; }, /generator cargo options are invalid/],
     ["cache", value => { value.cache.wrapper = 42; }, /native build input cache\.wrapper is invalid/],
   ]) {
     const mutated = structuredClone(valid);
@@ -258,14 +261,17 @@ test("native qualification restores Rustflags when setup fails", async () => {
   const priorRustflags = process.env.RUSTFLAGS;
   const priorEncoded = process.env.CARGO_ENCODED_RUSTFLAGS;
   const priorIncremental = process.env.CARGO_INCREMENTAL;
+  const priorReleaseIncremental = process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
   process.env.RUSTFLAGS = "-C opt-level=2";
   delete process.env.CARGO_ENCODED_RUSTFLAGS;
   process.env.CARGO_INCREMENTAL = "1";
+  process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "1";
   await assert.rejects(
     withDeterministicRustflags("C:/src", "C:/target", undefined, async () => {
       assert.equal(process.env.RUSTFLAGS, undefined);
       assert.match(process.env.CARGO_ENCODED_RUSTFLAGS, /__acyclic_stream_source/u);
       assert.equal(process.env.CARGO_INCREMENTAL, "0");
+      assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "0");
       throw new Error("capture setup failed");
     }),
     /capture setup failed/,
@@ -273,12 +279,15 @@ test("native qualification restores Rustflags when setup fails", async () => {
   assert.equal(process.env.RUSTFLAGS, "-C opt-level=2");
   assert.equal(process.env.CARGO_ENCODED_RUSTFLAGS, undefined);
   assert.equal(process.env.CARGO_INCREMENTAL, "1");
+  assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "1");
   if (priorRustflags === undefined) delete process.env.RUSTFLAGS;
   else process.env.RUSTFLAGS = priorRustflags;
   if (priorEncoded === undefined) delete process.env.CARGO_ENCODED_RUSTFLAGS;
   else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncoded;
   if (priorIncremental === undefined) delete process.env.CARGO_INCREMENTAL;
   else process.env.CARGO_INCREMENTAL = priorIncremental;
+  if (priorReleaseIncremental === undefined) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
+  else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
 });
 
 test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {

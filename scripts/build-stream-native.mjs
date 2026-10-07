@@ -232,8 +232,10 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
   const priorRustflags = envValue("RUSTFLAGS");
   const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
   const priorCargoIncremental = envValue("CARGO_INCREMENTAL");
+  const priorReleaseIncremental = envValue("CARGO_PROFILE_RELEASE_INCREMENTAL");
   try {
     process.env.CARGO_INCREMENTAL = "0";
+    process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "0";
     process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
     delete process.env.RUSTFLAGS;
     return await operation();
@@ -244,6 +246,8 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
     else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
     if (priorCargoIncremental === null) delete process.env.CARGO_INCREMENTAL;
     else process.env.CARGO_INCREMENTAL = priorCargoIncremental;
+    if (priorReleaseIncremental === null) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
+    else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
   }
 }
 
@@ -545,6 +549,7 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
         js_package_name: packageName,
         js_binding: "binding.cjs",
         dts: "binding.d.ts",
+        cargo_options: ["--locked"],
       },
     },
     linker: linkerInputs(target),
@@ -623,6 +628,8 @@ export function assertBuildInputs(value) {
   if (value.generator.package !== "@napi-rs/cli") throw new Error("native build generator package is unsupported");
   for (const field of ["package_sha256", "entry_sha256", "lock_sha256"]) assertDigest(generator[field], `generator.${field}`);
   const generatorOptions = assertStringFields(generator.options, ["output_dir", "target_dir", "js_package_name", "js_binding", "dts"], "generator.options");
+  assertStringArray(generatorOptions.cargo_options, "generator.options.cargo_options");
+  if (JSON.stringify(generatorOptions.cargo_options) !== JSON.stringify(["--locked"])) throw new Error("native build generator cargo options are invalid");
   if (generatorOptions.release !== true || generatorOptions.platform !== true) throw new Error("native build generator options are invalid");
   if (generatorOptions.target !== value.target) throw new Error("native build generator target differs");
   if (generatorOptions.target_dir !== value.target_dir) throw new Error("native build generator target directory differs");
@@ -630,6 +637,7 @@ export function assertBuildInputs(value) {
   if (value.profile.name !== "release") throw new Error("native build profile is not release");
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
   assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
+  if (profile.cargo_incremental !== "0" || profile.release_incremental !== "0") throw new Error("native build incremental policy is not pinned to zero");
   assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
   const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
@@ -785,6 +793,7 @@ async function build(options) {
         jsPackageName: packageManifest.name,
         jsBinding: "binding.cjs",
         dts: "binding.d.ts",
+        cargoOptions: ["--locked"],
         release: true,
       });
       await buildResult.task;
