@@ -15,7 +15,7 @@ import type {
   WasmToolJsonSchema,
   WasmToolJsonValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-import { isValidComponentLabel } from "./component-label-contract.js";
+import { validateComponentLabel as validateComponentLabelRust } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary while allowing provider-specific typing. */
 export type Model<Options = unknown> = Readonly<Omit<WasmModelWire, "options"> & { options: Options }>;
@@ -106,15 +106,15 @@ export interface ToolRef<Input, Output> {
   readonly [toolRefBrand]: (input: Input) => Output;
 }
 export type LiveTool<Input, Output> = (context: ToolContext, input: Input) => Output | Promise<Output>;
-export function validateComponentLabel(value: string, field: string): void {
-  if (typeof value !== "string" || !isValidComponentLabel(value)) throw new TypeError(`${field} is invalid`);
+export function validateComponentLabel(value: string, field: string): Promise<void> {
+  return validateComponentLabelRust(value, field);
 }
-export function validateToolName(name: string): void {
-  validateComponentLabel(name, "tool name");
+export function validateToolName(name: string): Promise<void> {
+  return validateComponentLabel(name, "tool name");
 }
-export function defineTool<Input, Output>(definition: Omit<ToolDefinition<Input, Output>, "handler">, handler: LiveTool<Input, Output>): ToolDefinition<Input, Output> {
-  validateToolName(definition.name);
-  validateComponentLabel(definition.revision, "tool revision");
+export async function defineTool<Input, Output>(definition: Omit<ToolDefinition<Input, Output>, "handler">, handler: LiveTool<Input, Output>): Promise<ToolDefinition<Input, Output>> {
+  await validateToolName(definition.name);
+  await validateComponentLabel(definition.revision, "tool revision");
   if (typeof definition.parseInput !== "function" || typeof definition.parseOutput !== "function") {
     throw new TypeError("typed tools require input and output parsers");
   }
