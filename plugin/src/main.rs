@@ -15,6 +15,7 @@ mod control_transport;
 mod git;
 mod guidance;
 mod install;
+mod obs;
 mod roots;
 mod service;
 mod service_process;
@@ -93,7 +94,10 @@ use util::*;
 
 /// Unified Acyclic CLI, local service, host hook bridges, and installer.
 fn main() {
-    if let Err(error) = main_result() {
+    obs::init();
+    let result = main_result();
+    obs::finish();
+    if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
     }
@@ -211,6 +215,13 @@ enum ServiceStart {
 /// Sends one native hook to the service and returns its response. Every
 /// hook transport answers through this function; they differ only in how the
 /// event arrives and whether they may start the service.
+#[tracing::instrument(
+    target = "acyclic_plugin",
+    name = "acyclic.plugin.hook",
+    level = "info",
+    skip_all,
+    fields(host = obs::hook_host(host))
+)]
 async fn forward_native_hook(
     host: &str,
     event: &str,
@@ -513,6 +524,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             print_cli_response(response).map_err(io::Error::other)?
         };
         if exit_code != 0 {
+            obs::finish();
             std::process::exit(exit_code);
         }
         return Ok(());

@@ -1796,6 +1796,8 @@ pub(crate) fn control_response_for(
     request_id: &control_protocol::RequestId,
     result: Result<Value, String>,
 ) -> Vec<u8> {
+    // Every request's outcome passes through here.
+    obs::record_outcome(&result);
     let response = match result {
         Ok(result) => {
             json!({"version":2,"requestId":request_id.as_str(),"ok":true,"result":result})
