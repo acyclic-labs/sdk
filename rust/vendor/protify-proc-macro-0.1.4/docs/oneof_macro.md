@@ -89,6 +89,14 @@ fn main() {
     - Description:
         Overrides the automatically generated conversion from proto to proxy.
 
+- `post_from_proto`
+    - Type: function Path or closure
+    - Example: `#[proto(post_from_proto = MyType::validate_from_proto)]`
+    - Description:
+        Runs after the generated fallible variant conversion and before the
+        semantic value is returned. The callback receives `&Self` and returns
+        `Result<(), E>`.
+
 - `into_proto`
     - Type: function Path or closure
     - Example: `#[proto(into_proto = my_convert_fn)]` or `#[proto(into_proto = |v| v.some_method())]`

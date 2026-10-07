@@ -12,7 +12,10 @@ declaration is annotated with `fallible = E`, generated `TryFrom<Proto>`
 implementations preserve validation errors instead of emitting an infallible
 `From<Proto>` that can panic on invalid branded values. This keeps the Rust
 semantic declaration authoritative while retaining the generated protobuf
-shadow and wire descriptor.
+shadow and wire descriptor. The same focused patch provides the narrow
+`post_from_proto = path` ingress hook: generated field conversion completes
+first, then the callback reuses a semantic type's existing constructor
+predicate without a second field registry.
 
 To reproduce the patched behavior, run the Actors crate tests and inspect the
 fallible ingress cases in `rust/crates/actors/src/domain.rs`; invalid IDs,

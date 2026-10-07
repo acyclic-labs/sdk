@@ -124,7 +124,22 @@ impl ProtoConversions<'_> {
 			quote! { Self { #(#tokens),* } }
 		};
 
-		let result = if kind.is_oneof() {
+		let result = if let Some(expr) = container_attrs.post_from_proto_expr() {
+			let validation = process_custom_expression(expr, &quote! { &semantic });
+			if kind.is_oneof() {
+				quote! {
+					let semantic = (#body)?;
+					(#validation)?;
+					::core::result::Result::Ok(semantic)
+				}
+			} else {
+				quote! {
+					let semantic = #body;
+					(#validation)?;
+					::core::result::Result::Ok(semantic)
+				}
+			}
+		} else if kind.is_oneof() {
 			quote! { #body }
 		} else {
 			quote! { ::core::result::Result::Ok(#body) }

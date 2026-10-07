@@ -208,6 +208,13 @@ impl ContainerAttrs<'_> {
 		}
 	}
 
+	pub const fn post_from_proto_expr(&self) -> Option<&PathOrClosure> {
+		match self {
+			ContainerAttrs::Message(message_attrs) => message_attrs.post_from_proto.as_ref(),
+			ContainerAttrs::Oneof(oneof_attrs) => oneof_attrs.post_from_proto.as_ref(),
+		}
+	}
+
 	pub const fn has_custom_conversions(&self) -> bool {
 		match self {
 			ContainerAttrs::Message(message_attrs) => message_attrs.has_custom_conversions(),

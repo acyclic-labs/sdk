@@ -10,6 +10,9 @@ pub struct MessageAttrs {
 	pub name: ParsedStr,
 	pub parent_message: Option<Ident>,
 	pub from_proto: Option<PathOrClosure>,
+	/// Validation applied to the fully converted semantic value on wire ingress.
+	/// The callback receives `&Self` and returns `Result<(), fallible_error>`.
+	pub post_from_proto: Option<PathOrClosure>,
 	pub into_proto: Option<PathOrClosure>,
 	pub forwarded_derives: Vec<Path>,
 	pub forwarded_attrs: Vec<Meta>,
@@ -71,6 +74,7 @@ pub fn process_message_attrs(
 	let mut options = TokenStreamOr::new(|_| quote! { [] });
 	let mut proto_name: Option<ParsedStr> = None;
 	let mut from_proto: Option<PathOrClosure> = None;
+	let mut post_from_proto: Option<PathOrClosure> = None;
 	let mut into_proto: Option<PathOrClosure> = None;
 	let mut forwarded_derives: Vec<Path> = Vec::new();
 	let mut parent_message: Option<Ident> = None;
@@ -140,6 +144,9 @@ pub fn process_message_attrs(
 						"from_proto" => {
 							from_proto = Some(meta.expr_value()?.as_path_or_closure()?);
 						}
+						"post_from_proto" => {
+							post_from_proto = Some(meta.expr_value()?.as_path_or_closure()?);
+						}
 						"into_proto" => {
 							into_proto = Some(meta.expr_value()?.as_path_or_closure()?);
 						}
@@ -173,6 +180,7 @@ pub fn process_message_attrs(
 		name,
 		parent_message,
 		from_proto,
+		post_from_proto,
 		into_proto,
 		forwarded_derives,
 		is_proxied: macro_args.is_proxied,

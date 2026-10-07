@@ -269,7 +269,7 @@ impl Header {
 
 /// Resource binding admitted by the canonical create/update validators.
 #[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[proto(file = ACTORS_FILE, post_from_proto = Binding::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
@@ -297,6 +297,17 @@ impl Binding {
             capability,
             resource,
         })
+    }
+
+    /// Re-checks a value admitted from an untrusted protobuf wire message
+    /// through the canonical constructor predicate.
+    pub fn validate_from_proto(&self) -> Result<(), DomainError> {
+        Self::new(
+            self.name.clone(),
+            self.capability.clone(),
+            self.resource.clone(),
+        )
+        .map(|_| ())
     }
 
     /// Returns the binding name.
@@ -502,7 +513,7 @@ impl SubscriptionStart {
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
 #[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[proto(file = ACTORS_FILE, post_from_proto = SubscriptionSpec::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
@@ -541,6 +552,18 @@ impl SubscriptionSpec {
             start,
             placement_anchor,
         })
+    }
+
+    /// Re-checks a value admitted from an untrusted protobuf wire message
+    /// through the canonical constructor predicate.
+    pub fn validate_from_proto(&self) -> Result<(), DomainError> {
+        Self::new(
+            self.subscription_id.clone(),
+            self.stream_path.clone(),
+            self.start,
+            self.placement_anchor,
+        )
+        .map(|_| ())
     }
 
     /// Returns the subscription identifier.
@@ -1546,6 +1569,32 @@ mod tests {
         };
         assert_eq!(
             SubscriptionSpec::try_from(invalid),
+            Err(DomainError::InvalidSubscription)
+        );
+    }
+
+    #[test]
+    fn wire_ingress_rechecks_container_constructor_predicates() {
+        let invalid_binding = wire::Binding {
+            name: String::new(),
+            capability: "read".into(),
+            resource: "bucket/a".into(),
+        };
+        assert_eq!(
+            Binding::try_from(invalid_binding),
+            Err(DomainError::InvalidBinding)
+        );
+
+        let invalid_subscription = wire::SubscriptionSpec {
+            subscription_id: String::new(),
+            stream_path: "events/input".into(),
+            start: Some(wire::SubscriptionStart {
+                start: Some(wire::subscription_start::Start::Cursor(0)),
+            }),
+            placement_anchor: false,
+        };
+        assert_eq!(
+            SubscriptionSpec::try_from(invalid_subscription),
             Err(DomainError::InvalidSubscription)
         );
     }
