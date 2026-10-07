@@ -1,0 +1,74 @@
+{
+  "artifact": "kani-proof-integration-implementation-20261007",
+  "branch": "codex/kani-proof-filesystem-c2-20261007",
+  "source_revision": "c2e2d8ef80ab88a989c1f5955e6f35881f0274cd",
+  "source_worktree": "C:\\Users\\varun\\.codex\\tmp\\kani-proof-filesystem-c2",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rust": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "jobs": 1,
+    "offline": true
+  },
+  "production_source_sha256": {
+    "rust\\crates\\filesystem\\src\\operation_window\\kani_reconcile_limits_proof.rs": "752E0863D65430D7CFEB03082F7A2D8F341513158E8A56C644C17A2395BF2BDD",
+    "rust\\crates\\filesystem\\src\\lib.rs": "D5D463017806B69747F4F063DA04ADD8C71041BA5D5D2F646EA27FF1D5FB4367",
+    "rust\\crates\\filesystem\\src\\kani_proofs.rs": "A3CE5EAD19B578EE6F473200CE116C90AA97D68594EB2DAFCA218F6C2537AFFE",
+    "rust\\crates\\filesystem\\src\\operation_window.rs": "DDFF238809DA7EFC47D9D91929E1AEE815A6E05C01E4DB7E836090535545EBD7",
+    "rust\\crates\\filesystem\\src\\numeric.rs": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF"
+  },
+  "kani_results": [
+    {
+      "harness": "kani_proofs::exact_u32_from_f64_all_bits",
+      "result": "PASS",
+      "checks": "0 of 7 failed",
+      "verification": "SUCCESSFUL",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/exact-u32-positive.raw.txt"
+    },
+    {
+      "harness": "operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero",
+      "result": "PASS",
+      "checks": "0 of 94 failed (2 unreachable)",
+      "verification": "SUCCESSFUL",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/reconcile-limits-positive.raw.txt"
+    },
+    {
+      "harness": "kani_proofs::exact_u32_from_f64_negative_control_accepts_fraction",
+      "result": "EXPECTED_FAILURE",
+      "checks": "1 of 10 failed",
+      "verification": "FAILED",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/exact-u32-negative.raw.txt"
+    },
+    {
+      "harness": "operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_negative_control_accepts_zero_generation",
+      "result": "EXPECTED_FAILURE",
+      "checks": "1 of 91 failed (2 unreachable)",
+      "verification": "FAILED",
+      "terminal_tool_exit": 0,
+      "raw_log": "audit/reconcile-limits-negative.raw.txt"
+    }
+  ],
+  "raw_log_sha256": {
+    "reconcile-limits-negative.raw.txt": "4CCB7DD197F9263ABC8D8E96AA2B3899C3B3B9428D9B4B4C4E03EFED722D24E1",
+    "exact-u32-positive.raw.txt": "FC1C84930F07F10A833FD8D7E59B211697EEA0097041B8C485B02A718E6C821D",
+    "exact-u32-negative.raw.txt": "7B26E41FDAB0135393746D18F7E729EE3EC8C50D23737FD0D2AF7828F498A421",
+    "reconcile-limits-positive.raw.txt": "D9A02E2C9CF0D9303315E25B0EA3DC8DD16FFD2F424BECA615CDABB7506C83C2"
+  },
+  "stable_check": {
+    "command": "RUSTC_WRAPPER=; CARGO_NET_OFFLINE=true; cargo check --manifest-path rust/crates/filesystem/Cargo.toml --package acyclic-fs --offline",
+    "result": "PASS",
+    "exit_code": 0,
+    "notes": "two expected unexpected_cfg(kani) warnings"
+  },
+  "format_check": {
+    "command": "cargo fmt --check --manifest-path rust/crates/filesystem/Cargo.toml",
+    "result": "PASS",
+    "exit_code": 0
+  },
+  "claim": "direct production exact_u32_from_f64 and validate_reconcile_limits only",
+  "copied_algorithm": false
+}

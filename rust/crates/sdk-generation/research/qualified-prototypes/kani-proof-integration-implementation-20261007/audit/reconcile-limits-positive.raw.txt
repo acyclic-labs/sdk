@@ -1,0 +1,601 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: trailing semicolon in macro used in expression position
+  --> rust/crates/stream/src/lib.rs:67:15
+   |
+67 | const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+   = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+   = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+   = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling acyclic-fs v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-filesystem-c2/rust/crates/filesystem)
+warning: linker stdout: -Wl,--version-script=/tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-stream/b3dbc965db760eea/out/rustcP3tHKK/list -Wl,--no-undefined-version -m64 /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-stream/b3dbc965db760eea/out/rustcP3tHKK/symbols.o -Wl,--as-needed -Wl,-Bstatic /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-8fb4789a2abb2d82.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/uuid/8f181dc24f538fde/out/libuuid-8f181dc24f538fde.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/getrandom/a777159758d40f65/out/libgetrandom-a777159758d40f65.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/tokio/7cc234cc78304296/out/libtokio-7cc234cc78304296.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/signal-hook-registry/071416d4fdbc2407/out/libsignal_hook_registry-071416d4fdbc2407.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/errno/ec63130e2e3e5f54/out/liberrno-ec63130e2e3e5f54.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/mio/4466e1d9efed44b3/out/libmio-4466e1d9efed44b3.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/log/9aad8f06d0919a66/out/liblog-9aad8f06d0919a66.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/sha2/937501f5d1f59ffc/out/libsha2-937501f5d1f59ffc.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/cpufeatures/3f70a1852789034f/out/libcpufeatures-3f70a1852789034f.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/digest/bb391b9d2fb0afb5/out/libdigest-bb391b9d2fb0afb5.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/const-oid/8ab49dea5f07b7f1/out/libconst_oid-8ab49dea5f07b7f1.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/crypto-common/393094703ce78a3c/out/libcrypto_common-393094703ce78a3c.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/block-buffer/aab67645b382fe28/out/libblock_buffer-aab67645b382fe28.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/hybrid-array/132f80e351cbd4b1/out/libhybrid_array-132f80e351cbd4b1.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/typenum/7be49e7e117eeec9/out/libtypenum-7be49e7e117eeec9.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/fs2/8e341affa06b65b0/out/libfs2-8e341affa06b65b0.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-native-runtime/e81ff6543937d6f6/out/libacyclic_native_runtime-e81ff6543937d6f6.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/compio-driver/d152a47183760ddb/out/libcompio_driver-d152a47183760ddb.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/smallvec/9f46c0f4ba480ab2/out/libsmallvec-9f46c0f4ba480ab2.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/io-uring/79686f28d8791133/out/libio_uring-79686f28d8791133.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/socket2/ec1f0b4009044c06/out/libsocket2-ec1f0b4009044c06.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/libc/d100ea65601d3135/out/liblibc-d100ea65601d3135.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/mod_use/22dea457a30a9283/out/libmod_use-22dea457a30a9283.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/rustix/b36d288918d9361b/out/librustix-b36d288918d9361b.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/bitflags/08e09b3a95adc6f6/out/libbitflags-08e09b3a95adc6f6.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/linux-raw-sys/ace45e0c9a29d2d9/out/liblinux_raw_sys-ace45e0c9a29d2d9.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/flume/33e109f402531913/out/libflume-33e109f402531913.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/thin-cell/0267e0900d556804/out/libthin_cell-0267e0900d556804.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/synchrony/d81c17225dd704a5/out/libsynchrony-d81c17225dd704a5.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/compio-send-wrapper/0a24fff3f812247b/out/libcompio_send_wrapper-0a24fff3f812247b.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/cfg-if/b83f6abb182486e5/out/libcfg_if-b83f6abb182486e5.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/compio-log/f9971eaa3adef156/out/libcompio_log-f9971eaa3adef156.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/tracing/e81d631c3eda7cda/out/libtracing-e81d631c3eda7cda.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/tracing-core/7042a18b3e5ea4ab/out/libtracing_core-7042a18b3e5ea4ab.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/once_cell/f8e0cbf97e45e8e5/out/libonce_cell-f8e0cbf97e45e8e5.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/compio-buf/21727649ea9749aa/out/libcompio_buf-21727649ea9749aa.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/serde_json/a29d4e6982577ec5/out/libserde_json-a29d4e6982577ec5.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/itoa/82c889af80896d88/out/libitoa-82c889af80896d88.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/zmij/1638c8fdace94e14/out/libzmij-1638c8fdace94e14.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/serde_core/7e7b4cedc48dec8b/out/libserde_core-7e7b4cedc48dec8b.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/prost/61b6e710288aa103/out/libprost-61b6e710288aa103.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures/18531f5e4639b237/out/libfutures-18531f5e4639b237.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-executor/b57b499069ab5e1b/out/libfutures_executor-b57b499069ab5e1b.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-util/e08892231ef25e68/out/libfutures_util-e08892231ef25e68.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/memchr/613c6826ea26f746/out/libmemchr-613c6826ea26f746.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-io/711d6d4181c987f1/out/libfutures_io-711d6d4181c987f1.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/slab/94e6c903ceac4b4a/out/libslab-94e6c903ceac4b4a.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-channel/cce06b953f44c33a/out/libfutures_channel-cce06b953f44c33a.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/pin-project-lite/781e9165350f8530/out/libpin_project_lite-781e9165350f8530.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-sink/6bd59ed0ae133d81/out/libfutures_sink-6bd59ed0ae133d81.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-task/a8e3222f423f6d46/out/libfutures_task-a8e3222f423f6d46.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/futures-core/1b636d776a0f3046/out/libfutures_core-1b636d776a0f3046.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/thiserror/e2224683192a5870/out/libthiserror-e2224683192a5870.rlib /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/bytes/06c2bb19dccc9154/out/libbytes-06c2bb19dccc9154.rlib /home/var/.kani/kani-0.68.0/lib/libstd.rlib /home/var/.kani/kani-0.68.0/lib/libkani.rlib /home/var/.kani/kani-0.68.0/lib/libkani_core-47948813a3681a94.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-71372c34d5050188.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-aa7b658e04386409.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-3fed2ffc932fa9f7.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-d0fd1f27f215e8f6.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-d5f7ae8b9dcc46c1.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-78012f0d32b8b438.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-274f1282c368e804.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-96dbaaaa423fc346.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-15bfbeb329ac4218.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-249d0d9fb763b7e7.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-dbbcfcfcdc525eac.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-52a55e88f3f2da9f.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-326b2c3b74173ded.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-31d96d129380b17b.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-954d47fafe9dbfe7.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-4c5e29bee490bff8.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-8e75218055a4771a.rlib /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-5182fb36d65c607a.rlib -Wl,-Bdynamic -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc -L /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-stream/b3dbc965db760eea/out/rustcP3tHKK/raw-dylibs -B/home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld -B/home/var/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld -fuse-ld=lld -Wl,--eh-frame-hdr -Wl,-z,noexecstack -L /home/var/.kani/kani-0.68.0/lib -L /home/var/.kani/kani-0.68.0/lib/rustlib/x86_64-unknown-linux-gnu/lib -o /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-stream/b3dbc965db760eea/out/libacyclic_stream.so -Wl,--gc-sections -shared -Wl,-z,relro,-z,now -nodefaultlibs
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: trailing semicolon in macro used in expression position
+  --> rust/crates/filesystem/src/kani_proofs.rs:20:19
+   |
+20 |         Err(_) => assert!(!admissible),
+   |                   ^^^^^^^^^^^^^^^^^^^^
+   |
+   = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+   = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+   = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+   = note: this warning originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+    --> rust/crates/filesystem/src/demand.rs:1139:22
+     |
+1139 | ...   .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+     |        ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+1139 -                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+1139 +                     .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+     |
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: Found the following unsupported constructs:
+             - caller_location (1)
+             - foreign function (1)
+         
+         Verification will fail if one or more of these constructs is reachable.
+         See https://model-checking.github.io/kani/rust-feature-support.html for more details.
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 43s
+warning: the following packages contain code that will be rejected by a future version of Rust: acyclic-fs v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-filesystem-c2/rust/crates/filesystem), acyclic-stream v0.2.0 (/mnt/c/Users/varun/.codex/tmp/kani-proof-filesystem-c2/rust/crates/stream)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Checking harness operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /tmp/kani-proof-filesystem-c2-20261007/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-fs/415f0d42703a05e3/out/acyclic_fs-415f0d42703a05e3__RNvNtNtCsbZdM3OTowsc_10acyclic_fs16operation_window27kani_reconcile_limits_proof47validate_reconcile_limits_iff_all_three_nonzero.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 594 column 5 function std::result::Result::<(), workspace::WorkspaceError>::is_ok thread 0
+aborting path on assume(false) at file rust/crates/filesystem/src/operation_window/kani_reconcile_limits_proof.rs line 8 column 1 function operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs line 872 column 5 function prost::alloc::raw_vec::RawVecInner::deallocate thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs line 872 column 5 function prost::alloc::raw_vec::RawVecInner::deallocate thread 0
+Runtime Symex: 0.127332s
+size of program expression: 2758 steps
+slicing removed 1808 assignments
+Generated 186 VCC(s), 20 remaining after simplification
+Runtime Postprocess Equation: 0.00244923s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.018573s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 0.00214576s
+Solving with CaDiCaL 3.0.0
+14127 variables, 30091 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.00319885s
+Runtime decision procedure: 0.0223905s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+14128 variables, 30092 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00456205s
+Runtime decision procedure: 0.00483576s
+
+RESULTS:
+Check 1: __rust_dealloc.assertion.1
+	 - Status: SUCCESS
+	 - Description: "Alignment is power of two"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:83 in function __rust_dealloc
+
+Check 2: __rust_dealloc.assertion.2
+	 - Status: SUCCESS
+	 - Description: "rust_dealloc must be called on an object whose allocated size matches its layout"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:85 in function __rust_dealloc
+
+Check 3: operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: result.is_ok() == positive"
+	 - Location: rust/crates/filesystem/src/operation_window/kani_reconcile_limits_proof.rs:19:5 in function operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero
+
+Check 4: operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: rust/crates/filesystem/src/operation_window/kani_reconcile_limits_proof.rs:8:1 in function operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero
+
+Check 5: operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero.assertion.2
+	 - Status: SUCCESS
+	 - Description: "assertion failed: matches!(result, Err(WorkspaceError::JoinLimit))"
+	 - Location: rust/crates/filesystem/src/operation_window/kani_reconcile_limits_proof.rs:21:9 in function operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero
+
+Check 6: core::num::<impl usize>::unchecked_mul.arithmetic_overflow.1
+	 - Status: SUCCESS
+	 - Description: "attempt to compute `unchecked_mul` which would overflow"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:1401:17 in function core::num::<impl usize>::unchecked_mul
+
+Check 7: std::fmt::Arguments::<'_>::from_str.assertion.1
+	 - Status: UNREACHABLE
+	 - Description: "attempt to shift left with overflow"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/fmt/mod.rs:820:38 in function std::fmt::Arguments::<'_>::from_str
+
+Check 8: std::result::Result::<(), workspace::WorkspaceError>::is_ok.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:594:5 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 9: std::panic::Location::<'_>::caller.unsupported_construct.1
+	 - Status: SUCCESS
+	 - Description: "caller_location is not currently supported by Kani. Please post your example at https://github.com/model-checking/kani/issues/374"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic/location.rs:181:9 in function std::panic::Location::<'_>::caller
+
+Check 10: prost::alloc::raw_vec::RawVecInner::deallocate.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:872:5 in function prost::alloc::raw_vec::RawVecInner::deallocate
+
+Check 11: std::ptr::drop_in_place::<[u8]>.safety_check.1
+	 - Status: SUCCESS
+	 - Description: "misaligned pointer to reference cast: address must be a multiple of its type's alignment"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:843:24 in function std::ptr::drop_in_place::<[u8]>
+
+Check 12: std::ptr::drop_in_place::<[u8]>.safety_check.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:843:24 in function std::ptr::drop_in_place::<[u8]>
+
+Check 13: std::alloc::Layout::is_size_align_valid.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:69:5 in function std::alloc::Layout::is_size_align_valid
+
+Check 14: std::alloc::Layout::max_size_for_alignment.assertion.1
+	 - Status: UNREACHABLE
+	 - Description: "attempt to add with overflow"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:97:32 in function std::alloc::Layout::max_size_for_alignment
+
+Check 15: std::alloc::Layout::max_size_for_alignment.arithmetic_overflow.1
+	 - Status: SUCCESS
+	 - Description: "attempt to compute `unchecked_sub` which would overflow"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:97:18 in function std::alloc::Layout::max_size_for_alignment
+
+Check 16: core::panicking::panic_nounwind_fmt::runtime.unsupported_construct.1
+	 - Status: SUCCESS
+	 - Description: "call to foreign "Rust" function `_RNvCskSgPeDzUGbv_7___rustc17rust_begin_unwind` is not currently supported by Kani. Please post your example at https://github.com/model-checking/kani/issues/new/choose"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panicking.rs:110:17 in function core::panicking::panic_nounwind_fmt::runtime
+
+Check 17: prost::alloc::raw_vec::RawVecInner::non_null::<u8>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:611:9 in function prost::alloc::raw_vec::RawVecInner::non_null::<u8>
+
+Check 18: prost::alloc::raw_vec::RawVecInner::non_null::<u8>.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:611:9 in function prost::alloc::raw_vec::RawVecInner::non_null::<u8>
+
+Check 19: prost::alloc::raw_vec::RawVecInner::non_null::<u8>.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:611:9 in function prost::alloc::raw_vec::RawVecInner::non_null::<u8>
+
+Check 20: prost::alloc::raw_vec::RawVecInner::non_null::<u8>.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:611:9 in function prost::alloc::raw_vec::RawVecInner::non_null::<u8>
+
+Check 21: prost::alloc::raw_vec::RawVecInner::non_null::<u8>.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:611:9 in function prost::alloc::raw_vec::RawVecInner::non_null::<u8>
+
+Check 22: prost::alloc::raw_vec::RawVecInner::non_null::<u8>.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:611:9 in function prost::alloc::raw_vec::RawVecInner::non_null::<u8>
+
+Check 23: std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>
+
+Check 24: std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>
+
+Check 25: std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>
+
+Check 26: std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>
+
+Check 27: std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>
+
+Check 28: std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<std::result::Result<(), workspace::WorkspaceError>>
+
+Check 29: std::ptr::drop_glue::<workspace::WorkspaceError>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<workspace::WorkspaceError>
+
+Check 30: std::ptr::drop_glue::<workspace::WorkspaceError>.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<workspace::WorkspaceError>
+
+Check 31: std::ptr::drop_glue::<workspace::WorkspaceError>.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<workspace::WorkspaceError>
+
+Check 32: std::ptr::drop_glue::<workspace::WorkspaceError>.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<workspace::WorkspaceError>
+
+Check 33: std::ptr::drop_glue::<workspace::WorkspaceError>.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<workspace::WorkspaceError>
+
+Check 34: std::ptr::drop_glue::<workspace::WorkspaceError>.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:848:1 in function std::ptr::drop_glue::<workspace::WorkspaceError>
+
+Check 35: std::result::Result::<(), workspace::WorkspaceError>::is_ok.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 36: std::result::Result::<(), workspace::WorkspaceError>::is_ok.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 37: std::result::Result::<(), workspace::WorkspaceError>::is_ok.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 38: std::result::Result::<(), workspace::WorkspaceError>::is_ok.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 39: std::result::Result::<(), workspace::WorkspaceError>::is_ok.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 40: std::result::Result::<(), workspace::WorkspaceError>::is_ok.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<(), workspace::WorkspaceError>::is_ok
+
+Check 41: std::mem::Alignment::new.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/mem/alignment.rs:175:13 in function std::mem::Alignment::new
+
+Check 42: std::alloc::Layout::is_size_align_valid.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:70:31 in function std::alloc::Layout::is_size_align_valid
+
+Check 43: std::alloc::Layout::size.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:176:9 in function std::alloc::Layout::size
+
+Check 44: std::alloc::Layout::size.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:176:9 in function std::alloc::Layout::size
+
+Check 45: std::alloc::Layout::size.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:176:9 in function std::alloc::Layout::size
+
+Check 46: std::alloc::Layout::size.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:176:9 in function std::alloc::Layout::size
+
+Check 47: std::alloc::Layout::size.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:176:9 in function std::alloc::Layout::size
+
+Check 48: std::alloc::Layout::size.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:176:9 in function std::alloc::Layout::size
+
+Check 49: std::alloc::Layout::align.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:188:9 in function std::alloc::Layout::align
+
+Check 50: std::alloc::Layout::align.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:188:9 in function std::alloc::Layout::align
+
+Check 51: std::alloc::Layout::align.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:188:9 in function std::alloc::Layout::align
+
+Check 52: std::alloc::Layout::align.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:188:9 in function std::alloc::Layout::align
+
+Check 53: std::alloc::Layout::align.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:188:9 in function std::alloc::Layout::align
+
+Check 54: std::alloc::Layout::align.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:188:9 in function std::alloc::Layout::align
+
+Check 55: std::alloc::Layout::alignment.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:198:9 in function std::alloc::Layout::alignment
+
+Check 56: std::alloc::Layout::alignment.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:198:9 in function std::alloc::Layout::alignment
+
+Check 57: std::alloc::Layout::alignment.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:198:9 in function std::alloc::Layout::alignment
+
+Check 58: std::alloc::Layout::alignment.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:198:9 in function std::alloc::Layout::alignment
+
+Check 59: std::alloc::Layout::alignment.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:198:9 in function std::alloc::Layout::alignment
+
+Check 60: std::alloc::Layout::alignment.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/alloc/layout.rs:198:9 in function std::alloc::Layout::alignment
+
+Check 61: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:631:39 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 62: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:631:39 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 63: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:631:39 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 64: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:631:39 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 65: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:631:39 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 66: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:631:39 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 67: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:632:13 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 68: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:639:67 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 69: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:639:67 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 70: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:639:67 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 71: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:639:67 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 72: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:639:67 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 73: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.13
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:639:67 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 74: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.14
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:641:23 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 75: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.15
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:641:23 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 76: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.16
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:641:23 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 77: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.17
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:641:23 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 78: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.18
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:641:23 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 79: prost::alloc::raw_vec::RawVecInner::current_memory.pointer_dereference.19
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:641:23 in function prost::alloc::raw_vec::RawVecInner::current_memory
+
+Check 80: prost::alloc::raw_vec::RawVecInner::deallocate.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:874:38 in function prost::alloc::raw_vec::RawVecInner::deallocate
+
+Check 81: operation_window::validate_reconcile_limits.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/filesystem/src/operation_window.rs:209:5 in function operation_window::validate_reconcile_limits
+
+Check 82: operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/filesystem/src/operation_window/kani_reconcile_limits_proof.rs:21:26 in function operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero
+
+Check 83: <std::vec::Vec<u8> as std::ops::Drop>::drop.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4361:42 in function <std::vec::Vec<u8> as std::ops::Drop>::drop
+
+Check 84: <std::vec::Vec<u8> as std::ops::Drop>::drop.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4361:42 in function <std::vec::Vec<u8> as std::ops::Drop>::drop
+
+Check 85: <std::vec::Vec<u8> as std::ops::Drop>::drop.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4361:42 in function <std::vec::Vec<u8> as std::ops::Drop>::drop
+
+Check 86: <std::vec::Vec<u8> as std::ops::Drop>::drop.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4361:42 in function <std::vec::Vec<u8> as std::ops::Drop>::drop
+
+Check 87: <std::vec::Vec<u8> as std::ops::Drop>::drop.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4361:42 in function <std::vec::Vec<u8> as std::ops::Drop>::drop
+
+Check 88: <std::vec::Vec<u8> as std::ops::Drop>::drop.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:4361:42 in function <std::vec::Vec<u8> as std::ops::Drop>::drop
+
+Check 89: __rust_dealloc.precondition_instance.1
+	 - Status: SUCCESS
+	 - Description: "free argument must be NULL or valid pointer"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:87 in function __rust_dealloc
+
+Check 90: __rust_dealloc.precondition_instance.2
+	 - Status: SUCCESS
+	 - Description: "free argument must be dynamic object"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:87 in function __rust_dealloc
+
+Check 91: __rust_dealloc.precondition_instance.3
+	 - Status: SUCCESS
+	 - Description: "free argument has offset zero"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:87 in function __rust_dealloc
+
+Check 92: __rust_dealloc.precondition_instance.4
+	 - Status: SUCCESS
+	 - Description: "double free"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:87 in function __rust_dealloc
+
+Check 93: __rust_dealloc.precondition_instance.5
+	 - Status: SUCCESS
+	 - Description: "free called for new[] object"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:87 in function __rust_dealloc
+
+Check 94: __rust_dealloc.precondition_instance.6
+	 - Status: SUCCESS
+	 - Description: "free called for stack-allocated object"
+	 - Location: ../../../../../../../home/var/.kani/kani-0.68.0/library/kani/kani_lib.c:87 in function __rust_dealloc
+
+
+SUMMARY:
+ ** 0 of 94 failed (2 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.2542049s
+
+Manual Harness Summary:
+Complete - 1 successfully verified harnesses, 0 failures, 1 total.

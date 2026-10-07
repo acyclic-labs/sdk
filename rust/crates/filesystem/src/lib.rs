@@ -99,6 +99,8 @@ mod heap_future;
 pub mod hosted;
 #[doc(hidden)]
 pub mod hosted_contract;
+#[cfg(kani)]
+mod kani_proofs;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
