@@ -6,7 +6,7 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
-    runtime::{MAX_CHILD_PAGE, MAX_CHILD_SLOT_BYTES},
+    runtime,
     scheduler::{
         AssemblyKind, DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
@@ -38,18 +38,12 @@ fn validate_child_page_request(
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
-    if parent.into_bytes() == [0; 16]
-        || maximum == 0
-        || maximum > MAX_CHILD_PAGE
-        || after_slot.is_some_and(|slot| {
-            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
-        })
-    {
-        return Err(Error::Invalid(
-            "child hierarchy page request is invalid".into(),
-        ));
-    }
-    Ok(())
+    runtime::validate_child_page_request(
+        "child hierarchy",
+        parent.into_bytes(),
+        after_slot,
+        maximum,
+    )
 }
 
 fn validate_child_page(
@@ -58,34 +52,14 @@ fn validate_child_page(
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
-    if expected_revision.is_some_and(|revision| revision != page.revision)
-        || page.entries.len() > maximum
-        || page
-            .next_after
-            .as_ref()
-            .is_some_and(|next| page.entries.last().is_none_or(|last| &last.slot != next))
-    {
-        return Err(Error::Invalid(
-            "child hierarchy page does not match its request".into(),
-        ));
-    }
-    let mut previous = after_slot;
-    let mut ids = std::collections::BTreeSet::new();
-    for entry in &page.entries {
-        if entry.operation_id.into_bytes() == [0; 16]
-            || entry.slot.trim().is_empty()
-            || entry.slot.len() > MAX_CHILD_SLOT_BYTES
-            || entry.slot.chars().any(char::is_control)
-            || previous.is_some_and(|slot| entry.slot.as_str() <= slot)
-            || !ids.insert(entry.operation_id)
-        {
-            return Err(Error::Invalid(
-                "child hierarchy entries are not in stable slot order".into(),
-            ));
-        }
-        previous = Some(&entry.slot);
-    }
-    Ok(())
+    runtime::validate_child_page(
+        "child hierarchy",
+        (page.revision, page.next_after.as_deref()),
+        page.entries
+            .iter()
+            .map(|entry| (entry.slot.as_str(), entry.operation_id.into_bytes())),
+        (expected_revision, after_slot, maximum),
+    )
 }
 
 /// One direct, same-owner child in stable declared-slot order.
@@ -1456,11 +1430,15 @@ mod tests {
         let parent = OperationId::from_bytes([1; 16]);
         assert!(validate_child_page_request(OperationId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_child_page_request(parent, None, 0).is_err());
-        assert!(validate_child_page_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
+        assert!(validate_child_page_request(parent, None, runtime::MAX_CHILD_PAGE + 1).is_err());
         assert!(validate_child_page_request(parent, Some("\u{7f}"), 1).is_err());
         assert!(
-            validate_child_page_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
-                .is_err()
+            validate_child_page_request(
+                parent,
+                Some(&"x".repeat(runtime::MAX_CHILD_SLOT_BYTES + 1)),
+                1
+            )
+            .is_err()
         );
         validate_child_page_request(parent, Some("résumé"), 1)?;
 
