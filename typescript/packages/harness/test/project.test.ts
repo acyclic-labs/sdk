@@ -10,17 +10,19 @@ const child = { provider, id: "child", class: "project", owner } as const;
 const generation = (byte: number): ResourceRef<"generation"> => ({ kind: "generation", provider, key: [byte], version: null });
 const contracts = await NativeContracts.create();
 
-test("project workspace bindings need authority and scoped views cannot regain them", () => {
+test("project workspace bindings need authority and scoped views cannot regain them", async () => {
   const workspaces: ProjectWorkspaceProvider = {
     provider, project: parent,
     async forkProject() { throw new Error("unused"); },
     async prepareProjectMerge() { throw new Error("unused"); },
   };
-  expect(() => Harness.builder(contracts).workspaces(workspaces).build()).toThrow("project workspaces require");
-  const runtime = Harness.builder(contracts).bindings({ workspaces, grants: ["project:merge"] }).build();
+  await expect(Harness.builder(contracts).workspaces(workspaces).build()).rejects.toThrow("project workspaces require");
+  const runtime = await Harness.builder(contracts).bindings({ workspaces, grants: ["project:merge"] }).build();
   expect(runtime.projectWorkspaces()).toBe(workspaces);
-  expect(() => runtime.scoped(ExecutionScope.create().onlyGrants()).projectWorkspaces()).toThrow("lacks project authority");
-  expect(() => runtime.scoped(ExecutionScope.create().onlyGrants("project:merge")).projectWorkspaces()).toThrow("not bound");
+  const ungranted = await runtime.scoped(ExecutionScope.create().onlyGrants());
+  expect(() => ungranted.projectWorkspaces()).toThrow("lacks project authority");
+  const unbound = await runtime.scoped(ExecutionScope.create().onlyGrants("project:merge"));
+  expect(() => unbound.projectWorkspaces()).toThrow("not bound");
 });
 
 test("Rust and TypeScript share the canonical v2 project merge receipt", async () => {

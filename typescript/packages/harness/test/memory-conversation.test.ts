@@ -1,19 +1,16 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
-const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
 const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
 const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
 
 test("ephemeral private volumes never alias another conversation of the same agent", async () => {
-  const first = await MemoryConversation.create({ agent, wasm });
-  const second = await MemoryConversation.create({ agent, wasm });
+  const first = await MemoryConversation.create({ agent });
+  const second = await MemoryConversation.create({ agent });
   expect(first.volume).not.toEqual(second.volume);
   const file = await first.stage("notes/one.txt", new TextEncoder().encode("private"), "text/plain", "one.txt");
   await expect(second.read(file)).rejects.toThrow("authorized owning-provider resolver");
@@ -22,7 +19,7 @@ test("ephemeral private volumes never alias another conversation of the same age
 });
 
 test("local staging applies its Rust-validated bound before retaining bytes", async () => {
-  const host = await MemoryConversation.create({ agent, wasm,
+  const host = await MemoryConversation.create({ agent,
     limits: { ...DEFAULT_LIMITS, file_bytes: 8, render_bytes: 8, path_bytes: 24 } });
   const empty = await host.stage("files/empty", new Uint8Array(), "text/plain", "empty.txt");
   expect((await host.read(empty)).byteLength).toBe(0);
@@ -34,11 +31,11 @@ test("local staging applies its Rust-validated bound before retaining bytes", as
 });
 
 test("ephemeral content retention bounds bytes and zero-byte versions without discarding pinned refs", async () => {
-  await expect(MemoryConversation.create({ agent, wasm, maxResidentBytes: Number.POSITIVE_INFINITY }))
+  await expect(MemoryConversation.create({ agent, maxResidentBytes: Number.POSITIVE_INFINITY }))
     .rejects.toThrow("retention limits are invalid");
-  await expect(MemoryConversation.create({ agent, wasm, maxResidentFiles: 0 }))
+  await expect(MemoryConversation.create({ agent, maxResidentFiles: 0 }))
     .rejects.toThrow("retention limits are invalid");
-  const host = await MemoryConversation.create({ agent, wasm, maxResidentBytes: 3, maxResidentFiles: 3 });
+  const host = await MemoryConversation.create({ agent, maxResidentBytes: 3, maxResidentFiles: 3 });
   const first = await host.stage("files/one", new Uint8Array([1, 2]), "application/octet-stream", "one");
   const second = await host.stage("files/two", new Uint8Array([3]), "application/octet-stream", "two");
   await expect(host.stage("files/three", new Uint8Array([4]), "application/octet-stream", "three"))
@@ -53,7 +50,7 @@ test("ephemeral content retention bounds bytes and zero-byte versions without di
   expect(await host.read(empty)).toEqual(new Uint8Array());
   host.free();
 
-  const deduplicated = await MemoryConversation.create({ agent, wasm, maxResidentBytes: 2, maxResidentFiles: 3 });
+  const deduplicated = await MemoryConversation.create({ agent, maxResidentBytes: 2, maxResidentFiles: 3 });
   const a = await deduplicated.stage("files/a", new Uint8Array([5, 6]), "text/plain", "a");
   const b = await deduplicated.stage("files/b", new Uint8Array([5, 6]), "application/octet-stream", "b");
   expect(await deduplicated.read(a)).toEqual(await deduplicated.read(b));
@@ -63,11 +60,11 @@ test("ephemeral content retention bounds bytes and zero-byte versions without di
 });
 
 test("typed tasks use owner-bound content grants and stable upload identities", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   await expect(host.stage(".system/forged.txt", new Uint8Array([1]), "text/plain", "forged.txt"))
     .rejects.toThrow("reserved");
   const content = host.contentBindings();
-  const task = TaskDefinition.live<void, string>("content_task", "1", async context => {
+  const task = await TaskDefinition.live<void, string>("content_task", "1", async context => {
     const file = await context.stageFile("upload-1", "task/output.txt", new TextEncoder().encode("owned"), "text/plain", "output.txt");
     await expect(context.stageFile("upload-1", "task/sibling.txt", new TextEncoder().encode("other"), "text/plain", "sibling.txt"))
       .rejects.toThrow("another file");
@@ -75,18 +72,18 @@ test("typed tasks use owner-bound content grants and stable upload identities", 
       .rejects.toThrow("another file");
     return new TextDecoder().decode(await context.readFile(file));
   }, { requirements: ["content:write"] });
-  expect(() => Harness.builder(contracts).task(task).build()).toThrow("unsatisfied task requirement");
-  const runtime = Harness.builder(contracts).content(content)
+  await expect(Harness.builder(contracts).task(task).build()).rejects.toThrow("unsatisfied task requirement");
+  const runtime = await Harness.builder(contracts).content(content)
     .grant(content.volumeReadCapability(host.volume), content.writer!.writeCapability())
     .task(task).build();
   expect(await runtime.spawn(task, undefined).result()).toEqual({ kind: "succeeded", value: "owned" });
-  expect(await runtime.scoped(ExecutionScope.create().onlyGrants()).spawn(task, undefined).result())
+  expect(await (await runtime.scoped(ExecutionScope.create().onlyGrants())).spawn(task, undefined).result())
     .toMatchObject({ kind: "failed" });
   host.free();
 });
 
 test("resident file versions pin display name as well as bytes and media type", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   const file = await host.stage("notes/pinned.txt", new TextEncoder().encode("same"), "text/plain", "pinned.txt");
   expect(Object.isFrozen(file)).toBe(true);
   expect(Object.isFrozen(file.volume)).toBe(true);
@@ -109,21 +106,21 @@ test("resident file versions pin display name as well as bytes and media type", 
 
 test("an attached reader can use a private-root directory grant without a write grant", async () => {
   const ownerAgent = "09090909-0909-0909-0909-090909090909" as AgentId;
-  const owner = await MemoryConversation.create({ agent: ownerAgent, wasm });
+  const owner = await MemoryConversation.create({ agent: ownerAgent });
   const foreign = await owner.stage("notes/nested/shared.txt", new TextEncoder().encode("owner bytes"),
     "text/plain", "shared.txt");
   const delegated = owner.delegateDirectoryRead(agent, "read-owner-root", "");
   await expect(owner.readAuthorized({ ...delegated, capabilities: [
     ...delegated.capabilities, "forged:write",
   ] }, foreign)).rejects.toThrow();
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   const ownerBinding = owner.readBindings(delegated);
   const content = composeContentBindings(contracts, [
     { volume: host.volume, content: host.contentBindings() },
     { volume: owner.volume, content: ownerBinding },
   ]);
   (delegated.proof as number[])[0] = (delegated.proof[0] ?? 0) ^ 1;
-  const task = TaskDefinition.live<void, string>("read_attached", "1", async context => {
+  const task = await TaskDefinition.live<void, string>("read_attached", "1", async context => {
     expect("harness" in context).toBe(false);
     expect("harness" in context.group(GroupPolicies.collectAll)).toBe(false);
     const page = await context.listPrivateDirectory(owner.volume, "", "notes");
@@ -134,11 +131,11 @@ test("an attached reader can use a private-root directory grant without a write 
     expect(resolved.file).toEqual(foreign);
     return new TextDecoder().decode(resolved.bytes);
   });
-  const blocked = Harness.builder(contracts).content(content).task(task).build();
+  const blocked = await Harness.builder(contracts).content(content).task(task).build();
   expect(await blocked.spawn(task, undefined).result()).toMatchObject({
     kind: "failed", error: { message: expect.stringContaining("cannot discover this directory") },
   });
-  const runtime = Harness.builder(contracts).content(content)
+  const runtime = await Harness.builder(contracts).content(content)
     .grant(content.directoryReadCapability(foreign.volume, ""))
     .task(task).build();
   expect(await runtime.spawn(task, undefined).result()).toEqual({ kind: "succeeded", value: "owner bytes" });
@@ -149,9 +146,9 @@ test("an attached reader can use a private-root directory grant without a write 
 });
 
 test("local conversation publishes staged refs and pinned context before model dispatch", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let calls = 0;
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() {
       calls += 1;
       expect(host.snapshot().events.some(event => typeof event === "object" && event !== null
@@ -184,9 +181,9 @@ test("local conversation publishes staged refs and pinned context before model d
 });
 
 test("projection read failure leaves the turn retryable before context commit", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let calls = 0;
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() {
       calls += 1;
       yield { kind: "content" as const, delta: "recovered" };
@@ -222,8 +219,8 @@ test("projection read failure leaves the turn retryable before context commit", 
 });
 
 test("large attachment lists are manifest-backed and changed retry inputs are rejected", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const host = await MemoryConversation.create({ agent });
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() { yield { kind: "completed" as const, metadata: {} }; },
     async reconcile() { return undefined; },
   }).build();
@@ -238,14 +235,14 @@ test("large attachment lists are manifest-backed and changed retry inputs are re
 });
 
 test("local conversation retains exact tool call and full result artifact", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let step = 0;
-  const tool = defineTool<number, string>({ name: "echo", revision: "1", description: "echo",
+  const tool = await defineTool<number, string>({ name: "echo", revision: "1", description: "echo",
     inputSchema: {}, outputSchema: {},
     parseInput(value) { if (typeof value !== "number") throw new TypeError("expected number"); return value; },
     parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
   }, async (_, value) => `value:${value}`);
-  const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+  const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
     async *generate() {
       if (step++ === 0) {
         yield { kind: "tool_call" as const, callId: "call-1", name: "echo", arguments: 7 };
@@ -267,14 +264,14 @@ test("local conversation retains exact tool call and full result artifact", asyn
 });
 
 test("partial tool-history publication is idempotent across a transient retry", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
-  const tool = defineTool<number, string>({ name: "echo_retry", revision: "1", description: "echo",
+  const host = await MemoryConversation.create({ agent });
+  const tool = await defineTool<number, string>({ name: "echo_retry", revision: "1", description: "echo",
     inputSchema: {}, outputSchema: {},
     parseInput(value) { if (typeof value !== "number") throw new TypeError("expected number"); return value; },
     parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
   }, async (_, value) => `value:${value}`);
   let step = 0;
-  const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo_retry").model(testModel, {
+  const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:echo_retry").model(testModel, {
     async *generate() {
       if (step++ === 0) {
         yield { kind: "tool_call" as const, callId: "retry-call-1", name: "echo_retry", arguments: 1 };
@@ -314,10 +311,10 @@ test("partial tool-history publication is idempotent across a transient retry", 
 });
 
 test("large canonical attachment lists produce a bounded model request", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let projectedParts = 0;
   let omission = "";
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate(request) {
       const content = request.messages.at(-1)?.content;
       if (!Array.isArray(content)) throw new Error("expected selected file parts");
@@ -340,9 +337,9 @@ test("large canonical attachment lists produce a bounded model request", async (
 }, 0);
 
 test("concurrent retries serialize before model dispatch", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let calls = 0;
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() {
       calls += 1;
       await new Promise(resolve => setTimeout(resolve, 1));
@@ -363,7 +360,7 @@ test("concurrent retries serialize before model dispatch", async () => {
 });
 
 test("a completed model run resumes publication without dispatching twice", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let dispatches = 0;
   const model = {
     async *generate() {
@@ -373,8 +370,8 @@ test("a completed model run resumes publication without dispatching twice", asyn
     },
     async reconcile() { return undefined; },
   };
-  const narrow = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, model).build();
-  const wider = Harness.builder(contracts).limits({ file_bytes: 1_024, render_bytes: 1_024 }).model(testModel, model).build();
+  const narrow = await Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, model).build();
+  const wider = await Harness.builder(contracts).limits({ file_bytes: 1_024, render_bytes: 1_024 }).model(testModel, model).build();
   const operation = "08080808-0808-0808-0808-080808080808" as OperationId;
   const content = await host.stage("turns/eight/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
   await expect(host.runConversation(narrow, operation, content)).rejects.toThrow("exceeds harness limits");
@@ -387,9 +384,9 @@ test("a completed model run resumes publication without dispatching twice", asyn
 });
 
 test("an unknown model attempt needs explicit owner abandonment before another turn", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let dispatches = 0;
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() {
       dispatches++;
       if (dispatches === 1) throw new Error("remote acknowledgement lost");
@@ -416,7 +413,7 @@ test("an unknown model attempt needs explicit owner abandonment before another t
 });
 
 test("a durable turn host reconciles an unknown model attempt under the same selection", async () => {
-  const conversation = await MemoryConversation.create({ agent, wasm });
+  const conversation = await MemoryConversation.create({ agent });
   const requests: string[] = [];
   const host: HarnessRuntimeHost = {
     policyIdentity: () => null,
@@ -431,7 +428,7 @@ test("a durable turn host reconciles an unknown model attempt under the same sel
     async send(message) { return { accepted: true, messageId: message.id }; },
     async *inbox() { yield* []; },
   };
-  const runtime = Harness.builder(contracts).host(host).build();
+  const runtime = await Harness.builder(contracts).host(host).build();
   const operation = "10101010-1010-1010-1010-101010101010" as OperationId;
   const content = await conversation.stage("turns/ten/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
   await expect(conversation.runConversation(runtime, operation, content))
@@ -444,7 +441,7 @@ test("a durable turn host reconciles an unknown model attempt under the same sel
 
 test("authoritative failed and cancelled turns close without claiming an unknown model effect", async () => {
   for (const outcome of ["failed", "cancelled"] as const) {
-    const conversation = await MemoryConversation.create({ agent, wasm });
+    const conversation = await MemoryConversation.create({ agent });
     let dispatches = 0;
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
@@ -462,7 +459,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
       async send(message) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* []; },
     };
-    const runtime = Harness.builder(contracts).host(host).build();
+    const runtime = await Harness.builder(contracts).host(host).build();
     const operation = "11111111-1111-1111-1111-111111111111" as OperationId;
     const content = await conversation.stage("turns/known/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
     await expect(conversation.runConversation(runtime, operation, content)).rejects.toBeInstanceOf(TerminalModelTurnError);
@@ -474,7 +471,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
 });
 
 test("terminal outcomes publish under tight but valid file and path limits", async () => {
-  const conversation = await MemoryConversation.create({ agent, wasm });
+  const conversation = await MemoryConversation.create({ agent });
   let dispatches = 0;
   const host: HarnessRuntimeHost = {
     policyIdentity: () => null,
@@ -487,7 +484,7 @@ test("terminal outcomes publish under tight but valid file and path limits", asy
     async send(message) { return { accepted: true, messageId: message.id }; },
     async *inbox() { yield* []; },
   };
-  const runtime = Harness.builder(contracts).limits({ file_bytes: 1, path_bytes: 1, render_bytes: 1 })
+  const runtime = await Harness.builder(contracts).limits({ file_bytes: 1, path_bytes: 1, render_bytes: 1 })
     .host(host).build();
   const operation = "12121212-1212-1212-1212-121212121212" as OperationId;
   const content = await conversation.stage("u", new TextEncoder().encode("q"), "text/plain", "u");
@@ -524,9 +521,9 @@ test("terminal outcomes publish under tight but valid file and path limits", asy
 });
 
 test("different local turns serialize and inherit the prior committed assistant", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   const seen: number[] = [];
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate(request) {
       seen.push(request.messages.length);
       yield { kind: "content" as const, delta: "ok" };
@@ -541,8 +538,8 @@ test("different local turns serialize and inherit the prior committed assistant"
 });
 
 test("oversized attachment manifests never reach canonical admission", async () => {
-  const host = await MemoryConversation.create({ agent, wasm });
-  const runtime = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, {
+  const host = await MemoryConversation.create({ agent });
+  const runtime = await Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, {
     async *generate() { throw new Error("model must not dispatch"); },
     async reconcile() { return undefined; },
   }).build();
@@ -557,10 +554,10 @@ test("oversized attachment manifests never reach canonical admission", async () 
 
 test("foreign references require their owning provider to grant the reader", async () => {
   const bytes = new TextEncoder().encode("shared by its owner");
-  const owner = await MemoryConversation.create({ agent: "09090909-0909-0909-0909-090909090909" as AgentId, wasm });
+  const owner = await MemoryConversation.create({ agent: "09090909-0909-0909-0909-090909090909" as AgentId });
   const file = await owner.stage("notes/shared.txt", bytes, "text/plain", "shared.txt");
-  const host = await MemoryConversation.create({ agent, wasm });
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const host = await MemoryConversation.create({ agent });
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() { yield { kind: "completed" as const, metadata: {} }; },
     async reconcile() { return undefined; },
   }).build();
@@ -579,10 +576,10 @@ test("foreign references require their owning provider to grant the reader", asy
 
 test("unseen owner volumes mount lazily without granting writes", async () => {
   const bytes = new TextEncoder().encode("lazy owner bytes");
-  const owner = await MemoryConversation.create({ agent: "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a" as AgentId, wasm });
+  const owner = await MemoryConversation.create({ agent: "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a" as AgentId });
   const file = await owner.stage("notes/lazy.txt", bytes, "text/plain", "lazy.txt");
   const scope = owner.delegateDirectoryRead(agent, "lazy-reader", "notes");
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   let granted = false;
   let resolutions = 0;
   host.mountReadVolumes({ mount(volume) {
@@ -631,12 +628,12 @@ test("unseen owner volumes mount lazily without granting writes", async () => {
 
 test("a foreign provider cannot admit bytes that disagree with its pinned ref", async () => {
   const bytes = new TextEncoder().encode("correct");
-  const owner = await MemoryConversation.create({ agent: "07070707-0707-0707-0707-070707070707" as AgentId, wasm });
+  const owner = await MemoryConversation.create({ agent: "07070707-0707-0707-0707-070707070707" as AgentId });
   const resident = await owner.stage("notes/readme.txt", new TextEncoder().encode("tampered"), "text/plain", "readme.txt");
   const file: FileRef = { ...resident, descriptor: await descriptorFor(bytes, "text/plain") };
-  const host = await MemoryConversation.create({ agent, wasm });
+  const host = await MemoryConversation.create({ agent });
   host.attachReadVolume(owner, owner.delegateDirectoryRead(agent, "corrupt-reader", "notes"));
-  const runtime = Harness.builder(contracts).model(testModel, {
+  const runtime = await Harness.builder(contracts).model(testModel, {
     async *generate() { throw new Error("model must not dispatch"); },
     async reconcile() { return undefined; },
   }).build();

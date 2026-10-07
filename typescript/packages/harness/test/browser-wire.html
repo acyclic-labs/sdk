@@ -19,28 +19,12 @@ import { ErrorCode, ResumeRequestSchema } from "../generated/proto/harness/v2/ha
 import { HandshakeRequestSchema, HandshakeResponseSchema } from "../generated/proto/protocol/v1/protocol_pb.js";
 
 try {
-  const originalFetch = globalThis.fetch;
-  let failOnce = true;
-  globalThis.fetch = (input, init) => {
-    if (failOnce && new URL(input.url ?? input).pathname.endsWith("acyclic_harness_wasm_bg.wasm")) {
-      failOnce = false;
-      return Promise.reject(new Error("simulated temporary WASM fetch failure"));
-    }
-    return originalFetch(input, init);
-  };
   const options = {
     authority: { kind: "task", id: "browser" },
     issuerId: "browser",
     issuerKey: new Uint8Array(32).fill(7),
   };
-  try {
-    await Harness.create(options);
-    throw new Error("temporary WASM fetch failure was ignored");
-  } catch (error) {
-    if (!String(error.message).includes("simulated temporary WASM fetch failure")) throw error;
-  }
   const harness = await Harness.create(options);
-  globalThis.fetch = originalFetch;
   const contracts = await NativeContracts.create();
   const provider = { namespace: "browser", family: "filesystem", version: "2" };
   const skillSource = {

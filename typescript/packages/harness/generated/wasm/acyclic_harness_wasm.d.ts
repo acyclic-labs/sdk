@@ -464,6 +464,19 @@ export interface ContextDiscovery {
 export type ContextPlacement = "prepend" | "append";
 
 /**
+ * Public Rust projection for the immutable workflow admission envelope.
+ *
+ * The validator still consumes the canonical `WorkflowAdmission`; this DTO
+ * only gives the generated TypeScript surface the exact serde shape and
+ * bigint treatment used by the Rust value.
+ */
+export interface WasmWorkflowAdmissionWire {
+    operation_id: string;
+    request_digest: readonly number[];
+    initial: Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>;
+}
+
+/**
  * Public model-message input used by the runtime validator.  The content
  * input intentionally reuses the generated camelCase facade type while the
  * Rust parser below still consumes the canonical `ModelMessage` DTO.
@@ -1066,6 +1079,19 @@ export function taskIdentityDigest(name: string, version: string, input_schema: 
 export function uuidFromDigestHalf(digest: Uint8Array, second: boolean): string;
 
 /**
+ * Validates one aggregate identity with the same path-segment policy used by
+ * every Rust stream access. The returned spelling is unchanged so hosts can
+ * retain their branded string facade without reimplementing the policy.
+ */
+export function validateAuthorityPathSegment(value: string): string;
+
+/**
+ * Validates one component name with the canonical Rust byte and character
+ * policy. The field-specific error text remains a thin TypeScript concern.
+ */
+export function validateComponentLabel(value: string): string;
+
+/**
  * Validates a host-approved pinned selection without granting read authority.
  */
 export function validateContextSelection(selection: ContextSelection, limits: WasmModelLimitsInput): void;
@@ -1198,6 +1224,12 @@ export function validateWireResume(request: Uint8Array): Uint8Array;
 export function validateWireStatus(request: Uint8Array, status: Uint8Array): Uint8Array;
 
 /**
+ * Validates and projects one immutable workflow admission through Rust.
+ * Hosts retain this detached value before any replay or dispatch begins.
+ */
+export function validateWorkflowAdmission(value: WasmWorkflowAdmissionWire): WasmWorkflowAdmissionWire;
+
+/**
  * Checks immutable file identity without constructing a reducer or issuer.
  */
 export function verifyFileBytes(file: any, bytes: Uint8Array): void;
@@ -1238,6 +1270,8 @@ export interface InitOutput {
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
     readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly validateAuthorityPathSegment: (a: any) => [number, number, number, number];
+    readonly validateComponentLabel: (a: any) => [number, number, number, number];
     readonly validateContextSelection: (a: any, b: any) => [number, number];
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
@@ -1262,6 +1296,7 @@ export interface InitOutput {
     readonly validateWireObserve: (a: number, b: number) => [number, number];
     readonly validateWireResume: (a: number, b: number) => [number, number];
     readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWorkflowAdmission: (a: any) => [number, number, number];
     readonly verifyFileBytes: (a: any, b: number, c: number) => [number, number];
     readonly wasmcontentstore_generation: (a: number) => [number, number, number];
     readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
