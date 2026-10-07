@@ -21,14 +21,18 @@ const sourceRoots = [
   "rust/crates/native-runtime",
   "rust/crates/actors",
   "rust/crates/actors-napi",
+  "rust/crates/actors-wasm",
   "rust/vendor/protify-proc-macro-0.1.4",
   "package.json",
   "bun.lock",
   "typescript/packages/actors/package.json",
+  "typescript/packages/actors/tsconfig.json",
+  "tsconfig.base.json",
   "typescript/packages/actors/src",
   "typescript/packages/actors/generated/proto",
   "scripts/build-actors-native.mjs",
   "scripts/assemble-actors-native-package.mjs",
+  "scripts/build-wasm.mjs",
 ];
 
 function usage() {
@@ -182,7 +186,9 @@ function pathFromArtifact(output, artifactPath) {
   return candidate;
 }
 
-async function assertBundle(output, { expectedTarget } = {}) {
+/** @param {{ expectedTarget?: string }} [options] */
+async function assertBundle(output, options = {}) {
+  const { expectedTarget } = options;
   const metadataPath = resolve(output, "native-targets.json");
   const generationPath = resolve(output, generationManifestName);
   const metadataBytes = await readFile(metadataPath);
