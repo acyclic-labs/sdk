@@ -254,14 +254,22 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
                 FORMAT_VERSION
             )));
         }
-        if let Some(crate_version) = krate.crate_version.as_deref() {
-            if crate_version != input.version {
+        match krate.crate_version.as_deref() {
+            Some(crate_version) if crate_version != input.version => {
                 return Err(Error::Invalid(format!(
                     "{} reports crate version {crate_version}, but the build is {}",
                     path.display(),
                     input.version
                 )));
             }
+            None if input.channel == Channel::Release => {
+                return Err(Error::Invalid(format!(
+                    "{} does not declare crate version for release {}",
+                    path.display(),
+                    input.version
+                )));
+            }
+            _ => {}
         }
         if krate.includes_private {
             return Err(Error::Invalid(format!(
@@ -384,7 +392,15 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
 
 fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
+    reject_reparse_ancestors(&index_path)?;
     let index = if index_path.exists() {
+        let metadata = fs::symlink_metadata(&index_path)?;
+        if !metadata.is_file() {
+            return Err(Error::Invalid(format!(
+                "version index is not a regular file: {}",
+                index_path.display()
+            )));
+        }
         serde_json::from_slice::<VersionIndex>(&fs::read(&index_path)?)?
     } else {
         VersionIndex {
@@ -1228,6 +1244,41 @@ mod tests {
     }
 
     #[test]
+    fn version_index_must_be_a_regular_non_reparse_file() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-index-kind-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        fs::create_dir_all(output.join("sdk-docs-versions.v1.json"))
+            .expect("index directory should be creatable");
+        let data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                input_sha256: "a".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        let error = write_bundle(&data, &output, true)
+            .expect_err("directory at the index path must block publication");
+        assert!(error
+            .to_string()
+            .contains("version index is not a regular file"));
+        assert!(output.join("sdk-docs-versions.v1.json").is_dir());
+        assert!(!output.join("releases").exists());
+        fs::remove_dir_all(output).expect("test output should be removable");
+    }
+
+    #[test]
     fn version_index_rejects_a_conflicting_release_rewrite() {
         let output = std::env::temp_dir().join(format!("sdk-docs-index-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output);
@@ -1576,7 +1627,7 @@ mod tests {
         let rustdoc_path = root.join("demo.json");
         let fixture = serde_json::json!({
             "root": 0,
-            "crate_version": null,
+            "crate_version": "1.0.0",
             "includes_private": false,
             "index": {
                 "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
@@ -1614,6 +1665,19 @@ mod tests {
         changed_source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
         let changed = build_data(&changed_source).expect("source identity should be retained");
         assert_ne!(first.source.source_sha256, changed.source.source_sha256);
+        let missing_version_path = root.join("missing-version.json");
+        let mut missing_version = fixture.clone();
+        missing_version["crate_version"] = serde_json::Value::Null;
+        fs::write(
+            &missing_version_path,
+            serde_json::to_vec(&missing_version).expect("missing-version fixture should serialize"),
+        )
+        .expect("missing-version fixture should write");
+        let mut missing_version_input = input.clone();
+        missing_version_input.rustdoc_files = vec![missing_version_path];
+        let error = build_data(&missing_version_input)
+            .expect_err("release rustdoc without crate version must fail");
+        assert!(error.to_string().contains("does not declare crate version"));
         let family = &first.families[0];
         let alias = family
             .items

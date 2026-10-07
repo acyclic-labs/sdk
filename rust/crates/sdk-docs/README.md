@@ -29,7 +29,8 @@ fn build_preview(root: PathBuf, rustdoc_json: PathBuf) -> Result<DocsData, Error
 `build_data` validates the Rustdoc format and source identity, projects public
 items, docs, source spans, reexports, and same-crate public documentation links,
 then returns `DocsData`. Call `write_bundle` to persist the data file, generated
-schema, and immutable release or preview index.
+schema, and guarded release or preview version index. Published release data
+files are immutable; the index is validated and replaced atomically.
 
 `write_bundle` serializes publication with the persistent
 `.sdk-docs-versions.v1.lock` file in the output directory. Concurrent
