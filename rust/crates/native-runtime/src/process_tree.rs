@@ -905,6 +905,8 @@ mod platform {
                 // SAFETY: this plain Win32 structure is initialized before the
                 // query writes its exact size through an owned live Job handle.
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+                // SAFETY: `job` is owned and live, and `accounting` is a writable
+                // structure of exactly the size passed to the query.
                 if unsafe {
                     QueryInformationJobObject(
                         self.job,
@@ -957,20 +959,18 @@ mod platform {
         let mut restricted = std::ptr::null_mut();
         // SAFETY: both source and target are this process; the duplicate has
         // zero access rights. Keep the original handle for mandatory cleanup.
-        assert_ne!(
-            unsafe {
-                DuplicateHandle(
-                    GetCurrentProcess(),
-                    tree.guard.job,
-                    GetCurrentProcess(),
-                    &raw mut restricted,
-                    0,
-                    0,
-                    0,
-                )
-            },
-            0
-        );
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                tree.guard.job,
+                GetCurrentProcess(),
+                &raw mut restricted,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_ne!(duplicated, 0);
         let original = std::mem::replace(
             &mut tree.guard,
             Guard {
@@ -1011,20 +1011,18 @@ mod platform {
         let mut restricted = std::ptr::null_mut();
         // SAFETY: duplicate the live Job into this process without assign or
         // terminate authority; the original guard remains independently owned.
-        assert_ne!(
-            unsafe {
-                DuplicateHandle(
-                    GetCurrentProcess(),
-                    guard.job,
-                    GetCurrentProcess(),
-                    &raw mut restricted,
-                    0,
-                    0,
-                    0,
-                )
-            },
-            0
-        );
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                guard.job,
+                GetCurrentProcess(),
+                &raw mut restricted,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_ne!(duplicated, 0);
         let mut restricted = Guard {
             job: restricted,
             active: true,
@@ -1033,10 +1031,9 @@ mod platform {
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn().expect("spawn suspended child");
         // SAFETY: live handles; this real assignment must fail for lack of rights.
-        assert_eq!(
-            unsafe { AssignProcessToJobObject(restricted.job, child.as_raw_handle().cast()) },
-            0
-        );
+        let assigned =
+            unsafe { AssignProcessToJobObject(restricted.job, child.as_raw_handle().cast()) };
+        assert_eq!(assigned, 0);
         let admission = io::Error::last_os_error();
         let error = failed_admission(&mut child, &mut restricted, admission);
         assert!(
