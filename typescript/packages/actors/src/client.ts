@@ -274,7 +274,12 @@ async function loadNativeCompanion(): Promise<NativeActorsModule | undefined> {
   const packageName = await nativeCompanionPackageName();
   if (packageName === undefined) return undefined;
   try {
-    return await import(packageName) as unknown as NativeActorsModule;
+    // Native addons are CommonJS `.node` entrypoints.  Node's ESM loader
+    // rejects a direct dynamic import of that extension, while createRequire
+    // delegates to the maintained N-API loader and preserves the same package
+    // resolution/error identity for optional companions.
+    const { createRequire } = await import("node:module");
+    return createRequire(import.meta.url)(packageName) as NativeActorsModule;
   } catch (error) {
     if (isMissingNativePackage(error, packageName)) return undefined;
     throw error;
