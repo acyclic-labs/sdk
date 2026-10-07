@@ -1,0 +1,55 @@
+{
+  "artifact": "kani-proof-filesystem-followup-20261007",
+  "branch": "codex/kani-proof-filesystem-followup-evidence-20261007",
+  "evidence_commit_parent": "bb5e775413",
+  "source_base_commit": "1e94392e9d1d34772132197480c69081b593d4d4",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rust": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "jobs": 1,
+    "offline": true,
+    "platform": "Linux WSL2 ext4 source mirror"
+  },
+  "source_sha256": {
+    "rust/crates/filesystem/src/numeric.rs": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF",
+    "rust/crates/filesystem/src/operation_window.rs": "5A6CCB503D039679922D519C48DD69F8E213D073B3B376C97B517A9EE92559B1",
+    "rust/crates/filesystem/src/lib.rs": "10BC1F4E4452D065E2A68B62B48F0361229F067ACAF827DC2C8984C989803299",
+    "rust/crates/filesystem/src/kani_proofs.rs": "D196B61DF258FE64B01833B9FA5AF48EC845D742E21184E2198A013726FCB7F5",
+    "rust/crates/filesystem/src/operation_window/kani_reconcile_limits_proof.rs": "9EABEE12C3AC11BD5C069F1772D4983735BC8B983E8AAA9740DBBF1A81014D30"
+  },
+  "kani_results": [
+    {
+      "harness": "kani_proofs::exact_u32_from_f64_all_bits",
+      "result": "PASS",
+      "checks": "0 of 7 failed",
+      "verification": "SUCCESSFUL",
+      "terminal_exit": 0,
+      "raw_log": "audit/numeric-positive.raw.txt",
+      "raw_log_sha256": "565248E5711216C0F913211B9BFF98392D6F5A762B146797A370309CDC5795B6"
+    },
+    {
+      "harness": "operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero",
+      "result": "PASS",
+      "checks": "0 of 94 failed (2 unreachable)",
+      "verification": "SUCCESSFUL",
+      "terminal_exit": 0,
+      "raw_log": "audit/reconcile-positive.raw.txt",
+      "raw_log_sha256": "7BFAD51E53FAF60D0E18763A287FE5E6EDD97E10FE75EAEED3E6B53D3C56330"
+    }
+  ],
+  "stable_check": {
+    "command": "RUSTC_WRAPPER= CARGO_NET_OFFLINE=true cargo check --manifest-path rust/crates/filesystem/Cargo.toml --package acyclic-fs --offline",
+    "result": "PASS",
+    "exit_code": 0,
+    "platform": "Linux WSL2 ext4 source mirror",
+    "notes": "two expected unexpected_cfg(kani) warnings"
+  },
+  "format_and_diff_check": {
+    "result": "PASS",
+    "notes": "cargo fmt and git diff --check"
+  },
+  "claim": "Only exact_u32_from_f64 and validate_reconcile_limits function-level properties are proven; no whole-crate or transport claim.",
+  "copied_algorithm": false
+}
