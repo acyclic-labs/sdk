@@ -57,6 +57,7 @@ const narrowMachinesDecoder = output => {
 // dependent crate under fat LTO on each later run. Separate target
 // directories keep each configuration warm.
 const packages = {
+  actors: { cargo: ["-p", "acyclic-actors-wasm"], artifact: "acyclic_actors_wasm", outName: "acyclic_actors_wasm" },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm", outName: "acyclic_fs_wasm" },
   stream: {
     cargo: ["-p", "acyclic-stream", "--no-default-features", "--features", "wasm"],

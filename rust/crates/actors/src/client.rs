@@ -33,12 +33,6 @@ pub enum Error {
     /// The request failed the canonical Rust-owned admission validator.
     #[error("Actors request failed canonical contract validation: {0}")]
     Contract(#[from] crate::ContractError),
-    /// A wire response or semantic request could not be represented by the
-    /// Rust-owned domain types without losing information. The structured
-    /// domain error is retained so unknown enum values and their raw numbers
-    /// remain observable to bindings.
-    #[error("Actors semantic conversion failed: {0}")]
-    Semantic(#[source] crate::domain::DomainError),
     /// The caller cancelled the operation before the transport completed.
     #[error("Actors operation cancelled")]
     Cancelled,
@@ -148,7 +142,7 @@ impl Client {
                 "Actors endpoint must use HTTPS; HTTP is limited to loopback tests and userinfo, query, and fragment are forbidden".into(),
             ));
         }
-        if token.trim().is_empty() || token.contains(['\r', '\n']) {
+        if !crate::valid_token(token) {
             return Err(Error::Configuration(
                 "invalid Actors bearer credential".into(),
             ));
@@ -257,13 +251,8 @@ macro_rules! operation {
         }
 
         impl Client {
-            /// Executes the wire operation for native and WASM codec bridges.
-            ///
-            /// This is intentionally hidden from generated SDK documentation;
-            /// callers should use the semantic method with the ordinary
-            /// operation name.
-            #[doc(hidden)]
-            pub async fn $wire_name(&self, request: &$request) -> Result<$response, Error> {
+            /// Executes the typed wire operation for native and WASM codec bridges.
+            pub async fn $name(&self, request: &$request) -> Result<$response, Error> {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     let mut client = match &self.inner {
@@ -305,90 +294,6 @@ operation!(
     validate_none
 );
 
-fn semantic_error(error: crate::domain::DomainError) -> Error {
-    match error {
-        crate::domain::DomainError::Contract(error) => Error::Contract(error),
-        error => Error::Semantic(error),
-    }
-}
-
-impl Client {
-    /// Executes `create_actor` through the Rust-owned semantic facade.
-    pub async fn create_actor(
-        &self,
-        request: &crate::domain::CreateActorRequest,
-    ) -> Result<crate::domain::CreateActorResponse, Error> {
-        let response = self.wire_create_actor(&request.clone().into()).await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `update_actor` through the Rust-owned semantic facade.
-    pub async fn update_actor(
-        &self,
-        request: &crate::domain::UpdateActorRequest,
-    ) -> Result<crate::domain::UpdateActorResponse, Error> {
-        let response = self.wire_update_actor(&request.clone().into()).await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `inspect_actor` through the Rust-owned semantic facade.
-    pub async fn inspect_actor(
-        &self,
-        request: &crate::domain::InspectActorRequest,
-    ) -> Result<crate::domain::InspectActorResponse, Error> {
-        let response = self.wire_inspect_actor(&request.clone().into()).await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `add_subscription` through the Rust-owned semantic facade.
-    pub async fn add_subscription(
-        &self,
-        request: &crate::domain::AddSubscriptionRequest,
-    ) -> Result<crate::domain::AddSubscriptionResponse, Error> {
-        let response = self.wire_add_subscription(&request.clone().into()).await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `remove_subscription` through the Rust-owned semantic facade.
-    pub async fn remove_subscription(
-        &self,
-        request: &crate::domain::RemoveSubscriptionRequest,
-    ) -> Result<crate::domain::RemoveSubscriptionResponse, Error> {
-        let response = self
-            .wire_remove_subscription(&request.clone().into())
-            .await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `resume_subscription` through the Rust-owned semantic facade.
-    pub async fn resume_subscription(
-        &self,
-        request: &crate::domain::ResumeSubscriptionRequest,
-    ) -> Result<crate::domain::ResumeSubscriptionResponse, Error> {
-        let response = self
-            .wire_resume_subscription(&request.clone().into())
-            .await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `checkpoint_actor` through the Rust-owned semantic facade.
-    pub async fn checkpoint_actor(
-        &self,
-        request: &crate::domain::CheckpointActorRequest,
-    ) -> Result<crate::domain::CheckpointActorResponse, Error> {
-        let response = self.wire_checkpoint_actor(&request.clone().into()).await?;
-        response.try_into().map_err(semantic_error)
-    }
-
-    /// Executes `invoke_actor` through the Rust-owned semantic facade.
-    pub async fn invoke_actor(
-        &self,
-        request: &crate::domain::InvokeActorRequest,
-    ) -> Result<crate::domain::InvokeActorResponse, Error> {
-        let response = self.wire_invoke_actor(&request.clone().into()).await?;
-        Ok(response.into())
-    }
-}
 operation!(
     add_subscription,
     wire_add_subscription,

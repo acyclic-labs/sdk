@@ -37,6 +37,18 @@ pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.
 pub const MAX_BINDINGS: usize = 64;
 
+/// Bearer credentials are nonblank, bounded, and free of HTTP controls.
+pub(crate) fn valid_token(token: &str) -> bool {
+    !token.trim().is_empty()
+        && token.len() <= 8192
+        && !token.chars().any(|character| matches!(character, '\r' | '\n' | '\0'))
+}
+
+/// Idempotency keys are present and bounded consistently across operations.
+pub(crate) fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256
+}
+
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("createActor", "v1/actors/create"),
@@ -77,7 +89,7 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
 pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
     if !domain::valid_code_sha256(&request.code_sha256)
         || request.home_region.is_empty()
-        || request.idempotency_key.is_empty()
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -120,7 +132,7 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
         || !domain::valid_code_sha256(&request.code_sha256)
-        || request.idempotency_key.is_empty()
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -149,7 +161,7 @@ pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
-        || request.idempotency_key.is_empty()
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.subscription.as_ref().is_some_and(subscription)
     {
         return Err(ContractError::InvalidArgument);
