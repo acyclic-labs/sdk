@@ -1,4 +1,7 @@
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "process containment uses platform process-group and Job Object calls"
+)]
 
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Output};
@@ -439,7 +442,6 @@ mod platform {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::ProcessTree;
     use std::fs;
@@ -478,7 +480,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::zombie_processes)] // exit-parent deliberately tests parent-before-descendant exit.
+    #[allow(
+        clippy::zombie_processes,
+        reason = "exit-parent deliberately tests parent-before-descendant exit"
+    )]
     fn process_tree_helper() {
         let Ok(mode) = std::env::var(MODE) else {
             return;
@@ -990,7 +995,6 @@ mod platform {
     }
 
     #[test]
-    #[allow(clippy::expect_used)]
     fn denied_job_cleanup_retains_child_and_reports_failure() {
         use windows_sys::Win32::Foundation::DuplicateHandle;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -1045,7 +1049,6 @@ mod platform {
     }
 
     #[test]
-    #[allow(clippy::expect_used)]
     fn denied_admission_still_observes_unassigned_child_exit() {
         use windows_sys::Win32::Foundation::DuplicateHandle;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;

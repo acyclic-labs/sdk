@@ -675,10 +675,8 @@ pub fn snapshot_settled(state: Option<&str>) -> bool {
 
 #[cfg(test)]
 #[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic
+    reason = "tests index collections whose shape they just built or asserted"
 )]
 mod tests {
     use std::collections::BTreeSet;

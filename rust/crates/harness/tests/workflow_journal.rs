@@ -1,6 +1,9 @@
 //! Durable workflow journal qualification.
 #![cfg(feature = "filesystem")]
-#![allow(clippy::indexing_slicing)]
+#![allow(
+    clippy::indexing_slicing,
+    reason = "journal scenarios index the commits they appended"
+)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{FilesystemHost, FilesystemWorkflowJournal};
@@ -55,7 +58,10 @@ impl ResumableMachine for Counter {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
     let stream = StreamClient::new(Arc::new(MemoryStream::default()));
     let provider = ProviderRef::new("workflow-e2e", "filesystem", "2")?;

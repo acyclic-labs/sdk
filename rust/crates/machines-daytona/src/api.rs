@@ -682,10 +682,8 @@ fn status_error(status: StatusCode, body: &str) -> ProviderError {
 
 #[cfg(test)]
 #[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic
+    reason = "tests index collections whose shape they just built or asserted"
 )]
 mod tests {
     use super::*;

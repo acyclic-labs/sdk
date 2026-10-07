@@ -62,7 +62,10 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
     Ok(results)
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "takes the owned batch like the portable write_all_batch_owned it serves"
+)]
 pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
     // Reject an invalid batch before it can partially change the file.
     for write in &writes {

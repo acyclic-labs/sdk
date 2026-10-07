@@ -68,7 +68,10 @@ impl ForkCaptureProvider for LostCaptureReply {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
     let provider = ProviderRef::new("fork-e2e", "filesystem", "2")?;
     let stream_provider = ProviderRef::new("fork-e2e", "stream", "2")?;

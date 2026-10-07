@@ -292,7 +292,10 @@ impl Drop for State {
 }
 
 /// One snapshot entry. `until` is legacy disk metadata, never an eviction rule.
-#[cfg_attr(not(feature = "local"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "local"),
+    allow(dead_code, reason = "only local snapshots read the retained fields")
+)]
 struct Retained {
     until: u64,
     replay: Option<Bytes>,

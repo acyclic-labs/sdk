@@ -74,7 +74,11 @@ fn identity(namespace: &str, operation: &str) -> Option<wire::MutationIdentity> 
 /// # Errors
 /// Returns a typed provider failure or the exact failed invariant. The namespace
 /// must be a valid unused bucket name; failed verification may leave fixture data.
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "one ordered provider lifecycle qualifies every public operation"
+)]
 pub async fn verify<P: ObjectsProvider + ?Sized>(
     provider: &P,
     namespace: &str,

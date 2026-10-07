@@ -257,7 +257,10 @@ impl NativeFile {
     /// concurrent independent I/O outside this `NativeFile`. The caller must
     /// transfer the sole I/O ownership of the handle to this function.
     #[cfg(windows)]
-    #[allow(unsafe_code)]
+    #[allow(
+        unsafe_code,
+        reason = "the caller must uphold the overlapped-handle ownership contract"
+    )]
     pub unsafe fn from_overlapped_file_unchecked(file: File) -> io::Result<Self> {
         let mut native = Self::from_file(file)?;
         native.overlapped = true;
@@ -2101,7 +2104,7 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(target_vendor = "apple")]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "F_BARRIERFSYNC is reachable only through fcntl")]
 fn barrier_sync(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: `F_BARRIERFSYNC` acts only on the live descriptor.
@@ -2880,7 +2883,10 @@ mod tests {
     /// driver has attached that handle, and neither moves the other.
     #[cfg(windows)]
     #[test]
-    #[allow(unsafe_code)]
+    #[allow(
+        unsafe_code,
+        reason = "the test drives a raw overlapped handle through the unsafe constructor"
+    )]
     fn inline_overlapped_io_matches_the_driver() -> io::Result<()> {
         use std::os::windows::fs::OpenOptionsExt as _;
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
@@ -3742,7 +3748,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered scenario keeps each step next to the state it checks"
+    )]
     fn bounded_native_admission_is_work_conserving_and_cancellation_wakes_the_successor()
     -> io::Result<()> {
         use std::sync::atomic::AtomicUsize;

@@ -77,7 +77,6 @@ pub fn upload_length(size: u64) -> Result<(), Error> {
 
 /// Validates a canonical binary request before any transport or provider side effect.
 /// Upload routes accept their generated header message, with the decoded body length separate.
-#[allow(clippy::too_many_lines)]
 pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<(), Error> {
     use prost::Message;
     if bytes.len() > 16 * 1024 * 1024 {

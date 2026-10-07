@@ -1,6 +1,9 @@
 //! Bounded durable-local recursive forks across Stream and Filesystem.
 #![cfg(feature = "filesystem-local")]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::context::ContextPipeline;
@@ -91,7 +94,10 @@ impl ModelProvider for PrefixModel {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each fork level threads the same fixtures"
+)]
 async fn model_fork_prefix<A, O>(
     host: Arc<FilesystemHost<A, O>>,
     stream: &StreamClient<LocalStream>,

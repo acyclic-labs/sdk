@@ -3065,7 +3065,10 @@ fn scope_proof(
     *hasher.finalize().as_bytes()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one field of the attested proof preimage"
+)]
 fn effect_attestation_proof(
     key: &[u8; 32],
     audience: &Authority,

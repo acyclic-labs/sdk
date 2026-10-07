@@ -29,7 +29,12 @@ pub use grpc::Tls;
 #[doc(hidden)]
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the documented public schema")]
-    #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
+    #![allow(
+        clippy::all,
+        clippy::pedantic,
+        clippy::allow_attributes_without_reason,
+        reason = "generated protobuf bindings"
+    )]
     include!("generated/acyclic.machines.v1.rs");
 }
 

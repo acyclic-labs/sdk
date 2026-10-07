@@ -15,7 +15,10 @@ use acyclic_harness::{
 use std::sync::Arc;
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 async fn project_workspace_binding_uses_parent_forks_published_after_construction() -> Result<()> {
     let provider = ProviderRef::new("project-workspaces", "filesystem", "2")?;
     let stream_provider = ProviderRef::new("project-workspaces", "stream", "2")?;

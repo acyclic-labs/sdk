@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract binary, not public API")]
 
 fn main() {
     match serde_json::to_string(acyclic_stream::HTTP_RESPONSE_CONTRACT) {

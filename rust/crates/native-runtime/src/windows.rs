@@ -1,6 +1,9 @@
 //! Windows file I/O is owned by one completion driver, not by the service executor.
 
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "file I/O submits raw handles to the Compio completion driver"
+)]
 
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;

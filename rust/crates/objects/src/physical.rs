@@ -51,7 +51,10 @@ pub(crate) fn sync_segment_directory(
 /// before anything durable refers to the segment. A segment already published
 /// is validated and reused, and needs that synchronization just the same: the
 /// write that published it may not have made its entry durable yet.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 pub(crate) fn write_segment(
     root: &Path,
     bodies: &[([u8; 32], bytes::Bytes)],
@@ -227,7 +230,6 @@ pub(crate) fn validate_referenced_segments(
     Ok(validated_segments.into_keys().collect())
 }
 
-#[allow(clippy::too_many_lines)]
 fn validate_segment_records(
     path: &Path,
     expected_id: &[u8; 32],
