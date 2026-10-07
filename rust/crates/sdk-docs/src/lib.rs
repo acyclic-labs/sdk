@@ -3,7 +3,7 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
+use rustdoc_types::{Crate, FORMAT_VERSION, Id, Item, ItemEnum, ItemKind};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 mod public_api;
 
@@ -61,6 +61,22 @@ pub struct SourceSpan {
     pub begin_column: usize,
     pub end_line: usize,
     pub end_column: usize,
+}
+
+/// A compiler-reported source file that was generated outside the repository
+/// checkout and copied into the documentation bundle by the caller.
+///
+/// The physical path is attested by its exact bytes before it can satisfy a
+/// Rustdoc source span. The logical path is the repository-relative path under
+/// which the caller bundles those bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedSource {
+    /// The exact physical file reported by Rustdoc, before canonicalization.
+    pub physical_path: PathBuf,
+    /// The relative path at which the caller includes the file in its source bundle.
+    pub logical_path: PathBuf,
+    /// A SHA-256 digest, optionally prefixed with `sha256:`.
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
@@ -146,6 +162,8 @@ pub struct BuildInput {
     pub source_sha256: Option<String>,
     pub repository_root: PathBuf,
     pub rustdoc_files: Vec<PathBuf>,
+    /// Generated Rust sources whose external Rustdoc spans may be projected.
+    pub generated_sources: Vec<GeneratedSource>,
     pub mark_latest: bool,
 }
 
@@ -220,6 +238,8 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             "captured snapshots and release tags require a trusted source manifest digest".into(),
         ));
     }
+    let repository_root = canonical_repository_root(&input.repository_root)?;
+    let generated_sources = attest_generated_sources(&repository_root, &input.generated_sources)?;
     // Callers may discover rustdoc files through different filesystem traversals.
     // Normalize the order before hashing or projecting so the same inputs always
     // produce the same identity and family order.
@@ -278,7 +298,19 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             )));
         }
         format_versions.insert(krate.format_version);
-        families.push(build_family(&input.repository_root, path, &krate)?);
+        families.push(build_family(
+            &repository_root,
+            &generated_sources,
+            path,
+            &krate,
+        )?);
+    }
+    let final_generated_sources =
+        attest_generated_sources(&repository_root, &input.generated_sources)?;
+    if final_generated_sources != generated_sources {
+        return Err(Error::Invalid(
+            "generated source changed while projecting rustdoc".into(),
+        ));
     }
     families.sort_by(|a, b| a.slug.cmp(&b.slug));
     if families.windows(2).any(|pair| pair[0].slug == pair[1].slug) {
@@ -664,7 +696,12 @@ fn merge_version_index(
     Ok(index)
 }
 
-fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Result<Family, Error> {
+fn build_family(
+    repository_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    json_path: &Path,
+    krate: &Crate,
+) -> Result<Family, Error> {
     let root_item = krate.index.get(&krate.root).ok_or_else(|| {
         Error::Invalid(format!(
             "{} does not contain its declared rustdoc root item",
@@ -702,10 +739,19 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         {
             continue;
         }
-        if path.first() != Some(&crate_name) {
+        // public-api renders an implementation method through the receiver's
+        // path. An impl owned by this crate can therefore legitimately have a
+        // foreign-looking path, for example `String::from` for a local
+        // `impl From<&ActorId> for String`. Keep that local implementation
+        // occurrence instead of treating the receiver path as an external
+        // definition.
+        if path.first() != Some(&crate_name) && !is_local_impl_member(&krate, public_item) {
             return Err(Error::Invalid(format!(
-                "public-api item {} does not resolve to the crate root",
-                id.0
+                "{} public-api item {} ({}) does not resolve to the crate root: {}",
+                json_path.display(),
+                id.0,
+                public_item.display,
+                path.join("::")
             )));
         }
         let (item_id, item, target) =
@@ -762,7 +808,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             source: item
                 .span
                 .as_ref()
-                .map(|span| source_span(repository_root, span))
+                .map(|span| source_span_at_root(repository_root, generated_sources, span))
                 .transpose()?,
             reexport,
             reexport_target,
@@ -834,6 +880,55 @@ fn public_occurrence_paths(
     paths
 }
 
+fn is_local_impl_member(krate: &Crate, public_item: &public_api::PublicItemSignature) -> bool {
+    // public-api queues both explicit impl items and inherited trait members
+    // with the impl as their logical parent. Keep either only when Rustdoc
+    // proves the child belongs to this local impl and, for inherited members,
+    // to the local trait that supplied the default.
+    let Some(item) = krate.index.get(&public_item.id) else {
+        return false;
+    };
+    if item.crate_id != 0 {
+        return false;
+    }
+    let Some(parent) = public_item
+        .parent_id
+        .and_then(|parent_id| krate.index.get(&parent_id))
+    else {
+        return false;
+    };
+    let ItemEnum::Impl(implementation) = &parent.inner else {
+        return false;
+    };
+    if parent.crate_id != 0 {
+        return false;
+    }
+    if implementation.items.contains(&public_item.id) {
+        return true;
+    }
+
+    let Some(trait_path) = &implementation.trait_ else {
+        return false;
+    };
+    let Some(trait_item) = krate.index.get(&trait_path.id) else {
+        return false;
+    };
+    let Some(name) = item.name.as_deref() else {
+        return false;
+    };
+    trait_item.crate_id == 0
+        && !implementation
+            .items
+            .iter()
+            .filter_map(|id| krate.index.get(id))
+            .any(|explicit| explicit.name.as_deref() == Some(name))
+        && matches!(
+            &trait_item.inner,
+            ItemEnum::Trait(trait_definition)
+                if trait_definition.items.contains(&public_item.id)
+        )
+}
+
 fn rustdoc_links(
     item: &Item,
     public_occurrence_paths: &HashMap<Id, Vec<String>>,
@@ -877,6 +972,7 @@ fn public_use_occurrences(
         vec![crate_name.to_owned()],
         &mut occurrences,
         &mut ancestors,
+        false,
     )?;
     Ok(occurrences)
 }
@@ -887,6 +983,7 @@ fn collect_public_use_occurrences(
     path: Vec<String>,
     occurrences: &mut HashMap<(Id, String), Id>,
     ancestors: &mut Vec<Id>,
+    via_glob: bool,
 ) -> Result<(), Error> {
     // A module can be reachable through multiple public aliases. Keep the
     // current path in the cycle guard so each alias gets its own descendants,
@@ -915,7 +1012,15 @@ fn collect_public_use_occurrences(
                     let mut exported = path.clone();
                     exported.push(use_.name.clone());
                     let exported_path = exported.join("::");
-                    occurrences.insert((target, exported_path), *child_id);
+                    let occurrence = (target, exported_path);
+                    let occurrence_is_glob = via_glob || use_.is_glob;
+                    if occurrence_is_glob {
+                        // Explicit re-exports win over a glob reaching the
+                        // same target under the same public path.
+                        occurrences.entry(occurrence).or_insert(*child_id);
+                    } else {
+                        occurrences.insert(occurrence, *child_id);
+                    }
                     if matches!(
                         krate.index.get(&target).map(|item| &item.inner),
                         Some(ItemEnum::Module(_))
@@ -927,6 +1032,7 @@ fn collect_public_use_occurrences(
                             nested_path,
                             occurrences,
                             ancestors,
+                            occurrence_is_glob,
                         )?;
                     }
                 }
@@ -941,6 +1047,7 @@ fn collect_public_use_occurrences(
                         nested,
                         occurrences,
                         ancestors,
+                        via_glob,
                     )?;
                 }
             }
@@ -951,32 +1058,159 @@ fn collect_public_use_occurrences(
     Ok(())
 }
 
-fn source_span(repository_root: &Path, span: &rustdoc_types::Span) -> Result<SourceSpan, Error> {
-    let repository_root = repository_root.canonicalize().map_err(|error| {
+fn canonical_repository_root(path: &Path) -> Result<PathBuf, Error> {
+    let root = path.canonicalize().map_err(|error| {
         Error::Invalid(format!(
             "cannot resolve rustdoc source root {}: {error}",
-            repository_root.display()
+            path.display()
         ))
     })?;
+    reject_reparse_ancestors(&root)?;
+    Ok(root)
+}
+
+fn attest_generated_sources(
+    repository_root: &Path,
+    sources: &[GeneratedSource],
+) -> Result<HashMap<PathBuf, GeneratedSource>, Error> {
+    canonical_repository_root(repository_root)?;
+    let mut attested = HashMap::new();
+    let mut logical_paths = HashSet::new();
+    let mut physical_paths = HashSet::new();
+    for source in sources {
+        let logical_path = normalize_generated_logical_path(&source.logical_path)?;
+        let logical_key = if cfg!(windows) {
+            logical_path.to_ascii_lowercase()
+        } else {
+            logical_path.clone()
+        };
+        if !logical_paths.insert(logical_key) {
+            return Err(Error::Invalid(format!(
+                "generated source logical path is duplicated: {logical_path}"
+            )));
+        }
+        reject_reparse_ancestors(&source.physical_path)?;
+        let physical_path = source.physical_path.canonicalize().map_err(|error| {
+            Error::Invalid(format!(
+                "cannot resolve generated source {}: {error}",
+                source.physical_path.display()
+            ))
+        })?;
+        reject_reparse_ancestors(&physical_path)?;
+        let metadata = fs::symlink_metadata(&physical_path)?;
+        if !metadata.is_file() {
+            return Err(Error::Invalid(format!(
+                "generated source is not a regular file: {}",
+                physical_path.display()
+            )));
+        }
+        let physical_key = if cfg!(windows) {
+            physical_path.to_string_lossy().to_ascii_lowercase()
+        } else {
+            physical_path.to_string_lossy().into_owned()
+        };
+        if !physical_paths.insert(physical_key) {
+            return Err(Error::Invalid(format!(
+                "generated source physical path is duplicated: {}",
+                physical_path.display()
+            )));
+        }
+        let bytes = fs::read(&physical_path)?;
+        validate_generated_sha256(&source.sha256)?;
+        if !generated_sha256_matches(&source.sha256, &bytes) {
+            return Err(Error::Invalid(format!(
+                "generated source digest does not match {}",
+                physical_path.display()
+            )));
+        }
+        attested.insert(
+            physical_path.clone(),
+            GeneratedSource {
+                physical_path,
+                logical_path: PathBuf::from(logical_path),
+                sha256: source.sha256.clone(),
+            },
+        );
+    }
+    Ok(attested)
+}
+
+fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    if raw.is_empty() || raw.contains(':') {
+        return Err(Error::Invalid(format!(
+            "generated source logical path must be relative: {raw:?}"
+        )));
+    }
+    let mut components = Vec::new();
+    for component in Path::new(&raw).components() {
+        match component {
+            Component::Normal(component) => {
+                components.push(component.to_string_lossy().into_owned())
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::Invalid(format!(
+                    "generated source logical path escapes its bundle root: {raw:?}"
+                )));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(Error::Invalid(format!(
+            "generated source logical path must not be empty: {raw:?}"
+        )));
+    }
+    Ok(components.join("/"))
+}
+
+fn validate_generated_sha256(value: &str) -> Result<(), Error> {
+    let digest = value.strip_prefix("sha256:").unwrap_or(value);
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::Invalid(format!(
+            "generated source digest must be a SHA-256 value: {value:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {
+    expected
+        .strip_prefix("sha256:")
+        .unwrap_or(expected)
+        .eq_ignore_ascii_case(&sha256_hex(bytes))
+}
+
+fn source_span_at_root(
+    repository_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    span: &rustdoc_types::Span,
+) -> Result<SourceSpan, Error> {
     let source_path = if span.filename.is_absolute() {
         span.filename.clone()
     } else {
         repository_root.join(&span.filename)
     };
+    reject_reparse_ancestors(&source_path)?;
     let source_path = source_path.canonicalize().map_err(|error| {
         Error::Invalid(format!(
             "cannot resolve rustdoc source span {}: {error}",
             span.filename.display()
         ))
     })?;
-    let relative = source_path.strip_prefix(&repository_root).map_err(|_| {
-        Error::Invalid(format!(
-            "rustdoc source span escapes its source root: {}",
-            span.filename.display()
-        ))
-    })?;
+    let path = if let Ok(relative) = source_path.strip_prefix(&repository_root) {
+        normalize_path(relative)
+    } else {
+        let generated = generated_sources.get(&source_path).ok_or_else(|| {
+            Error::Invalid(format!(
+                "rustdoc source span escapes its source root without an attested generated source: {}",
+                span.filename.display()
+            ))
+        })?;
+        normalize_path(&generated.logical_path)
+    };
     Ok(SourceSpan {
-        path: normalize_path(relative),
+        path,
         begin_line: span.begin.0,
         begin_column: span.begin.1,
         end_line: span.end.0,
@@ -1079,11 +1313,18 @@ fn guides_from_rustdoc(
             .last()
             .map(String::as_str)
             .unwrap_or(crate_name);
+        // Preserve links authored on a public re-export.  The definition's
+        // links are only a fallback when that occurrence has no link metadata.
+        let link_source = if item.links.is_empty() {
+            effective
+        } else {
+            item
+        };
         guides.push(Guide {
             path,
             title: guide_title(&markdown, fallback),
             markdown,
-            links: rustdoc_links(effective, public_occurrence_paths),
+            links: rustdoc_links(link_source, public_occurrence_paths),
         });
     }
     guides.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1305,6 +1546,97 @@ mod tests {
     }
 
     #[test]
+    fn generated_source_spans_require_attestation_and_preserve_lines() {
+        let suffix = std::process::id();
+        let repository_root = std::env::temp_dir().join(format!(
+            "sdk-docs-generated-source-root-{suffix}"
+        ));
+        let external_root = std::env::temp_dir().join(format!(
+            "sdk-docs-generated-source-external-{suffix}"
+        ));
+        let _ = fs::remove_dir_all(&repository_root);
+        let _ = fs::remove_dir_all(&external_root);
+        fs::create_dir_all(repository_root.join("src")).expect("repository root should be writable");
+        fs::create_dir_all(&external_root).expect("external source root should be writable");
+
+        let inside = repository_root.join("src/inside.rs");
+        fs::write(&inside, b"pub struct Inside;\n").expect("checkout source should be writable");
+        let external = external_root.join("wire.rs");
+        let bytes = b"pub struct Wire;\n";
+        fs::write(&external, bytes).expect("generated source should be writable");
+        let digest = sha256_hex(bytes);
+        let generated = GeneratedSource {
+            physical_path: external.clone(),
+            logical_path: PathBuf::from("generated/actors/wire.rs"),
+            sha256: digest.clone(),
+        };
+        let attested = attest_generated_sources(&repository_root, &[generated.clone()])
+            .expect("matching generated source should be attested");
+        let repository_root = canonical_repository_root(&repository_root)
+            .expect("repository fixture should have a canonical path");
+
+        let external_span = rustdoc_types::Span {
+            filename: external.clone(),
+            begin: (7, 3),
+            end: (8, 9),
+        };
+        let projected = source_span_at_root(&repository_root, &attested, &external_span)
+            .expect("attested generated source should project");
+        assert_eq!(projected.path, "generated/actors/wire.rs");
+        assert_eq!(projected.begin_line, 7);
+        assert_eq!(projected.begin_column, 3);
+        assert_eq!(projected.end_line, 8);
+        assert_eq!(projected.end_column, 9);
+
+        let checkout_span = rustdoc_types::Span {
+            filename: PathBuf::from("src/inside.rs"),
+            begin: (1, 1),
+            end: (1, 18),
+        };
+        let checkout_projection = source_span_at_root(&repository_root, &attested, &checkout_span)
+            .expect("checkout source should take precedence over generated mappings");
+        assert_eq!(checkout_projection.path, "src/inside.rs");
+
+        let error = source_span_at_root(
+            &repository_root,
+            &HashMap::new(),
+            &external_span,
+        )
+        .expect_err("unattested external source must be rejected");
+        assert!(error
+            .to_string()
+            .contains("without an attested generated source"));
+
+        let mut bad_digest = generated.clone();
+        bad_digest.sha256 = "0".repeat(64);
+        let error = attest_generated_sources(&repository_root, &[bad_digest])
+            .expect_err("incorrect generated digest must be rejected");
+        assert!(error.to_string().contains("digest does not match"));
+
+        let mut escaping = generated.clone();
+        escaping.logical_path = PathBuf::from("../wire.rs");
+        let error = attest_generated_sources(&repository_root, &[escaping])
+            .expect_err("escaping generated logical path must be rejected");
+        assert!(error
+            .to_string()
+            .contains("escapes its bundle root"));
+
+        let mut duplicate = generated.clone();
+        duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
+        let error = attest_generated_sources(&repository_root, &[generated.clone(), duplicate])
+            .expect_err("normalized duplicate logical paths must be rejected");
+        assert!(error.to_string().contains("logical path is duplicated"));
+
+        fs::write(&external, b"pub struct Changed;\n").expect("generated source should be mutable");
+        let error = attest_generated_sources(&repository_root, &[generated])
+            .expect_err("generated source mutation must invalidate attestation");
+        assert!(error.to_string().contains("digest does not match"));
+
+        fs::remove_dir_all(&repository_root).expect("repository fixture should be removed");
+        fs::remove_dir_all(&external_root).expect("external fixture should be removed");
+    }
+
+    #[test]
     fn publication_rejects_navigation_that_does_not_match_sorted_families() {
         let output =
             std::env::temp_dir().join(format!("sdk-docs-navigation-{}", std::process::id()));
@@ -1348,9 +1680,11 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("publication must reject stale or incomplete navigation");
-        assert!(error
-            .to_string()
-            .contains("navigation entries must exactly match"));
+        assert!(
+            error
+                .to_string()
+                .contains("navigation entries must exactly match")
+        );
         assert!(!output.exists());
     }
 
@@ -1377,6 +1711,319 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert!(items.contains(&nested_occurrence));
         assert!(items.contains(&alias));
+    }
+
+    #[test]
+    fn local_impl_member_keeps_a_foreign_receiver_path() {
+        let krate: Crate = serde_json::from_value(serde_json::json!({
+            "root": 0,
+            "crate_version": "1.0.0",
+            "includes_private": false,
+            "index": {
+                "0": {
+                    "id": 0, "crate_id": 0, "name": "demo", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"module": {"is_crate": true, "items": [7], "is_stripped": false}}
+                },
+                "7": {
+                    "id": 7, "crate_id": 0, "name": null, "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"impl": {
+                        "is_unsafe": false,
+                        "generics": {"params": [], "where_predicates": []},
+                        "provided_trait_methods": [],
+                        "trait": {"path": "From", "id": 8, "args": null},
+                        "for": {"resolved_path": {"path": "String", "id": 8, "args": null}},
+                        "items": [129], "is_negative": false, "is_synthetic": false,
+                        "blanket_impl": null
+                    }}
+                },
+                "129": {
+                    "id": 129, "crate_id": 0, "name": "from", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"function": {
+                        "sig": {"inputs": [], "output": null, "is_c_variadic": false},
+                        "generics": {"params": [], "where_predicates": []},
+                        "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"},
+                        "has_body": true, "default_unstable": null
+                    }}
+                }
+            },
+            "paths": {},
+            "external_crates": {},
+            "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
+            "format_version": 60
+        }))
+        .expect("local implementation fixture should deserialize");
+        let occurrence = public_api::PublicItemSignature {
+            id: Id(129),
+            parent_id: Some(Id(7)),
+            display: "fn from(&ActorId) -> String".into(),
+            path: ["alloc", "string", "String", "from"]
+                .map(String::from)
+                .to_vec(),
+        };
+        assert!(is_local_impl_member(&krate, &occurrence));
+        let mut unparented = occurrence;
+        unparented.parent_id = None;
+        assert!(!is_local_impl_member(&krate, &unparented));
+    }
+
+    #[test]
+    fn inherited_local_trait_associated_members_use_typed_membership() {
+        let krate: Crate = serde_json::from_value(serde_json::json!({
+            "root": 0,
+            "crate_version": "1.0.0",
+            "includes_private": false,
+            "index": {
+                "0": {
+                    "id": 0, "crate_id": 0, "name": "demo", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"module": {"is_crate": true, "items": [8], "is_stripped": false}}
+                },
+                "8": {
+                    "id": 8, "crate_id": 0, "name": "LocalTrait", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"trait": {
+                        "is_auto": false, "is_unsafe": false, "is_dyn_compatible": true,
+                        "items": [130, 131, 133],
+                        "generics": {"params": [], "where_predicates": []},
+                        "bounds": [], "implementations": [7]
+                    }}
+                },
+                "7": {
+                    "id": 7, "crate_id": 0, "name": null, "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"impl": {
+                        "is_unsafe": false,
+                        "generics": {"params": [], "where_predicates": []},
+                        "provided_trait_methods": [],
+                        "trait": {"path": "LocalTrait", "id": 8, "args": null},
+                        "for": {"resolved_path": {"path": "String", "id": 99, "args": null}},
+                        "items": [132], "is_negative": false, "is_synthetic": false,
+                        "blanket_impl": null
+                    }}
+                },
+                "130": {
+                    "id": 130, "crate_id": 0, "name": "VALUE", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_const": {
+                        "type": {"primitive": "usize"}, "value": "0", "default_unstable": null
+                    }}
+                },
+                "131": {
+                    "id": 131, "crate_id": 0, "name": "Output", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_type": {
+                        "generics": {"params": [], "where_predicates": []},
+                        "bounds": [], "type": {"primitive": "usize"}, "default_unstable": null
+                    }}
+                },
+                "132": {
+                    "id": 132, "crate_id": 0, "name": "VALUE", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_const": {
+                        "type": {"primitive": "usize"}, "value": "1", "default_unstable": null
+                    }}
+                },
+                "133": {
+                    "id": 133, "crate_id": 0, "name": "Other", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"assoc_const": {
+                        "type": {"primitive": "usize"}, "value": "2", "default_unstable": null
+                    }}
+                }
+            },
+            "paths": {
+                "99": {"crate_id": 1, "path": ["alloc", "string", "String"], "kind": "struct"}
+            },
+            "external_crates": {},
+            "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
+            "format_version": 60
+        }))
+        .expect("associated-member fixture should deserialize");
+
+        for (id, name) in [(131, "Output"), (133, "Other")] {
+            let occurrence = public_api::PublicItemSignature {
+                id: Id(id),
+                parent_id: Some(Id(7)),
+                display: format!("{name}"),
+                path: vec![
+                    "alloc".into(),
+                    "string".into(),
+                    "String".into(),
+                    name.into(),
+                ],
+            };
+            assert!(is_local_impl_member(&krate, &occurrence));
+        }
+        let overridden = public_api::PublicItemSignature {
+            id: Id(130),
+            parent_id: Some(Id(7)),
+            display: "VALUE".into(),
+            path: vec![
+                "alloc".into(),
+                "string".into(),
+                "String".into(),
+                "VALUE".into(),
+            ],
+        };
+        assert!(!is_local_impl_member(&krate, &overridden));
+        let explicit = public_api::PublicItemSignature {
+            id: Id(132),
+            parent_id: Some(Id(7)),
+            display: "VALUE".into(),
+            path: vec![
+                "alloc".into(),
+                "string".into(),
+                "String".into(),
+                "VALUE".into(),
+            ],
+        };
+        assert!(is_local_impl_member(&krate, &explicit));
+    }
+
+    #[test]
+    fn build_family_keeps_inherited_local_trait_member_and_source_span() {
+        let root =
+            std::env::temp_dir().join(format!("sdk-docs-inherited-impl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("fixture source directory should be creatable");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub trait LocalTrait { fn default(&self) {} }\n",
+        )
+        .expect("fixture source should be writable");
+        let rustdoc_path = root.join("demo.json");
+        let fixture = serde_json::json!({
+            "root": 0,
+            "crate_version": "1.0.0",
+            "includes_private": false,
+            "index": {
+                "0": {
+                    "id": 0, "crate_id": 0, "name": "demo", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"module": {"is_crate": true, "items": [20], "is_stripped": false}}
+                },
+                "20": {
+                    "id": 20, "crate_id": 0, "name": "LocalTrait",
+                    "span": {"filename": "src/lib.rs", "begin": [1, 1], "end": [1, 44]},
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"trait": {
+                        "is_auto": false, "is_unsafe": false, "is_dyn_compatible": true,
+                        "items": [21],
+                        "generics": {"params": [], "where_predicates": []},
+                        "bounds": [], "implementations": [22]
+                    }}
+                },
+                "21": {
+                    "id": 21, "crate_id": 0, "name": "default",
+                    "span": {"filename": "src/lib.rs", "begin": [1, 24], "end": [1, 43]},
+                    "visibility": "default", "docs": "Default behavior.", "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"function": {
+                        "sig": {"inputs": [], "output": null, "is_c_variadic": false},
+                        "generics": {"params": [], "where_predicates": []},
+                        "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"},
+                        "has_body": true, "default_unstable": null
+                    }}
+                },
+                "22": {
+                    "id": 22, "crate_id": 0, "name": null,
+                    "span": {"filename": "src/lib.rs", "begin": [2, 1], "end": [2, 25]},
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"impl": {
+                        "is_unsafe": false,
+                        "generics": {"params": [], "where_predicates": []},
+                        "provided_trait_methods": ["default"],
+                        "trait": {"path": "LocalTrait", "id": 20, "args": null},
+                        "for": {"resolved_path": {"path": "String", "id": 99, "args": null}},
+                        "items": [], "is_negative": false, "is_synthetic": false,
+                        "blanket_impl": null
+                    }}
+                }
+            },
+            "paths": {
+                "99": {"crate_id": 1, "path": ["alloc", "string", "String"], "kind": "struct"}
+            },
+            "external_crates": {},
+            "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
+            "format_version": 60
+        });
+        fs::write(
+            &rustdoc_path,
+            serde_json::to_vec(&fixture).expect("fixture should serialize"),
+        )
+        .expect("fixture should be writable");
+        let input = BuildInput {
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            revision: "a".repeat(40),
+            source_state: "captured-snapshot".into(),
+            source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+            repository_root: root.clone(),
+            rustdoc_files: vec![rustdoc_path.clone()],
+            generated_sources: Vec::new(),
+            mark_latest: false,
+        };
+        let data = build_data(&input).expect("inherited local trait fixture should build");
+        let family = &data.families[0];
+        let inherited = family
+            .items
+            .iter()
+            .find(|item| item.id == "21" && item.path == "alloc::string::String::default")
+            .unwrap_or_else(|| {
+                panic!(
+                    "inherited default method should retain its foreign receiver path: {:?}",
+                    family
+                        .items
+                        .iter()
+                        .map(|item| (&item.id, &item.path, &item.signature))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            inherited.source,
+            Some(SourceSpan {
+                path: "src/lib.rs".into(),
+                begin_line: 1,
+                begin_column: 24,
+                end_line: 1,
+                end_column: 43,
+            })
+        );
+        assert!(
+            family
+                .items
+                .iter()
+                .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default")
+        );
+
+        let mut external_trait = fixture;
+        external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);
+        fs::write(
+            &rustdoc_path,
+            serde_json::to_vec(&external_trait).expect("negative fixture should serialize"),
+        )
+        .expect("negative fixture should be writable");
+        let error = build_data(&input).expect_err("foreign inherited member must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("does not resolve to the crate root"));
+        assert!(message.contains("String::default"));
+        fs::remove_dir_all(root).expect("fixture directory should be removable");
     }
 
     #[test]
@@ -1443,9 +2090,11 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("directory at the index path must block publication");
-        assert!(error
-            .to_string()
-            .contains("version index is not a regular file"));
+        assert!(
+            error
+                .to_string()
+                .contains("version index is not a regular file")
+        );
         assert!(output.join("sdk-docs-versions.v1.json").is_dir());
         assert!(!output.join("releases").exists());
         fs::remove_dir_all(output).expect("test output should be removable");
@@ -1649,9 +2298,11 @@ mod tests {
         let before = fs::read(&index_path).expect("index should remain readable");
         let error = write_bundle(&data, &output, true)
             .expect_err("bundle revision mismatch must block publication");
-        assert!(error
-            .to_string()
-            .contains("data revision does not match the index"));
+        assert!(
+            error
+                .to_string()
+                .contains("data revision does not match the index")
+        );
         assert_eq!(
             before,
             fs::read(&index_path).expect("index should be unchanged")
@@ -1834,7 +2485,7 @@ mod tests {
             "includes_private": false,
             "index": {
                 "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": "# Demo\n\nRoot guide", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
-                "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {"alias-only": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
+                "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
                 "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {"target link": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 3, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "5": {"id": 5, "crate_id": 0, "name": "associated_target", "span": null, "visibility": "public", "docs": "target", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
@@ -1859,6 +2510,7 @@ mod tests {
             source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path],
+            generated_sources: Vec::new(),
             mark_latest: false,
         };
         let first = build_data(&input).expect("typed fixture should build");
@@ -1879,12 +2531,12 @@ mod tests {
             "span": null,
             "visibility": "public",
             "docs": "# Source\n\nDefinition guide",
-            "links": {},
+            "links": {"target-only": 5},
             "attrs": [],
             "deprecation": null,
             "stability": null,
             "const_stability": null,
-            "inner": {"module": {"is_crate": false, "items": [9], "is_stripped": false}}
+            "inner": {"module": {"is_crate": false, "items": [9, 14], "is_stripped": false}}
         });
         alias_graph["index"]["9"] = serde_json::json!({
             "id": 9,
@@ -1907,7 +2559,7 @@ mod tests {
             "span": null,
             "visibility": "public",
             "docs": "# First\n\nAlias guide",
-            "links": {},
+            "links": {"alias-only": 5},
             "attrs": [],
             "deprecation": null,
             "stability": null,
@@ -1942,6 +2594,20 @@ mod tests {
             "const_stability": null,
             "inner": {"use": {"source": "source", "name": "source", "id": 8, "is_glob": true}}
         });
+        alias_graph["index"]["14"] = serde_json::json!({
+            "id": 14,
+            "crate_id": 0,
+            "name": null,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"use": {"source": "source", "name": "first", "id": 8, "is_glob": false}}
+        });
         let alias_graph: Crate =
             serde_json::from_value(alias_graph).expect("module alias fixture should deserialize");
         let occurrences = public_use_occurrences(&alias_graph, "demo")
@@ -1963,15 +2629,34 @@ mod tests {
             Some(&Id(9))
         );
         assert_eq!(
+            occurrences.get(&(Id(8), "demo::first".into())),
+            Some(&Id(10)),
+            "an explicit re-export must win over the same path reached through a glob"
+        );
+        assert_eq!(
             occurrences.get(&(Id(0), "demo::nested::crate".into())),
             Some(&Id(7))
         );
-        let alias_public_items = vec![public_api::PublicItemSignature {
-            id: Id(8),
-            parent_id: Some(Id(0)),
-            display: "pub use source as first".into(),
-            path: vec!["demo".into(), "first".into()],
-        }];
+        let alias_public_items = vec![
+            public_api::PublicItemSignature {
+                id: Id(8),
+                parent_id: Some(Id(0)),
+                display: "pub use source as first".into(),
+                path: vec!["demo".into(), "first".into()],
+            },
+            public_api::PublicItemSignature {
+                id: Id(8),
+                parent_id: Some(Id(0)),
+                display: "pub use source as second".into(),
+                path: vec!["demo".into(), "second".into()],
+            },
+            public_api::PublicItemSignature {
+                id: Id(5),
+                parent_id: Some(Id(0)),
+                display: "pub fn associated_target".into(),
+                path: vec!["demo".into(), "associated_target".into()],
+            },
+        ];
         let alias_public_paths = public_occurrence_paths(&alias_public_items, "demo");
         let alias_root = alias_graph
             .index
@@ -1992,6 +2677,13 @@ mod tests {
             .expect("the alias guide should be projected");
         assert_eq!(alias_guide.title, "First");
         assert_eq!(alias_guide.markdown, "# First\n\nAlias guide");
+        assert!(alias_guide.links.contains_key("alias-only"));
+        assert!(!alias_guide.links.contains_key("target-only"));
+        let fallback_guide = alias_guides
+            .iter()
+            .find(|guide| guide.path == "demo::second")
+            .expect("the target guide should be projected for an undocumented alias");
+        assert!(fallback_guide.links.contains_key("target-only"));
         let missing_version_path = root.join("missing-version.json");
         let mut missing_version = fixture.clone();
         missing_version["crate_version"] = serde_json::Value::Null;
@@ -2016,10 +2708,12 @@ mod tests {
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
         assert_eq!(alias.docs.as_deref(), Some("hidden"));
-        assert!(alias
-            .links
-            .get("target link")
-            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
+        assert!(
+            alias
+                .links
+                .get("target link")
+                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
+        );
         assert!(!alias.links.contains_key("alias-only"));
         let linked = family
             .items
@@ -2029,10 +2723,12 @@ mod tests {
         // Rustdoc resolves the alias reference to definition id 3; the
         // public occurrence map still exposes the reachable `demo::Visible`
         // use path rather than confusing the use item id with the definition.
-        assert!(linked
-            .links
-            .get("alias target")
-            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
+        assert!(
+            linked
+                .links
+                .get("alias target")
+                .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned()))
+        );
         let associated_paths = linked
             .links
             .get("associated target")
@@ -2075,10 +2771,12 @@ mod tests {
             .iter()
             .find(|guide| guide.path == "demo::nested")
             .expect("the public module guide should be projected");
-        assert!(guide
-            .links
-            .get("associated target")
-            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
+        assert!(
+            guide
+                .links
+                .get("associated target")
+                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
+        );
         let linked_roundtrip: ApiItem = serde_json::from_value(
             serde_json::to_value(linked).expect("non-empty links should serialize"),
         )
