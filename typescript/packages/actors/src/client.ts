@@ -380,7 +380,7 @@ function isMissingGeneratedLoader(error: unknown): boolean {
   const requested = firstLine.match(/^(?:ResolveMessage:\s*)?Cannot find module ['"]([^'"]+)['"]/i)?.[1];
   if (requested === undefined) return false;
   if (requested === "../generated/native/binding.cjs") {
-    const importer = firstLine.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
+    const importer = moduleImporter(firstLine);
     return importer !== undefined && normalizeModulePath(importer) === normalizeModulePath(import.meta.url);
   }
   // Only the package's own generated loader is optional. Matching a path
@@ -412,8 +412,13 @@ function hasGeneratedLoaderRequireStack(message: string): boolean {
   // Bun reports the same provenance inline instead of emitting Node's
   // `Require stack` block. Keep the source check equally narrow so a missing
   // dependency from inside an optional companion still propagates.
-  const source = lines[0]?.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
+  const source = moduleImporter(lines[0] ?? "");
   return source !== undefined && isOwnGeneratedLoader(source);
+}
+
+function moduleImporter(message: string): string | undefined {
+  const match = message.match(/\s(?:imported )?from (?:['"]([^'"]+)['"]|(.+))$/i);
+  return match?.[1] ?? match?.[2];
 }
 
 function isOwnGeneratedLoader(path: string): boolean {
