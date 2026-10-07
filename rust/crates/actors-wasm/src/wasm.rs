@@ -35,6 +35,8 @@ export interface ActorsError extends Error {
 export function validateCreateActor(request: ActorsWireBytes): void;
 export function validateUpdateActor(request: ActorsWireBytes): void;
 export function validateAddSubscription(request: ActorsWireBytes): void;
+export function PositiveU64(value: bigint): PositiveU64;
+export type PositiveU64 = bigint & { readonly __brand: unique symbol };
 "#;
 
 fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
@@ -92,10 +94,11 @@ fn validate_add(request: &wire::AddSubscriptionRequest) -> Result<(), JsValue> {
 /// ergonomic string representation in generated TypeScript.
 #[wasm_bindgen(
     js_name = ActorId,
-    unchecked_param_type = "string",
     unchecked_return_type = "ActorId"
 )]
-pub fn actor_id(value: String) -> Result<String, JsValue> {
+pub fn actor_id(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: String,
+) -> Result<String, JsValue> {
     acyclic_actors::domain::ActorId::new(value)
         .map(|value| value.as_str().to_owned())
         .map_err(semantic_error)
@@ -105,13 +108,38 @@ pub fn actor_id(value: String) -> Result<String, JsValue> {
 /// ergonomic `Uint8Array` representation in generated TypeScript.
 #[wasm_bindgen(
     js_name = CodeSha256,
-    unchecked_param_type = "Uint8Array",
     unchecked_return_type = "CodeSha256"
 )]
-pub fn code_sha256(value: JsValue) -> Result<JsValue, JsValue> {
+pub fn code_sha256(
+    #[wasm_bindgen(unchecked_param_type = "Uint8Array")] value: JsValue,
+) -> Result<JsValue, JsValue> {
     let value = js_sys::Uint8Array::new(&value).to_vec();
     acyclic_actors::domain::CodeSha256::new(value)
         .map(|value| js_sys::Uint8Array::from(value.as_bytes().as_slice()).into())
+        .map_err(semantic_error)
+}
+
+/// Constructs the Rust-owned strictly positive `u64` semantic value without
+/// converting through a JavaScript `number`.
+#[wasm_bindgen(
+    js_name = PositiveU64,
+    unchecked_return_type = "PositiveU64"
+)]
+pub fn positive_u64(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    if !value.is_bigint() {
+        return Err(invalid("PositiveU64 requires a bigint"));
+    }
+    let value = value.unchecked_ref::<js_sys::BigInt>();
+    let spelling = JsValue::from(value.to_string(10).map_err(JsValue::from)?)
+        .as_string()
+        .ok_or_else(|| invalid("PositiveU64 bigint spelling is invalid"))?;
+    let raw = spelling
+        .parse::<u64>()
+        .map_err(|_| invalid("PositiveU64 must be an unsigned 64-bit bigint"))?;
+    acyclic_actors::domain::PositiveU64::new(raw)
+        .map(|value| JsValue::from(js_sys::BigInt::from(value.get())))
         .map_err(semantic_error)
 }
 
@@ -340,11 +368,11 @@ impl ActorsClient {
         validate_add(&decode(&request_bytes(request)?)?)
     }
 
-    #[wasm_bindgen(js_name = createActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = createActor, unchecked_return_type = "ActorsWireBytes")]
     pub async fn create_actor(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CreateActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::CreateActorRequest::try_from(request)
@@ -352,16 +380,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::CreateActorResponse, _>(
             self.inner.create_actor(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = updateActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = updateActor, unchecked_return_type = "ActorsWireBytes")]
     pub async fn update_actor(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::UpdateActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::UpdateActorRequest::try_from(request)
@@ -369,16 +397,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::UpdateActorResponse, _>(
             self.inner.update_actor(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = inspectActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = inspectActor, unchecked_return_type = "ActorsWireBytes")]
     pub async fn inspect_actor(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InspectActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::InspectActorRequest::try_from(request)
@@ -386,16 +414,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::InspectActorResponse, _>(
             self.inner.inspect_actor(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = addSubscription, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = addSubscription, unchecked_return_type = "ActorsWireBytes")]
     pub async fn add_subscription(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::AddSubscriptionRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::AddSubscriptionRequest::try_from(request)
@@ -403,16 +431,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::AddSubscriptionResponse, _>(
             self.inner.add_subscription(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = removeSubscription, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = removeSubscription, unchecked_return_type = "ActorsWireBytes")]
     pub async fn remove_subscription(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::RemoveSubscriptionRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::RemoveSubscriptionRequest::try_from(request)
@@ -420,16 +448,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::RemoveSubscriptionResponse, _>(
             self.inner.remove_subscription(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = resumeSubscription, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = resumeSubscription, unchecked_return_type = "ActorsWireBytes")]
     pub async fn resume_subscription(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::ResumeSubscriptionRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::ResumeSubscriptionRequest::try_from(request)
@@ -437,16 +465,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::ResumeSubscriptionResponse, _>(
             self.inner.resume_subscription(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = checkpointActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = checkpointActor, unchecked_return_type = "ActorsWireBytes")]
     pub async fn checkpoint_actor(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CheckpointActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::CheckpointActorRequest::try_from(request)
@@ -454,16 +482,16 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::CheckpointActorResponse, _>(
             self.inner.checkpoint_actor(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }
 
-    #[wasm_bindgen(js_name = invokeActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
+    #[wasm_bindgen(js_name = invokeActor, unchecked_return_type = "ActorsWireBytes")]
     pub async fn invoke_actor(
         &self,
-        request: JsValue,
-        cancellation: Option<&CancellationHandle>,
+        #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InvokeActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::InvokeActorRequest::try_from(request)
@@ -471,7 +499,7 @@ impl ActorsClient {
             .map_err(facade_error)?;
         encode_domain_operation::<_, wire::InvokeActorResponse, _>(
             self.inner.invoke_actor(&request),
-            cancellation,
+            Some(cancellation),
         )
         .await
     }

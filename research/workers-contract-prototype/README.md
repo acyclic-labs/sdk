@@ -19,7 +19,12 @@ The source follows the maintained Actors migration pattern: a package/file handl
 - `src/contract.rs`: package registration and rendering entrypoint.
 - `wire-identity.md`: field-by-field identity map against the current proto.
 - `unsupported.md`: features verified in the pinned Protify source and the remaining migration gate.
+- `qualification.md`: offline compile, render, descriptor production, and immutable baseline comparison.
+- `artifacts/workers/v1/`: generated proto and descriptor from the qualified source.
+- `fixtures/workers/v1/`: immutable baseline descriptor used for comparison.
 
 ## Acceptance command for the product migration
 
 From the product worktree, add this declaration set to `rust/crates/workers`, render the proto and descriptor into a clean temporary directory, then compare the normalized descriptor to the immutable Workers baseline. The comparison must preserve field numbers, cardinality, oneof membership, enum values, service method identities, reserved names/numbers, and file options. Only source information and the known Protify declaration ordering normalization may differ.
+
+

@@ -7,7 +7,7 @@
 use std::{future::Future, sync::Arc};
 
 use acyclic_actors::{client, wire};
-use napi::bindgen_prelude::{Buffer, Error, Result, Status, Uint8Array};
+use napi::bindgen_prelude::{BigInt, Buffer, Error, Result, Status, Uint8Array};
 use napi_derive::napi;
 use prost::Message;
 use serde::Serialize;
@@ -155,6 +155,29 @@ pub fn code_sha256(
 ) -> Result<Uint8Array> {
     acyclic_actors::domain::CodeSha256::new(value.as_ref().to_vec())
         .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
+        .map_err(|error| napi_error(domain_error_metadata(error)))
+}
+
+/// Constructs the Rust-owned positive `u64` value used by the TypeScript
+/// facade. N-API exposes the input as a BigInt so values above JavaScript's
+/// safe-integer range stay exact; the lossless and sign bits are checked
+/// before the canonical Rust domain constructor is called.
+#[napi(
+    js_name = "PositiveU64",
+    ts_return_type = "import('@acyclic-labs/actors/types').PositiveU64"
+)]
+pub fn positive_u64(#[napi(ts_arg_type = "bigint")] value: BigInt) -> Result<BigInt> {
+    let (sign_bit, raw, lossless) = value.get_u64();
+    if sign_bit || !lossless {
+        return Err(napi_error(domain_error_metadata(
+            acyclic_actors::domain::DomainError::Contract(
+                acyclic_actors::ContractError::InvalidArgument,
+            ),
+        )));
+    }
+
+    acyclic_actors::domain::PositiveU64::new(raw)
+        .map(|value| BigInt::from(value.get()))
         .map_err(|error| napi_error(domain_error_metadata(error)))
 }
 
@@ -678,6 +701,22 @@ mod tests {
         let digest_error =
             code_sha256(Uint8Array::from(vec![0; 31])).expect_err("short digest must be rejected");
         assert!(digest_error.reason.contains("invalid_code_sha256"));
+        Ok(())
+    }
+
+    #[test]
+    fn positive_u64_preserves_exact_values_and_rejects_invalid_bigints() -> Result<()> {
+        let maximum = positive_u64(BigInt::from(u64::MAX))?;
+        assert_eq!(maximum, BigInt::from(u64::MAX));
+
+        for (value, label) in [
+            (BigInt::from(0_u64), "zero"),
+            (BigInt::from(-1_i64), "negative"),
+            (BigInt::from(u128::from(u64::MAX) + 1), "overflow"),
+        ] {
+            let error = positive_u64(value).expect_err(label);
+            assert!(error.reason.contains("invalid_argument"), "{label}");
+        }
         Ok(())
     }
 

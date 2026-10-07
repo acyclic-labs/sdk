@@ -19,6 +19,7 @@ prost = "0.14.4"
 js-sys = "0.3.94"
 tokio-util = { version = "=0.7.19", features = ["rt"] }
 wasm-bindgen = "=0.2.117"
+wasm-bindgen-futures = "=0.4.67"
 
 [lints.rust]
 unsafe_code = "deny"

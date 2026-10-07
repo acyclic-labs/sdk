@@ -5,8 +5,8 @@
 //! visibility or creating a second validation rule.
 
 use super::{
-    valid_code_sha256, wire, ActorState, DomainError, ErrorCode, SubscriptionStart,
-    SubscriptionState,
+    valid_code_sha256, wire, ActorState, DomainError, ErrorCode, PositiveU64,
+    SubscriptionStart, SubscriptionState,
 };
 
 #[kani::proof]
@@ -109,6 +109,25 @@ fn subscription_start_preserves_cursor_and_current_head_presence() {
         SubscriptionStart::try_from(missing_start),
         Err(DomainError::InvalidSubscription)
     );
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
+fn positive_u64_constructor_accepts_exactly_nonzero_values() {
+    let value: u64 = kani::any();
+    match PositiveU64::new(value) {
+        Ok(positive) => {
+            assert_ne!(value, 0);
+            assert_eq!(positive.get(), value);
+        }
+        Err(error) => {
+            assert_eq!(value, 0);
+            assert_eq!(
+                error,
+                DomainError::Contract(crate::ContractError::InvalidArgument)
+            );
+        }
+    }
 }
 
 #[kani::proof]

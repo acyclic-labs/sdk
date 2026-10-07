@@ -46,6 +46,7 @@ pub mod projection;
 pub mod registry;
 pub mod resources;
 pub mod runtime;
+pub mod runtime_handle;
 pub mod scheduler;
 pub mod store;
 pub mod tool;

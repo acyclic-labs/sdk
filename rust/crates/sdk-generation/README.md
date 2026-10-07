@@ -46,9 +46,17 @@ cargo +1.98.1 run --offline --locked -- generate \
   --version <version> --channel preview
 ```
 
-The Rust launcher is the only generation authority. After it writes a bundle,
-the root TypeScript commands verify or stage that exact bundle before invoking
-the existing workspace compiler:
+This launcher is the generation authority for the Rust-owned documentation
+families currently covered here (all eleven published docs families) and for
+the Actors proto/descriptor, domain, and TypeScript stages. Other workspace
+families still use their maintained legacy generators: the root Buf and
+per-family scripts remain in the migration path, and Workers plus the other
+domain contracts still have authored Rust/proto inputs outside this launcher.
+The root commands below are thin bundle consumers. They verify or stage the
+exact bundle supplied by this launcher and then reuse the existing workspace
+pipeline; they do not create another generation authority. The `generate`
+variant runs the legacy root generation first, then stages the Rust bundle, so
+the bundle is the final checked-in Rust-owned output for this migration step:
 
 ```text
 bun run build:with-rust-actors -- <bundle>  # stages with write, then runs build

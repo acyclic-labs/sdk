@@ -1,0 +1,52 @@
+{
+  "schema": "acyclic.kani-proof/v1",
+  "captured_at_utc": "2026-10-07T01:07:13.9064798Z",
+  "status": "proved",
+  "source": {
+    "revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "files_sha256": {
+      "rust\\crates\\actors\\src\\domain.rs": "223C2C0C2F48A28FD0A6F1E9A18125B3A4DAEF429863F3EBC70016BA913C310B",
+      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "6F14544E030364B1A0E8E072F7A2DCADF327A0E995E395AB0F7E14A45BB5CBF0",
+      "rust\\crates\\actors\\build.rs": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C",
+      "rust\\crates\\actors\\Cargo.toml": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
+      "Cargo.toml": "F48D5BD3D03513DBA45EC66DD01223CD9CBAAE02AC919503C864B68AD822F765"
+    },
+    "note": "The checkout was dirty during the run; these hashes identify the source snapshot used."
+  },
+  "tools": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "cargo": "1.100.0-nightly (514c56dd7 2026-08-19)",
+    "toolchain": "nightly-2026-08-21-x86_64-unknown-linux-gnu"
+  },
+  "command": {
+    "template": "cd <sdk>; export RUSTUP_HOME=<isolated>/rustup-home KANI_HOME=<isolated>/kani-home CARGO_HOME=<isolated>/cargo-home CARGO_TARGET_DIR=<isolated>/target; cargo-kani --manifest-path rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::subscription_start_preserves_cursor_and_current_head_presence --exact --default-unwind 1 -j1",
+    "jobs": 1,
+    "default_unwind": 1
+  },
+  "harnesses": [
+    {
+      "status": "successful",
+      "obligation": "For every symbolic u64 cursor, decoding a Cursor preserves the exact cursor and leaves current_head absent; decoding CurrentHead(true) preserves the true payload and leaves cursor absent; CurrentHead(false) and a missing oneof are rejected as InvalidSubscription.",
+      "name": "domain::kani_proofs::subscription_start_preserves_cursor_and_current_head_presence"
+    }
+  ],
+  "result": {
+    "successful_harnesses": 1,
+    "failed_harnesses": 0,
+    "total_harnesses": 1,
+    "verifier_result": "VERIFICATION:- SUCCESSFUL",
+    "exit_code": 0
+  },
+  "evidence": {
+    "external_log": "foundation-kani-068/subscription-start-proof.log",
+    "log_sha256": "70863A0837C2FE26DFCAB2DACBBE488191A2AA6599A49DEA77ECD11654D6023A",
+    "source_checkout": "C foundation worktree",
+    "unsupported_constructs": "Kani reported reachable caller_location (1) and foreign function (1) in the crate; no selected harness failed."
+  },
+  "scope": {
+    "formal": "Only the listed pure SubscriptionStart conversion and presence property is proved; this receipt says nothing about wire identity beyond the exercised generated type, codecs, native loading, package installation, network transport, streaming, cancellation, recovery, or platform behavior.",
+    "runtime_followups": "Those integration properties remain runtime/artifact obligations."
+  }
+}

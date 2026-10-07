@@ -19,15 +19,12 @@ const ACTORS_CRATE: &str = "acyclic_actors";
 const SOURCE_PATHS: &[&str] = &[
     "Cargo.toml",
     "release/cargo-crates.json",
-    "docs/objects-v2-http.md",
-    "docs/rust-source-generation.md",
     "Cargo.lock",
     "rust/crates/sdk-docs/Cargo.toml",
     "rust/crates/sdk-docs/Cargo.lock",
     "rust/crates/sdk-docs/src",
     "rust/crates/sdk-generation/Cargo.toml",
     "rust/crates/sdk-generation/Cargo.lock",
-    "rust/crates/sdk-generation/README.md",
     "rust/crates/sdk-generation/build.rs",
     "rust/crates/sdk-generation/rust-toolchain.toml",
     "rust/crates/sdk-generation/src",
@@ -627,7 +624,7 @@ fn collect_sources(
 
 fn active_cargo_config_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
     let root = canonical(root)?;
-    let mut current = canonical(&root.join("rust/crates/actors"))?;
+    let mut current = root.clone();
     let mut paths = Vec::new();
     loop {
         for name in ["config.toml", "config"] {
@@ -1020,15 +1017,21 @@ fn sanitize_compiler_environment(command: &mut Command, tools: &PinnedToolchain)
         .env("RUSTC_BOOTSTRAP", "1");
 }
 
-fn rustdoc_target(config: &Config) -> io::Result<PathBuf> {
-    rustdoc_target_named(config, "sdk-generation-rustdoc-target")
-}
-
 fn rustdoc_target_named(config: &Config, name: &str) -> io::Result<PathBuf> {
-    let parent = config
-        .output
-        .parent()
-        .ok_or_else(|| io::Error::other("output has no parent directory"))?;
+    let parent = if let Some(configured) = env::var_os("CARGO_TARGET_DIR") {
+        let configured = PathBuf::from(configured);
+        if configured.is_absolute() {
+            configured
+        } else {
+            config.root.join(configured)
+        }
+    } else {
+        config
+            .output
+            .parent()
+            .ok_or_else(|| io::Error::other("output has no parent directory"))?
+            .to_owned()
+    };
     let target = parent.join(name);
     reject_reparse_ancestors(&target, false)?;
     fs::create_dir_all(&target)?;
@@ -1094,7 +1097,7 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
 }
 
 fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<RustdocInput> {
-    let json_target = rustdoc_target(config)?;
+    let json_target = rustdoc_target_named(config, "sdk-generation-rustdoc-target")?;
     let dep_info_target =
         rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
     let manifest = config.root.join("Cargo.toml");
@@ -1150,11 +1153,10 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
                 dep_info.display()
             )));
         }
-        let package_root = config.root.join(&owner.package_root);
         markdown_dependencies.extend(rustdoc_markdown_dependencies(
             &dep_info,
             &config.root,
-            &package_root,
+            &config.root,
         )?);
     }
     markdown_dependencies.sort();

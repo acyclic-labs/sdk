@@ -153,7 +153,7 @@ impl Client {
                 "invalid Actors bearer credential".into(),
             ));
         }
-        let mut authorization = format!("Bearer {token}")
+        let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = format!("Bearer {token}")
             .parse()
             .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         authorization.set_sensitive(true);
@@ -209,7 +209,7 @@ pub async fn connect_with_ca_certificate(
                 "caller-provided CA certificates are unsupported in browser builds".into(),
             ));
         }
-        return Self::from_browser(endpoint, token);
+        return Client::from_browser(endpoint, token);
     }
 }
 

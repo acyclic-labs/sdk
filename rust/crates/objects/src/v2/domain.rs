@@ -172,6 +172,14 @@ impl TryFrom<String> for IdempotencyKey {
     }
 }
 
+impl TryFrom<&str> for IdempotencyKey {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 impl TryFrom<wire::MutationIdentity> for IdempotencyKey {
     type Error = Error;
 
@@ -331,6 +339,97 @@ impl From<Precondition> for wire::Preconditions {
     }
 }
 
+/// A typed object deletion request.
+///
+/// The generated request remains the transport form; this façade keeps its
+/// bucket, key, condition, and retry identity values validated by construction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteObjectRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    preconditions: Option<Precondition>,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl DeleteObjectRequest {
+    /// Creates a deletion request for one validated bucket and object key.
+    pub fn new(bucket: BucketName, object_key: ObjectKey) -> Self {
+        Self {
+            bucket,
+            object_key,
+            preconditions: None,
+            mutation: None,
+        }
+    }
+
+    /// Adds an atomic current-value condition.
+    pub fn with_precondition(mut self, precondition: Precondition) -> Self {
+        self.preconditions = Some(precondition);
+        self
+    }
+
+    /// Adds a caller retry identity.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the optional atomic condition.
+    pub fn precondition(&self) -> Option<&Precondition> {
+        self.preconditions.as_ref()
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::DeleteObjectRequest> for DeleteObjectRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::DeleteObjectRequest) -> Result<Self, Self::Error> {
+        request::delete_digest(&value)?;
+        let bucket = BucketName::try_from(value.bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?;
+        let object_key = ObjectKey::new(value.object_key)?;
+        let preconditions = value
+            .preconditions
+            .map(Precondition::try_from)
+            .transpose()?;
+        let mutation = value
+            .mutation
+            .map(IdempotencyKey::try_from)
+            .transpose()?;
+        Ok(Self {
+            bucket,
+            object_key,
+            preconditions,
+            mutation,
+        })
+    }
+}
+
+impl From<DeleteObjectRequest> for wire::DeleteObjectRequest {
+    fn from(value: DeleteObjectRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            preconditions: value.preconditions.map(Into::into),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
 /// A validated nonzero caller page size.
 ///
 /// The wire contract accepts zero as shorthand for its default. The semantic
@@ -434,13 +533,34 @@ mod tests {
         let precondition = Precondition::IfMatch(Etag::try_from("etag-1").unwrap());
         let wire = wire::Preconditions::from(precondition.clone());
         assert!(matches!(
-            wire.condition,
-            Some(wire::preconditions::Condition::IfMatch(value)) if value == "etag-1"
+            wire.condition.as_ref(),
+            Some(wire::preconditions::Condition::IfMatch(value)) if value.as_str() == "etag-1"
         ));
         assert_eq!(Precondition::try_from(wire), Ok(precondition));
         assert!(PageSize::try_from(0).is_err());
         assert_eq!(PageSize::default().get(), 1_000);
         assert!(PartNumber::try_from(0).is_err());
         assert_eq!(PartNumber::try_from(1).unwrap().get(), 1);
+    }
+
+    #[test]
+    fn typed_delete_request_round_trips_validated_values() {
+        let request = DeleteObjectRequest::new(
+            BucketName::try_from("customer.inputs").unwrap(),
+            ObjectKey::try_from("artifact").unwrap(),
+        )
+        .with_precondition(Precondition::IfAbsent)
+        .with_idempotency_key(IdempotencyKey::try_from("delete-1").unwrap());
+
+        let wire = wire::DeleteObjectRequest::from(request.clone());
+        assert_eq!(DeleteObjectRequest::try_from(wire), Ok(request));
+
+        let invalid = wire::DeleteObjectRequest {
+            bucket: None,
+            object_key: String::new(),
+            preconditions: None,
+            mutation: None,
+        };
+        assert!(DeleteObjectRequest::try_from(invalid).is_err());
     }
 }

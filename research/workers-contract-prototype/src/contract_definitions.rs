@@ -1,5 +1,3 @@
-use protify::*;
-
 proto_package!(
     WORKERS_PACKAGE,
     name = "acyclic.workers.v1",

@@ -9,4 +9,10 @@ path = "src/lib.rs"
 
 [dependencies]
 prost = "=0.14.4"
+prost-reflect = "=0.16.5"
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }
+
+[workspace]
+
+
+

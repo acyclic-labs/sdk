@@ -1,0 +1,52 @@
+{
+  "schema": "acyclic.kani-proof/v1",
+  "captured_at_utc": "2026-10-07T01:15:18.4955417Z",
+  "status": "proved",
+  "source": {
+    "revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "files_sha256": {
+      "rust\\crates\\actors\\src\\domain.rs": "FABCAF54CB8274425873C5FBA1B288E071C211C15718207AE552D0BC093B1195",
+      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "DE3549BFD151CC804DA60C231A81B7F1F83404C09CE639B4B82C2672A0DA8589",
+      "rust\\crates\\actors\\build.rs": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C",
+      "rust\\crates\\actors\\Cargo.toml": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
+      "Cargo.toml": "F48D5BD3D03513DBA45EC66DD01223CD9CBAAE02AC919503C864B68AD822F765"
+    },
+    "note": "The checkout was dirty during the run; these hashes identify the source snapshot used."
+  },
+  "tools": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "cargo": "1.100.0-nightly (514c56dd7 2026-08-19)",
+    "toolchain": "nightly-2026-08-21-x86_64-unknown-linux-gnu"
+  },
+  "command": {
+    "template": "cd <sdk>; export RUSTUP_HOME=<isolated>/rustup-home KANI_HOME=<isolated>/kani-home CARGO_HOME=<isolated>/cargo-home CARGO_TARGET_DIR=<isolated>/target; cargo-kani --manifest-path rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values --exact --default-unwind 1 -j1",
+    "jobs": 1,
+    "default_unwind": 1
+  },
+  "harnesses": [
+    {
+      "status": "successful",
+      "obligation": "For every symbolic u64, PositiveU64::new(value) succeeds exactly when value is nonzero, preserves the exact value through get(), and returns Contract(InvalidArgument) exactly for zero.",
+      "name": "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values"
+    }
+  ],
+  "result": {
+    "successful_harnesses": 1,
+    "failed_harnesses": 0,
+    "total_harnesses": 1,
+    "verifier_result": "VERIFICATION:- SUCCESSFUL",
+    "exit_code": 0
+  },
+  "evidence": {
+    "external_log": "foundation-kani-068/positive-u64-proof.log",
+    "log_sha256": "4F9858C027F6F87A59116FFE21551B2C2BC92330CE0262D0E2E5EDBCC4F8FC72",
+    "source_checkout": "C foundation worktree",
+    "unsupported_constructs": "Kani reported no selected harness failure; the crate-level run retained the known caller_location and foreign-function reachability warnings."
+  },
+  "scope": {
+    "formal": "Only the pure PositiveU64 constructor and accessor invariant is proved for symbolic u64 values; this receipt says nothing about arbitrary Vec-based digest construction, wire identity, codecs, native loading, package installation, network transport, streaming, cancellation, recovery, or platform behavior.",
+    "runtime_followups": "Those integration properties remain runtime/artifact obligations."
+  }
+}

@@ -6,7 +6,7 @@
 //! lossless enum/presence rules. Transport behavior remains in
 //! [`crate::grpc`] and [`crate::http`].
 
-use std::path::Path;
+use std::{num::NonZeroU64, path::Path};
 
 use crate::wire;
 use ts_rs::{Config, ExportError, TS};
@@ -25,6 +25,15 @@ pub struct ActorId(String);
 #[ts(export_to = "actors/CodeSha256.ts")]
 #[ts(type = "Uint8Array & { readonly __brand: unique symbol; readonly __length: 32 }")]
 pub struct CodeSha256([u8; 32]);
+
+/// A strictly positive unsigned 64-bit value.
+///
+/// The wire contract remains a raw `u64`; this nominal type is used only at
+/// semantic boundaries where zero is not admitted.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+#[ts(export_to = "actors/PositiveU64.ts")]
+#[ts(type = "bigint & { readonly __brand: unique symbol }")]
+pub struct PositiveU64(NonZeroU64);
 
 /// Failure while constructing a semantic value from customer or wire input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -113,6 +122,29 @@ impl CodeSha256 {
                 .map_err(|_| DomainError::InvalidCodeSha256)?,
         ))
     }
+}
+
+impl PositiveU64 {
+    /// Constructs a positive value using the canonical semantic predicate.
+    pub fn new(value: u64) -> Result<Self, DomainError> {
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or(DomainError::Contract(crate::ContractError::InvalidArgument))
+    }
+
+    /// Returns the exact unsigned wire value.
+    #[must_use]
+    pub fn get(self) -> u64 { self.0.get() }
+}
+
+impl TryFrom<u64> for PositiveU64 {
+    type Error = DomainError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> { Self::new(value) }
+}
+
+impl From<PositiveU64> for u64 {
+    fn from(value: PositiveU64) -> Self { value.get() }
 }
 
 /// The shared digest predicate used by the existing Actor validators.
@@ -215,25 +247,16 @@ impl From<Binding> for wire::Binding {
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
-    #[ts(type = "bigint")]
-    handler_timeout_millis: u64,
-    #[ts(type = "bigint")]
-    memory_bytes: u64,
-    #[ts(type = "bigint")]
-    checkpoint_bytes: u64,
+    handler_timeout_millis: PositiveU64,
+    memory_bytes: PositiveU64,
+    checkpoint_bytes: PositiveU64,
 }
 
 impl TryFrom<wire::ActorLimits> for ActorLimits {
     type Error = DomainError;
 
     fn try_from(value: wire::ActorLimits) -> Result<Self, Self::Error> {
-        if value.handler_timeout_millis == 0
-            || value.memory_bytes == 0
-            || value.checkpoint_bytes == 0
-        {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
-        Ok(Self::from_validated(value))
+        Self::from_validated(value)
     }
 }
 
@@ -244,49 +267,46 @@ impl ActorLimits {
         memory_bytes: u64,
         checkpoint_bytes: u64,
     ) -> Result<Self, DomainError> {
-        if handler_timeout_millis == 0 || memory_bytes == 0 || checkpoint_bytes == 0 {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
         Ok(Self {
-            handler_timeout_millis,
-            memory_bytes,
-            checkpoint_bytes,
+            handler_timeout_millis: handler_timeout_millis.try_into()?,
+            memory_bytes: memory_bytes.try_into()?,
+            checkpoint_bytes: checkpoint_bytes.try_into()?,
         })
     }
 
     /// Returns the handler timeout in milliseconds.
     #[must_use]
     pub fn handler_timeout_millis(&self) -> u64 {
-        self.handler_timeout_millis
+        self.handler_timeout_millis.get()
     }
 
     /// Returns the memory limit in bytes.
     #[must_use]
     pub fn memory_bytes(&self) -> u64 {
-        self.memory_bytes
+        self.memory_bytes.get()
     }
 
     /// Returns the checkpoint limit in bytes.
     #[must_use]
     pub fn checkpoint_bytes(&self) -> u64 {
-        self.checkpoint_bytes
+        self.checkpoint_bytes.get()
     }
 
-    fn from_validated(value: wire::ActorLimits) -> Self {
-        Self {
-            handler_timeout_millis: value.handler_timeout_millis,
-            memory_bytes: value.memory_bytes,
-            checkpoint_bytes: value.checkpoint_bytes,
-        }
+    fn from_validated(value: wire::ActorLimits) -> Result<Self, DomainError> {
+        Ok(Self {
+            handler_timeout_millis: value.handler_timeout_millis.try_into()?,
+            memory_bytes: value.memory_bytes.try_into()?,
+            checkpoint_bytes: value.checkpoint_bytes.try_into()?,
+        })
     }
 }
 
 impl From<ActorLimits> for wire::ActorLimits {
     fn from(value: ActorLimits) -> Self {
         Self {
-            handler_timeout_millis: value.handler_timeout_millis,
-            memory_bytes: value.memory_bytes,
-            checkpoint_bytes: value.checkpoint_bytes,
+            handler_timeout_millis: value.handler_timeout_millis.get(),
+            memory_bytes: value.memory_bytes.get(),
+            checkpoint_bytes: value.checkpoint_bytes.get(),
         }
     }
 }
@@ -969,7 +989,7 @@ impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
                 .into_iter()
                 .map(Binding::from_validated)
                 .collect(),
-            limits: ActorLimits::from_validated(value.limits.ok_or(DomainError::MissingMessage)?),
+            limits: ActorLimits::from_validated(value.limits.ok_or(DomainError::MissingMessage)?)?,
             subscriptions: value
                 .subscriptions
                 .into_iter()
@@ -1062,7 +1082,7 @@ impl TryFrom<wire::UpdateActorRequest> for UpdateActorRequest {
                 .into_iter()
                 .map(Binding::from_validated)
                 .collect(),
-            limits: ActorLimits::from_validated(value.limits.ok_or(DomainError::MissingMessage)?),
+            limits: ActorLimits::from_validated(value.limits.ok_or(DomainError::MissingMessage)?)?,
             expected_configuration_revision: value.expected_configuration_revision,
             idempotency_key: value.idempotency_key,
         })
@@ -1468,6 +1488,7 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
     }
 
     export_roots!(
+        PositiveU64,
         CreateActorRequest,
         UpdateActorRequest,
         InspectActorRequest,
@@ -1512,6 +1533,36 @@ mod tests {
             Err(DomainError::InvalidCodeSha256)
         );
         assert!(CodeSha256::new(vec![1; 32]).is_ok());
+    }
+
+    #[test]
+    fn positive_u64_is_the_single_limits_admission_predicate() {
+        let invalid = DomainError::Contract(crate::ContractError::InvalidArgument);
+        assert_eq!(PositiveU64::new(0), Err(invalid));
+        assert_eq!(PositiveU64::try_from(0), Err(invalid));
+
+        let one = PositiveU64::new(1).expect("one is positive");
+        let max = PositiveU64::new(u64::MAX).expect("u64::MAX is representable");
+        assert_eq!(one.get(), 1);
+        assert_eq!(max.get(), u64::MAX);
+
+        let wire = wire::ActorLimits {
+            handler_timeout_millis: 1,
+            memory_bytes: u64::MAX,
+            checkpoint_bytes: 4096,
+        };
+        let limits = ActorLimits::try_from(wire.clone()).expect("positive wire limits");
+        assert_eq!(limits.handler_timeout_millis(), 1);
+        assert_eq!(limits.memory_bytes(), u64::MAX);
+        assert_eq!(limits.checkpoint_bytes(), 4096);
+        assert_eq!(wire::ActorLimits::from(limits), wire);
+
+        let invalid_wire = wire::ActorLimits {
+            handler_timeout_millis: 0,
+            memory_bytes: 1,
+            checkpoint_bytes: 1,
+        };
+        assert_eq!(ActorLimits::try_from(invalid_wire), Err(invalid));
     }
 
     #[test]

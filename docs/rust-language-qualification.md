@@ -113,10 +113,13 @@ The bounded harness stays independent of package generation and network code:
   `ErrorCode` conversions. Known values round-trip, while unknown values remain
   observable in the corresponding `DomainError` payload.
 
+* SubscriptionStart is checked directly through the existing wire conversion: every symbolic u64 cursor is preserved exactly, the CurrentHead(true) payload and oneof presence are preserved, while CurrentHead(false) and a missing start are rejected.
+* PositiveU64 is checked directly through its Rust-owned NonZeroU64 constructor: every symbolic u64 succeeds exactly when nonzero, preserves the exact value through get(), and maps zero to Contract(InvalidArgument).
+
 These harnesses target exact functions already present in
 `rust/crates/actors/src/domain.rs`; they do not introduce a second contract or
-validation rule. The recorded proof is bounded to fixed arrays, finite enum
-domains, and one symbolic `i32`; it does not claim an unbounded theorem.
+validation rule. The recorded proofs cover fixed arrays, finite enum domains,
+and symbolic `i32` and `u64` values; they do not claim an unbounded theorem.
 
 [Kani](https://github.com/model-checking/kani) is the maintained OSS candidate
 for bounded model checking of small, pure Rust conversion and validation
@@ -131,6 +134,10 @@ worker. All six listed harnesses passed with exit code 0: the symbolic digest
 equivalence, four wrong-length rejection cases, and the numeric enum mapping
 invariant. The receipt identifies the exact Rust source hashes and points to
 the external log `foundation-kani-068/domain-invariant-proof.log`.
+
+A follow-up Kani 0.68 receipt also proves subscription_start_preserves_cursor_and_current_head_presence for the symbolic cursor and current-head presence/rejection cases; it is recorded in rust/crates/actors/proofs/kani-subscription-start.json with its own source hashes and external log.
+
+A separate Kani 0.68 receipt proves positive_u64_constructor_accepts_exactly_nonzero_values over symbolic u64 values; it is recorded in rust/crates/actors/proofs/kani-positive-u64.json with its own source hashes and external log.
 
 The earlier Kani 0.67 attempt is retained as historical failed evidence: it
 used a Rust 1.93 nightly compiler path and stopped before proving a harness.

@@ -980,7 +980,7 @@ async fn read(
         .stream(request.path.to_string())
         .map_err(stream_error)?;
     let token = cancellation_state(cancellation);
-    let mut records = stream.read(request.from, request.limit);
+    let records = stream.read(request.from, request.limit);
     let mut records =
         run_with_cancellation(async { records.await.map_err(stream_error) }, token.clone()).await?;
     let mut output = Vec::new();
