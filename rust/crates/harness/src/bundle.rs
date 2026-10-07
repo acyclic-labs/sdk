@@ -875,7 +875,7 @@ mod tests {
         impl ModelProvider for Provider {
             fn generate<'a>(
                 &'a self,
-                _: crate::model::ModelRequest,
+                _: crate::model::PreparedModelRequest,
             ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
                 Box::pin(futures::stream::empty())
             }

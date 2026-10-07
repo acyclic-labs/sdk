@@ -730,6 +730,33 @@ struct WasmProjectionResolver {
     files: std::collections::HashMap<String, Vec<u8>>,
 }
 
+struct WasmPrefixReader {
+    files: WasmProjectionResolver,
+    verifier: crate::core::AuthorityVerifier,
+    scope: Scope,
+}
+
+impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
+    fn verify<'a>(
+        &'a self,
+        file: &'a FileRef,
+    ) -> futures::future::BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async move {
+            ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
+            file.descriptor().verify(&self.files.bytes(file)?)
+        })
+    }
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+        Box::pin(async move {
+            ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
+            self.files.bytes(file)
+        })
+    }
+}
+
 impl WasmProjectionResolver {
     fn from_js(value: JsValue) -> Result<Self, JsValue> {
         let map = value
@@ -1981,6 +2008,48 @@ impl WasmReducer {
         Ok(())
     }
 
+    /// Composes the native immutable prefix after authenticating every exact
+    /// reference against this owner's signed scope. The host captures resident
+    /// bytes before entry; supplied bytes and capability strings grant nothing.
+    #[wasm_bindgen(js_name = prepareInheritedModelRequest)]
+    pub async fn prepare_inherited_model_request(
+        &self,
+        scope: JsValue,
+        request: JsValue,
+        prefix: JsValue,
+        files: JsValue,
+        limits: JsValue,
+    ) -> Result<Vec<u8>, JsValue> {
+        let limits: Limits = from_js(limits)?;
+        limits.validate().map_err(js_error)?;
+        let files = WasmProjectionResolver::from_js(files)?;
+        let total = files
+            .files
+            .values()
+            .try_fold(0_u64, |sum, bytes| sum.checked_add(bytes.len() as u64));
+        if total.is_none_or(|bytes| bytes > crate::model::MAX_MODEL_REQUEST_BYTES)
+            || files.files.len()
+                > limits
+                    .context_messages
+                    .saturating_mul(limits.attachments + 2)
+        {
+            return Err(JsValue::from_str("captured prefix files exceed limits"));
+        }
+        let reader = WasmPrefixReader {
+            files,
+            verifier: self.issuer.verifier(),
+            scope: from_js(scope)?,
+        };
+        reader.verifier.verify(&reader.scope).map_err(js_error)?;
+        let prefix: FileRef = from_js(prefix)?;
+        let input: WasmModelRequestInput = from_js(request)?;
+        let prepared =
+            crate::model::PreparedModelRequest::inherit(input.into(), &prefix, &reader, limits)
+                .await
+                .map_err(js_error)?;
+        Ok(prepared.bytes().to_vec())
+    }
+
     /// Authenticates lazy directory and named-path access against the
     /// owner's signed, segment-bounded private-volume read grant.
     #[wasm_bindgen(js_name = verifyPrivateDirectoryRead)]
@@ -2448,6 +2517,78 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Public facade input for the shared request constructor.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmModelRequestInput {
+    model: crate::model::Model,
+    messages: Vec<ModelMessage>,
+    tools: Vec<WasmToolDefinitionInput>,
+    max_output_tokens: Option<u32>,
+}
+
+impl From<WasmModelRequestInput> for crate::model::ModelRequest {
+    fn from(input: WasmModelRequestInput) -> Self {
+        Self {
+            model: input.model,
+            messages: input.messages,
+            tools: input.tools.into_iter().map(ToolDefinition::from).collect(),
+            max_output_tokens: input.max_output_tokens,
+        }
+    }
+}
+
+/// Creates a direct-parent segment from the exact admitted request bytes.
+#[wasm_bindgen(js_name = encodeModelPrefix)]
+pub fn encode_model_prefix(
+    request: Vec<u8>,
+    parent: JsValue,
+    parent_request: Option<Vec<u8>>,
+    limits: JsValue,
+) -> Result<Vec<u8>, JsValue> {
+    let limits: Limits = from_js(limits)?;
+    let prepare = |bytes: &[u8]| -> crate::Result<crate::model::PreparedModelRequest> {
+        let request = serde_json::from_slice(bytes)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let prepared = crate::model::PreparedModelRequest::prepare(request, limits)?;
+        if prepared.bytes() != bytes {
+            return Err(crate::Error::Invalid(
+                "request bytes are not canonical".into(),
+            ));
+        }
+        Ok(prepared)
+    };
+    let request = prepare(&request).map_err(js_error)?;
+    let parent: Option<FileRef> = from_js(parent)?;
+    let parent_request = parent_request
+        .as_deref()
+        .map(prepare)
+        .transpose()
+        .map_err(js_error)?;
+    let selected = match (&parent, &parent_request) {
+        (None, None) => None,
+        (Some(reference), Some(prepared)) => Some((reference, prepared)),
+        _ => {
+            return Err(JsValue::from_str(
+                "prefix parent and request must be paired",
+            ));
+        }
+    };
+    crate::model::ModelPrefix::select(&request, selected)
+        .and_then(|prefix| prefix.canonical_bytes())
+        .map_err(js_error)
+}
+
+/// Constructs the same canonical request bytes used by native providers.
+#[wasm_bindgen(js_name = prepareModelRequest)]
+pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8>, JsValue> {
+    let input: WasmModelRequestInput = from_js(request)?;
+    let request = input.into();
+    let prepared =
+        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
+    Ok(prepared.bytes().to_vec())
 }
 
 /// Validates provider-neutral model content under the exact native limits.
