@@ -341,6 +341,8 @@ case "$lane" in
       --all-targets --all-features --locked -- -D warnings
     cargo clippy -p acyclic-harness --features wasm \
       --target wasm32-unknown-unknown --locked -- -D warnings
+    cargo clippy -p acyclic-machines-wasm -p acyclic-inference-wasm -p acyclic-objects-wasm \
+      --target wasm32-unknown-unknown --all-targets --all-features --locked -- -D warnings
     if [[ "$(wasm-bindgen-test-runner --version 2>/dev/null)" != "wasm-bindgen-test-runner 0.2.117" ]]; then
       # The pinned release archive avoids compiling wasm-bindgen-cli on a cold cache.
       install_tool wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz \

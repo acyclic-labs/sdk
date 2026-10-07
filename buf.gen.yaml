@@ -10,11 +10,6 @@ plugins:
     out: generated/rust
     strategy: all
     types:
-      - acyclic.filesystem.v2.FilesystemService
-      - acyclic.objects.v1.BucketsService
-      - acyclic.objects.v1.ObjectsService
-      - acyclic.objects.v1.MultipartService
-      - acyclic.objects.v1.SnapshotsService
       - acyclic.objects.v2.BucketsService
       - acyclic.objects.v2.ObjectsService
       - acyclic.objects.v2.MultipartService

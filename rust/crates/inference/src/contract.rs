@@ -950,14 +950,17 @@ mod tests {
             }),
             ..Default::default()
         };
-        let mut result = wire::RunResult::default();
-        result.context = Some(context);
-        result.terminal = wire::RunTerminal::Completed.into();
         let view = wire::RunView {
             run_id: vec![2; 16],
             input: vec![3; 32],
             model: "model".to_owned(),
-            result: Some(result),
+            // Explicit fields: the host feature adds a scrubbing `Drop`.
+            result: Some(wire::RunResult {
+                output: Vec::new(),
+                context: Some(context),
+                terminal: wire::RunTerminal::Completed.into(),
+                receipt: None,
+            }),
             ..Default::default()
         };
         assert!(validate_run_view(&view, [2; 16]).is_ok());
@@ -999,14 +1002,18 @@ mod tests {
 
     #[test]
     fn completed_run_watch_start_is_shared_with_the_host() {
-        let mut result = wire::RunResult::default();
-        result.terminal = wire::RunTerminal::Completed.into();
         let view = wire::RunView {
             run_id: vec![2; 16],
             input: vec![3; 32],
             model: "model".to_owned(),
             last_sequence: 7,
-            result: Some(result),
+            // Explicit fields: the host feature adds a scrubbing `Drop`.
+            result: Some(wire::RunResult {
+                output: Vec::new(),
+                context: None,
+                terminal: wire::RunTerminal::Completed.into(),
+                receipt: None,
+            }),
             ..Default::default()
         };
         let bytes = view.encode_to_vec();

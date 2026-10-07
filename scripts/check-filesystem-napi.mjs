@@ -46,7 +46,7 @@ const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-napi-"));
 const bindingPath = join(temporary, `${basename(libraryName)}.node`);
 try {
   await copyFile(source, bindingPath);
-  await new Promise((resolveChild, rejectChild) => {
+  await /** @type {Promise<void>} */ (new Promise((resolveChild, rejectChild) => {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
       env: {
         ...process.env,
@@ -61,7 +61,7 @@ try {
       if (code === 0) resolveChild();
       else rejectChild(new Error(`N-API child exited with code ${code} and signal ${signal}`));
     });
-  });
+  }));
   if (output !== undefined) {
     // Retain the private copy loaded by the successful child, never recopy the build output.
     await mkdir(dirname(output), { recursive: true });

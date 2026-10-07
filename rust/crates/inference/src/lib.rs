@@ -7,6 +7,9 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/inference.customer.v1.rs"));
 }
 
+/// Customer-only reflection; no backend descriptors or implementation are packaged.
+pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
+
 mod contract;
 #[cfg(feature = "http-codec")]
 pub mod http_codec;

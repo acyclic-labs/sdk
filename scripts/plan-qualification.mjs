@@ -41,6 +41,7 @@ export const qualificationEventKinds = Object.freeze({
   other: "other",
 });
 
+/** @param {{ eventName?: string, ref?: string, force?: boolean }} event */
 export function classifyQualificationEvent({ eventName, ref, force = false }) {
   // Reusable release callers inherit the caller's push/tag event.  An explicit
   // force input is the authoritative signal that this invocation is a full
@@ -71,7 +72,6 @@ export const ignored = {
     unrelatedGithub(path) ||
     standaloneProjects(path) ||
     (path.startsWith("typescript/") && path !== "typescript/packages/filesystem/package.json") ||
-    path.startsWith("generated/typescript/") ||
     path.startsWith("languages/") ||
     path.startsWith("ffi/") ||
     ["bun.lock", "package.json", "tsconfig.json", "tsconfig.base.json"].includes(path),

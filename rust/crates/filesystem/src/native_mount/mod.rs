@@ -122,6 +122,54 @@ fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
     }
 }
 
+/// Entries a driver requests from the source per directory page.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const DIRECTORY_PAGE_SIZE: u32 = 256;
+/// Named attributes a driver requests from the source per page.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const ATTRIBUTE_PAGE_SIZE: u32 = 256;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
+
+/// Metadata for a node created through a POSIX mount by `uid`/`gid` now.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
+    let now = system_time_ns(SystemTime::now()).unwrap_or(i64::MAX);
+    FileMetadata {
+        posix_mode: MetadataField::Value((mode & 0o7777) | kind),
+        posix_uid: MetadataField::Value(uid),
+        posix_gid: MetadataField::Value(gid),
+        posix_flags: MetadataField::Value(0),
+        windows_attributes: MetadataField::Unavailable,
+        created_ns: MetadataField::Value(now),
+        modified_ns: MetadataField::Value(now),
+        accessed_ns: MetadataField::Value(now),
+        changed_ns: MetadataField::Value(now),
+        named_attributes: MetadataField::Unavailable,
+        acl: MetadataField::Unavailable,
+        security_descriptor: MetadataField::Unavailable,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::needless_pass_by_value)]
+fn errno(error: MountSourceError) -> i32 {
+    match error {
+        MountSourceError::NotFound => libc::ENOENT,
+        MountSourceError::AlreadyExists => libc::EEXIST,
+        MountSourceError::Invalid(_) => libc::EINVAL,
+        MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
+        MountSourceError::Engine(_) => libc::EIO,
+        MountSourceError::Stale => libc::ESTALE,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::needless_pass_by_value)]
+fn source_error(error: MountSourceError) -> NativeMountError {
+    NativeMountError::Driver(error.to_string())
+}
+
 #[cfg(target_os = "windows")]
 mod projfs;
 #[cfg(target_os = "windows")]

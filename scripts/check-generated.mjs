@@ -65,6 +65,7 @@ const wasmSmoke = {
     return [module.validatePath("/check-generated"), module.validateSequence("0")];
   },
 };
+/** @type {[string, string][]} */
 const wasmPackages = [
   ["filesystem", "acyclic_fs_wasm"],
   ["harness", "acyclic_harness_wasm"],
@@ -157,15 +158,9 @@ try {
   }
   const freshTypeScript = join(temporary, "generated/typescript");
   const freshRust = join(temporary, "generated/rust");
-  const committedRust = join(root, "generated/rust");
-  const freshRustFiles = generatedFiles(freshRust);
-  if (JSON.stringify(freshRustFiles) !== JSON.stringify(generatedFiles(committedRust))) {
-    throw new Error("generated Rust file set drift; run bun run generate");
-  }
-  for (const relative of freshRustFiles) {
-    const fresh = normalizeGeneratedRust(relative.replaceAll("\\", "/"), readFileSync(join(freshRust, relative), "utf8"));
-    const committed = readFileSync(join(committedRust, relative), "utf8");
-    if (fresh !== committed) throw new Error(`generated Rust drift: ${relative}`);
+  for (const [relative, packaged] of packagedRustBindings) {
+    const fresh = normalizeGeneratedRust(relative, readFileSync(join(freshRust, relative), "utf8"));
+    if (fresh !== readFileSync(join(root, packaged), "utf8")) throw new Error(`packaged Rust drift: ${packaged}`);
   }
   for (const [source, destination] of generatedDescriptors) {
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
@@ -182,20 +177,11 @@ try {
       throw new Error(`generated descriptor drift: ${destination}`);
     }
   }
-  for (const [relative, declaration] of [
-    ["typescript/packages/filesystem/generated/descriptor-digest.js", false],
-    ["typescript/packages/filesystem/generated/descriptor-digest.d.ts", true],
-  ]) {
+  for (const declaration of [false, true]) {
+    const relative = `typescript/packages/filesystem/generated/descriptor-digest.${declaration ? "d.ts" : "js"}`;
     const expected = filesystemDescriptorDigestSource(root, declaration);
     if (readFileSync(join(root, relative), "utf8") !== expected) {
       throw new Error(`generated filesystem descriptor digest drift: ${relative}`);
-    }
-  }
-
-  for (const [relative, packaged] of packagedRustBindings) {
-    const canonical = readFileSync(join(committedRust, relative));
-    if (!canonical.equals(readFileSync(join(root, packaged)))) {
-      throw new Error(`packaged Rust drift: ${relative}`);
     }
   }
 

@@ -1406,6 +1406,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(*operation_id)
             .ok_or_else(|| Error::NotFound("waiting task".into()))?;
         if (!replaying && operation.phase != crate::scheduler::OperationPhase::Suspended)
+            || operation.phase == crate::scheduler::OperationPhase::Terminal
             || operation.cancellation_requested
             || operation.workflow.as_ref().is_none_or(|slot| {
                 slot.revision != *workflow_revision

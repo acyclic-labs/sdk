@@ -176,6 +176,7 @@ test("routine pull requests qualify only the core gate and policy lanes", () => 
 });
 
 test("release, manual, and scheduled events are full qualification events", () => {
+  /** @type {Array<[{ eventName: string, force?: boolean }, string]>} */
   const cases = [
     [{ eventName: "release" }, qualificationEventKinds.release],
     [{ eventName: "workflow_dispatch", force: false }, qualificationEventKinds.manual],

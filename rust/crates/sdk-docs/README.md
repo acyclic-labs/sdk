@@ -20,7 +20,13 @@ fn build_preview(root: PathBuf, rustdoc_json: PathBuf) -> Result<DocsData, Error
         source_state: "working-tree".into(),
         source_sha256: None,
         repository_root: root,
-        rustdoc_files: vec![rustdoc_json],
+        rustdoc_files: vec![rustdoc_json.clone()],
+        package_metadata: vec![sdk_docs::PackageMetadata {
+            rustdoc_file: rustdoc_json,
+            package_name: "example-package".into(),
+            crate_name: "example".into(),
+            version: "0.1.0".into(),
+        }],
         generated_sources: Vec::new(),
         mark_latest: false,
     })
@@ -43,7 +49,7 @@ the physical file, rejects symlink or reparse-point paths, rejects absolute or
 escaping logical paths, rejects duplicate mappings, and verifies the digest
 before projection and again after projection. The resulting `SourceSpan.path`
 uses the logical path while retaining Rustdoc's line and column coordinates;
-generated-source inputs are transient and do not add fields to the v1 output
+generated-source inputs are transient and do not add fields to the v2 output
 schema.
 
 Crate-root `//!` documentation becomes a guide at the crate path. Public module
@@ -59,9 +65,9 @@ stable release with the greatest SemVer; `releases` contains the stable
 release entries, and `preview` is one independent optional preview entry.
 Resolve each entry's `dataFile` relative to the index root rather than
 reconstructing a path from an untrusted version string. Release data is stored
-under `releases/<version>/sdk-docs-data.v1.json`; preview data is stored under
-`preview/<version>/sdk-docs-data.v1.json`. Each version directory also contains
-its `sdk-docs-data.v1.schema.json`.
+under `releases/<version>/sdk-docs-data.v2.json`; preview data is stored under
+`preview/<version>/sdk-docs-data.v2.json`. Each version directory also contains
+its `sdk-docs-data.v2.schema.json`.
 
 The selected data file contains its own `version`, `channel`, `source`,
 `navigation`, and `families`. The `version`, `channel`, and
@@ -74,6 +80,4 @@ publishers may target the same output directory; each publisher holds this
 lock across index validation, bundle writes, and index replacement so entries
 are not lost.
 
-The current contract is `sdk-docs-data.v1`; optional fields such as `links` are
-omitted when empty and default during deserialization so older v1 bundles remain
-readable.
+The current contract is `sdk-docs-data.v2`; every new bundle includes Rust/Cargo-derived package and search records alongside navigation and families. `packageMetadata` must identify the Cargo package, Rust crate, and Rust crate version for every Rustdoc input; the preview label never becomes an installable package version. The version index remains `sdk-docs-versions.v1` so release selection and latest-version semantics are unchanged. Existing immutable `sdk-docs-data.v1` releases remain valid index entries and are read with their original schema rules when a later v2 release is added; only v2 bundles are written by this library.

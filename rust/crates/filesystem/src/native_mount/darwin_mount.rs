@@ -6,10 +6,11 @@
 #![allow(unsafe_code)]
 
 use super::{
-    DriverStartFailure, MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup,
-    MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp,
-    metadata_or, system_time_ns,
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, DriverStartFailure,
+    MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES, MountAttributeWriteMode, MountDirectoryEntry,
+    MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation,
+    MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
+    ViewOrigin, ViewStamp, create_metadata, errno, metadata_or, source_error, system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -28,8 +29,6 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 const ROOT_INODE: u64 = 1;
-const DIRECTORY_PAGE_SIZE: u32 = 256;
-const ATTRIBUTE_PAGE_SIZE: u32 = 256;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
 /// Most times a listing that has delivered no entry starts over in a view
 /// that keeps moving before it fails.
@@ -38,7 +37,6 @@ const MAXIMUM_LISTING_RESTARTS: usize = 8;
 /// an unconfirmed fence; with more, waiting out the attribute timeout costs
 /// less.
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
-const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
 const FALLOC_FL_KEEP_SIZE: c_int = 0x01;
@@ -413,7 +411,7 @@ impl FlushLedger {
             return Ok(());
         }
         let covered = self.latest();
-        source.flush().map_err(|error| errno(&error))?;
+        source.flush().map_err(errno)?;
         self.flushed.fetch_max(covered, Ordering::AcqRel);
         Ok(())
     }
@@ -773,7 +771,7 @@ impl DarwinMountContext {
                 return cached.ok_or(libc::ENOENT);
             }
         }
-        let lookup = self.source.lookup(path).map_err(|error| errno(&error))?;
+        let lookup = self.source.lookup(path).map_err(errno)?;
         if let Some(stamp) = stamp {
             self.remember_lookup(path, lookup, stamp)?;
         }
@@ -853,8 +851,8 @@ impl DarwinMountContext {
             }
             entry.file_id
         };
-        let file = self.source.open_file(path).map_err(|error| errno(&error))?;
-        if file.lookup().map_err(|error| errno(&error))?.node.file_id != file_id {
+        let file = self.source.open_file(path).map_err(errno)?;
+        if file.lookup().map_err(errno)?.node.file_id != file_id {
             return Err(libc::ESTALE);
         }
         let mut files = self.files.write().map_err(|_| libc::EIO)?;
@@ -906,7 +904,7 @@ impl DarwinMountContext {
     /// without a marker when `handle` is zero.
     fn file_target(&self, path: &MountPath, handle: u64) -> Result<FileTarget, i32> {
         if handle == 0 {
-            let file = self.source.open_file(path).map_err(|error| errno(&error))?;
+            let file = self.source.open_file(path).map_err(errno)?;
             return Ok(FileTarget {
                 file,
                 written: None,
@@ -930,7 +928,7 @@ impl DarwinMountContext {
     /// a later sync covers it and the change attribute advances.
     fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>) -> Result<T, i32> {
         self.admit_write()?;
-        let result = mutation().map_err(|error| errno(&error));
+        let result = mutation().map_err(errno);
         self.ledger.record();
         result
     }
@@ -946,7 +944,7 @@ impl DarwinMountContext {
     ) -> Result<T, i32> {
         self.admit_write()?;
         let target = self.file_target(path, handle)?;
-        let result = mutation(target.file.as_ref()).map_err(|error| errno(&error));
+        let result = mutation(target.file.as_ref()).map_err(errno);
         let sequence = self.ledger.record();
         if let Some(written) = target.written {
             written.fetch_max(sequence, Ordering::AcqRel);
@@ -973,10 +971,7 @@ impl DarwinMountContext {
             }
         }
         let stamp = self.cache_stamp();
-        let lookup = self
-            .bind(path, handle)?
-            .lookup()
-            .map_err(|error| errno(&error))?;
+        let lookup = self.bind(path, handle)?.lookup().map_err(errno)?;
         if stamp.is_some() {
             let mut observation = observation.lock().map_err(|_| libc::EIO)?;
             observation.stamp = stamp;
@@ -1245,7 +1240,7 @@ impl DarwinMountSession {
         })?;
         let root = source
             .lookup(&MountPath::root())
-            .map_err(|error| source_error(&error))?
+            .map_err(source_error)?
             .ok_or_else(|| NativeMountError::Driver("volume root is absent".to_owned()))?;
         if root.node.kind != MountNodeKind::Directory {
             return Err(
@@ -1832,7 +1827,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
         let bytes = context
             .file_or_open(&mount_path(path)?, handle)?
             .read_up_to(offset, requested_length)
-            .map_err(|error| errno(&error))?;
+            .map_err(errno)?;
         if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
             return Err(libc::EIO);
         }
@@ -1924,7 +1919,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         let _binding_lease = context
             .source
             .acquire_binding_lease(binding_epoch)
-            .map_err(|error| errno(&error))?;
+            .map_err(errno)?;
         if context.lookup(&path)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
         }
@@ -1961,7 +1956,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
         let _binding_lease = context
             .source
             .acquire_binding_lease(directory.binding_epoch)
-            .map_err(|error| errno(&error))?;
+            .map_err(errno)?;
         directory.keep_current(context)?;
         if offset < 0 {
             return Err(libc::EINVAL);
@@ -2120,7 +2115,7 @@ fn ensure_directory_page(
                 directory.cursor.as_deref(),
                 DIRECTORY_PAGE_SIZE,
             )
-            .map_err(|error| errno(&error))?;
+            .map_err(errno)?;
         directory.keep_current(context)?;
         if directory.epochs != read_in {
             // Started over in a newer view; this page is from the older one.
@@ -2306,7 +2301,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
         let target = context
             .source
             .read_link(&mount_path(path)?)
-            .map_err(|error| errno(&error))?;
+            .map_err(errno)?;
         if target.len() >= length {
             return Err(libc::ENAMETOOLONG);
         }
@@ -2439,7 +2434,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
         let bytes = context
             .source
             .read_attribute(&path, c_bytes(name)?)
-            .map_err(|error| errno(&error))?
+            .map_err(errno)?
             .ok_or(libc::ENOATTR)?;
         copy_variable_result(&bytes, value, length)
     })
@@ -2495,7 +2490,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
             let page = context
                 .source
                 .list_attributes(&path, cursor.as_deref(), ATTRIBUTE_PAGE_SIZE)
-                .map_err(|error| errno(&error))?;
+                .map_err(errno)?;
             for name in page.names {
                 if name.contains(&0) {
                     return Err(libc::EIO);
@@ -2552,7 +2547,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
         let result = context
             .file_or_open(&mount_path(path)?, handle)?
             .seek(offset, target)
-            .map_err(|error| errno(&error))?
+            .map_err(errno)?
             .ok_or(libc::ENXIO)?;
         i64::try_from(result).map_err(|_| libc::EOVERFLOW)
     })
@@ -2697,24 +2692,6 @@ fn copy_variable_result(bytes: &[u8], output: *mut c_char, length: usize) -> Res
     c_int::try_from(bytes.len()).map_err(|_| libc::EOVERFLOW)
 }
 
-fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
-    let now = system_time_ns(SystemTime::now()).unwrap_or(i64::MAX);
-    FileMetadata {
-        posix_mode: MetadataField::Value((mode & 0o7777) | kind),
-        posix_uid: MetadataField::Value(uid),
-        posix_gid: MetadataField::Value(gid),
-        posix_flags: MetadataField::Value(0),
-        windows_attributes: MetadataField::Unavailable,
-        created_ns: MetadataField::Value(now),
-        modified_ns: MetadataField::Value(now),
-        accessed_ns: MetadataField::Value(now),
-        changed_ns: MetadataField::Value(now),
-        named_attributes: MetadataField::Unavailable,
-        acl: MetadataField::Unavailable,
-        security_descriptor: MetadataField::Unavailable,
-    }
-}
-
 fn update_time(field: &mut MetadataField<i64>, seconds: i64, nanoseconds: i64) -> Result<(), i32> {
     if nanoseconds == libc::UTIME_OMIT {
         return Ok(());
@@ -2743,21 +2720,6 @@ fn metadata_time(field: MetadataField<i64>) -> (i64, u32) {
         nanos.div_euclid(1_000_000_000),
         u32::try_from(nanos.rem_euclid(1_000_000_000)).unwrap_or(0),
     )
-}
-
-fn errno(error: &MountSourceError) -> i32 {
-    match error {
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::Invalid(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
-        MountSourceError::Engine(_) => libc::EIO,
-        MountSourceError::Stale => libc::ESTALE,
-    }
-}
-
-fn source_error(error: &MountSourceError) -> NativeMountError {
-    NativeMountError::Driver(error.to_string())
 }
 
 fn driver_errno(error: i32) -> NativeMountError {

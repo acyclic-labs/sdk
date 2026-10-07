@@ -9,7 +9,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use wasm_bindgen::{JsCast, prelude::*};
 
 use crate::{

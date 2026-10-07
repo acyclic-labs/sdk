@@ -1,6 +1,6 @@
 # `safe_version` injectivity and static URL proof note
 
-**Candidate source snapshot SHA-256:** `342B56A1755C142B0511A6163FD87F235DCF16A3916240E4B20F3F1FB60C9915`
+**Candidate source snapshot SHA-256:** `AF949D5FB8E494B66E9F9651EDBB51F235DE771782ADFE973803D36E38E46315`
 **Candidate source:** `rust/crates/sdk-docs/src/lib.rs`, `safe_version` and
 `hex_version` in the candidate source snapshot.
 

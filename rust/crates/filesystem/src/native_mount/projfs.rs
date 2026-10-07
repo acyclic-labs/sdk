@@ -9,9 +9,9 @@
 
 use super::provider_stack;
 use super::{
-    DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
-    MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin,
-    ViewStamp,
+    DIRECTORY_PAGE_SIZE, DriverStartFailure, MountContentPin, MountFilesystem, MountLookup,
+    MountNode, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
+    ViewObserver, ViewOrigin, ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -63,7 +63,6 @@ const HR_VIRTUALIZATION_INVALID_OPERATION: HRESULT = HRESULT(0x8007_0181_u32.cas
 const HR_SHARING_VIOLATION: HRESULT = HRESULT(0x8007_0020_u32.cast_signed());
 const HR_DIRECTORY_NOT_EMPTY: HRESULT = HRESULT(0x8007_0091_u32.cast_signed());
 
-const DIRECTORY_PAGE_SIZE: u32 = 256;
 /// Every notification the provider observes, for every file, for its whole
 /// life. A file created or renamed through the mount keeps this exact set:
 /// narrowing it would hide a later write, metadata edit, or delete of that

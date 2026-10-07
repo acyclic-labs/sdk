@@ -85,7 +85,7 @@ export interface CompatibilityWireEnvelope {
   readonly [key: string]: CompatibilityJson;
 }
 
-/** Immutable merge/publication codec shared by N-API and WASM. */
+/** Immutable merge/publication codec served by the WASM build. */
 export interface CompatibilityWire {
   encode(kind: CompatibilityWireKind, value: CompatibilityJson): CompatibilityWireEnvelope;
   decode(kind: CompatibilityWireKind, envelope: CompatibilityWireEnvelope): CompatibilityJson;

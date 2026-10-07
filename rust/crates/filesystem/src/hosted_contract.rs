@@ -199,9 +199,15 @@ pub const SOURCE_INVALIDATION_REASON: &[HostedEnumEntry<wire::SourceInvalidation
 /// Typed name encoding mapping.
 pub const NAME_ENCODING: &[HostedEnumEntry<wire::NameEncoding>] = &[
     entry(wire::NameEncoding::Unspecified, None),
-    entry(wire::NameEncoding::Utf8, Some("utf8")),
-    entry(wire::NameEncoding::PosixBytes, Some("posix-bytes")),
-    entry(wire::NameEncoding::WindowsUtf16le, Some("windows-utf16le")),
+    entry(wire::NameEncoding::Utf8, Some(NameEncoding::Utf8.as_str())),
+    entry(
+        wire::NameEncoding::PosixBytes,
+        Some(NameEncoding::PosixBytes.as_str()),
+    ),
+    entry(
+        wire::NameEncoding::WindowsUtf16le,
+        Some(NameEncoding::WindowsUtf16Le.as_str()),
+    ),
 ];
 
 /// Typed rebase status mapping.

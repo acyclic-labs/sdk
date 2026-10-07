@@ -51,6 +51,10 @@ pub mod store;
 pub mod tool;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[allow(
+    deprecated,
+    reason = "tsify deprecates its wasm_abi attributes because a failed conversion throws past destructors (madonoharu/tsify#65); moving these exports to tsify::Ts is a separate binding change"
+)]
 mod wasm;
 pub mod wire_api;
 mod wire_codec;

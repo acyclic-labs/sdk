@@ -13,8 +13,21 @@ pub fn fixed_width_metadata_native() -> Result<String, &'static str> {
     schema::fixed_width_metadata()
 }
 
-#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+
+/// Builds every error thrown across the JavaScript boundary: an `Error` whose
+/// string `code` names a stable failure category, `invalid` for a contract
+/// violation or `unavailable` when the embedded descriptor cannot load.
+fn js_error(code: &str, message: &str) -> JsValue {
+    let error = js_sys::Error::new(message);
+    // Defining a data property on a fresh, unfrozen `Error` cannot fail.
+    let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
+    error.into()
+}
+
+fn invalid(message: &str) -> JsValue {
+    js_error("invalid", message)
+}
 
 /// Opaque Rust-owned state for an ordered Run watch.
 #[cfg(target_arch = "wasm32")]
@@ -35,13 +48,13 @@ impl WatchRunState {
     /// Validate one protobuf Run event and advance this state in place.
     #[wasm_bindgen]
     pub fn advance(&mut self, event: &[u8]) -> Result<(), JsValue> {
-        self.inner.advance_wire(event).map_err(JsValue::from_str)
+        self.inner.advance_wire(event).map_err(invalid)
     }
 
     /// Confirm that the stream ended after a terminal event.
     #[wasm_bindgen]
     pub fn finish(&self) -> Result<(), JsValue> {
-        self.inner.finish().map_err(JsValue::from_str)
+        self.inner.finish().map_err(invalid)
     }
 }
 
@@ -56,20 +69,7 @@ pub fn validate_customer_wire(
     expected: &[u8],
     related: &[u8],
 ) -> Result<(), JsValue> {
-    acyclic_inference::validate_customer_wire(kind, message, expected, related)
-        .map_err(JsValue::from_str)
-}
-
-/// Decide from a validated Run view whether watching at this cursor is already complete.
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub fn watch_run_start_wire(
-    message: &[u8],
-    expected: &[u8],
-    from_sequence: &str,
-) -> Result<bool, JsValue> {
-    acyclic_inference::watch_run_start_wire(message, expected, from_sequence)
-        .map_err(JsValue::from_str)
+    acyclic_inference::validate_customer_wire(kind, message, expected, related).map_err(invalid)
 }
 
 /// Start Rust-owned state for a validated Run watch.
@@ -82,5 +82,5 @@ pub fn watch_run_start_state_wire(
 ) -> Result<WatchRunState, JsValue> {
     acyclic_inference::watch_run_start_state_wire(message, expected, from_sequence)
         .map(|inner| WatchRunState { inner })
-        .map_err(JsValue::from_str)
+        .map_err(invalid)
 }

@@ -34,18 +34,19 @@ Actors and Workers have candidate v1 schemas under `proto/` and Rust contract
 crates. Their generated TypeScript bindings follow the same pipeline; their
 hosted services must qualify against those contracts before availability is
 claimed.
-`buf.gen.yaml` generates Rust bindings in `generated/rust/` and ESM-ready
-JavaScript plus declarations. `bun run generate` builds each family descriptor
-and writes the TypeScript bindings straight into each published package's
-`generated/proto/` (the only committed copy), using
-`scripts/generated-bindings.mjs` for descriptors, compatibility digests, and
-package paths. Filesystem carries Harness messages because its generated schema
-imports them. Rust-owned TypeScript contracts (limits, routes, enum maps) are
+`buf.gen.yaml` generates Rust bindings and ESM-ready JavaScript plus
+declarations into an uncommitted `generated/` scratch tree. `bun run generate`
+builds each family descriptor and copies the bindings straight into the crates'
+`src/generated/` and each published package's `generated/proto/` (the only
+committed copies), using `scripts/generated-bindings.mjs` for descriptors,
+compatibility digests, and package paths. Crates that compile their schema in
+`build.rs` (Filesystem, Harness, Inference, Stream) commit no Rust bindings.
+Filesystem carries Harness messages because its generated schema imports them.
+Rust-owned TypeScript contracts (limits, routes, enum maps) are
 rendered by `scripts/generate-contracts.mjs` from one Cargo build.
 `bun run check:generated` compares fresh Buf output and descriptors with the
-committed Rust tree and package copies. Rust
-WASM exports are built from the Rust crates and packaged beside the TypeScript
-facades. Every family package's `./proto` export points directly to its
+committed crate and package copies. Rust WASM exports are built from the Rust
+crates and packaged beside the TypeScript facades. Every family package's `./proto` export points directly to its
 generated module. Handwritten TypeScript should provide idiomatic APIs and
 runtime boundaries, not duplicate protobuf message definitions.
 

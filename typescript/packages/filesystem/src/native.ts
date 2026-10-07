@@ -77,6 +77,7 @@ import {
   stringifyGitFilesystemResult,
   stringifyGitCompatCommand,
 } from "./compat.js";
+import { nodeWasmBindings } from "./wasm-node.js";
 
 import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
 import { adaptTransaction } from "./transaction-adapter.js";
@@ -213,9 +214,12 @@ export async function openNativeGitCompatRepository(
   return adaptGitCompat(binding.NativeGitCompatRepository.open(stateRoot, workspaceId));
 }
 
-/** Opens the canonical Rust merge/publication wire codec. */
+/**
+ * Opens the canonical Rust merge/publication wire codec. The codec is pure,
+ * so the packaged WASM build serves it without the native companion.
+ */
 export async function openNativeCompatibilityWire(): Promise<CompatibilityWire> {
-  return adaptCompatibilityWire(await bindings());
+  return adaptCompatibilityWire(await nodeWasmBindings());
 }
 
 /** Opens the durable agent-neutral multi-root context registry. */

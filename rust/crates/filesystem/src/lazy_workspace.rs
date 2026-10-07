@@ -4282,14 +4282,10 @@ where
         &self,
         path: &str,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
-        let path = self.canonical_path(path)?;
+        let path = self.namespace_path(path)?;
         let state = self.state().await?;
         self.source
-            .lookup(
-                state.source,
-                &self.namespace_path(&path)?,
-                &CancellationToken::new(),
-            )
+            .lookup(state.source, &path, &CancellationToken::new())
             .await
             .map(|receipt| receipt.value.map(|node| node.version))
             .or_else(|failure| match failure.error {
@@ -5130,16 +5126,11 @@ fn account_work(
 
 fn account_nested_with_live_memory(
     current: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, LazyWorkspaceError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(counter_overflow)?;
-    nested.peak_allocation_bytes = 0;
-    let mut combined = current.checked_add(nested)?;
-    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous_peak);
+    let combined = current.with_backend(nested, live_bytes)?;
     combined.verify(budget)?;
     Ok(combined)
 }
