@@ -1,14 +1,5 @@
 //! Build the Actors descriptor and transport directly from the Rust contract.
 
-#[derive(Debug)]
-pub struct ContractError;
-
-impl From<std::convert::Infallible> for ContractError {
-    fn from(value: std::convert::Infallible) -> Self {
-        match value {}
-    }
-}
-
 #[path = "src/codegen.rs"]
 mod codegen;
 #[path = "src/contract.rs"]

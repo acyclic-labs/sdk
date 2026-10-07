@@ -5,7 +5,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_actors::{client, wire};
+use acyclic_actors::{client, domain, wire};
 use prost::Message;
 use wasm_bindgen::prelude::*;
 
@@ -22,6 +22,7 @@ fn map_error(error: client::Error) -> JsValue {
         client::Error::Transport(_) => "transport",
         client::Error::Service { .. } => "service",
         client::Error::Contract(_) => "contract",
+        client::Error::Semantic(_) => "semantic",
         client::Error::Cancelled => "cancelled",
     };
     js_error(code, error)
@@ -29,6 +30,15 @@ fn map_error(error: client::Error) -> JsValue {
 
 fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, JsValue> {
     T::decode(bytes).map_err(|error| js_error("invalid-request", error))
+}
+
+fn decode_semantic<T, D>(bytes: &[u8]) -> Result<D, JsValue>
+where
+    T: Message + Default,
+    D: TryFrom<T>,
+    D::Error: std::fmt::Display,
+{
+    D::try_from(decode::<T>(bytes)?).map_err(|error| js_error("invalid-request", error))
 }
 
 fn encode<T: Message>(message: T) -> Vec<u8> {
@@ -61,81 +71,97 @@ impl ActorsClient {
 
     /// Execute `CreateActor` with an encoded protobuf request.
     pub async fn create_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::CreateActorRequest>(request)?;
+        let request =
+            decode_semantic::<wire::CreateActorRequest, domain::CreateActorRequest>(request)?;
         self.inner
             .create_actor(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::CreateActorResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `UpdateActor` with an encoded protobuf request.
     pub async fn update_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::UpdateActorRequest>(request)?;
+        let request =
+            decode_semantic::<wire::UpdateActorRequest, domain::UpdateActorRequest>(request)?;
         self.inner
             .update_actor(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::UpdateActorResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `InspectActor` with an encoded protobuf request.
     pub async fn inspect_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::InspectActorRequest>(request)?;
+        let request =
+            decode_semantic::<wire::InspectActorRequest, domain::InspectActorRequest>(request)?;
         self.inner
             .inspect_actor(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::InspectActorResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `AddSubscription` with an encoded protobuf request.
     pub async fn add_subscription(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::AddSubscriptionRequest>(request)?;
+        let request = decode_semantic::<
+            wire::AddSubscriptionRequest,
+            domain::AddSubscriptionRequest,
+        >(request)?;
         self.inner
             .add_subscription(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::AddSubscriptionResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `RemoveSubscription` with an encoded protobuf request.
     pub async fn remove_subscription(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::RemoveSubscriptionRequest>(request)?;
+        let request = decode_semantic::<
+            wire::RemoveSubscriptionRequest,
+            domain::RemoveSubscriptionRequest,
+        >(request)?;
         self.inner
             .remove_subscription(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::RemoveSubscriptionResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `ResumeSubscription` with an encoded protobuf request.
     pub async fn resume_subscription(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::ResumeSubscriptionRequest>(request)?;
+        let request = decode_semantic::<
+            wire::ResumeSubscriptionRequest,
+            domain::ResumeSubscriptionRequest,
+        >(request)?;
         self.inner
             .resume_subscription(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::ResumeSubscriptionResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `CheckpointActor` with an encoded protobuf request.
     pub async fn checkpoint_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::CheckpointActorRequest>(request)?;
+        let request = decode_semantic::<
+            wire::CheckpointActorRequest,
+            domain::CheckpointActorRequest,
+        >(request)?;
         self.inner
             .checkpoint_actor(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::CheckpointActorResponse::from(value)))
             .map_err(map_error)
     }
 
     /// Execute `InvokeActor` with an encoded protobuf request.
     pub async fn invoke_actor(&self, request: &[u8]) -> Result<Vec<u8>, JsValue> {
-        let request = decode::<wire::InvokeActorRequest>(request)?;
+        let request =
+            decode_semantic::<wire::InvokeActorRequest, domain::InvokeActorRequest>(request)?;
         self.inner
             .invoke_actor(&request)
             .await
-            .map(encode)
+            .map(|value| encode(wire::InvokeActorResponse::from(value)))
             .map_err(map_error)
     }
 }

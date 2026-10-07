@@ -72,7 +72,13 @@ fn nominal_error(error: domain::DomainError) -> NativeActorsErrorMetadata {
     let code = match error {
         domain::DomainError::EmptyActorId => "empty_actor_id",
         domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
-        domain::DomainError::NotPositive => "not_positive",
+        domain::DomainError::Contract(_) => "invalid_argument",
+        domain::DomainError::UnknownActorState(_) => "unknown_actor_state",
+        domain::DomainError::UnknownSubscriptionState(_) => "unknown_subscription_state",
+        domain::DomainError::UnknownErrorCode(_) => "unknown_error_code",
+        domain::DomainError::MissingMessage => "missing_message",
+        domain::DomainError::InvalidSubscription => "invalid_subscription",
+        domain::DomainError::InvalidBinding => "invalid_binding",
     };
     NativeActorsErrorMetadata {
         code: code.to_owned(),
@@ -161,6 +167,7 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
                 ..Default::default()
             }
         }
+        client::Error::Semantic(error) => nominal_error(error),
         client::Error::Service { grpc_code, detail } => NativeActorsErrorMetadata {
             code: grpc_name(grpc_code).to_owned(),
             message: detail.as_ref().map_or_else(
@@ -185,6 +192,22 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
 
 fn decode<T: Message + Default>(value: &Buffer, operation: &str) -> Result<T> {
     T::decode(value.as_ref()).map_err(|error| {
+        napi_error(NativeActorsErrorMetadata {
+            code: String::from("invalid_argument"),
+            message: format!("{operation}: {error}"),
+            ..Default::default()
+        })
+    })
+}
+
+fn decode_semantic<T, D>(value: &Buffer, operation: &str) -> Result<D>
+where
+    T: Message + Default,
+    D: TryFrom<T>,
+    D::Error: std::fmt::Display,
+{
+    let wire = decode::<T>(value, operation)?;
+    D::try_from(wire).map_err(|error| {
         napi_error(NativeActorsErrorMetadata {
             code: String::from("invalid_argument"),
             message: format!("{operation}: {error}"),
@@ -364,7 +387,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::CreateActorRequest>(&request, "create_actor")?;
+        let decoded = decode_semantic::<wire::CreateActorRequest, domain::CreateActorRequest>(
+            &request,
+            "create_actor",
+        )?;
         let value = cancellable(
             self.inner.create_actor(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -372,7 +398,10 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "create_actor").map_err(napi_error)?),
+                value: Some(
+                    encode(&wire::CreateActorResponse::from(value), "create_actor")
+                        .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -388,7 +417,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::UpdateActorRequest>(&request, "update_actor")?;
+        let decoded = decode_semantic::<wire::UpdateActorRequest, domain::UpdateActorRequest>(
+            &request,
+            "update_actor",
+        )?;
         let value = cancellable(
             self.inner.update_actor(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -396,7 +428,10 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "update_actor").map_err(napi_error)?),
+                value: Some(
+                    encode(&wire::UpdateActorResponse::from(value), "update_actor")
+                        .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -412,7 +447,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::InspectActorRequest>(&request, "inspect_actor")?;
+        let decoded = decode_semantic::<wire::InspectActorRequest, domain::InspectActorRequest>(
+            &request,
+            "inspect_actor",
+        )?;
         let value = cancellable(
             self.inner.inspect_actor(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -420,7 +458,10 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "inspect_actor").map_err(napi_error)?),
+                value: Some(
+                    encode(&wire::InspectActorResponse::from(value), "inspect_actor")
+                        .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -436,7 +477,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::AddSubscriptionRequest>(&request, "add_subscription")?;
+        let decoded = decode_semantic::<
+            wire::AddSubscriptionRequest,
+            domain::AddSubscriptionRequest,
+        >(&request, "add_subscription")?;
         let value = cancellable(
             self.inner.add_subscription(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -444,7 +488,13 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "add_subscription").map_err(napi_error)?),
+                value: Some(
+                    encode(
+                        &wire::AddSubscriptionResponse::from(value),
+                        "add_subscription",
+                    )
+                    .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -460,7 +510,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::RemoveSubscriptionRequest>(&request, "remove_subscription")?;
+        let decoded = decode_semantic::<
+            wire::RemoveSubscriptionRequest,
+            domain::RemoveSubscriptionRequest,
+        >(&request, "remove_subscription")?;
         let value = cancellable(
             self.inner.remove_subscription(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -468,7 +521,13 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "remove_subscription").map_err(napi_error)?),
+                value: Some(
+                    encode(
+                        &wire::RemoveSubscriptionResponse::from(value),
+                        "remove_subscription",
+                    )
+                    .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -484,7 +543,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::ResumeSubscriptionRequest>(&request, "resume_subscription")?;
+        let decoded = decode_semantic::<
+            wire::ResumeSubscriptionRequest,
+            domain::ResumeSubscriptionRequest,
+        >(&request, "resume_subscription")?;
         let value = cancellable(
             self.inner.resume_subscription(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -492,7 +554,13 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "resume_subscription").map_err(napi_error)?),
+                value: Some(
+                    encode(
+                        &wire::ResumeSubscriptionResponse::from(value),
+                        "resume_subscription",
+                    )
+                    .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -508,7 +576,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::CheckpointActorRequest>(&request, "checkpoint_actor")?;
+        let decoded = decode_semantic::<
+            wire::CheckpointActorRequest,
+            domain::CheckpointActorRequest,
+        >(&request, "checkpoint_actor")?;
         let value = cancellable(
             self.inner.checkpoint_actor(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -516,7 +587,13 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "checkpoint_actor").map_err(napi_error)?),
+                value: Some(
+                    encode(
+                        &wire::CheckpointActorResponse::from(value),
+                        "checkpoint_actor",
+                    )
+                    .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {
@@ -532,7 +609,10 @@ impl NativeActorsClient {
         request: Buffer,
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsOperationResult> {
-        let decoded = decode::<wire::InvokeActorRequest>(&request, "invoke_actor")?;
+        let decoded = decode_semantic::<wire::InvokeActorRequest, domain::InvokeActorRequest>(
+            &request,
+            "invoke_actor",
+        )?;
         let value = cancellable(
             self.inner.invoke_actor(&decoded),
             cancellation.map(|value| value.state.clone()),
@@ -540,7 +620,10 @@ impl NativeActorsClient {
         .await;
         Ok(match value {
             Ok(value) => NativeActorsOperationResult {
-                value: Some(encode(&value, "invoke_actor").map_err(napi_error)?),
+                value: Some(
+                    encode(&wire::InvokeActorResponse::from(value), "invoke_actor")
+                        .map_err(napi_error)?,
+                ),
                 error: None,
             },
             Err(error) => NativeActorsOperationResult {

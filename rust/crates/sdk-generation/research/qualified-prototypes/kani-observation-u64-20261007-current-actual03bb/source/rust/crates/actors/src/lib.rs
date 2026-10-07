@@ -77,12 +77,6 @@ pub enum ContractError {
     DuplicateName,
 }
 
-impl From<std::convert::Infallible> for ContractError {
-    fn from(value: std::convert::Infallible) -> Self {
-        match value {}
-    }
-}
-
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
     !value.subscription_id.is_empty()
         && !value.stream_path.is_empty()

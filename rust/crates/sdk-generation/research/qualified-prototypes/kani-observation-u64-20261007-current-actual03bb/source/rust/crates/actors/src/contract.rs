@@ -106,7 +106,7 @@ mod fallible_producer_tests {
         FALLIBLE_FILE,
         name = "actors/test.proto",
         package = FALLIBLE_PACKAGE,
-        messages = [IngressProto, ChildProto, EnvelopeProto]
+        messages = [IngressProto]
     );
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,12 +120,6 @@ mod fallible_producer_tests {
 
     impl std::error::Error for IngressError {}
 
-    impl From<std::convert::Infallible> for IngressError {
-        fn from(value: std::convert::Infallible) -> Self {
-            match value {}
-        }
-    }
-
     fn parse_actor_id(value: String) -> Result<String, IngressError> {
         (!value.is_empty()).then_some(value).ok_or(IngressError)
     }
@@ -135,33 +129,6 @@ mod fallible_producer_tests {
     pub struct Ingress {
         #[proto(string, tag = 1, from_proto = parse_actor_id)]
         actor_id: String,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    #[proto_message(proxied, fallible = IngressError)]
-    pub struct Child {
-        #[proto(string, tag = 1)]
-        value: String,
-    }
-
-    #[proto_oneof(proxied, fallible = IngressError)]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Selector {
-        #[proto(tag = 1)]
-        Cursor(u64),
-        #[proto(tag = 2)]
-        CurrentHead(bool),
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    #[proto_message(proxied, fallible = IngressError)]
-    pub struct Envelope {
-        #[proto(message(proxied), tag = 1)]
-        child: Option<Child>,
-        #[proto(repeated(message(proxied)), tag = 2)]
-        children: Vec<Child>,
-        #[proto(oneof(proxied, tags(1, 2)))]
-        selector: Option<Selector>,
     }
 
     #[test]
@@ -181,17 +148,5 @@ mod fallible_producer_tests {
         let encoded = wire.encode_to_vec();
         let decoded = IngressProto::decode(encoded.as_slice()).expect("decode fixture");
         assert_eq!(Ingress::try_from(decoded), Ok(authored));
-    }
-
-    #[test]
-    fn fallible_nested_and_presence_conversions_are_recursive() {
-        let authored = Envelope {
-            child: Some(Child { value: String::from("one") }),
-            children: vec![Child { value: String::from("two") }],
-            selector: Some(Selector::Cursor(0)),
-        };
-        let wire: EnvelopeProto = authored.clone().into();
-        let decoded = Envelope::try_from(wire).expect("nested conversion");
-        assert_eq!(decoded, authored);
     }
 }

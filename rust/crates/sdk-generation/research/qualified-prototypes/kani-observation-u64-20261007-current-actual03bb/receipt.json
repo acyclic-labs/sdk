@@ -1,0 +1,166 @@
+{
+  "absolute_prototype_path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-observation-u64-20261007-current-actual03bb",
+  "status": "pass_current_actual_production_cursor",
+  "date": "2026-10-07",
+  "scope": "source-bound Kani check over current Q snapshot Actors validator",
+  "source_revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+  "working_tree_note": "The source snapshot has pre-existing in-progress Actors and workspace edits; hashes identify the exact compiled production files. No production files were changed by this proof.",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "cargo_kani": "/tmp/kani68/bin/cargo-kani",
+    "target": "/tmp/kani-current-target-03bb (Linux ext4)",
+    "offline": true
+  },
+  "production_source_inventory": {
+    "Cargo.toml": {
+      "path": "Cargo.toml",
+      "sha256": "EFEE03BA4D746D7AF09460235425DD8556B0355116E2D2A5E46158778ABF9121"
+    },
+    "rust\\crates\\actors\\Cargo.toml": {
+      "path": "rust\\crates\\actors\\Cargo.toml",
+      "sha256": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE"
+    },
+    "rust\\crates\\actors\\src\\lib.rs": {
+      "path": "rust\\crates\\actors\\src\\lib.rs",
+      "sha256": "27580BC13A02BED90E76B0C91AFFE8A013AA50578235DC43652B2CBD98D52FE1"
+    },
+    "rust\\crates\\actors\\src\\contract_definitions.rs": {
+      "path": "rust\\crates\\actors\\src\\contract_definitions.rs",
+      "sha256": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA"
+    },
+    "rust\\crates\\actors\\src\\domain.rs": {
+      "path": "rust\\crates\\actors\\src\\domain.rs",
+      "sha256": "62A5C972C19F9D83D894BF59C449DFE4AEA0637BBF598ED0744A09146411909C"
+    },
+    "rust\\crates\\actors\\src\\wire.rs": {
+      "path": "rust\\crates\\actors\\src\\wire.rs",
+      "sha256": "CA6F3403948843F017B2B59BE089EB83FFF6B02EDAAEC062CB1473977CA98B55"
+    },
+    "rust\\crates\\actors\\src\\codegen.rs": {
+      "path": "rust\\crates\\actors\\src\\codegen.rs",
+      "sha256": "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6"
+    },
+    "rust\\crates\\actors\\build.rs": {
+      "path": "rust\\crates\\actors\\build.rs",
+      "sha256": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C"
+    },
+    "Cargo.lock": {
+      "path": "Cargo.lock",
+      "sha256": "F4F0E48273E0D9AA5232339D8B7F4A8162B1F242ED651580B293712A30DDC8A2"
+    },
+    "proof_manifest": {
+      "path": "Cargo.toml",
+      "sha256": "4B4C4073C249F48732A3ED401754DF0FA919003A218CD8C4F684D3F94A4297A3"
+    },
+    "proof_harness": {
+      "path": "src/bin/kani_actual_current.rs",
+      "sha256": "A166401C2551FA5EF1BEFB870D3BA1B2697D039FCA2BF8F0E3EC218675E4493D"
+    },
+    "prototype_lock": {
+      "path": "Cargo.lock",
+      "sha256": "F81C396292E254308F00AB591727126F6E751D0915694ACC683A37F972ACF03A"
+    }
+  },
+  "properties": {
+    "production_current_cursor_all_u64": {
+      "status": "pass",
+      "mathematical_statement": "For every cursor in u64, with actor_id, idempotency_key, and SubscriptionSpec fields fixed to non-empty valid values and Start::Cursor(cursor), current Q snapshot acyclic_actors::validate_add_subscription(request) = Ok(()).",
+      "production_function_invoked": "acyclic_actors::validate_add_subscription",
+      "raw_log": "audit/current-production-cursor-kani068.raw.txt",
+      "terminal_exit": 0,
+      "checks": "SUMMARY: ** 0 of 295 failed (4 unreachable)",
+      "verification_time": "1.1368132s"
+    },
+    "negative_mutated_cursor": {
+      "status": "expected_failure_control",
+      "mathematical_statement": "The same current production invocation does not satisfy an intentionally false Err(InvalidArgument) assertion for all valid symbolic cursors.",
+      "mutated_harness": "audit/negative-mutated-cursor.rs",
+      "raw_log": "audit/negative-mutated-cursor.raw.txt",
+      "terminal_exit": 1,
+      "checks": "SUMMARY: ** 1 of 295 failed (4 unreachable)",
+      "failed_check": "intentional negative mutation",
+      "verification_time": "1.3121786s"
+    }
+  },
+  "not_proven": [
+    "ActorLimits acceptance equivalence for validate_create or validate_update",
+    "Actor checkpoint/epoch/configuration revision projection",
+    "CreateActorResponse or UpdateActorResponse optional actor presence mapping",
+    "subscription response cursor fields or failed_cursor presence",
+    "arbitrary strings, transport behavior, wire cloning, or whole-message preservation"
+  ],
+  "source_binding_audit": {
+    "production_projection_function_invoked": false,
+    "production_validator_invoked": "acyclic_actors::validate_add_subscription",
+    "mapping_identity_claim": false
+  },
+  "raw_evidence": [
+    "audit/current-production-cursor-kani068.raw.txt",
+    "audit/negative-mutated-cursor.raw.txt",
+    "audit/negative-mutated-cursor.rs"
+  ],
+  "source_snapshot": {
+    "Cargo.lock": {
+      "path": "source/Cargo.lock",
+      "sha256": "F4F0E48273E0D9AA5232339D8B7F4A8162B1F242ED651580B293712A30DDC8A2"
+    },
+    "Cargo.toml": {
+      "path": "source/Cargo.toml",
+      "sha256": "EFEE03BA4D746D7AF09460235425DD8556B0355116E2D2A5E46158778ABF9121"
+    },
+    "rust\\crates\\actors\\build.rs": {
+      "path": "source/rust/crates/actors/build.rs",
+      "sha256": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C"
+    },
+    "rust\\crates\\actors\\Cargo.toml": {
+      "path": "source/rust/crates/actors/Cargo.toml",
+      "sha256": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE"
+    },
+    "rust\\crates\\actors\\README.md": {
+      "path": "source/rust/crates/actors/README.md",
+      "sha256": "DFF81283954619B0552E48B969114C8C0347BF96DBF2861DF618743CBB20D4DF"
+    },
+    "rust\\crates\\actors\\src\\client.rs": {
+      "path": "source/rust/crates/actors/src/client.rs",
+      "sha256": "A3D58E6887D07C3144C54D1B8448365BFE344FE28408A7CC89ABEC3D1695FF3D"
+    },
+    "rust\\crates\\actors\\src\\codegen.rs": {
+      "path": "source/rust/crates/actors/src/codegen.rs",
+      "sha256": "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6"
+    },
+    "rust\\crates\\actors\\src\\contract_definitions.rs": {
+      "path": "source/rust/crates/actors/src/contract_definitions.rs",
+      "sha256": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA"
+    },
+    "rust\\crates\\actors\\src\\contract.rs": {
+      "path": "source/rust/crates/actors/src/contract.rs",
+      "sha256": "33E5493E5942B588B2322270B5DE8D84E608AEE04105C7E26C3B77CD59CD0DC6"
+    },
+    "rust\\crates\\actors\\src\\domain.rs": {
+      "path": "source/rust/crates/actors/src/domain.rs",
+      "sha256": "62A5C972C19F9D83D894BF59C449DFE4AEA0637BBF598ED0744A09146411909C"
+    },
+    "rust\\crates\\actors\\src\\grpc.rs": {
+      "path": "source/rust/crates/actors/src/grpc.rs",
+      "sha256": "C97C0FC82B2864979FEF4894C4340B7AC40308439BB2997991CB39DCF0CB6F57"
+    },
+    "rust\\crates\\actors\\src\\http.rs": {
+      "path": "source/rust/crates/actors/src/http.rs",
+      "sha256": "A95B206C31F5816C9460EE46302C76B874EB4526BB851BEAD9EC483A6D2E15CB"
+    },
+    "rust\\crates\\actors\\src\\lib.rs": {
+      "path": "source/rust/crates/actors/src/lib.rs",
+      "sha256": "27580BC13A02BED90E76B0C91AFFE8A013AA50578235DC43652B2CBD98D52FE1"
+    },
+    "rust\\crates\\actors\\src\\wire.rs": {
+      "path": "source/rust/crates/actors/src/wire.rs",
+      "sha256": "CA6F3403948843F017B2B59BE089EB83FFF6B02EDAAEC062CB1473977CA98B55"
+    },
+    "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": {
+      "path": "source/rust/crates/actors/src/domain/kani_proofs.rs",
+      "sha256": "E71AFBB9AAB686396E2084EF018F802617753AAEED451DB5C26F10A4EDF1A1CF"
+    }
+  }
+}

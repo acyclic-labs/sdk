@@ -1,0 +1,14 @@
+[package]
+name = "kani-observation-u64-20261007-current-actual03bb"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-actors = { path = "../../../../actors" }
+
+[[bin]]
+name = "kani_actual_current"
+path = "src/bin/kani_actual_current.rs"
