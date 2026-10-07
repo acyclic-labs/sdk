@@ -113,7 +113,18 @@ fn print_help() {
 }
 
 fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
-    let flags = parse_flags(values)?;
+    let flags = parse_flags(
+        values,
+        &[
+            "root",
+            "output",
+            "version",
+            "rustdoc-dir",
+            "execute-profiles",
+            "channel",
+            "skip-scenarios",
+        ],
+    )?;
     let required = |name: &str| {
         flags
             .get(name)
@@ -148,7 +159,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
 }
 
 fn parse_path_flags(values: Vec<String>) -> Result<(PathBuf, PathBuf, PathBuf), CliError> {
-    let flags = parse_flags(values)?;
+    let flags = parse_flags(values, &["root", "output", "rustdoc-dir"])?;
     let root = flags
         .get("root")
         .cloned()
@@ -164,14 +175,20 @@ fn parse_path_flags(values: Vec<String>) -> Result<(PathBuf, PathBuf, PathBuf), 
     Ok((root.into(), output.into(), rustdoc_dir.into()))
 }
 
-fn parse_flags(values: Vec<String>) -> Result<BTreeMap<String, String>, CliError> {
+fn parse_flags(
+    values: Vec<String>,
+    allowed: &[&str],
+) -> Result<BTreeMap<String, String>, CliError> {
     let mut result = BTreeMap::new();
     let mut iter = values.into_iter();
     while let Some(value) = iter.next() {
         let Some(name) = value.strip_prefix("--") else {
             return Err(CliError(format!("unexpected argument `{value}`")));
         };
-        if name == "skip-scenarios" {
+        if !allowed.contains(&name) {
+            return Err(CliError(format!("unknown option `--{name}`")));
+        }
+        if matches!(name, "skip-scenarios" | "execute-profiles") {
             result.insert(name.to_owned(), String::new());
             continue;
         }
@@ -197,9 +214,16 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             .unwrap_or_else(|_| output.join(".rustdoc")),
         _ => return Err(CliError("invalid Rustdoc input mode".into())),
     };
-    let cargo_path = pinned_cargo(&root)?;
-    let metadata = load_metadata(&root, &cargo_path)?;
-    let toolchain = toolchain_identity(&cargo_path)?;
+    let cargo_path = args
+        .execute_profiles
+        .then(|| pinned_cargo(&root))
+        .transpose()?;
+    let metadata = load_metadata(&root, cargo_path.as_deref())?;
+    let toolchain = cargo_path
+        .as_deref()
+        .map(toolchain_identity)
+        .transpose()?
+        .unwrap_or_default();
     let revision = git_revision(&root)?;
     let source_files = source_file_hashes(&root, &output)?;
     let source_sha256 = digest_map(&source_files);
@@ -225,7 +249,9 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             &rustdoc_dir,
             &metadata,
             &source_sha256,
-            &cargo_path,
+            cargo_path
+                .as_deref()
+                .ok_or_else(|| CliError("profile execution has no pinned Cargo".into()))?,
         )?
     } else {
         Vec::new()
@@ -244,9 +270,9 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     let mut profiles = BTreeMap::new();
     let mut receipt_manifest = BTreeMap::new();
     let mut receipt_specs = BTreeMap::<String, ProfileSpec>::new();
-    for receipt in receipts {
-        let observation = observe_rustdoc(&receipt).map_err(profile_error)?;
-        let source_attestation = receipt_source_attestation(&receipt)?;
+    for receipt in &receipts {
+        let observation = observe_rustdoc(receipt).map_err(profile_error)?;
+        let source_attestation = receipt_source_attestation(receipt)?;
         if source_attestation.as_deref() != Some(source_sha256.as_str()) {
             return Err(CliError(format!(
                 "Rustdoc receipt {} is missing a matching source attestation (expected {})",
@@ -259,24 +285,36 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             .map_err(profile_error)?;
         let owner =
             api_owner_for_package(&metadata, &package.name.to_string()).map_err(profile_error)?;
-        let profile_spec = ProfileSpec {
-            package: package.name.to_string(),
-            target: observation.target.clone(),
-            default_features: true,
-            features: BTreeSet::new(),
-        };
+        let profile_spec = executed_profiles
+            .iter()
+            .find(|executed| executed.receipt == *receipt)
+            .map(|executed| executed.spec.clone())
+            .unwrap_or(ProfileSpec {
+                package: package.name.to_string(),
+                target: observation.target.clone(),
+                // A hand-supplied receipt has no producer profile metadata.
+                // Keep its item coverage useful while refusing to claim that
+                // Cargo default features were actually selected.
+                default_features: false,
+                features: BTreeSet::new(),
+            });
         let profile_id = profile_spec.id();
         let crate_name = observation.crate_name.clone();
-        let items = extract_owned_api_for_crate(&receipt, &owner, profile_id.clone(), &crate_name)
+        let items = extract_owned_api_for_crate(receipt, &owner, profile_id.clone(), &crate_name)
             .map_err(profile_error)?;
         profile_items.extend(items);
         profiles.insert(profile_id.clone(), profile_spec.clone());
-        receipt_specs.insert(path_string(&receipt), profile_spec.clone());
-        let receipt_key = rustdoc_key(&rustdoc_dir, &receipt)?;
-        receipt_manifest.insert(receipt_key, sha256_file(&receipt)?);
+        if executed_profiles
+            .iter()
+            .any(|executed| executed.receipt == *receipt)
+        {
+            receipt_specs.insert(path_string(receipt), profile_spec.clone());
+        }
+        let receipt_key = rustdoc_key(&rustdoc_dir, receipt)?;
+        receipt_manifest.insert(receipt_key, sha256_file(receipt)?);
         rustdoc_files.push(receipt.clone());
         package_metadata.push(PackageMetadata {
-            rustdoc_file: receipt,
+            rustdoc_file: receipt.clone(),
             package_name: package.name.to_string(),
             crate_name,
             version: package.version.to_string(),
@@ -286,9 +324,10 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     // Additional feature and target receipts are profile evidence, not
     // additional docs families. Merge their exact signatures into the
     // existing catalog below.
-    for executed in executed_profiles.iter().filter(|executed| {
-        !receipts.iter().any(|receipt| receipt == &executed.receipt)
-    }) {
+    for executed in executed_profiles
+        .iter()
+        .filter(|executed| !receipts.iter().any(|receipt| receipt == &executed.receipt))
+    {
         let receipt = &executed.receipt;
         let observation = observe_rustdoc(&receipt).map_err(profile_error)?;
         if receipt_source_attestation(&receipt)?.as_deref() != Some(source_sha256.as_str()) {
@@ -376,13 +415,13 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             published_owner: owner.published_package,
             owner_kind: format!("{:?}", owner.kind),
             target: observation.target,
-            default_features: true,
-            features: Vec::new(),
+            default_features: spec.default_features,
+            features: spec.features.iter().cloned().collect(),
             profile: spec.id(),
             rustdoc_file: path.clone(),
             rustdoc_sha256: digest.clone(),
             rustdoc_version: observation.crate_version,
-            rustdoc_profiles_covered: true,
+            rustdoc_profiles_covered: receipt_specs.contains_key(&path_string(&receipt)),
             installed_runtime_qualified: false,
         });
     }
@@ -473,6 +512,15 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
     if manifest.revision != git_revision(&root)? {
         return Err(CliError("source revision changed since generation".into()));
     }
+    if !manifest.toolchain.is_empty() {
+        let current_toolchain = toolchain_identity(&pinned_cargo(&root)?)?;
+        if manifest.toolchain != current_toolchain {
+            return Err(CliError(format!(
+                "pinned Cargo toolchain changed since generation (expected {}, got {})",
+                manifest.toolchain, current_toolchain
+            )));
+        }
+    }
     let expected_state = if manifest.channel == Channel::Release {
         "captured-snapshot"
     } else {
@@ -519,11 +567,8 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
     Ok(())
 }
 
-fn load_metadata(root: &Path, cargo_path: &Path) -> Result<Metadata, CliError> {
-    sdk_docs::rustdoc_profiles::load_metadata_with_cargo(
-        root.join("Cargo.toml"),
-        Some(cargo_path),
-    )
+fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Metadata, CliError> {
+    sdk_docs::rustdoc_profiles::load_metadata_with_cargo(root.join("Cargo.toml"), cargo_path)
         .map_err(profile_error)
 }
 
@@ -533,22 +578,23 @@ fn execute_default_profiles(
     rustdoc_dir: &Path,
     metadata: &Metadata,
     source_sha256: &str,
-) -> Result<Vec<ExecutedProfile>, CliError> {
     cargo_path: &Path,
-    ) -> Result<Vec<ExecutedProfile>, CliError> {
+) -> Result<Vec<ExecutedProfile>, CliError> {
     let host = rustc_host()?;
     let targets = BTreeSet::from([host.clone()]);
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
+    let published = published_packages(root)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     let mut executed = Vec::new();
     for package in &metadata.packages {
-        let publishable = package
-            .publish
-            .as_ref()
-            .is_none_or(|registries| !registries.is_empty());
-        if !publishable && api_owner_for_package(metadata, package.name.as_str()).is_err() {
+        let owned_binding = api_owner_for_package(metadata, package.name.as_str())
+            .ok()
+            .is_some_and(|owner| owner.rustdoc_package == package.name.as_ref());
+        if !published.contains(package.name.as_ref()) && !owned_binding {
             continue;
         }
         let Some(target) = package.targets.iter().find(|target| {
@@ -565,47 +611,49 @@ fn execute_default_profiles(
         }) else {
             continue;
         };
-        let profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
-            metadata,
-            package.name.as_str(),
-            &host,
-            &targets,
-        )
-        .map_err(profile_error)?;
-        for profile in profiles {
-            let receipt = if profile.default_features && profile.features.is_empty() {
-                rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")))
-            } else {
-                rustdoc_dir
-                    .join("profiles")
-                    .join(format!("{}.json", profile.id().0.replace(';', "_")))
-            };
-            if let Some(parent) = receipt.parent() {
-                fs::create_dir_all(parent).map_err(io_error)?;
-            }
-            execute_profile_with_cargo(
-                root.join("Cargo.toml"),
+        let owner = api_owner_for_package(metadata, package.name.as_str()).ok();
+        let wasm_binding = owner
+            .as_ref()
+            .is_some_and(|owner| owner.kind == ApiOwnerKind::WasmBinding);
+        if !wasm_binding {
+            let profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
                 metadata,
-                &profile,
+                package.name.as_str(),
+                &host,
                 &targets,
-                &target_dir,
-                &receipt,
-                Some(cargo_path),
             )
             .map_err(profile_error)?;
-            fs::write(receipt.with_extension("source.sha256"), source_sha256)
-                .map_err(io_error)?;
-            executed.push(ExecutedProfile {
-                receipt,
-                spec: profile,
-            });
+            for profile in profiles {
+                let receipt = if profile.default_features && profile.features.is_empty() {
+                    rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")))
+                } else {
+                    rustdoc_dir
+                        .join("profiles")
+                        .join(format!("{}.json", profile.id().0.replace(';', "_")))
+                };
+                if let Some(parent) = receipt.parent() {
+                    fs::create_dir_all(parent).map_err(io_error)?;
+                }
+                execute_profile_with_cargo(
+                    root.join("Cargo.toml"),
+                    metadata,
+                    &profile,
+                    &targets,
+                    &target_dir,
+                    &receipt,
+                    Some(cargo_path),
+                )
+                .map_err(profile_error)?;
+                fs::write(receipt.with_extension("source.sha256"), source_sha256)
+                    .map_err(io_error)?;
+                executed.push(ExecutedProfile {
+                    receipt,
+                    spec: profile,
+                });
+            }
         }
         if installed_targets.contains(wasm_target) {
-            let owner = api_owner_for_package(metadata, package.name.as_str()).ok();
-            if owner
-                .as_ref()
-                .is_some_and(|owner| owner.kind == ApiOwnerKind::WasmBinding)
-            {
+            if wasm_binding {
                 let wasm_targets = BTreeSet::from([wasm_target.to_owned()]);
                 let wasm_profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
                     metadata,
@@ -615,10 +663,15 @@ fn execute_default_profiles(
                 )
                 .map_err(profile_error)?;
                 for wasm_profile in wasm_profiles {
-                    let wasm_receipt = rustdoc_dir.join("wasm").join(format!(
-                        "{}.json",
-                        wasm_profile.id().0.replace(';', "_")
-                    ));
+                    let wasm_receipt =
+                        if wasm_profile.default_features && wasm_profile.features.is_empty() {
+                            rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")))
+                        } else {
+                            rustdoc_dir.join("profiles").join(format!(
+                                "wasm-{}.json",
+                                wasm_profile.id().0.replace(';', "_")
+                            ))
+                        };
                     if let Some(parent) = wasm_receipt.parent() {
                         fs::create_dir_all(parent).map_err(io_error)?;
                     }
@@ -658,6 +711,46 @@ fn rustc_host() -> Result<String, CliError> {
         .find_map(|line| line.strip_prefix("host: "))
         .map(str::to_owned)
         .ok_or_else(|| CliError("rustc -vV did not report a host target".into()))
+}
+
+fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
+    let toolchain = fs::read_to_string(root.join("rust-toolchain.toml"))
+        .map_err(io_error)?
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "channel").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .ok_or_else(|| CliError("rust-toolchain.toml has no pinned channel".into()))?;
+    let output = Command::new("rustup")
+        .args(["which", "cargo", "--toolchain", &toolchain])
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(CliError(format!(
+            "pinned Cargo toolchain `{toolchain}` is unavailable: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if !path.is_file() {
+        return Err(CliError(format!(
+            "rustup selected a missing Cargo executable {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+fn toolchain_identity(cargo: &Path) -> Result<String, CliError> {
+    let output = Command::new(cargo)
+        .args(["-V", "--verbose"])
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(CliError("pinned Cargo identity query failed".into()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn rustup_targets() -> Result<BTreeSet<String>, CliError> {
@@ -1022,13 +1115,23 @@ fn collect_source_files(
             let under_crates = components.len() >= 3
                 && components[0].as_os_str() == OsStr::new("rust")
                 && components[1].as_os_str() == OsStr::new("crates");
-            let include = (under_crates
+            let under_plugin = components
+                .first()
+                .is_some_and(|component| component.as_os_str() == OsStr::new("plugin"));
+            let under_doc_sources = components.first().is_some_and(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("docs" | "examples" | "scripts")
+                )
+            });
+            let include = ((under_crates || under_plugin || under_doc_sources)
                 && relative
                     .extension()
                     .and_then(OsStr::to_str)
                     .is_some_and(|ext| matches!(ext, "rs" | "toml" | "lock" | "md")))
                 || relative == Path::new("Cargo.toml")
                 || relative == Path::new("Cargo.lock")
+                || relative == Path::new("rust-toolchain.toml")
                 || relative == Path::new("release/cargo-crates.json");
             if include {
                 files.push(path);

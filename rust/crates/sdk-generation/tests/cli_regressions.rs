@@ -28,7 +28,9 @@ fn source_files(root: &Path, include_plugin: bool) -> BTreeMap<String, String> {
         "Cargo.lock",
         "Cargo.toml",
         "release/cargo-crates.json",
+        "docs/guide.md",
         "rust/crates/demo/Cargo.toml",
+        "rust/crates/demo/README.md",
         "rust/crates/demo/src/lib.rs",
     ];
     let mut files = paths
@@ -77,6 +79,7 @@ fn fixture(include_plugin: bool) -> Fixture {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
     fs::create_dir_all(root.join("src")).unwrap();
     fs::create_dir_all(root.join("release")).unwrap();
     fs::write(
@@ -88,8 +91,18 @@ fn fixture(include_plugin: bool) -> Fixture {
     fs::write(root.join("src/lib.rs"), "pub fn fixture() {}\n").unwrap();
     fs::write(root.join("release/cargo-crates.json"), "[\"demo-docs\"]\n").unwrap();
     fs::write(
+        root.join("docs/guide.md"),
+        "# Fixture guide\n\nThe guide is part of the docs source closure.\n",
+    )
+    .unwrap();
+    fs::write(
         root.join("rust/crates/demo/Cargo.toml"),
         "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("rust/crates/demo/README.md"),
+        "# Demo crate\n\nThis crate guide is part of the source closure.\n",
     )
     .unwrap();
     fs::write(
@@ -254,6 +267,183 @@ fn run_generate(
         command.arg("--skip-scenarios");
     }
     command.output().unwrap()
+}
+
+fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_plugin: bool) {
+    let fixture = fixture(include_plugin);
+    let first = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "source-closure-baseline",
+        "preview",
+        true,
+    );
+    assert!(
+        first.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let source = fixture.root.join(relative);
+    let original = fs::read(&source).unwrap();
+    let original_hash = hash_bytes(&original);
+    fs::write(&source, changed).unwrap();
+    let changed_hash = hash_file(&source);
+    assert_ne!(
+        original_hash, changed_hash,
+        "test edit did not change {relative}"
+    );
+
+    let drift = run_drift(&fixture);
+    assert!(!drift.status.success());
+    let drift_message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
+    );
+    assert!(
+        drift_message.contains("source digest changed"),
+        "{drift_message}"
+    );
+    assert!(drift_message.contains(relative), "{drift_message}");
+
+    let stale_output = fixture.root.join("stale-after-source-edit");
+    let stale = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &stale_output,
+        "source-closure-stale",
+        "preview",
+        true,
+    );
+    assert!(!stale.status.success());
+    let stale_message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&stale.stdout),
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    assert!(
+        stale_message.contains("matching source attestation"),
+        "{stale_message}"
+    );
+    assert!(!stale_output.join("generation-manifest.v1.json").exists());
+
+    fs::write(&source, &original).unwrap();
+    assert_eq!(hash_file(&source), original_hash);
+    assert!(run_drift(&fixture).status.success());
+
+    let refreshed_output = fixture.root.join("refreshed-after-source-restore");
+    let refreshed = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &refreshed_output,
+        "source-closure-restored",
+        "preview",
+        true,
+    );
+    assert!(
+        refreshed.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&refreshed.stdout),
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(refreshed_output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["sourceFiles"][relative], original_hash);
+}
+
+#[test]
+fn crate_rust_comment_and_markdown_guide_edits_invalidate_output() {
+    assert_source_edit_invalidates_output(
+        "rust/crates/demo/src/lib.rs",
+        "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
+        false,
+    );
+    assert_source_edit_invalidates_output(
+        "rust/crates/demo/README.md",
+        "# Demo crate\n\nChanged crate guide.\n",
+        false,
+    );
+    assert_source_edit_invalidates_output(
+        "docs/guide.md",
+        "# Fixture guide\n\nChanged workspace guide.\n",
+        false,
+    );
+}
+
+#[test]
+fn plugin_rust_edits_invalidate_output() {
+    assert_source_edit_invalidates_output(
+        "plugin/src/main.rs",
+        "fn main() {}\n// changed plugin source\n",
+        true,
+    );
+}
+
+#[test]
+fn unknown_generate_option_is_rejected_before_writes() {
+    let fixture = fixture(false);
+    let result = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .args([
+            "generate",
+            "--root",
+            fixture.root.to_str().unwrap(),
+            "--output",
+            fixture.output.to_str().unwrap(),
+            "--rustdoc-dir",
+            fixture.rustdoc.to_str().unwrap(),
+            "--version",
+            "unknown-option",
+            "--unknown",
+            "accepted",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(message.contains("unknown option `--unknown`"), "{message}");
+    assert!(
+        !fixture.output.exists(),
+        "unknown options must fail before generation writes output"
+    );
+}
+
+#[test]
+fn unknown_drift_option_is_rejected_before_reads() {
+    let fixture = fixture(false);
+    let result = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .args([
+            "drift",
+            "--root",
+            fixture.root.to_str().unwrap(),
+            "--output",
+            fixture.output.to_str().unwrap(),
+            "--rustdoc-dir",
+            fixture.rustdoc.to_str().unwrap(),
+            "--unknown",
+            "accepted",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(message.contains("unknown option `--unknown`"), "{message}");
+    assert!(
+        !fixture.output.exists(),
+        "unknown options must fail before drift reads or writes output"
+    );
 }
 
 #[test]

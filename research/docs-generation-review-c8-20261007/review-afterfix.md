@@ -63,3 +63,66 @@ Integration source SHA-256: `8ABFC237234DFD31AC8F8095F6211053C725CE5738E5BA8A1AA
 ## Plugin regression cause
 
 A fresh `sdk-generation.exe` built in `Q:/sdk/work/docs-generation-review-c8-target-plugin-cause` reproduced the active plugin failure. The fixture attestation includes `plugin/src/main.rs` and hashes to `sha256:ff38aaa5760aee0d1f69ec4ecf3731491b932b5dbcf86a66f6f6260f1d6743cf`; the current collector computes `sha256:ba426e321fe85f66eebfe56c47b785904f559bc7c2dbac76d39672fdc9158dee`, which is exactly the same inventory with `plugin/src/main.rs` omitted. The fixture has the expected root Cargo files and Rust crate files, so this is an inventory mismatch rather than a fixture drift. The producer-side source attestation correctly exposes the missing plugin closure.
+
+## Fresh binary input/provenance probe (supersedes stale summary claims)
+
+On 2026-10-07, the fresh binary at
+`Q:/sdk/work/docs-generation-review-c8-target-plugin-cause/debug/sdk-generation.exe`
+accepted an unrecognized `--unknown accepted` pair and exited 0 after the
+source-attestation sidecar was temporarily aligned to the binary's current
+computed hash (`sha256:9f33f84392c25924dbab5e4039467ed67207649d996d3fa6da473c61b7888dc0`);
+the original sidecar was restored. This confirms the parser still silently
+accepts unknown flags. Evidence details and output paths are in
+`external-profile-provenance-probe.md` (SHA-256
+`8DD8EB675DBBA1C829A9F7D794A90422AD6687989D99346BBE00BB99B2B21A`).
+
+That same fresh generation consumed an external Rustdoc receipt with no
+producer profile sidecar and emitted `defaultFeatures: true`, `features: []`,
+and `rustdocProfilesCovered: true`. Those values are not supported by the
+receipt's provenance. The CLI must reject absent producer metadata or emit an
+explicit unknown profile with coverage false; the bounded Cargo metadata
+planner does not repair this external-receipt gap.
+
+The current active integration rerun remains **4 passed, 1 failed**: the plugin
+source-closure test fails because the production inventory excludes
+`plugin/src/main.rs`. Earlier text saying all five passed was stale and is
+superseded by the active run and the exact cause above. No production collector
+change was made in this review.
+
+## Strict CLI allowlist fix (parser ownership)
+
+The maintained parser boundary now passes command-specific allowlists into
+`parse_flags`: `generate` accepts only its documented path/version/channel,
+Rustdoc mode, and scenario flags; `drift` accepts only root/output/Rustdoc
+inputs. Unknown options fail with `unknown option `--name`` before command
+execution. Boolean `--skip-scenarios` and `--execute-profiles` remain
+value-less flags.
+
+`cli_regressions.rs` adds active generation and drift cases that pass an
+unknown option and assert a nonzero exit plus no output directory. The actual
+binary test run passed all 7 tests, including plugin closure after the
+owner-side collector update. Test source SHA-256 is
+`D9637B65262709A36AD4C869F5C9F250E0C88FF7E6495879FE6187ED105A3693`.
+The parser change is limited to `parse_generate`, `parse_path_flags`, and
+`parse_flags`; collector/profile execution/provenance code was not edited by
+this task.
+
+## Source coverage mutation gate (latest)
+
+The active CLI suite now passes 9 tests. New fixtures create included
+`rust/crates/demo/src/lib.rs`, `rust/crates/demo/README.md`, `docs/guide.md`,
+and (for the plugin fixture) `plugin/src/main.rs`. Each mutation test changes
+one exact source, confirms existing drift fails with the changed relative path,
+confirms fresh generation rejects the old Rustdoc source attestation before
+writing, restores exact bytes, confirms drift passes, and regenerates a fresh
+manifest.
+
+The restored base fixture source snapshot is
+`sha256:1d6cc2905e983bfae296fa9e9994f365badcf66dbfeff28142c6f03bdb59a4ab`; the
+plugin snapshot is
+`sha256:73f29b1d2311b9c0b104c807b100d4bed88259a7769b119cc5d9d4787033c70c`.
+Detailed file hashes and paths are in
+`source-coverage-mutation-evidence.md` (SHA-256
+`65C9988D01E8C458BC37B9A231935524AC05F560CA641E9D67DCD07B54FB9D26`).
+This task changed regression fixtures/tests only; the production collector and
+profile execution paths were not edited.
