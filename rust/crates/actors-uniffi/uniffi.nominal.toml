@@ -25,17 +25,14 @@ nominal = true
 [bindings.python.custom_types.ActorId]
 nominal = true
 validator = "acyclic_actors_uniffi.validate_actor_id"
-imports = [".acyclic_actors_uniffi"]
 
 [bindings.python.custom_types.CodeSha256]
 nominal = true
 validator = "acyclic_actors_uniffi.validate_code_sha256"
-imports = [".acyclic_actors_uniffi"]
 
 [bindings.python.custom_types.PositiveU64]
 nominal = true
 validator = "acyclic_actors_uniffi.validate_positive_u64"
-imports = [".acyclic_actors_uniffi"]
 
 # Other bindings may opt into nominal wrappers only after their generator
 # exposes the same Rust-backed validator hook. Semantic predicates must remain
@@ -47,14 +44,20 @@ readonly_collections = true
 [bindings.dart.custom_types.ActorId]
 nominal = true
 safe_value = "non-empty-string"
+validator = "validateActorId"
+imports = ["acyclic_actors_uniffi.dart"]
 
 [bindings.dart.custom_types.CodeSha256]
 nominal = true
 safe_value = "fixed-bytes-32"
+validator = "validateCodeSha256"
+imports = ["acyclic_actors_uniffi.dart"]
 
 [bindings.dart.custom_types.PositiveU64]
 nominal = true
 safe_value = "non-zero-u64"
+validator = "validatePositiveU64"
+imports = ["acyclic_actors_uniffi.dart"]
 
 # CurrentHead remains a Rust-owned true-only oneof payload. The generated Dart
 # enum retains the Rust shape; invalid false is rejected by Rust projection.

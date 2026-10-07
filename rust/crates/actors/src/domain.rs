@@ -416,7 +416,9 @@ fn parse_subscription_start(
             Ok(subscription_start::Start::Cursor(cursor))
         }
         Some(subscription_start::StartProto::CurrentHead(true)) => {
-            Ok(subscription_start::Start::CurrentHead(true))
+            Ok(subscription_start::Start::CurrentHead(
+                subscription_start::CurrentHeadMarker::new(),
+            ))
         }
         Some(subscription_start::StartProto::CurrentHead(false)) | None => {
             Err(DomainError::InvalidSubscription)
@@ -427,6 +429,33 @@ fn parse_subscription_start(
 pub mod subscription_start {
     use super::*;
 
+    /// The only valid semantic payload for the current-head selector. The
+    /// protobuf wire representation remains a bool for descriptor stability,
+    /// while this type makes `false` unrepresentable after ingress validation.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    pub struct CurrentHeadMarker;
+
+    impl CurrentHeadMarker {
+        #[must_use]
+        pub const fn new() -> Self {
+            Self
+        }
+    }
+
+    impl TryFrom<bool> for CurrentHeadMarker {
+        type Error = DomainError;
+
+        fn try_from(value: bool) -> Result<Self, Self::Error> {
+            value.then_some(Self).ok_or(DomainError::InvalidSubscription)
+        }
+    }
+
+    impl From<CurrentHeadMarker> for bool {
+        fn from(_: CurrentHeadMarker) -> Self {
+            true
+        }
+    }
+
     /// The semantic oneof for [`super::SubscriptionStart`].
     #[proto_oneof(proxied, fallible = DomainError)]
     #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -436,8 +465,8 @@ pub mod subscription_start {
         #[proto(tag = 1)]
         Cursor(u64),
         /// Start at the service's current head, preserving the wire boolean.
-        #[proto(tag = 2)]
-        CurrentHead(bool),
+        #[proto(tag = 2, bool)]
+        CurrentHead(CurrentHeadMarker),
     }
 }
 
@@ -452,9 +481,11 @@ impl SubscriptionStart {
 
     /// Creates a current-head start selector.
     #[must_use]
-    pub fn current_head(current_head: bool) -> Self {
+    pub fn current_head() -> Self {
         Self {
-            start: subscription_start::Start::CurrentHead(current_head),
+            start: subscription_start::Start::CurrentHead(
+                subscription_start::CurrentHeadMarker::new(),
+            ),
         }
     }
 
@@ -472,7 +503,7 @@ impl SubscriptionStart {
     pub fn current_head_value(&self) -> Option<bool> {
         match self.start {
             subscription_start::Start::Cursor(_) => None,
-            subscription_start::Start::CurrentHead(current_head) => Some(current_head),
+            subscription_start::Start::CurrentHead(_) => Some(true),
         }
     }
 }
@@ -1543,7 +1574,7 @@ mod tests {
         let subscription = SubscriptionSpec::new(
             "events".into(),
             "agents/a/events".into(),
-            SubscriptionStart::current_head(true),
+            SubscriptionStart::current_head(),
             false,
         )
         .expect("valid subscription");
@@ -1553,12 +1584,9 @@ mod tests {
         assert_eq!(AddSubscriptionRequest::try_from(add_wire), Ok(add));
 
         assert_eq!(
-            SubscriptionSpec::new(
-                "events".into(),
-                "agents/a/events".into(),
-                SubscriptionStart::current_head(false),
-                false,
-            ),
+            SubscriptionStart::try_from(wire::SubscriptionStart {
+                start: Some(wire::subscription_start::Start::CurrentHead(false)),
+            }),
             Err(DomainError::InvalidSubscription)
         );
     }

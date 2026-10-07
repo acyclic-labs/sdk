@@ -1,0 +1,19 @@
+{
+  "schema": "actors-root-review.v1",
+  "runs": [
+    {
+      "exit": 0,
+      "probe": "shared-connect-cancellation",
+      "raw": "shared-connect-cancellation.fixed.raw.txt"
+    },
+    {
+      "exit": 0,
+      "probe": "reconnect-after-final-waiter-abort",
+      "raw": "reconnect-after-final-waiter-abort.fixed.raw.txt"
+    }
+  ],
+  "scope": "actual TypeScript connection state machine with injected stalled bindings",
+  "sourceStable": true,
+  "clientSha256": "E699DFB93B3A3DCED4EA47D1BD6328B2513B4ED95F7C0BA2A865A698925263BF",
+  "sourceHead": "40bcdfa458d9b61a5568458808025c55698d904d"
+}
