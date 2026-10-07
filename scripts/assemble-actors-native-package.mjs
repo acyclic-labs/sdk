@@ -5,6 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertSourceSnapshot, sourceSnapshot } from "./build-actors-native.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagePath = resolve(root, "typescript/packages/actors");
@@ -53,6 +54,7 @@ async function main() {
   }
   const sourceSha = run("git", ["rev-parse", "HEAD"]);
   if (sourceSha !== options.sourceSha) fail(`source ${options.sourceSha} differs from checkout ${sourceSha}`);
+  const source = await sourceSnapshot();
   const bundle = resolve(options.bundle);
   const output = resolve(options.output);
   const metadata = JSON.parse(await readFile(join(bundle, "native-targets.json"), "utf8"));
@@ -109,6 +111,8 @@ async function main() {
     const companionRoot = join(npmDir, companionEntries[0].name);
     const companionManifest = JSON.parse(await readFile(join(companionRoot, "package.json"), "utf8"));
     const companionArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: companionRoot });
+    await assertSourceSnapshot(source);
+    if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("source revision changed during package assembly");
     const receipt = {
       schema: "acyclic.actors.native-package-assembly.v1",
       source_commit: sourceSha,
