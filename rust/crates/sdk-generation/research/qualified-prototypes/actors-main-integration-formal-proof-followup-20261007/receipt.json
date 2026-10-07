@@ -1,0 +1,105 @@
+{
+  "artifact": "actors-main-integration-formal-proof-followup-20261007",
+  "parent_receipt": "actors-main-integration-formal-proof-audit-20261007",
+  "worktree": "C:\\Users\\varun\\.codex\\worktrees\\actors-main-integration\\sdk",
+  "head": "ec0496fea57f137f2ecf4e4aa29c4275dbf3b0da",
+  "source_state": "Task-local proof mirror only; no Actors product files changed. Production mirror restored after mutation controls.",
+  "mirror": "/tmp/actors-fcd-proof-20261007",
+  "proof_source": "formal_proofs.rs",
+  "source_sha256": {
+    "rust/crates/actors/src/domain.rs": "53255601658C33F955EF8CB860FB71EC4682585D5F0E26CE20DE11616369515A",
+    "rust/crates/actors/src/domain/formal_proofs.rs": "3F8FEA8371597AC061A9B489F7BF4839F60124EF8BAA8E21DEDBF6FCB038A46E",
+    "rust/crates/actors/src/lib.rs": "7F7076432EDCBC2D88A18F534B3259669622183F5B1EB1A3B6F7E1CF530F7252",
+    "rust/crates/actors/src/contract.rs": "4E01F66F5AEF315F25CCDC502C4B01634A7126F8F5105B4D338EB3FC5FACBEF0",
+    "rust/crates/actors/build.rs": "8A02F03262256B58EEB6AA756BCA122984DB53D91420A548B33CC4708CD605C3",
+    "rust/crates/actors/Cargo.toml": "D687485CFB5CDD125AD5E9D2DE008E018577593549510BEB19B04184A7B01F78"
+  },
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rust": "nightly-2026-08-21",
+    "sat_solver": "CaDiCaL 3.0.0",
+    "execution": "Linux WSL2 ext4 task-local mirror; CARGO_NET_OFFLINE=true; RUSTC_WRAPPER=; --jobs 1",
+    "unsupported_warning": "Kani emitted caller_location(1) and foreign function(2) warnings; each successful run ended with no verification failures or unwinding failures."
+  },
+  "harnesses": [
+    {
+      "harness": "contract::generated::domain::formal_proofs::code_sha256_exact_32_symbolic_bytes_preserved",
+      "production_calls": [
+        "CodeSha256::new",
+        "CodeSha256::as_bytes",
+        "valid_code_sha256 through CodeSha256::new"
+      ],
+      "property": "For every symbolic [u8;32] with at least one nonzero byte, actual CodeSha256::new accepts and as_bytes preserves all 32 bytes exactly.",
+      "result": "PASS",
+      "checks": "0 of 351 failed (5 unreachable)",
+      "terminal_exit": 0,
+      "raw_log": "audit/code-sha-symbolic.raw.txt",
+      "raw_log_sha256": "73E789E62369F72366ED78970DDEBAF5D05817A7237090B2B78922A3BBCE8119",
+      "algorithm_copy": false
+    },
+    {
+      "harness": "contract::generated::domain::formal_proofs::code_sha256_rejects_wrong_lengths_and_all_zero",
+      "production_calls": [
+        "CodeSha256::new",
+        "DomainError::InvalidCodeSha256"
+      ],
+      "property": "Actual production constructor rejects concrete lengths 0, 31, and 33, plus all-zero length 32.",
+      "result": "PASS",
+      "checks": "0 of 405 failed (2 unreachable)",
+      "terminal_exit": 0,
+      "raw_log": "audit/code-sha-boundaries.raw.txt",
+      "raw_log_sha256": "D740716F81D18A8B76C6301ABC8F9A69F1570FEE89C3081BCF7143799E44B802",
+      "algorithm_copy": false
+    },
+    {
+      "harness": "contract::generated::domain::formal_proofs::current_head_marker_bool_ingress_is_exact",
+      "production_calls": [
+        "subscription_start::CurrentHeadMarker::try_from",
+        "From<CurrentHeadMarker> for bool"
+      ],
+      "property": "For every bool, actual marker ingress accepts exactly true, rejects false with InvalidSubscription, and maps accepted marker back to true.",
+      "result": "PASS",
+      "checks": "0 of 98 failed",
+      "terminal_exit": 0,
+      "raw_log": "audit/current-head-marker.raw.txt",
+      "raw_log_sha256": "EA9EB52DD43CC110F69277D06AB55E8E21C9E084B6C4D13DC7E8AA2C6C8208EE",
+      "algorithm_copy": false
+    },
+    {
+      "harness": "contract::generated::domain::formal_proofs::subscription_start_oneof_ingress_preserves_cursor_and_current_head",
+      "production_calls": [
+        "SubscriptionStart::try_from",
+        "SubscriptionStart::cursor",
+        "SubscriptionStart::current_head",
+        "cursor_value",
+        "current_head_value",
+        "crate::wire::SubscriptionStart"
+      ],
+      "property": "For every symbolic u64 cursor, actual production ingress preserves cursor including zero; CurrentHead(true) yields current-head Some(true); CurrentHead(false) and missing oneof reject with InvalidSubscription; direct constructors expose matching presence.",
+      "result": "PASS",
+      "checks": "0 of 309 failed (2 unreachable)",
+      "terminal_exit": 0,
+      "raw_log": "audit/subscription-start.raw.txt",
+      "raw_log_sha256": "770A21A8A9190F2AC01BEA83F06744FD73761C40CCA25A33049CFBF86F964499",
+      "algorithm_copy": false
+    }
+  ],
+  "mutation_controls": [
+    {
+      "change": "valid_code_sha256 length predicate 32 -> 31 in task-local domain.rs",
+      "harness": "code_sha256_exact_32_symbolic_bytes_preserved",
+      "result": "EXPECTED_FAILURE; 1 of 351 failed; VERIFICATION:- FAILED at proof assertion false",
+      "raw_log": "audit/negative-controls/code-sha-mutated.raw.txt",
+      "raw_log_sha256": "8023EA6D22260477C69634FD7E1F74D36F26222446BC6DCD4CA5678CF6F2DAE9"
+    },
+    {
+      "change": "parse_subscription_start accepts CurrentHead(false) as CurrentHead marker in task-local domain.rs",
+      "harness": "subscription_start_oneof_ingress_preserves_cursor_and_current_head",
+      "result": "EXPECTED_FAILURE; 1 of 309 failed; VERIFICATION:- FAILED at false ingress == InvalidSubscription",
+      "raw_log": "audit/negative-controls/current-head-mutated.raw.txt",
+      "raw_log_sha256": "26AD32FC804B5AEC2623CC0DCE9F08F2FC92EC60D92135C403E1FB168A5799A6"
+    }
+  ],
+  "claim_scope": "These follow-up theorems cover only CodeSha256 fixed 32-byte admission/preservation and SubscriptionStart/CurrentHead marker presence and ingress. They do not prove arbitrary strings outside fixed digest bytes, transport behavior, whole requests, expected revision, or whole-crate semantics."
+}
