@@ -8184,6 +8184,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end lifecycle verifies binary data, exact forks, and reopen durability"
+    )]
     async fn native_named_workspace_is_durable_binary_and_fork_exact()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;

@@ -1163,24 +1163,18 @@ mod bindings {
                             options.maximum_conflicts,
                         )
                         .plan_pinned(
-                            match &options.source_generation {
-                                Some(id) => source
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "source generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => source.head().await.map_err(js_error)?,
-                            },
-                            match &options.target_generation {
-                                Some(id) => target
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "target generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => target.head().await.map_err(js_error)?,
-                            },
+                            browser_join_generation(
+                                source,
+                                options.source_generation.as_deref(),
+                                "source generation",
+                            )
+                            .await?,
+                            browser_join_generation(
+                                target,
+                                options.target_generation.as_deref(),
+                                "target generation",
+                            )
+                            .await?,
                         )
                         .await
                         .map_err(js_error)?,
@@ -1198,24 +1192,18 @@ mod bindings {
                             options.maximum_conflicts,
                         )
                         .plan_pinned(
-                            match &options.source_generation {
-                                Some(id) => source
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "source generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => source.head().await.map_err(js_error)?,
-                            },
-                            match &options.target_generation {
-                                Some(id) => target
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "target generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => target.head().await.map_err(js_error)?,
-                            },
+                            browser_join_generation(
+                                source,
+                                options.source_generation.as_deref(),
+                                "source generation",
+                            )
+                            .await?,
+                            browser_join_generation(
+                                target,
+                                options.target_generation.as_deref(),
+                                "target generation",
+                            )
+                            .await?,
                         )
                         .await
                         .map_err(js_error)?,
@@ -1233,24 +1221,18 @@ mod bindings {
                             options.maximum_conflicts,
                         )
                         .plan_pinned(
-                            match &options.source_generation {
-                                Some(id) => source
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "source generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => source.head().await.map_err(js_error)?,
-                            },
-                            match &options.target_generation {
-                                Some(id) => target
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "target generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => target.head().await.map_err(js_error)?,
-                            },
+                            browser_join_generation(
+                                source,
+                                options.source_generation.as_deref(),
+                                "source generation",
+                            )
+                            .await?,
+                            browser_join_generation(
+                                target,
+                                options.target_generation.as_deref(),
+                                "target generation",
+                            )
+                            .await?,
                         )
                         .await
                         .map_err(js_error)?,
@@ -7075,6 +7057,27 @@ mod bindings {
         })
     }
 
+    async fn browser_join_generation<
+        A: acyclic_fs::AsyncAuthorityStore,
+        O: acyclic_fs::AsyncObjectStore,
+    >(
+        workspace: &Workspace<A, O>,
+        id: Option<&[u8]>,
+        label: &str,
+    ) -> Result<Generation<A, O>, JsValue> {
+        match id {
+            Some(id) => {
+                workspace
+                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                        id, label,
+                    )?)))
+                    .await
+            }
+            None => workspace.head().await,
+        }
+        .map_err(js_error)
+    }
+
     fn browser_join_history(value: &str) -> Result<JoinHistory, JsValue> {
         match value {
             "merge" => Ok(JoinHistory::Merge),
@@ -7844,7 +7847,14 @@ mod bindings {
             );
             assert!(exact.read("/output/status".to_owned(), 5).await.is_err());
             let exact_fork = workspace
-                .fork_at("exact-fork".to_owned(), exact, None)
+                .fork_at(
+                    "exact-fork".to_owned(),
+                    exact,
+                    serde_wasm_bindgen::to_value(&BrowserForkOptions {
+                        paths: None,
+                        idempotency_key: None,
+                    })?,
+                )
                 .await?;
             assert!(
                 exact_fork

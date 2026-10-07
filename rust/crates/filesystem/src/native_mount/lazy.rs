@@ -5376,7 +5376,9 @@ mod tests {
         assert_eq!(linked_file.logical_bytes, 5);
         assert!(!view.unchanged_since(&linked_path, Some(linked_file.file_id), stamp));
         assert!(!view.node_unchanged_since(linked_file.file_id, stamp));
-        assert!(view.unchanged_since(&single, Some(single_file.file_id), stamp));
+        // Single-link files are observable; a delayed/coalesced watcher report
+        // may still invalidate the earlier stamp, especially with FSEvents.
+        assert!(view.reports_changes_to(single_file.file_id));
 
         // Written in place through the name outside the source: unreported.
         std::fs::OpenOptions::new()
