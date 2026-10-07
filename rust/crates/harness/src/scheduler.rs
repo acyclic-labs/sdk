@@ -1922,6 +1922,7 @@ mod tests {
         WaitForChildren(u8, u8),
         ReleaseLease(u8, u8),
         Cancel(u8, bool),
+        ModelClaim(u8, u8, u8, u8, u8),
         Complete(u8, u8, Option<u8>),
         Orchestrate(u8),
         /// The next lifecycle event for the operation's current phase.
@@ -1958,6 +1959,9 @@ mod tests {
             3 => (op(), lease()).prop_map(|(op, lease)| Step::WaitForChildren(op, lease)),
             1 => (op(), lease()).prop_map(|(op, lease)| Step::ReleaseLease(op, lease)),
             1 => (op(), any::<bool>()).prop_map(|(op, recursive)| Step::Cancel(op, recursive)),
+            4 => (op(), lease(), 0..2_u8, 0..3_u8, 0..4_u8)
+                .prop_map(|(op, lease, attempt, step, digest)|
+                    Step::ModelClaim(op, lease, attempt, step, digest)),
             4 => (op(), 0..4_u8, proptest::option::weighted(0.8, lease()))
                 .prop_map(|(op, outcome, fence)| Step::Complete(op, outcome, fence)),
             4 => op().prop_map(Step::Orchestrate),
@@ -2045,6 +2049,16 @@ mod tests {
                 operation_id: id(op),
                 recursive,
             },
+            Step::ModelClaim(op, lease, attempt, step, digest) => {
+                SchedulerEvent::ModelDispatchClaimed {
+                    operation_id: id(op),
+                    attempt_id: id(attempt),
+                    step: u32::from(step),
+                    request_digest: [digest; 32],
+                    fence: fence(lease),
+                    ceiling: 2,
+                }
+            }
             Step::Complete(op, outcome, lease) => SchedulerEvent::Completed {
                 operation_id: id(op),
                 outcome: match outcome {
@@ -2139,6 +2153,17 @@ mod tests {
                 if let Some(event) = event(&scheduler, declared).map_err(fail)? {
                     scheduler.apply(event).map_err(fail)?;
                 }
+                if parent.is_none() {
+                    scheduler.apply(SchedulerEvent::SessionConfigured {
+                        operation_id: id(op),
+                        limits: SessionLimits {
+                            active_tasks: 2,
+                            total_tasks: 5,
+                            depth: 3,
+                            model_steps: 2,
+                        },
+                    }).map_err(fail)?;
+                }
             }
             for step in steps {
                 let Some(event) = event(&scheduler, step).map_err(fail)? else {
@@ -2178,6 +2203,28 @@ mod tests {
                             | OperationPhase::Running
                             | OperationPhase::Reconciling
                     ));
+                }
+                // Claims cannot be refunded by lifecycle changes or exact
+                // retries, and all descendants consume the same admitted budget.
+                for (op, prior) in &before.model_claims {
+                    let current = scheduler.model_claims.get(op);
+                    prop_assert!(current.is_some_and(|current|
+                        current.ceiling == prior.ceiling
+                            && prior.attempts.iter().all(|(attempt, steps)|
+                                current.attempts.get(attempt).is_some_and(|retained|
+                                    steps.iter().all(|(step, digest)|
+                                        retained.get(step) == Some(digest))))));
+                }
+                for (root, limits) in &scheduler.sessions {
+                    let used = scheduler.model_claims.iter()
+                        .filter(|(op, _)| scheduler.session_root(**op)
+                            .is_ok_and(|(candidate, _)| candidate == *root))
+                        .map(|(_, claims)| claims.used())
+                        .sum::<u64>();
+                    prop_assert!(used <= limits.model_steps);
+                }
+                for claims in scheduler.model_claims.values() {
+                    prop_assert!(claims.used() <= claims.ceiling);
                 }
                 let completed = scheduler.completion_order.iter().collect::<BTreeSet<_>>();
                 prop_assert_eq!(completed.len(), scheduler.completion_order.len());
