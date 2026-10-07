@@ -8,7 +8,7 @@
                                 "Cargo.lock":  "F4F0E48273E0D9AA5232339D8B7F4A8162B1F242ED651580B293712A30DDC8A2",
                                 "rust/crates/actors/Cargo.toml":  "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
                                 "rust/crates/actors/src/lib.rs":  "D9609E96206C2D3915D55B0BF00FA8BE7E5C49747749725CE75EFFBE3CE374C9",
-                                "rust/crates/actors/src/domain.rs":  "1390DB39B264AD3CEBF6E9EC07AA903421B6982E9902FC60557E0CA6A8FDF902",
+                                "rust/crates/actors/src/domain.rs":  "8FE1923D14B2F16D2055B103736CB767B3FE98D39A84A503E14E230C5DD17AE6",
                                 "rust/crates/actors/src/client.rs":  "750EA049379898E7A1BBADCA06F6FEF65CFD6068A570E7E74F66411F5443131B",
                                 "rust/crates/actors/src/codegen.rs":  "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6",
                                 "rust/crates/actors/src/contract.rs":  "70CB496E3695FE725AFF1AB124AE400F090333575F57E2029B4C122647E8AE08",

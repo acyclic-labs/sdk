@@ -1,0 +1,87 @@
+{
+  "schema": "acyclic.swift-maintained-uniffi-installable-package-qualification/v1",
+  "status": "PASS_WINDOWS_MACOS",
+  "recordedAt": "2026-10-07",
+  "purpose": "Source-pinned external SwiftPM consumer package with platform native resources and real in-flight Task.cancel propagation",
+  "maintainedSource": {
+    "uniffiSource": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "commit": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "generatorBranch": "codex/swift-actors-cancellation",
+    "templates": {
+      "Async": "830FB89B3C97713CA2C1CF844BE63E0A1AD5D458AF7A3C87A3E2FF58A2B5E0C6",
+      "macros": "5EB1C64482514E8962099B42BE14BBC2C0B375570869CFE391006A77802ABDB4",
+      "Helpers": "932944185A48F7C99C81E0A08C3F89304515D7C20D025F552875D8BB816A7E44"
+    }
+  },
+  "generated": {
+    "swift": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
+    "header": "A840ACE58A5D895D1E166A0F98311C2F71D90C7F53DC40DA6E56A918809D5578",
+    "modulemap": "7ABF028E5A5A4E169B3F85E4002F66B3463D0E499C1CA034111D6FB1F4709183",
+    "cancellationConsumerSource": "58365B8DF3C8AF577DC99CE4B92710D08C1DBD6C3672B47208D4A44192C71394",
+    "sourcePath": "rust/crates/sdk-generation/research/qualified-prototypes/swift-actors-cancellation/consumer/Sources/ActorsConformanceConsumer/main.swift"
+  },
+  "windows": {
+    "packagePath": "Q:\\sdk\\work\\swift-install-pending-20261007-windows-package",
+    "packageManifestSha256": "E2E08C0C9BD42BF7ADC59558398C4A42B4006E41C01BBBBF92E12EF8BC16EF0D",
+    "nativeDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "nativeImportLibSha256": "64CACAA0F034C8D0DD52C4440A23DDE5A6131DC018693AA39DD2BF4FD3E98D18",
+    "executable": "Q:\\sdk\\work\\swift-install-pending-20261007-windows-build\\out\\Products\\Debug-windows-x86_64\\ActorsConformanceConsumer.exe",
+    "executableSha256": "57C62FB4070828A02E46DBBF0BB0EA17AB9F0F837E5D3BE3BF9B3350ADA49959",
+    "swift": "6.4",
+    "fixtureOptions": "Q:\\sdk\\work\\swift-install-pending-20261007\\options.json",
+    "fixtureOptionsSha256": "572FF3CD796A0821D1595A3365C21BDA8281D64D162EAB8AA5BD1103A07B5A28",
+    "fixtureEndpoint": "https://localhost:58173",
+    "fixtureControl": "http://127.0.0.1:58175",
+    "fixturePid": 28200,
+    "fixtureState": {
+      "baseline": "started=0 aborted=0 active=0",
+      "activeBeforeCancel": "started=1 aborted=0 active=1",
+      "final": "started=1 aborted=1 active=0"
+    },
+    "runLog": "Q:\\sdk\\work\\swift-install-pending-20261007-windows-run.log",
+    "runLogSha256": "30E7C7336B113DA39AC2283A0A893350DCE4A8F3392CDFDEDE38404328B4E4FD",
+    "buildLog": "Q:\\sdk\\work\\swift-install-pending-20261007-windows-build.log",
+    "result": "PASS exit=0; Task.cancel yielded CancellationError(); Rust future abort observed by fixture; cancellation argument=nil"
+  },
+  "macos": {
+    "host": "ivar",
+    "os": "Darwin 24.6.0 arm64",
+    "packagePath": "Q:\\sdk\\work\\swift-install-pending-20261007-mac-package",
+    "remotePackagePath": "/Users/var/swift-install-pending-20261007-mac-package",
+    "packageManifestSha256": "52381F0CAF63DB3D84F413F57B466679015DA21203BBB62BB080B1D98E386D0C",
+    "nativeDylibSha256": "8959C7F8A903ED9DBE3139935CE23BA9FC5E0356FE65390493853995DA9B5AB4",
+    "executable": "/Users/var/swift-install-pending-20261007-mac-build/arm64-apple-macosx/debug/ActorsConformanceConsumer",
+    "executableSha256": "2774E0BD85AD657960EC8B4A5A5FD59F2299A1341D645CBA00E222ECF8B6ADA2",
+    "swift": "6.1.2",
+    "rustc": "1.98.1",
+    "fixtureOptions": "Q:\\sdk\\work\\swift-install-pending-20261007-macfixture\\options.json",
+    "fixtureOptionsSha256": "946BE2E50D3B18E31859D3C865225D95A318E62F654232DD5BAE3CFE2B8C240F",
+    "fixtureEndpoint": "https://localhost:62283",
+    "fixtureControl": "http://127.0.0.1:62285",
+    "fixturePid": 58400,
+    "reverseForwards": "[::1]:62283 -> Windows [::1]:62283; 127.0.0.1:62285 -> Windows 127.0.0.1:62285",
+    "fixtureState": {
+      "baseline": "started=0 aborted=0 active=0",
+      "activeBeforeCancel": "started=1 aborted=0 active=1",
+      "final": "started=1 aborted=1 active=0"
+    },
+    "runLog": "Q:\\sdk\\work\\swift-install-pending-20261007-mac-run-fresh.log",
+    "runLogSha256": "30E7C7336B113DA39AC2283A0A893350DCE4A8F3392CDFDEDE38404328B4E4FD",
+    "remoteOptions": "/Users/var/swift-install-pending-20261007-mac-options-fresh.json",
+    "result": "PASS exit=0; Task.cancel yielded CancellationError(); Rust future abort observed by fixture; cancellation argument=nil"
+  },
+  "cleanup": {
+    "windowsFixturePidTerminal": "PID 28200 absent after fixture TLS failure cleanup; ports 58173/58175 not listening",
+    "macFixturePidTerminal": "PID 58400 absent after owned cleanup; control port 62285 not listening; endpoint had only TIME_WAIT",
+    "macMarker": "Q:\\sdk\\work\\swift-install-pending-20261007-macfixture\\marker.log",
+    "macMarkerSha256": "AA1946FDD7843456069602CF60F227E81E385262F836349FAF5E0CCAFD2AA63B",
+    "macMarkerTerminalLine": "request-abort started=1 active=0 aborted=1",
+    "noMaintainedSourceEdits": true
+  },
+  "notes": [
+    "Packages were copied from the canonical generated Swift package and only the external consumer entry point was replaced with the maintained cancellation consumer source.",
+    "No constructor reordering or Rust algorithm translation was used.",
+    "The first macOS attempt used incorrect reverse-forward address/hostname and is excluded from qualification; the fresh macOS fixture run above is the qualifying result.",
+    "Staged packages and native resources remain external under Q:\\sdk\\work and /Users/var; this receipt is the primary tracked research artifact."
+  ]
+}

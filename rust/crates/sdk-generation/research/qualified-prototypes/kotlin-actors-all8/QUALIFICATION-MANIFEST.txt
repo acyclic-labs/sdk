@@ -182,3 +182,11 @@ Final semantic producer cutover audit (2026-10-07):
 - active production checkout has no rust/crates/actors-uniffi facade yet; exact task-local JAR remains the prior qualified facade artifact and is not claimed as a production cutover output
 - maintained integration design: KOTLIN-FINAL-PRODUCER-INTEGRATION.md; local audit script: qualify-final-producer.ps1
 - required integration changes are producer-owned root/operation descriptors, source-closure hash extraction, and generated cancellation-adapter metadata; no handwritten semantic duplicate is admitted
+
+Production facade source receipt (2026-10-07):
+- checkout: Q:\sdk\work\sdkgen-main-actual03bb; owned path: rust/crates/actors-uniffi
+- facade scope: BindingError, CancellationHandle, ActorsClient, both connection functions, and the eight async client operations
+- semantic type mirrors: 0; signatures use acyclic_actors::domain directly and delegate to acyclic_actors::client
+- peer contract: acyclic-actors/uniffi feature with UniFFI derives on the existing domain declarations; root workspace registration remains foundation_port-owned
+- raw source receipt: audit/actors-uniffi-final-producer-facade.raw.txt
+- rustfmt check: PASS; Cargo check is intentionally pending the peer-owned feature contract

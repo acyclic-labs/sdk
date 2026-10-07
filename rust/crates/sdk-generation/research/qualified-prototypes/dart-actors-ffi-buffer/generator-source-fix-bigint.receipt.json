@@ -80,8 +80,17 @@
   ],
   "reproducibilityInventory": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/producer-031-reproducibility-inventory.json",
   "crossPlatform": {
-    "windows": "qualified-installed-probe",
-    "wslLinux": "source-qualified-only: cargo metadata --locked and 67 acyclic-actors lib tests passed; no Linux Dart runtime because producer is Windows DLL",
-    "sshMacOS": "unavailable: macos SSH alias did not resolve"
+    "windows": "qualified-installed-probe: all eight remote operations, typed errors, BigInt/presence, in-flight cancellation and server abort; clean archive local probe/analyzer passed",
+    "wslLinux": "qualified-installed-local-probe: source cargo build and clean package dart analyze/local runtime passed with pinned Dart 3.7.0-209.1.beta and native .so",
+    "sshMacOS": "qualified-installed-local-probe on authorized host ivar (macOS 15.6 arm64): source cargo +1.98.1 build and clean package dart analyze/local runtime passed with pinned Dart 3.7.0-209.1.beta and native .dylib",
+    "remoteFixtureBoundary": "Linux/macOS all8 and in-flight cancellation entry points are included in the clean package; transport execution requires the TLS conformance fixture. Windows installed qualification supplied the all8 and actual server-abort evidence."
+  },
+  "qualifiedPackageArchive": {
+    "path": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/actors-uniffi-dart-clean-package-031-20261007.zip",
+    "sha256": "b3d95db58248ae9828cc5cabaf756a074472f6dabe43e2caad40907d152c581c",
+    "bytes": 6031220,
+    "pubspecSha256": "CEBB5F962B21A01919F0B9B4EF3FCAAA55AA618DB061F1C263A7FD0D2119E483",
+    "pubspecLockSha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+    "contents": "deterministic clean external package with generated binding, probes, README, checksums, and native Windows/Linux/macOS artifacts"
   }
 }

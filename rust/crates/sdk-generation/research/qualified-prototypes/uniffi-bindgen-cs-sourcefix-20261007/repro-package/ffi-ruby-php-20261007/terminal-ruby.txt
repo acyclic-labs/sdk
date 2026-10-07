@@ -1,0 +1,29 @@
+$ ruby --version
+ruby 2.6.10p210 (2022-04-12 revision 67958) [universal.arm64e-darwin24]
+$ GEM_HOME=/tmp/acyclic-ruby-gems GEM_PATH=/tmp/acyclic-ruby-gems ruby /tmp/acyclic-ruby-unary.rb
+RUBY_ACTOR_ID_TYPE=AcyclicActorsUniffi::ActorId
+RUBY_ACTOR_ID_VALUE=ruby-fixture
+$ GEM_HOME=/tmp/acyclic-ruby-gems GEM_PATH=/tmp/acyclic-ruby-gems ruby /tmp/acyclic-ruby-token.rb
+RUBY_CANCEL_BEFORE=false
+RUBY_CANCEL_AFTER=true
+$ GEM_HOME=/tmp/acyclic-ruby-gems GEM_PATH=/tmp/acyclic-ruby-gems ruby /tmp/acyclic-ruby-debug.rb
+THREAD_ERROR NoMethodError: undefined method `consumeIntoOptionalTypeActorObservation' for 105553120178704:Integer
+/tmp/acyclic-ruby-generated/acyclic_actors_uniffi.rb:2401:in `inspect_actor'
+/tmp/acyclic-ruby-debug.rb:12:in `block in <main>'
+BEFORE_CONNECT
+AFTER_CONNECT
+BEFORE_INSPECT
+TICK
+TICK
+TICK
+TICK
+TICK
+TICK
+TICK
+TICK
+TICK
+TICK
+CANCELLED=false
+CANCEL_SENT
+ALIVE=false
+fixture /state: {"started":0,"aborted":0,"active":0}

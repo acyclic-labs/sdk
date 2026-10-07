@@ -19,6 +19,24 @@ function Assert-File($path, $expectedHash, $expectedBytes) {
     }
 }
 
+function Assert-RemoteArtifact($name, $output) {
+    # The macOS producer runs on ivar.  Its wheel is not copied into this
+    # checkout; bind the recorded output to the retained producer receipt,
+    # whose own hash and byte count are checked below.
+    if ($name -eq 'macos_wheel' -and $output.path.StartsWith('ivar:')) {
+        $retained = Join-Path $PSScriptRoot 'installed-receipts\macos-ivar-20261007.json'
+        $remoteReceipt = Get-Content -LiteralPath $retained -Raw | ConvertFrom-Json
+        $wheel = $remoteReceipt.artifacts.wheel
+        if ($output.path.Substring(5) -ne $wheel.path -or
+            $output.sha256.ToLowerInvariant() -ne $wheel.sha256.ToLowerInvariant() -or
+            $output.bytes -ne $wheel.bytes) {
+            throw "Remote macOS wheel does not match retained producer receipt: $($output.path)"
+        }
+        return
+    }
+    Assert-File $output.path $output.sha256 $output.bytes
+}
+
 Assert-File $receipt.generator.archive.path $receipt.generator.archive.sha256 $receipt.generator.archive.bytes
 Assert-File (Join-Path $PSScriptRoot 'uniffi-python-typing.patch') $receipt.generator.patch.sha256 $receipt.generator.patch.bytes
 
@@ -45,7 +63,7 @@ Assert-File $python.linux_path $python.sha256 $python.bytes
 foreach ($entry in $receipt.generated_outputs.PSObject.Properties) {
     if ($entry.Name -ne 'python_module') {
         $output = $entry.Value
-        Assert-File $output.path $output.sha256 $output.bytes
+        Assert-RemoteArtifact $entry.Name $output
     }
 }
 

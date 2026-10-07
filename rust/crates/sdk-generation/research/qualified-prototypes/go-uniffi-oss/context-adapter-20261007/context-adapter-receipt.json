@@ -26,7 +26,7 @@
       "version": "0.2.0",
       "manifestSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB737",
       "historicalLockSha256": "97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE",
-      "currentObservedLockSha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5",
+      "currentObservedLockSha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890",
       "historicalNativeInventory": {
         "uniffiLibSha256": "9AF194096FEE19643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A",
         "domainSha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
@@ -34,15 +34,16 @@
         "grpcSha256": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2"
       },
       "currentCheckoutInventory": {
-        "uniffiLibSha256": "9AF194096FEE19643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A",
+        "uniffiLibSha256": "9C1F32FAE8D4F2BD4925F785242F85369553E4182D188A894BC06C995F776853",
         "domainSha256": "8A5F0D7FE2775D13C15BB7B8A5E6A94509C56AA0D784E28DC0F7F21CEF4C9989",
         "clientSha256": "35953BD9C7F683DAECBF4B6813B6CC1E458CFB94A6542696420CE67C459E2B8A",
         "grpcSha256": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
         "uniffiConfigSha256": "950AB29CBC05E20643831B08A16FA5CABB99258FB4E0EACEA1FC78D54718B599"
       },
-      "interpretation": "AA6427 is retained under the historical inventory and is not relabeled as a build from the current checkout. Current lock/domain/client hashes differ."
+      "interpretation": "AA6427 is retained under the historical inventory and is not relabeled as a build from the current checkout. Current lock/uniffi/domain/client hashes differ."
     },
     "domainHash": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "currentDomainHash": "8A5F0D7FE2775D13C15BB7B8A5E6A94509C56AA0D784E28DC0F7F21CEF4C9989",
     "nativeDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241"
   },
   "design": {
@@ -59,7 +60,9 @@
     "contextCancellation": "PASS_RUNTIME: GO_CURRENT_ACTORS_CONTEXT_CANCEL_PASS error=ErrBindingErrorCancelled manual_handle=nil; pending InspectActor released and fixture closed cleanly",
     "serverAbortCleanupAuth": "PASS_RUNTIME: GO_SOURCE_REGENERATED_ALL8_PASS included an aborted TLS socket followed by authenticated InspectActor on the same client",
     "u64MaxAnd2Pow53": "PASS_RUNTIME: GO_SOURCE_REGENERATED_ALL8_PASS cursor=9007199254740993 u64_max=18446744073709551615",
-    "strongTypeNegatives": "PASS_COMPILE: GO_STRONG_TYPE_NEGATIVES_PASS rejected ActorId int, CodeSha256 string, and PositiveU64 float64 at compile time"
+    "strongTypeNegatives": "PASS_COMPILE: GO_STRONG_TYPE_NEGATIVES_PASS rejected ActorId int, CodeSha256 string, and PositiveU64 float64 at compile time",
+    "macosAllEight": "PASS_RUNTIME: macOS arm64 external module consumer completed all eight operations, full-u64/presence checks, server-abort cleanup, and authenticated follow-up",
+    "macosContextCancellation": "PASS_RUNTIME: macOS arm64 external module consumer returned ErrBindingErrorCancelled with nil manual handle and released pending InspectActor"
   },
   "runtime": {
     "go": "go1.25.1 linux/amd64",
@@ -73,26 +76,35 @@
     "contextTerminal": "probe/go-runtime-context-terminal.txt sha256=AF127DE3F6C9592C62A4F5711D34CF355502D95314BCA5D97D27EE9F107C64B8",
     "strongNegativeTerminal": "probe/go-runtime-strong-negative-terminal.txt sha256=69AF96B67FCE0DB8AAA7F67028A256F5C955B9BBF7ED6ECABCEC05316FBA99E7",
     "externalConsumerTerminal": "probe/go-external-module-terminal.txt sha256=FBB795EDAC8550004ECCD49D96F6CC2329152E5135460CF6C3E4793F0AE52746",
+    "macosAllEightTerminal": "probe/go-macos-runtime-all8-terminal.txt sha256=C4FE35358132CD200D97C136B6DC9FC1F1B36814924F1174E71E426A93F9BB4C",
+    "macosContextTerminal": "probe/go-macos-runtime-context-terminal.txt sha256=46030FD032EE0CE5BD7BD4010E2A607D73E69DF08EBB15BDB4D08B2B91218526",
     "allEightProbeSourceSha256": "0ED67B6404C515D5A24E9C63E1327138ADA4F8761158DF3324F17B8D1E9317DC"
   },
   "moduleArtifact": {
     "root": "go-module",
     "modulePath": "example.local/acyclic-actors-uniffi-go",
     "cargoVersion": "0.2.0",
-    "manifestSha256": "A7799C13B17324F19D5D7C7065AB417D78DC45FA966BF6FEC7D6D4F6291C11AE",
+    "manifestSha256": "BC3BCE485AEEA2D381C0FCB736286B7076F0DBC02F737D68C1A9283E31347606",
     "archive": "acyclic-actors-uniffi-go-0.2.0-qualification.zip",
-    "archiveBytes": 7223685,
-    "archiveSha256": "0F08BE3BE8AB30FA606C10932B246CAFB28EB2876BA1041C18B64657ED1FBA4E",
+    "archiveBytes": 7223719,
+    "archiveSha256": "5A634410A7DB58885B96826753D123B665D486E0C29EBDFB9E5CCD29AE9CC223",
     "status": "installable source artifact; publish=false"
   },
   "platformScopes": {
     "linuxWsl": "QUALIFIED: go1.25.1 linux/amd64 with AA6427 native and external module consumer",
     "windows": "UNQUALIFIED_FOR_GO: preserved native DLL identity A09452; no Windows Go runtime claim",
     "macosIvar": {
-      "status": "UNQUALIFIED_FOR_GO",
-      "nativeDylibSha256": "28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719",
+      "status": "QUALIFIED_FOR_GO",
+      "nativeDylibSha256": "35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04",
+      "sourceArchiveSha256": "29B901853E9888EEB6796F84CF9869080277B483AB5B8330178F36F829271827",
+      "sourceBuild": "CARGO_TARGET_DIR=/tmp/go-uniffi-macos-source-20261007-target CARGO_INCREMENTAL=0 cargo +1.98.1-aarch64-apple-darwin build --manifest-path rust/crates/actors-uniffi/Cargo.toml --release --lib",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "go": "go1.25.1 darwin/arm64",
       "goArchiveSha256": "32fced3b3e71e782525b5e36546e0db94579a4de644a22f32e7775ac197a8612",
-      "reason": "SSH reverse relay reached EOF without a TLS peer; no runtime PASS is claimed"
+      "goQualificationCommand": "CGO_CFLAGS=-I/tmp/go-uniffi-qual-mac-20261007/generated/acyclic_actors_uniffi CGO_LDFLAGS=-L/tmp/go-uniffi-qual-mac-20261007/native/darwin-arm64 -lacyclic_actors_uniffi -Wl,-rpath,/tmp/go-uniffi-qual-mac-20261007/native/darwin-arm64 go run",
+      "fixtureCertificatePemSha256": "6CCBB2CF9D92433ED139EDA65A7DFCD91CDFA636FE704AB74587DC3E329AC5AF",
+      "fixtureIdentityJsonSha256": "D5DC54C23D3A8B2EF12EF641EA5430BE0D3CD4DFE103A9243DA55F92C5CFB181",
+      "fixtureTransport": "task-owned local macOS Node TLS/HTTP2 fixture with Rust conformance certificate; no reverse relay"
     }
   },
   "fixture": {
@@ -109,6 +121,13 @@
     "probeMarker": "GO_CURRENT_ACTORS_CONTEXT_CANCEL_PASS error=ErrBindingErrorCancelled manual_handle=nil endpoint=https://localhost:65109",
     "cleanup": "external pending fixture exited cleanly after context cancellation and consumer completion"
   },
+  "macosFixture": {
+    "normalEndpoint": "https://localhost:59610",
+    "pendingEndpoint": "https://localhost:59628",
+    "certificatePemSha256": "6CCBB2CF9D92433ED139EDA65A7DFCD91CDFA636FE704AB74587DC3E329AC5AF",
+    "identityJsonSha256": "D5DC54C23D3A8B2EF12EF641EA5430BE0D3CD4DFE103A9243DA55F92C5CFB181",
+    "cleanup": "task-owned normal and pending fixture sessions were terminated after successful consumers; pending release file was observed"
+  },
   "artifacts": {
     "patch": "D26B679FA35DB370851A7A82FFCD0ECF4012E46767937487C9EED363279C1D11",
     "generatedGo": "0FFF109D0183D45D3C396D6172C715980F93DF0D0F51DA9DEB24AD3898209B2C",
@@ -122,6 +141,7 @@
     ],
     "probe": "2AFDB09947CFA3047B7B42C6642BF40428A7494442E6CA5C8F40F007CEB2816E",
     "nativeDll": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "nativeDylibMacosSourceBuilt": "35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04",
     "ca": "5A0AA4F0A814EC3B8B3CCB6BB547137462B7733E84C0E91594DE19653F4F73BA"
   },
   "limitations": [

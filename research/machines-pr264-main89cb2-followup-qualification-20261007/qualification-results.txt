@@ -1,0 +1,5 @@
+27 Machines tests: pass=27 fail=0
+TypeScript consumer: positive=0 expected-negative=0 raw-negative=1
+Runtime smoke: runtime-smoke-ok
+Generated source/package/installed/prepost: exact
+Tarball excluded from this research receipt

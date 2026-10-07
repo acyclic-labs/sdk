@@ -224,6 +224,20 @@ fn fallible_proxy_rejects_invalid_nested_actor() {
 }
 
 #[test]
+fn fallible_proxy_rejects_missing_required_nested_actor() {
+    let wire = RegisterActorProto {
+        actor_id: "actor-1".into(),
+        max_children: 1,
+        code_sha256: vec![0; 32].into(),
+        nested: None,
+    };
+    assert_eq!(
+        RegisterActor::try_from(wire),
+        Err(IngressError::MissingNestedActor)
+    );
+}
+
+#[test]
 fn fallible_proxy_rejects_bad_actor_id() {
     let wire = RegisterActorProto {
         actor_id: "".into(),

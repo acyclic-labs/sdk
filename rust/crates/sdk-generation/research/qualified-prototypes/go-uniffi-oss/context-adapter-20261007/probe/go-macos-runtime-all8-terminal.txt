@@ -1,0 +1,7 @@
+ld: warning: duplicate -rpath '/tmp/go-uniffi-qual-mac-20261007/native/darwin-arm64' ignored
+ld: warning: ignoring duplicate libraries: '-lacyclic_actors_uniffi'
+GO_SOURCE_REGENERATED_ALL8_PASS inspect=create=update=add=remove=resume=checkpoint invoke_status=201 cursor=9007199254740993 u64_max=18446744073709551615 semantic_typed=true server_abort_cleanup_auth=true
+go version go1.25.1 darwin/arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+native runtime: libacyclic_actors_uniffi.dylib sha256=35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04
+fixture transport: task-owned local macOS Node TLS/HTTP2 fixture, Rust conformance certificate, authenticated token conformance

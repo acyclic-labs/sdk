@@ -9,7 +9,7 @@
     "version": "0.2.0",
     "manifestSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377",
     "historicalLockSha256": "97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE",
-    "currentObservedLockSha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5",
+    "currentObservedLockSha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890",
     "rustVersion": "1.98"
   },
   "sourceProvenance": {
@@ -24,8 +24,8 @@
     },
     "currentCheckoutInventory": {
       "manifestSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377",
-      "lockSha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5",
-      "uniffiLibSha256": "9AF194096FEE19643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A",
+      "lockSha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890",
+      "uniffiLibSha256": "9C1F32FAE8D4F2BD4925F785242F85369553E4182D188A894BC06C995F776853",
       "domainSha256": "8A5F0D7FE2775D13C15BB7B8A5E6A94509C56AA0D784E28DC0F7F21CEF4C9989",
       "clientSha256": "35953BD9C7F683DAECBF4B6813B6CC1E458CFB94A6542696420CE67C459E2B8A",
       "grpcSha256": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
@@ -60,8 +60,8 @@
     },
     "darwin-arm64": {
       "path": "native/darwin-arm64/libacyclic_actors_uniffi.dylib",
-      "sha256": "28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719",
-      "scope": "artifact identity retained; Go runtime not qualified on macOS"
+      "sha256": "35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04",
+      "scope": "macOS arm64 Rust-native producer built from current recorded source; Go all-eight and context runtime qualified"
     }
   },
   "module": {
@@ -73,7 +73,7 @@
   },
   "qualificationScope": {
     "linuxWsl": "PASS: external module consumer all-eight, context cancellation, server-abort followed by authenticated call, u64 max and 2^53 boundary, and compile negatives",
-    "macosIvar": "UNQUALIFIED_FOR_GO: native identity is retained; Go toolchain/runtime scope requires a separate run",
+    "macosIvar": "PASS: external module consumer all-eight and context cancellation against task-owned local macOS fixture using current-source Rust dylib",
     "windows": "UNQUALIFIED_FOR_GO: Windows native identity is retained; Linux Go runtime was used",
     "externalConsumerTerminalSha256": "FBB795EDAC8550004ECCD49D96F6CC2329152E5135460CF6C3E4793F0AE52746"
   }

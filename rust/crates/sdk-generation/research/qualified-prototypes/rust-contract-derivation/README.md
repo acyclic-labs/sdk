@@ -10,4 +10,4 @@ The public Rust model is the only authored semantic contract. `proto_message(pro
 
 The patch is source-only under `vendor/` and is also captured in `protify-fallible-proxy.patch`: it adds opt-in `fallible = ErrorType` attributes to messages and oneofs, threads them through generation, and emits generic fallible field conversion using `TryInto` plus field-level conversion hooks. Optional oneofs and nested messages preserve absent versus present wire values. The vendor copy removes Protify's unavailable Diesel dev dependency only to make this isolated offline prototype buildable; production sources are untouched.
 
-Run `cargo test --offline`. The seventeen tests cover schema rendering, Prost binary roundtrip, generated descriptor consistency, ts-rs exports, branded aliases, optional oneof and nested presence, and typed rejection of invalid top-level and nested fields.
+Run `cargo test --offline`. The eighteen tests cover schema rendering, Prost binary roundtrip, generated descriptor consistency, ts-rs exports, branded aliases, optional oneof and nested presence, and typed rejection of invalid top-level, nested, and missing required fields.

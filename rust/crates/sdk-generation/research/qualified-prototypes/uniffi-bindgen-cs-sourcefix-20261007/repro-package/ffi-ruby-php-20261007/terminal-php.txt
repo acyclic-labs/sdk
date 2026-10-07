@@ -1,0 +1,14 @@
+$ php -r "echo 'PHP_VERSION='.PHP_VERSION, PHP_EOL, 'PHP_FFI_EXTENSION='.(extension_loaded('FFI')?'present':'absent'), PHP_EOL;"
+PHP_VERSION=8.5.11
+PHP_FFI_EXTENSION=absent
+$ cbindgen --version
+cbindgen 0.29.4
+$ cbindgen --lang c --output target/actors-uniffi.h
+exit=0
+header SHA256=CB16FEEB6243454A636876FA5A6E046595E73F112EAA59DAC9381732696D6452
+header contents:
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+(uniffi/acyclic declarations count=0)

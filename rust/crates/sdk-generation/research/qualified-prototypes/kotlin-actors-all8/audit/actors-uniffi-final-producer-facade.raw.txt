@@ -1,0 +1,15 @@
+ACTORS_UNIFFI_FINAL_PRODUCER_FACADE_V1
+production_checkout=Q:\sdk\work\sdkgen-main-actual03bb
+owned_path=rust/crates/actors-uniffi
+root_workspace_registration=deferred_to_foundation_port
+facade_scope=BindingError,CancellationHandle,ActorsClient,connect_actors,connect_actors_with_ca,eight_client_operations
+semantic_type_mirrors=0
+semantic_source=acyclic_actors::domain
+transport_source=acyclic_actors::client
+source_feature_contract=acyclic-actors/uniffi (peer-owned feature-gated UniFFI derives)
+facade_cargo_sha256=50C930B9907A0D41075F303ABD63BA89B3031FF09BDE2BDA24C1D530A704CB9A
+facade_lib_sha256=506D50E7BA98E2C20B7827CB6DE5588AAB5FE1A8848D0D8A2525FE9EDC339859
+domain_contract_sha256=83C83BDA61625CA39F626731DF1842DF666A2FC0703FFE71D3748AF98CDA2C15
+format_check=cargo +1.98.1 fmt --manifest-path rust/crates/actors-uniffi/Cargo.toml -- --check PASS
+cargo_check=cargo +1.98.1 check --offline --manifest-path rust/crates/actors-uniffi/Cargo.toml BLOCKED: acyclic-actors has no uniffi feature until peer domain contract lands
+publication=none

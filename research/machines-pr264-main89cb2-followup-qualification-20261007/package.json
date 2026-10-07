@@ -1,0 +1,8 @@
+{
+  "name": "machines-pr264-followup-external-consumer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@acyclic-labs/machines": "file:../acyclic-labs-machines-0.2.0.tgz"
+  }
+}

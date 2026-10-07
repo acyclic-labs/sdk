@@ -38,11 +38,14 @@
   },
   "installedDartPackage": {
     "path": "Q:/sdk/work/actors-uniffi-dart-0322-current-20261007",
-    "archive": "none; isolated directory probe, no published archive",
+    "cleanArchive": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/actors-uniffi-dart-clean-package-031-20261007.zip",
+    "cleanArchiveSha256": "b3d95db58248ae9828cc5cabaf756a074472f6dabe43e2caad40907d152c581c",
+    "cleanArchiveBytes": 6031220,
     "pubspecSha256": "CEBB5F962B21A01919F0B9B4EF3FCAAA55AA618DB061F1C263A7FD0D2119E483",
     "pubspecLockSha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
     "dartSdk": "3.7.0-209.1.beta",
-    "dependency": "ffi 2.1.3"
+    "dependency": "ffi 2.1.3",
+    "archiveContents": "11 deterministic files: pubspecs, generated binding, three probes, README, checksums, and Windows/Linux/macOS native artifacts"
   },
   "artifactHashes": {
     "producerDll": {
@@ -67,19 +70,27 @@
     "windows": {
       "status": "qualified-installed-probe",
       "nativeArtifact": "Windows x86_64 DLL",
-      "evidence": "all eight remote operations, BigInt/error/presence, typed cancellation, server abort"
+      "nativeSha256": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402",
+      "evidence": "all eight remote operations, BigInt/error/presence, typed cancellation, server abort; clean external package local probe/analyzer also passed"
     },
     "wslLinux": {
-      "status": "source-qualified-only",
-      "environment": "Ubuntu WSL2; rustc 1.98.1; cargo 1.98.1",
+      "status": "qualified-installed-local-probe",
+      "environment": "Ubuntu WSL2 x86_64; rustc 1.98.1; cargo 1.98.1; pinned Dart 3.7.0-209.1.beta",
       "metadata": "cargo metadata --locked passed; 2 workspace members",
-      "tests": "cargo test --locked -p acyclic-actors --lib passed: 67",
-      "runtime": "not attempted: producer artifact is Windows DLL and no Linux .so was built"
+      "producerBuild": "cargo build --locked -p acyclic-actors-uniffi --release passed",
+      "nativeArtifact": "/tmp/actors-dart-linux-target/release/libacyclic_actors_uniffi.so",
+      "nativeSha256": "03d2494b9e7df06deebdd6cd74030a5da8055c2ff7c27eeab86ae54754e268203",
+      "runtime": "clean external package dart analyze passed for local/all8/cancel probes; local BigInt/error/presence/cancellation probe passed"
     },
     "sshMacOS": {
-      "status": "unavailable",
-      "attempt": "ssh -o BatchMode=yes -o ConnectTimeout=10 macos",
-      "result": "Could not resolve hostname macos; no macOS qualification claim"
+      "status": "qualified-installed-local-probe",
+      "host": "ivar",
+      "environment": "macOS 15.6 arm64; cargo +1.98.1; pinned Dart 3.7.0-209.1.beta",
+      "metadata": "cargo +1.98.1 metadata --locked passed; 2 workspace members",
+      "producerBuild": "cargo +1.98.1 build --locked -p acyclic-actors-uniffi --release passed",
+      "nativeArtifact": "/tmp/producer-macos-target/release/libacyclic_actors_uniffi.dylib",
+      "nativeSha256": "10e2144bd7bee9a0f636224ac44897d97ee736c2e881dea15a1997da3b89fdc7",
+      "runtime": "clean external package dart analyze passed for local/all8/cancel probes; local BigInt/error/presence/cancellation probe passed"
     }
   },
   "requirements": {
@@ -87,7 +98,8 @@
     "internalFFIUInt64": "signed int bit pattern",
     "typedErrors": true,
     "nullablePresence": true,
-    "inflightCancellationAndServerAbort": true
+    "inflightCancellationAndServerAbort": true,
+    "remoteCohort": "Windows installed package all eight remote operations plus actual in-flight cancellation/server abort; Linux/macOS package probes include all8/cancel entry points and require the conformance fixture to run transport calls"
   },
   "hostCheckout": {
     "root": "Q:/sdk",
@@ -95,5 +107,25 @@
     "branch": "codex/workspace-tools-fs-boundary",
     "dirtyEntries": 1142,
     "interpretation": "host checkout was dirty and is not used as a clean producer commit; producer identity is the source-authority revision plus snapshot inventory"
+  },
+  "sourceArchive": {
+    "path": "Q:/sdk/work/actors-uniffi-dart-ffibuffer-producer-031-20261007/producer-source-snapshot-031.zip",
+    "bytes": 87137,
+    "sha256": "02f0bac812cecf3105e9967c72674c74fc01c21855ecb4aaee91e1b4513989d7",
+    "scope": "28 source files; target and native build outputs excluded"
+  },
+  "dartSdkArchives": {
+    "linuxX64": {
+      "version": "3.7.0-209.1.beta",
+      "path": "Q:/sdk/work/dartsdk-linux-x64-3.7.0-209.1.beta.zip",
+      "bytes": 213804363,
+      "sha256": "3b8eee768198b0dec627afbfea7db0c0004d2c55d1ca999c7061590ebaade7cf"
+    },
+    "macosArm64": {
+      "version": "3.7.0-209.1.beta",
+      "path": "Q:/sdk/work/dartsdk-macos-arm64-3.7.0-209.1.beta.zip",
+      "bytes": 211890453,
+      "sha256": "6b7b192988803409fb7bbccdd9a6ab3e785beeb9fd86ead1c7b67065836acb18"
+    }
   }
 }

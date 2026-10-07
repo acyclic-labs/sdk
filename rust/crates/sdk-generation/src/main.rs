@@ -1,8 +1,8 @@
 use depinfo::RustcDepInfo;
 use sdk_docs::rustdoc_profiles::{
     OwnedApiItem, ProfileAvailability, ProfileId, ProfileSpec, api_owner_for_package,
-    execute_profile_with_cargo, extract_owned_api_for_crate, load_metadata, observe_rustdoc,
-    profiles_for_package, project_into_docs, validate_rustdoc_version,
+    execute_profile_with_cargo, extract_owned_api_for_crate, load_metadata_with_cargo,
+    observe_rustdoc, profiles_for_package, project_into_docs, validate_rustdoc_version,
 };
 use sdk_docs::{
     BuildInput, Channel, DocsData, GENERATOR_VERSION, GeneratedSource, build_data, write_bundle,
@@ -120,6 +120,7 @@ struct RustdocInput {
     _cache_lock: Option<RustdocCacheLock>,
     _staging_lock: Option<RustdocStagingLock>,
     toolchain: Option<PinnedToolchainRecord>,
+    cargo_path: Option<PathBuf>,
 }
 
 struct RustdocCacheLock {
@@ -443,6 +444,56 @@ fn owner_package_roots(owners: &[RustdocOwner]) -> Vec<PathBuf> {
         .iter()
         .map(|owner| owner.package_root.clone())
         .collect()
+}
+
+fn is_binding_package(package: &CargoPackage) -> bool {
+    !published_package(&package.publish)
+        && ["-napi", "-wasm", "-uniffi"]
+            .iter()
+            .any(|suffix| package.name.ends_with(suffix))
+}
+
+/// Include private binding sources in the immutable source attestation.
+///
+/// Binding receipts are intentionally retained as their own Rustdoc inputs,
+/// so their source spans must be part of the same snapshot as the published
+/// owner.  The stable source list already names the Actors N-API crate; skip
+/// that exact declaration to avoid turning the existing duplicate check into
+/// a second source authority.
+fn binding_package_source_roots(root: &Path, metadata: &CargoMetadata) -> io::Result<Vec<PathBuf>> {
+    let root = canonical(root)?;
+    let mut roots = Vec::new();
+    for package in &metadata.packages {
+        if !is_binding_package(package) {
+            continue;
+        }
+        reject_reparse_ancestors(&package.manifest_path, true)?;
+        let manifest = canonical(&package.manifest_path)?;
+        let package_root = manifest
+            .parent()
+            .ok_or_else(|| io::Error::other("cargo package manifest has no parent"))?;
+        if !package_root.starts_with(&root) {
+            return Err(io::Error::other(format!(
+                "cargo binding package escapes checkout: {}",
+                package_root.display()
+            )));
+        }
+        let source = package_root.join("src");
+        let relative = source
+            .strip_prefix(&root)
+            .map_err(|_| io::Error::other("cargo binding package escapes checkout"))?
+            .to_owned();
+        if SOURCE_PATHS
+            .iter()
+            .any(|declared| Path::new(declared) == relative)
+        {
+            continue;
+        }
+        roots.push(relative);
+    }
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
 }
 
 fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
@@ -1893,7 +1944,7 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
     }
 }
 
-fn installed_profile_targets(tools: &PinnedToolchain) -> io::Result<BTreeSet<String>> {
+fn installed_profile_targets(tools: &PinnedToolchain) -> io::Result<(BTreeSet<String>, String)> {
     let output = Command::new("rustup")
         .args(["target", "list", "--installed", "--toolchain", "1.98.1"])
         .output()
@@ -1919,13 +1970,15 @@ fn installed_profile_targets(tools: &PinnedToolchain) -> io::Result<BTreeSet<Str
     if !host.status.success() {
         return Err(io::Error::other("pinned rustc -vV failed"));
     }
-    if let Some(target) = String::from_utf8_lossy(&host.stdout)
+    let host_target = String::from_utf8_lossy(&host.stdout)
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
-    {
-        targets.insert(target.trim().to_owned());
-    }
-    Ok(targets)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| io::Error::other("pinned rustc -vV did not report a host target"))?;
+    targets.insert(host_target.clone());
+    Ok((targets, host_target))
 }
 
 fn binding_profile_target(package: &str, host: &str) -> String {
@@ -1954,13 +2007,9 @@ fn generate_binding_profiles(
     BTreeMap<ProfileId, ProfileSpec>,
     BTreeMap<PathBuf, ProfileId>,
 )> {
-    let metadata = load_metadata(manifest).map_err(io::Error::other)?;
-    let available_targets = installed_profile_targets(tools)?;
-    let host = available_targets
-        .iter()
-        .find(|target| !target.starts_with("wasm32"))
-        .cloned()
-        .ok_or_else(|| io::Error::other("pinned Rust toolchain has no host target"))?;
+    let metadata =
+        load_metadata_with_cargo(manifest, Some(&tools.cargo)).map_err(io::Error::other)?;
+    let (available_targets, host) = installed_profile_targets(tools)?;
     let target_dir = rustdoc_target_named(config, "sdk-generation-binding-profile-target")?;
     let receipt_root = staging_root.join("binding-profiles");
     fs::create_dir_all(&receipt_root)?;
@@ -1977,6 +2026,12 @@ fn generate_binding_profiles(
             continue;
         }
         let package_name = package.name.to_string();
+        if config.channel == "release" && package.version.to_string() != config.version {
+            return Err(io::Error::other(format!(
+                "private binding package {} has version {}, expected release {}",
+                package_name, package.version, config.version
+            )));
+        }
         let owner = api_owner_for_package(&metadata, &package_name).map_err(io::Error::other)?;
         if owner.rustdoc_package == owner.published_package {
             continue;
@@ -1987,6 +2042,7 @@ fn generate_binding_profiles(
         for profile in profiles {
             let profile_id = profile.id();
             let output = profile_receipt_path(&receipt_root, &profile_id);
+            clear_rustdoc_output(&output)?;
             let observation = execute_profile_with_cargo(
                 manifest,
                 &metadata,
@@ -2108,6 +2164,7 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
         _cache_lock: Some(cache_lock),
         _staging_lock: Some(staging_lock),
         toolchain,
+        cargo_path: Some(tools.cargo),
     })
 }
 
@@ -2128,6 +2185,7 @@ fn resolve_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rustd
                 _cache_lock: None,
                 _staging_lock: None,
                 toolchain: None,
+                cargo_path: None,
             })
         }
         (_, None) => Err(io::Error::other(
@@ -2141,7 +2199,9 @@ fn profile_availability(
     data: &DocsData,
     rustdoc_input: &RustdocInput,
 ) -> io::Result<ProfileAvailability> {
-    let metadata = load_metadata(root.join("Cargo.toml")).map_err(io::Error::other)?;
+    let metadata =
+        load_metadata_with_cargo(root.join("Cargo.toml"), rustdoc_input.cargo_path.as_deref())
+            .map_err(io::Error::other)?;
     let mut profiles = BTreeMap::<ProfileId, ProfileSpec>::new();
     let mut items = Vec::<OwnedApiItem>::new();
 
@@ -2259,7 +2319,8 @@ fn generate(config: &Config) -> io::Result<()> {
     let metadata = cargo_metadata(&config.root)?;
     let owners = load_rustdoc_owners(&config.root, &metadata)?;
     validate_owner_versions(config, &owners)?;
-    let owner_roots = owner_package_roots(&owners);
+    let mut owner_roots = owner_package_roots(&owners);
+    owner_roots.extend(binding_package_source_roots(&config.root, &metadata)?);
     let source_extras_before = baseline_source_extras(&config.root)?;
     let source_before_stage = collect_sources(&config.root, &source_extras_before, &owner_roots)?;
     generate_actors_contract_artifacts(config)?;
@@ -2358,7 +2419,8 @@ fn drift(config: &Config) -> io::Result<()> {
     let metadata = cargo_metadata(&config.root)?;
     let owners = load_rustdoc_owners(&config.root, &metadata)?;
     validate_owner_versions(config, &owners)?;
-    let owner_roots = owner_package_roots(&owners);
+    let mut owner_roots = owner_package_roots(&owners);
+    owner_roots.extend(binding_package_source_roots(&config.root, &metadata)?);
     let manifest: Manifest = serde_json::from_slice(&fs::read(config.output.join(MANIFEST))?)
         .map_err(io::Error::other)?;
     let revision = git_revision(&config.root)?;

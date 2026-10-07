@@ -1,0 +1,7 @@
+negative-raw.ts(2,7): error TS2322: Type 'string' is not assignable to type 'MachineId'.
+  Type 'string' is not assignable to type '{ readonly [machineBrand]: "MachineId"; }'.
+negative-raw.ts(4,6): error TS2540: Cannot assign to 'machines' because it is a read-only property.
+negative-raw.ts(5,27): error TS2322: Type '"latest"' is not assignable to type '"checkpoint" | "custom" | "managed-oci"'.
+negative-raw.ts(6,43): error TS2322: Type '"invalid"' is not assignable to type '"after-idle" | "manual"'.
+negative-raw.ts(7,43): error TS2322: Type '"invalid"' is not assignable to type '"at" | "idle" | "max-age" | "never"'.
+negative-raw.ts(8,39): error TS2322: Type '"made-up"' is not assignable to type '"checkpoint-destroyed" | "checkpointed" | "created" | "forked" | "machine-destroyed" | "machine-forked" | "suspended" | "suspension-policy-set" | "woken"'.

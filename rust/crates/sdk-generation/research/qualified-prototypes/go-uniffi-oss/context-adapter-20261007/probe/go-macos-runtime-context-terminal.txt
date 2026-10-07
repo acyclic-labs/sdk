@@ -1,0 +1,7 @@
+ld: warning: duplicate -rpath '/tmp/go-uniffi-qual-mac-20261007/native/darwin-arm64' ignored
+ld: warning: ignoring duplicate libraries: '-lacyclic_actors_uniffi'
+GO_CURRENT_ACTORS_CONTEXT_CANCEL_PASS error=ErrBindingErrorCancelled manual_handle=nil endpoint=https://localhost:59628
+go version go1.25.1 darwin/arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+native runtime: libacyclic_actors_uniffi.dylib sha256=35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04
+fixture transport: task-owned local macOS Node TLS/HTTP2 fixture; pending InspectActor released by context cancellation and fixture remained clean

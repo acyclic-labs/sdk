@@ -1,6 +1,6 @@
 # Rust source-of-truth goal completion ledger
 
-Snapshot: current main 89cb2ec2e1c3b7a48c6555c0c3f9c7dcd77bdf3f (2026-10-07).
+Snapshot: current main af6f814ccb97c3d49f93689e70b19d97d7840377 (2026-10-07).
 Review rule: evidence is labeled by its actual source. Main-tree facts,
 C-worktree research, and external qualification receipts are not interchangeable.
 
@@ -16,7 +16,7 @@ goal can be called. A row closes only with reproducible current-main evidence.
 | Actors authority | Main contains generated Actors proto/tonic sources plus grpc/http adapters. The Rust domain/contract source used in the C foundation worktree is not present on this main snapshot. | Existing generated/runtime surface; Rust semantic authority migration remains open. |
 | Rust documentation | PR258 supplies Cargo-bound package/search metadata, versioned immutable bundles, public API projection and the safe-version proof. | Complete Rustdoc profile coverage and executable language snippets remain open. |
 | SDK generation | Main has docs/rust-source-generation.md as an architecture record. It does not contain the sdk-generation crate or a completed all-owner generation bundle. | Open. |
-| TypeScript | PR263 moves Machines primitive transport/page-size admission into Rust. Inference has a Rust-owned shared contract. PR264 independently qualifies Machines generated-domain aliases but is not merged. | Broad family contract/behavior replacement remains open. |
+| TypeScript | PR263 moves Machines primitive transport/page-size admission into Rust. Inference has a Rust-owned shared contract. PR264 merges Rust-derived Machines unions and policy projections, removing56 authored TypeScript lines. | Broad family contract/behavior replacement remains open. |
 | Website data handoff | Main documents versioned release/preview data and catalog concepts. No website/Svelte consumer tree is present in this repository snapshot. | The Rust-generated data contract is in scope; website presentation and deployment are outside this goal. |
 | CI policy | PR262 supplies cheap ordinary qualification policy and cache reuse. PR259/264 ordinary runs pass without downstream language matrices. | Release/manual downstream coverage still requires the final generated pipeline. |
 

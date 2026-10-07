@@ -1,0 +1,51 @@
+{
+  "source": {
+    "checkout": "Q:\\sdk\\work\\machines-main-validation",
+    "head": "714ca576ec63f5df2ef3a769eae3cb61f05c7e95",
+    "base": "89cb2ec2e1c3b7a48c6555c0c3f9c7dcd77bdf3f",
+    "oldPr264Ref": "714ca576ec63f5df2ef3a769eae3cb61f05c7e95",
+    "status": "## HEAD (no branch)"
+  },
+  "qualification": {
+    "tests": "27 pass, 0 fail",
+    "typecheck": "positive 0; ts-expect-error 0; raw negative 1 with expected diagnostics",
+    "runtime": "runtime-smoke-ok",
+    "generatedPackageExact": true,
+    "generatedInstalledExact": true,
+    "generatedPrePostExact": true,
+    "tarballSha256": "789AE3597BD7118FC811BC6CB80E43F8F76E4BDD5B567B1A5635B94B2F541B9B",
+    "generated": [
+      {
+        "path": "proto/machines/v1/machines_pb.d.ts",
+        "length": 50581,
+        "sha256": "34F376C649384509C069F0DDFE11945B96D71D449E9EA20ADAA1918CCCE94967"
+      },
+      {
+        "path": "proto/machines/v1/machines_pb.js",
+        "length": 30400,
+        "sha256": "73169AFE5F91683E827B00B15ED204F0ADD7800C6F12698190EA92954A08B826"
+      },
+      {
+        "path": "wasm/acyclic_machines_wasm_bg.wasm",
+        "length": 942283,
+        "sha256": "924D59C5DE07F00C77E5C49846651FA0225BF3CAC0B7AD6017264649DFA515B6"
+      },
+      {
+        "path": "wasm/acyclic_machines_wasm_bg.wasm.d.ts",
+        "length": 3576,
+        "sha256": "9A2995CA8B57214CC47BFFCFDB89B02C59345C4ADE8D5C24A220A6D282415205"
+      },
+      {
+        "path": "wasm/acyclic_machines_wasm.d.ts",
+        "length": 16781,
+        "sha256": "117B111435A67BBBC4D1DBD720DA6D16E29B234EB2DD178CF8F78D94F3DA3737"
+      },
+      {
+        "path": "wasm/acyclic_machines_wasm.js",
+        "length": 36434,
+        "sha256": "3AEC057F3751176264F6820DF365CC35DC7F14E610AF3750790EB34286124391"
+      }
+    ]
+  },
+  "note": "Text-only receipt; tarball and generated WASM binary intentionally excluded."
+}

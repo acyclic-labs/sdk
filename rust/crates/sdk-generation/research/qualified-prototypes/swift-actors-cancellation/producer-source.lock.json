@@ -1,0 +1,112 @@
+{
+  "schema": "acyclic.swift-maintained-uniffi-producer-lock/v1",
+  "producerRoot": "rust/crates/actors-uniffi",
+  "semanticSourceRoots": [
+    "rust/crates/actors-uniffi",
+    "rust/crates/actors"
+  ],
+  "fingerprintAlgorithm": "sha256 of sorted relative-path TAB file-sha256 lines with trailing newline",
+  "fingerprint": "CCB7F15F488DE624CF819F181F8FE2F2A95A8FD445A40FED133B256B96DC6BAF",
+  "files": [
+    {
+      "path": "rust/crates/actors-uniffi/Cargo.lock",
+      "sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/Cargo.toml",
+      "sha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/bin/actors-uniffi-bindgen.rs",
+      "sha256": "F7A2DD11FB370E9595BDFA6C32FC41A9B67A60BBAB06EC711CB7A03EB873FFA6"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/bin/actors-uniffi-cancellation-adapter.rs",
+      "sha256": "C90C46EA9AD541E815443D03C35C551343BD8BEACD77F171D23028608F4FF730"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/cancellation_metadata.rs",
+      "sha256": "D13CE8677FC302E5414B3E6B611770B7AAC3EA931CBCBE01D84B58D0BA778389"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/kotlin_generation_metadata.rs",
+      "sha256": "3FFD3FBED012AB61EF2BC77544B91F322590A56F795EBD89701CCED4BF1E38A9"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/lib.rs",
+      "sha256": "9AF194096FEE19643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/uniffi.toml",
+      "sha256": "950AB29CBC05E20643831B08A16FA5CABB99258FB4E0EACEA1FC78D54718B599"
+    },
+    {
+      "path": "rust/crates/actors/build.rs",
+      "sha256": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C"
+    },
+    {
+      "path": "rust/crates/actors/Cargo.toml",
+      "sha256": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE"
+    },
+    {
+      "path": "rust/crates/actors/examples/actors-http-routes.rs",
+      "sha256": "4953BD466E38300B82E967C2EC2FFE664033E06FB28DA09FB7343A3864100511"
+    },
+    {
+      "path": "rust/crates/actors/examples/conformance-certificate.rs",
+      "sha256": "1707589419E871FCDFCFCC1301E6EDD51F41F6421FF845A8CC1F8349A39A5973"
+    },
+    {
+      "path": "rust/crates/actors/examples/transport-conformance.rs",
+      "sha256": "0514F9C5D9E7227D9C43B6E4077AF24D6B6BF337F4F2F5383189B74CB3F43791"
+    },
+    {
+      "path": "rust/crates/actors/src/client.rs",
+      "sha256": "35953BD9C7F683DAECBF4B6813B6CC1E458CFB94A6542696420CE67C459E2B8A"
+    },
+    {
+      "path": "rust/crates/actors/src/codegen.rs",
+      "sha256": "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6"
+    },
+    {
+      "path": "rust/crates/actors/src/contract_definitions.rs",
+      "sha256": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA"
+    },
+    {
+      "path": "rust/crates/actors/src/contract.rs",
+      "sha256": "CA408D0E1D9E5DF9CDD89CC804B7DF3C98D8E6FBB0997C84D21F13E4A9BB9E76"
+    },
+    {
+      "path": "rust/crates/actors/src/domain.rs",
+      "sha256": "8A5F0D7FE2775D13C15BB7B8A5E6A94509C56AA0D784E28DC0F7F21CEF4C9989"
+    },
+    {
+      "path": "rust/crates/actors/src/domain/kani_proofs.rs",
+      "sha256": "E71AFBB9AAB686396E2084EF018F802617753AAEED451DB5C26F10A4EDF1A1CF"
+    },
+    {
+      "path": "rust/crates/actors/src/grpc.rs",
+      "sha256": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2"
+    },
+    {
+      "path": "rust/crates/actors/src/http.rs",
+      "sha256": "FD04B1D37B4D9F75256373EFC232FC0030CC0BA32CB3974390A7081AC81BF675"
+    },
+    {
+      "path": "rust/crates/actors/src/lib.rs",
+      "sha256": "9C1F32FAE8D4F2BD4925F785242F85369553E4182D188A894BC06C995F776853"
+    },
+    {
+      "path": "rust/crates/actors/src/wire.rs",
+      "sha256": "CA6F3403948843F017B2B59BE089EB83FFF6B02EDAAEC062CB1473977CA98B55"
+    },
+    {
+      "path": "rust/crates/actors/tests/descriptor_compatibility.rs",
+      "sha256": "DA7953EB493820DB8F9763AFF9ECCB48EF6120E6565FC8203973A8F6C9F6A4CC"
+    },
+    {
+      "path": "rust/crates/actors/tests/domain_roundtrip.rs",
+      "sha256": "D0A6C55D253B053FD5E5D649D888C361580BF271A99C400A8E6781097AB84493"
+    }
+  ]
+}

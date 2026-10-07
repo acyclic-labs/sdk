@@ -394,13 +394,13 @@ namespace acyclic {
     enum class ErrorKind : ::std::uint8_t;
     struct PositiveU64Result;
     struct ClientConnectResult;
-    struct ActorOperationResult;
     struct RemoteConformanceResult;
     struct ActorsClient;
     struct ActorsError;
     struct ActorObservationView;
     struct PositiveU64View;
     struct ActorsOperation;
+    struct ActorOperationResult;
   }
 }
 
@@ -442,29 +442,6 @@ struct ClientConnectResult final {
   using IsRelocatable = ::std::true_type;
 };
 #endif // CXXBRIDGE1_STRUCT_acyclic$actors$ClientConnectResult
-
-#ifndef CXXBRIDGE1_STRUCT_acyclic$actors$ActorOperationResult
-#define CXXBRIDGE1_STRUCT_acyclic$actors$ActorOperationResult
-// One typed result per operation. The Rust domain object remains opaque;
-// these are validated projections, not a second request/response model.
-struct ActorOperationResult final {
-  bool ok CXX_DEFAULT_VALUE(false);
-  ::acyclic::actors::ErrorKind error;
-  ::rust::String message;
-  ::rust::String actor_id;
-  ::rust::String home_region;
-  bool active CXX_DEFAULT_VALUE(false);
-  bool subscriptions_empty CXX_DEFAULT_VALUE(false);
-  ::std::uint64_t configuration_revision CXX_DEFAULT_VALUE(0);
-  ::std::uint64_t checkpoint_epoch CXX_DEFAULT_VALUE(0);
-  bool has_checkpoint CXX_DEFAULT_VALUE(false);
-  ::std::uint64_t checkpoint CXX_DEFAULT_VALUE(0);
-  ::std::uint32_t status CXX_DEFAULT_VALUE(0);
-  bool has_location_header CXX_DEFAULT_VALUE(false);
-
-  using IsRelocatable = ::std::true_type;
-};
-#endif // CXXBRIDGE1_STRUCT_acyclic$actors$ActorOperationResult
 
 #ifndef CXXBRIDGE1_STRUCT_acyclic$actors$RemoteConformanceResult
 #define CXXBRIDGE1_STRUCT_acyclic$actors$RemoteConformanceResult
@@ -549,6 +526,20 @@ private:
 };
 #endif // CXXBRIDGE1_STRUCT_acyclic$actors$ActorsOperation
 
+#ifndef CXXBRIDGE1_STRUCT_acyclic$actors$ActorOperationResult
+#define CXXBRIDGE1_STRUCT_acyclic$actors$ActorOperationResult
+struct ActorOperationResult final : public ::rust::Opaque {
+  ~ActorOperationResult() = delete;
+
+private:
+  friend ::rust::layout;
+  struct layout {
+    static ::std::size_t size() noexcept;
+    static ::std::size_t align() noexcept;
+  };
+};
+#endif // CXXBRIDGE1_STRUCT_acyclic$actors$ActorOperationResult
+
 ::rust::Box<::acyclic::actors::ActorsClient> actors_client_new() noexcept;
 
 ::rust::Box<::acyclic::actors::ActorsClient> actors_client_connect(::rust::Str endpoint, ::rust::Str token, ::rust::Str ca_certificate) noexcept;
@@ -561,23 +552,49 @@ bool actors_client_is_connected(::acyclic::actors::ActorsClient const &client) n
 
 ::acyclic::actors::ClientConnectResult actors_client_connect_probe(::rust::Str endpoint, ::rust::Str token) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_create_actor(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_create_actor(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_update_actor(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_update_actor(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_inspect_actor(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_inspect_actor(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_add_subscription(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_add_subscription(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_remove_subscription(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_remove_subscription(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_resume_subscription(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_resume_subscription(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_checkpoint_actor(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_checkpoint_actor(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_invoke_actor(::acyclic::actors::ActorsClient const &client) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_invoke_actor(::acyclic::actors::ActorsClient const &client) noexcept;
 
-::acyclic::actors::ActorOperationResult actors_inspect_actor_with_cancel(::acyclic::actors::ActorsClient const &client, ::acyclic::actors::ActorsOperation const &operation) noexcept;
+::rust::Box<::acyclic::actors::ActorOperationResult> actors_inspect_actor_with_cancel(::acyclic::actors::ActorsClient const &client, ::acyclic::actors::ActorsOperation const &operation) noexcept;
+
+::rust::Box<::acyclic::actors::ActorOperationResult> actor_operation_result_empty() noexcept;
+
+bool actor_operation_ok(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::acyclic::actors::ErrorKind actor_operation_error(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::rust::String actor_operation_message(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::rust::String actor_operation_actor_id(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::rust::String actor_operation_home_region(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+bool actor_operation_active(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+bool actor_operation_subscriptions_empty(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::std::uint64_t actor_operation_configuration_revision(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::std::uint64_t actor_operation_checkpoint_epoch(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+bool actor_operation_has_checkpoint(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+::std::uint32_t actor_operation_status(::acyclic::actors::ActorOperationResult const &result) noexcept;
+
+bool actor_operation_has_location_header(::acyclic::actors::ActorOperationResult const &result) noexcept;
 
 ::acyclic::actors::RemoteConformanceResult actors_live_conformance_probe(::rust::Str endpoint, ::rust::Str token, ::rust::Str ca_certificate) noexcept;
 

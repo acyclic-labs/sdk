@@ -92,7 +92,22 @@ fn package_by_name<'a>(metadata: &'a Metadata, name: &str) -> Option<&'a Package
 
 /// Read the exact Cargo metadata used by a profile invocation.
 pub fn load_metadata(manifest: impl AsRef<Path>) -> Result<Metadata, ProfileError> {
+    load_metadata_with_cargo(manifest, None)
+}
+
+/// Read metadata with an explicitly selected Cargo executable.
+///
+/// Release generation passes the pinned toolchain's Cargo here so feature
+/// and target profiles, ownership, and version checks all use one Cargo
+/// identity. The one-argument helper remains available to library callers.
+pub fn load_metadata_with_cargo(
+    manifest: impl AsRef<Path>,
+    cargo_path: Option<&Path>,
+) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
+    if let Some(cargo_path) = cargo_path {
+        command.cargo_path(cargo_path);
+    }
     command.other_options(vec!["--locked".to_owned()]);
     command
         .no_deps()

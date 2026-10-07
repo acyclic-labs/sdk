@@ -6,7 +6,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
 use sha2::{Digest as _, Sha256};
 use tsify_next::Tsify;
 use uuid::Uuid;
@@ -178,6 +178,21 @@ pub fn validate_maximum_response_bytes(
         return Err(JsValue::from_str(
             "maximumResponseBytes must be a positive safe integer",
         ));
+    }
+    Ok(())
+}
+
+/// Validates the canonical Machines page-size policy before any provider is
+/// called, including custom TypeScript providers.
+#[wasm_bindgen(js_name = validatePageSize)]
+pub fn validate_page_size(
+    #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
+) -> Result<(), JsValue> {
+    let value = value
+        .as_f64()
+        .ok_or_else(|| JsValue::from_str("machine page limit must be 1..=256"))?;
+    if !public::is_safe_integer(value) || value < 1.0 || value > MAX_PAGE_SIZE as f64 {
+        return Err(JsValue::from_str("machine page limit must be 1..=256"));
     }
     Ok(())
 }
