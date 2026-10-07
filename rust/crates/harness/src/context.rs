@@ -1039,7 +1039,7 @@ mod tests {
 /// authenticated storage are assumptions. Admission claims the attempt before
 /// provider dispatch; a crash at that boundary may lose dispatch, never
 /// authorize redispatch. Correspondence: `executor::run_model_step`
-/// ModelStarted/load_json/append_if_tail/Model admission.
+/// `ModelStarted`/`load_json`/`append_if_tail`/`Model` admission.
 #[cfg(test)]
 mod admission_model {
     use std::collections::{BTreeSet, VecDeque};
@@ -1058,30 +1058,27 @@ mod admission_model {
             projection: 1 - state.projection,
             ..state
         }]; // future projection
-        match state.admitted {
-            None => {
-                let claimed = State {
-                    admitted: Some(state.projection),
-                    intact: true,
-                    ..state
-                };
-                next.push(claimed); // crash after claim
+        if state.admitted.is_none() {
+            let claimed = State {
+                admitted: Some(state.projection),
+                intact: true,
+                ..state
+            };
+            next.push(claimed); // crash after claim
+            next.push(State {
+                dispatches: 1,
+                ..claimed
+            }); // claim then dispatch
+        } else {
+            next.push(State {
+                intact: false,
+                ..state
+            }); // storage fault
+            if state.dispatches > 0 && state.intact {
                 next.push(State {
-                    dispatches: 1,
-                    ..claimed
-                }); // claim then dispatch
-            }
-            Some(_) => {
-                next.push(State {
-                    intact: false,
+                    completed: true,
                     ..state
-                }); // storage fault
-                if state.dispatches > 0 && state.intact {
-                    next.push(State {
-                        completed: true,
-                        ..state
-                    }); // durable observation
-                }
+                }); // durable observation
             }
         }
         next
@@ -1125,8 +1122,7 @@ mod admission_model {
         assert_eq!(check(retained), Ok(26));
         // Negative controls: replaying the current projection, or ignoring
         // missing storage, must be rejected.
-        let fresh: fn(State) -> Option<u8> =
-            |state| Some(state.projection).filter(|_| state.intact);
+        let fresh: fn(State) -> Option<u8> = |state| state.intact.then_some(state.projection);
         let unchecked: fn(State) -> Option<u8> = |state| state.admitted;
         assert!(check(fresh).is_err());
         assert!(check(unchecked).is_err());

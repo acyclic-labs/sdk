@@ -2233,6 +2233,32 @@ export declare type ExtensionRevision = Message<"acyclic.harness.v2.ExtensionRev
 export declare const ExtensionRevisionSchema: GenMessage<ExtensionRevision>;
 
 /**
+ * @generated from message acyclic.harness.v2.PrivateVolumeRevision
+ */
+export declare type PrivateVolumeRevision = Message<"acyclic.harness.v2.PrivateVolumeRevision"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.VolumeRef volume = 1;
+   */
+  volume?: VolumeRef | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.GenerationRef generation = 2;
+   */
+  generation?: GenerationRef | undefined;
+
+  /**
+   * @generated from field: repeated string paths = 3;
+   */
+  paths: string[];
+};
+
+/**
+ * Describes the message acyclic.harness.v2.PrivateVolumeRevision.
+ * Use `create(PrivateVolumeRevisionSchema)` to create a new message.
+ */
+export declare const PrivateVolumeRevisionSchema: GenMessage<PrivateVolumeRevision>;
+
+/**
  * @generated from message acyclic.harness.v2.ResourceRevision
  */
 export declare type ResourceRevision = Message<"acyclic.harness.v2.ResourceRevision"> & {
@@ -2281,6 +2307,12 @@ export declare type ResourceRevision = Message<"acyclic.harness.v2.ResourceRevis
      */
     value: ExtensionRevision;
     case: "extension";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v2.PrivateVolumeRevision private_volume = 8;
+     */
+    value: PrivateVolumeRevision;
+    case: "privateVolume";
   } | { case: undefined; value?: undefined };
 };
 

@@ -4058,8 +4058,8 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn named_attribute_exclusive_replay_is_bound_to_owner_and_name() {
-        // SAFETY: the test hook has no arguments and owns all callback state.
         assert_eq!(
+            // SAFETY: the test hook has no arguments and owns all callback state.
             unsafe { nfs4_test_namedattr_exclusive_replay_identity() },
             0
         );

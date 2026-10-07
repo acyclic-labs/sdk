@@ -14,6 +14,146 @@ use crate::storage::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+mod heterogeneous_mount {
+    use super::*;
+
+    // Consumer-owned dispatch implements existing provider contracts. Keeping
+    // this adapter in the test avoids imposing a production backend taxonomy.
+    enum Objects {
+        Memory(TestMemoryObjectStore),
+        Local(LocalFs),
+    }
+
+    macro_rules! delegate {
+        ($self:ident, $method:ident($($argument:expr),*)) => {
+            match $self {
+                Objects::Memory(store) => AsyncObjectStore::$method(store, $($argument),*).await,
+                Objects::Local(fs) => AsyncObjectStore::$method(&fs.inner.objects, $($argument),*).await,
+            }
+        };
+    }
+
+    impl AsyncObjectStore for Objects {
+        async fn put(
+            &self,
+            id: ObjectId,
+            bytes: Bytes,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> ObjectResult<()> {
+            delegate!(self, put(id, bytes, budget, cancellation))
+        }
+        async fn put_many(
+            &self,
+            writes: &[ObjectWrite],
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> ObjectResult<()> {
+            delegate!(self, put_many(writes, budget, cancellation))
+        }
+        async fn read(
+            &self,
+            id: ObjectId,
+            maximum: u64,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> ObjectResult<ObjectRead> {
+            delegate!(self, read(id, maximum, budget, cancellation))
+        }
+        async fn read_many(
+            &self,
+            requests: &[ObjectReadRequest],
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> ObjectResult<Vec<ObjectRead>> {
+            delegate!(self, read_many(requests, budget, cancellation))
+        }
+        async fn contains(
+            &self,
+            id: ObjectId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> ObjectResult<bool> {
+            delegate!(self, contains(id, budget, cancellation))
+        }
+        async fn flush_before_publish(
+            &self,
+            scope: crate::PublicationScope<'_>,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> ObjectResult<crate::PublicationHold> {
+            delegate!(self, flush_before_publish(scope, budget, cancellation))
+        }
+        fn collection(&self) -> Option<&Arc<crate::Collection>> {
+            match self {
+                Self::Memory(_) => None,
+                Self::Local(fs) => fs.inner.objects.collection(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let local = Fs::local(LocalOptions::new(directory.path())).await?;
+        // Authority remains in memory in this consumer; only the object
+        // backends differ. This does not claim a cross-provider transaction.
+        let memory = Fs::new(
+            crate::MemoryAuthorityStore::default(),
+            Objects::Memory(TestMemoryObjectStore::default()),
+            EmbeddedCapabilities::MEMORY,
+        );
+        let disk = Fs::new(
+            crate::MemoryAuthorityStore::default(),
+            Objects::Local(local),
+            EmbeddedCapabilities::MEMORY,
+        );
+        let root = memory.create_workspace("root").await?;
+        let scratch = disk.create_workspace("scratch").await?;
+        root.write_text("/file", "memory").await?;
+        scratch.write_text("/file", "disk").await?;
+        let mut view = crate::MountedView::builder()
+            .mount(
+                "/",
+                root.engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
+                    .await?,
+            )?
+            .mount(
+                "/.scratch",
+                scratch
+                    .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
+                    .await?,
+            )?
+            .build()?;
+        let cancellation = CancellationToken::new();
+        let root_path = crate::path::PortablePath::parse("/file", VolumeLimits::default())?;
+        let scratch_path =
+            crate::path::PortablePath::parse("/.scratch/file", VolumeLimits::default())?;
+        for path in [&root_path, &scratch_path] {
+            let route = view.route_mut(path)?;
+            assert!(
+                route
+                    .checkout
+                    .lookup_no_follow(&route.path, WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value
+                    .record
+                    .is_some()
+            );
+        }
+        assert_eq!(view.snapshot().bindings.len(), 2);
+        assert_eq!(
+            view.validate_rename(&root_path, &scratch_path),
+            Err(crate::MountError::CrossVolume)
+        );
+        assert_eq!(root.read("/file", 32).await?.as_ref(), b"memory");
+        assert_eq!(scratch.read("/file", 32).await?.as_ref(), b"disk");
+        Ok(())
+    }
+}
+
 fn config() -> VolumeConfig {
     VolumeConfig {
         profile: FilesystemProfile::Portable,

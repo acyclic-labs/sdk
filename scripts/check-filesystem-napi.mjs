@@ -121,6 +121,8 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     },
   });
   try {
+    const { exerciseWorkspace } = await import("../typescript/packages/filesystem/test/workspace-composition.mjs");
+    await exerciseWorkspace(engine);
     const workspace = await engine.createWorkspace("qualification");
     const originalId = workspace.id;
     if (originalId.constructor !== Uint8Array) throw new Error("native adapter exposed a Buffer workspace identity");

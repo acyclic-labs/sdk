@@ -535,23 +535,13 @@ where
                             &child.storage_name()?,
                         )?)
                         .await?;
-                    let expected_child = source_workspace
-                        .fork_workspace_id(child_workspace.name().as_str())
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    if child_workspace.id() != expected_child {
-                        return Err(Error::Invalid(
-                            "project capture is not a direct child workspace".into(),
-                        ));
-                    }
                     let source_generation =
                         self.host.generation(&source_workspace, fork_point).await?;
                     let child_generation = self.host.generation(&child_workspace, initial).await?;
-                    if child_generation
-                        .parents()
+                    if !child_generation
+                        .matches_fork_selection(&source_generation, None)
                         .await
                         .map_err(map_error)?
-                        .as_slice()
-                        != [source_generation.id()]
                     {
                         return Err(Error::Invalid(
                             "project capture is not forked from the selected generation".into(),
@@ -641,8 +631,53 @@ where
                         "child private generation changed before fork admission".into(),
                     ));
                 }
-                // A child-private volume may contain only the explicitly materialized
-                // inherited prefix at publication. Existing scratch is never adopted.
+                let scratch = seed
+                    .resources
+                    .iter()
+                    .find_map(|resource| match (&resource.source, &resource.revision) {
+                        (
+                            ResourceRevision::PrivateVolume {
+                                volume: source,
+                                generation,
+                                paths,
+                            },
+                            ResourceRevision::PrivateVolume {
+                                volume: child,
+                                generation: initial,
+                                ..
+                            },
+                        ) if child == &seed.child_private_volume => {
+                            Some((source, generation, paths, initial))
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        Error::Invalid("fork has no selected parent scratch lineage".into())
+                    })?;
+                let source_workspace = self
+                    .host
+                    .open(&workspace_ref(
+                        self.host.provider.clone(),
+                        &scratch.0.storage_name()?,
+                    )?)
+                    .await?;
+                let child_workspace = self.host.open(&private).await?;
+                let source = self.host.generation(&source_workspace, scratch.1).await?;
+                let initial = self.host.generation(&child_workspace, scratch.3).await?;
+                if !initial
+                    .matches_fork_selection(&source, Some(scratch.2.clone()))
+                    .await
+                    .map_err(map_error)?
+                {
+                    return Err(Error::Invalid(
+                        "scratch capture differs from its pinned selection".into(),
+                    ));
+                }
+                let head = self
+                    .host
+                    .generation(&child_workspace, &private_head)
+                    .await?;
+                let changes = initial.diff_to(&head, 65_536).await.map_err(map_error)?;
                 let expected = seed
                     .inherited_context
                     .iter()
@@ -673,58 +708,34 @@ where
                     }
                 }
                 let mut observed = BTreeSet::new();
-                let mut pending = vec![String::from("/")];
-                let mut visited = 0_usize;
-                while let Some(directory) = pending.pop() {
-                    visited += 1;
-                    if visited > 65_536 {
-                        return Err(Error::Invalid(
-                            "private volume directory limit exceeded".into(),
-                        ));
-                    }
-                    let mut cursor = None;
-                    loop {
-                        let page = self
-                            .host
-                            .list_after(
-                                &private,
-                                Some(&private_head),
-                                &directory,
-                                cursor.as_ref(),
-                                1_024,
-                            )
-                            .await?;
-                        let next = page.entries.last().map(|entry| entry.name.clone());
-                        for entry in page.entries {
-                            let name =
-                                std::str::from_utf8(entry.name.as_bytes()).map_err(|_| {
-                                    Error::Invalid("private volume name is not UTF-8".into())
-                                })?;
-                            let path = if directory == "/" {
-                                format!("/{name}")
-                            } else {
-                                format!("{directory}/{name}")
-                            };
-                            match entry.kind {
-                                FileKind::Directory if expected_directories.contains(&path) => {
-                                    pending.push(path);
-                                }
-                                FileKind::Regular if expected.contains(&path) => {
-                                    observed.insert(path);
-                                }
-                                _ => {
-                                    return Err(Error::Invalid(
-                                        "child private volume contains unselected state".into(),
-                                    ));
-                                }
-                            }
+                for change in changes.changed_paths(65_536).await.map_err(map_error)? {
+                    let components = change
+                        .path
+                        .components()
+                        .iter()
+                        .map(|name| {
+                            std::str::from_utf8(name.as_bytes())
+                                .map_err(|_| Error::Invalid("scratch path is not UTF-8".into()))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let path = format!("/{}", components.join("/"));
+                    match change.after {
+                        Some(record)
+                            if record.kind == FileKind::Directory
+                                && expected_directories.contains(&path)
+                                && change.before.is_none() => {}
+                        Some(record)
+                            if record.kind == FileKind::Regular
+                                && expected.contains(&path)
+                                && change.before.is_none() =>
+                        {
+                            observed.insert(path);
                         }
-                        if !page.has_more {
-                            break;
+                        _ => {
+                            return Err(Error::Invalid(
+                                "child scratch changed outside inherited context staging".into(),
+                            ));
                         }
-                        cursor = Some(next.ok_or_else(|| {
-                            Error::Storage("private directory pagination did not advance".into())
-                        })?);
                     }
                 }
                 if observed != expected {
@@ -747,7 +758,10 @@ where
                         continue;
                     }
                     match revision {
-                        ResourceRevision::Project { volume, generation } => {
+                        ResourceRevision::Project { volume, generation }
+                        | ResourceRevision::PrivateVolume {
+                            volume, generation, ..
+                        } => {
                             let workspace_ref =
                                 workspace_ref(self.host.provider.clone(), &volume.storage_name()?)?;
                             let workspace = self.host.open(&workspace_ref).await?;
@@ -971,6 +985,103 @@ pub struct ParentMergePlan<A, O> {
     parent_scope: Scope,
 }
 
+/// Destination-authorized volume import. The source workspace handle stays
+/// private so possession of a read grant cannot expose source mutation APIs.
+pub struct VolumeImportPlan<A, O> {
+    plan: JoinPlan<A, O>,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> VolumeImportPlan<A, O> {
+    /// Immutable exact conflict input for a caller's admitted policy step.
+    pub async fn describe_conflicts(
+        &self,
+        conflicts: &[MergeConflict],
+        truncated: bool,
+    ) -> Result<MergePlan> {
+        self.plan
+            .describe_conflicts(conflicts, truncated)
+            .await
+            .map_err(map_error)
+    }
+    /// Applies a retained declarative candidate through the owning publisher.
+    /// The caller pins any effectful policy and observation in its ordinary journal.
+    pub async fn apply_candidate_with_permit(
+        &self,
+        key: &IdempotencyKey,
+        candidate: &acyclic_fs::UnpublishedMergeCandidate,
+        permit: acyclic_fs::PublicationPermit,
+    ) -> Result<JoinOutcome<A, O>> {
+        self.plan
+            .apply_candidate_with_permit(
+                ApplyOptions {
+                    if_target: self.target_head(),
+                    idempotency_key: filesystem_key(key),
+                },
+                candidate,
+                permit,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+    /// Pinned source generation selected at inspection.
+    pub fn source_head(&self) -> GenerationId {
+        self.plan.source_head()
+    }
+    /// Destination CAS precondition selected at inspection.
+    pub fn target_head(&self) -> GenerationId {
+        self.plan.target_head()
+    }
+    /// Publishes only to the authorized destination using a stable retry key.
+    pub async fn apply(&self, key: &IdempotencyKey) -> Result<JoinOutcome<A, O>> {
+        self.plan
+            .apply(ApplyOptions {
+                if_target: self.target_head(),
+                idempotency_key: filesystem_key(key),
+            })
+            .await
+            .map_err(map_error)
+    }
+    /// Publishes exact conflict choices through the same destination CAS.
+    pub async fn apply_sides(
+        &self,
+        key: &IdempotencyKey,
+        sides: BTreeMap<MergeConflict, ConflictSide>,
+    ) -> Result<JoinOutcome<A, O>> {
+        self.plan
+            .apply_sides(
+                ApplyOptions {
+                    if_target: self.target_head(),
+                    idempotency_key: filesystem_key(key),
+                },
+                sides,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+    /// Uses owning Filesystem drivers and caller-owned exact resolution cache.
+    /// Effectful drivers require durable admitted observations in that cache.
+    pub async fn apply_with_drivers<C: MergeResolutionCache>(
+        &self,
+        key: &IdempotencyKey,
+        registry: &MergeDriverRegistry,
+        cache: &mut C,
+        replanning: bool,
+    ) -> Result<JoinOutcome<A, O>> {
+        self.plan
+            .apply_with_drivers(
+                ApplyOptions {
+                    if_target: self.target_head(),
+                    idempotency_key: filesystem_key(key),
+                },
+                registry,
+                cache,
+                replanning,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+}
+
 /// Prepared child-owned prefix and the exact read grants needed by every
 /// attached reader. Feed these fields into the parent-controlled `ForkReport`.
 pub struct InheritedContextCapture {
@@ -1028,7 +1139,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
             ));
         }
         project.validate()?;
-        if project.class() != VolumeClass::Project || project.provider() != &host.provider {
+        if project.provider() != &host.provider {
             return Err(Error::Invalid(
                 "parent project belongs to another provider or class".into(),
             ));
@@ -1133,6 +1244,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         &self,
         parent: &Reducer,
         child_private: &VolumeRef,
+        initial_generation: &GenerationRef,
         child_agent: AgentId,
         attached_agents: &[AgentId],
         through_sequence: u64,
@@ -1294,18 +1406,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             }
             prior
         } else {
-            let empty = self.host.resolve(&workspace).await?.generation;
-            let first_page = self
-                .host
-                .list_after(&workspace, Some(&empty), "/", None, 1)
-                .await?;
-            if !first_page.entries.is_empty() {
+            let initial = self.host.resolve(&workspace).await?.generation;
+            if &initial != initial_generation {
                 return Err(Error::Conflict("child private volume is not fresh".into()));
             }
             self.host
                 .apply(
                     &workspace,
-                    Some(&empty),
+                    Some(&initial),
                     &[
                         WorkspaceMutation::CreateDirectory {
                             path: "/.system/inherited-conversation".into(),
@@ -1362,15 +1470,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             .await
     }
 
-    /// Inspects a child's changes for an explicit parent-authorized promotion.
-    pub async fn prepare_project_merge(&self, child: &VolumeRef) -> Result<ParentMergePlan<A, O>> {
+    /// Inspects an exact readable source, regardless of agent ancestry. Only
+    /// this controller's destination can be published by the returned plan.
+    pub async fn prepare_project_import(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+    ) -> Result<ParentMergePlan<A, O>> {
         self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
+        ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read)?;
         Ok(ParentMergePlan {
             plan: self
                 .host
-                .prepare_project_merge(child, &self.project)
+                .prepare_project_import(source, generation, &self.project)
                 .await?,
-            child_project: child.clone(),
+            child_project: source.clone(),
             parent_project: self.project.clone(),
             parent_scope: self.scope.clone(),
         })
@@ -1528,10 +1642,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         child: &VolumeRef,
         idempotency_key: &IdempotencyKey,
     ) -> Result<WorkspaceObservation> {
-        self.require_project_pair(source, child)?;
+        self.fork_volume_pinned(source, source_generation, child, None, idempotency_key)
+            .await
+    }
+
+    /// Forks one explicitly selected scratch or skills volume through the
+    /// Filesystem's existing allocation and retry mechanism. Grants authorize
+    /// only the source read and the destination write; they grant no source writes.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "source and destination each require an exact volume and grant; selection and retry stay explicit"
+    )]
+    pub async fn fork_volume(
+        &self,
+        source: &VolumeRef,
+        source_grant: &ContentGrant,
+        source_generation: &GenerationRef,
+        destination: &VolumeRef,
+        destination_grant: &ContentGrant,
+        paths: Option<Vec<String>>,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<WorkspaceObservation> {
+        source_grant.require(source, VolumeOperation::Read)?;
+        destination_grant.require(destination, VolumeOperation::Write)?;
+        self.fork_volume_pinned(
+            source,
+            source_generation,
+            destination,
+            paths,
+            idempotency_key,
+        )
+        .await
+    }
+
+    async fn fork_volume_pinned(
+        &self,
+        source: &VolumeRef,
+        source_generation: &GenerationRef,
+        child: &VolumeRef,
+        paths: Option<Vec<String>>,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<WorkspaceObservation> {
+        source.validate()?;
+        child.validate()?;
+        self.validate_provider(source.provider())?;
+        self.validate_provider(child.provider())?;
         if source == child {
             return Err(Error::Invalid(
-                "project fork requires a distinct child volume".into(),
+                "volume fork requires a distinct destination".into(),
             ));
         }
         let source_name = source.storage_name()?;
@@ -1547,15 +1705,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         let child_name = child.storage_name()?;
+        let options = ForkOptions::from_generation(generation, filesystem_key(idempotency_key));
+        let options = match paths {
+            Some(paths) => options.inherit_paths(paths),
+            None => options,
+        };
         let forked = source_workspace
-            .fork(
-                &child_name,
-                ForkOptions::from_generation(generation, filesystem_key(idempotency_key)),
-            )
+            .fork(&child_name, options)
             .await
             .map_err(map_error)?;
         let child_workspace = workspace_ref(self.provider.clone(), &child_name)?;
-        let child_generation = self.generation_ref(&forked.head().await.map_err(map_error)?)?;
+        let initial = forked
+            .operation_generation(filesystem_key(idempotency_key))
+            .await
+            .map_err(map_error)?
+            .ok_or_else(|| Error::Storage("fork creation has no durable generation".into()))?;
+        let child_generation = self.generation_ref(&initial)?;
         self.retain_generation(&child_workspace, &child_generation)
             .await?;
         Ok(WorkspaceObservation {
@@ -1564,55 +1729,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 
-    /// Prepares an inspected, conflict-aware child-to-parent project merge.
-    /// Publication remains an explicit Filesystem `JoinPlan` application.
-    async fn prepare_project_merge(
+    /// Plans a separately requested scratch/skills integration. Project
+    /// integration never calls this operation or implicitly integrates skills.
+    pub async fn prepare_volume_import(
         &self,
-        child: &VolumeRef,
-        parent: &VolumeRef,
+        source: &VolumeRef,
+        source_grant: &ContentGrant,
+        generation: &GenerationRef,
+        destination: &VolumeRef,
+        destination_grant: &ContentGrant,
+    ) -> Result<VolumeImportPlan<A, O>> {
+        source_grant.require(source, VolumeOperation::Read)?;
+        destination_grant.require(destination, VolumeOperation::Write)?;
+        Ok(VolumeImportPlan {
+            plan: self
+                .plan_volume_import(source, generation, destination)
+                .await?,
+        })
+    }
+
+    async fn plan_volume_import(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        destination: &VolumeRef,
     ) -> Result<JoinPlan<A, O>> {
-        self.require_project_pair(child, parent)?;
-        let child_workspace = self
+        source.validate()?;
+        destination.validate()?;
+        self.validate_provider(source.provider())?;
+        self.validate_provider(destination.provider())?;
+        let source_workspace = self
             .open(&workspace_ref(
                 self.provider.clone(),
-                &child.storage_name()?,
+                &source.storage_name()?,
             )?)
             .await?;
-        let parent_workspace = self
+        let destination_workspace = self
             .open(&workspace_ref(
                 self.provider.clone(),
-                &parent.storage_name()?,
+                &destination.storage_name()?,
             )?)
             .await?;
-        let expected_child = parent_workspace
-            .fork_workspace_id(child_workspace.name().as_str())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        if child_workspace.id() != expected_child {
-            return Err(Error::Unauthorized(
-                "project merge target is not the child's direct parent".into(),
-            ));
-        }
-        child_workspace
-            .join_into(&parent_workspace)
-            .plan()
+        let source_generation = self.generation(&source_workspace, generation).await?;
+        let target = destination_workspace.head().await.map_err(map_error)?;
+        source_workspace
+            .join_into(&destination_workspace)
+            .plan_at(&source_generation, &target)
             .await
             .map_err(map_error)
     }
 
-    fn require_project_pair(&self, source: &VolumeRef, target: &VolumeRef) -> Result<()> {
-        source.validate()?;
-        target.validate()?;
-        if source.class() != VolumeClass::Project
-            || target.class() != VolumeClass::Project
-            || source.provider() != &self.provider
-            || target.provider() != &self.provider
-            || source.owner() != target.owner()
-        {
-            return Err(Error::Invalid(
-                "project fork or merge requires two project volumes".into(),
-            ));
-        }
-        Ok(())
+    async fn prepare_project_import(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        target: &VolumeRef,
+    ) -> Result<JoinPlan<A, O>> {
+        self.plan_volume_import(source, generation, target).await
     }
 
     /// Creates the unique physical workspace for a logical volume.
@@ -2030,7 +2203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         volume.validate()?;
         volume.directory_read_capability(path)?;
-        if volume.provider() != &self.provider || volume.class() != VolumeClass::AgentPrivate {
+        if volume.provider() != &self.provider {
             return Err(Error::Invalid(
                 "private directory belongs to another provider or class".into(),
             ));

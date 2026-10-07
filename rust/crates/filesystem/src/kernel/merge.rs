@@ -517,7 +517,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
         } else {
             vec![ours_parent_generation]
         },
-        required_features: request.ours.required_features,
+        required_features: request.ours.continuation_features(),
     };
     Ok(OperationReceipt {
         value: MergeGenerationOutcome::Prepared {

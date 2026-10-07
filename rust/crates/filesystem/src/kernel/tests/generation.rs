@@ -14,6 +14,27 @@ fn root() -> GenerationRoot {
 }
 
 #[test]
+fn filtered_fork_feature_round_trips_and_requires_one_parent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut value = root();
+    value.required_features = GenerationRoot::FILTERED_FORK;
+    let encoded = encode_generation_root(&value)?;
+    assert_eq!(
+        decode_generation_root(&encoded, DecodeLimits::default())?,
+        value
+    );
+    assert_eq!(value.continuation_features(), 0);
+    value.parents.clear();
+    assert!(encode_generation_root(&value).is_err());
+    value.parents = vec![
+        GenerationId::new(Digest::from_bytes([4; 32])),
+        GenerationId::new(Digest::from_bytes([5; 32])),
+    ];
+    assert!(encode_generation_root(&value).is_err());
+    Ok(())
+}
+
+#[test]
 fn generation_root_round_trip_and_identity_are_locked() -> Result<(), Box<dyn std::error::Error>> {
     let value = root();
     let encoded = encode_generation_root(&value)?;
@@ -47,7 +68,7 @@ fn duplicate_merge_parents_and_unknown_features_fail_closed()
     value.parents[1] = value.parents[0];
     assert!(encode_generation_root(&value).is_err());
     value.parents.pop();
-    value.required_features = 1;
+    value.required_features = 2;
     assert!(encode_generation_root(&value).is_err());
     Ok(())
 }
@@ -112,7 +133,7 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
 
     let mut unsupported = encode_generation_root(&root())?;
     let features_offset = unsupported.len() - 8;
-    unsupported[features_offset..].copy_from_slice(&1_u64.to_le_bytes());
+    unsupported[features_offset..].copy_from_slice(&2_u64.to_le_bytes());
     assert!(matches!(
         decode_generation_root(&unsupported, DecodeLimits::default()),
         Err(CanonicalDecodeError::Invariant(_))
