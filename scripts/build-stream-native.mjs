@@ -479,6 +479,14 @@ function normalizeFlagValue(value, context) {
   return encoded ? value.split("\x1f").map(segment => normalizeSegment(segment, true)).join("\x1f") : normalizeSegment(value, false);
 }
 
+// Rust may add diagnostic-only arguments to the delegated invocation (for
+// example, --diagnostic-width=79). Keep those exact arguments in the raw
+// receipt, but omit them from the published recipe so equivalent builds do
+// not drift with the host's diagnostic settings.
+function isDiagnosticOnlyRustcArgument(value) {
+  return typeof value === "string" && /^--diagnostic-width=\d+$/u.test(value);
+}
+
 export function normalizeBuildInputs(value, { targetDir, outputDir }) {
   const context = { targetDir: resolve(targetDir), outputDir: resolve(outputDir) };
   const normalized = normalizeBuildInputPaths(value, context);
@@ -490,10 +498,11 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
   normalized.generator.options.target_dir = "<target-dir>";
   normalized.linker.actual.rustc = "rustc";
   normalized.linker.actual.linker = normalizeToolPath(value.linker.actual.linker, context);
-  normalized.linker.actual.args = normalized.linker.actual.args.map((arg, index) => {
-    const raw = value.linker.actual.args[index];
+  const rawLinkerArgs = value.linker.actual.args.filter(arg => !isDiagnosticOnlyRustcArgument(arg));
+  normalized.linker.actual.args = normalized.linker.actual.args.filter(arg => !isDiagnosticOnlyRustcArgument(arg)).map((arg, index) => {
+    const raw = rawLinkerArgs[index];
     if (typeof raw === "string" && raw.startsWith("-Clinker=")) return `-Clinker=${normalizeToolPath(raw.slice("-Clinker=".length), context)}`;
-    if (index > 0 && value.linker.actual.args[index - 1] === "-C" && typeof raw === "string" && raw.startsWith("linker=")) return `linker=${normalizeToolPath(raw.slice("linker=".length), context)}`;
+    if (index > 0 && rawLinkerArgs[index - 1] === "-C" && typeof raw === "string" && raw.startsWith("linker=")) return `linker=${normalizeToolPath(raw.slice("linker=".length), context)}`;
     return arg;
   });
   normalized.linker.configured.target = normalizeToolPath(value.linker.configured.target, context);
@@ -754,8 +763,11 @@ async function assertBundle(output, { expectedTarget, verifySource = true } = {}
     const bytes = await readFile(pathFromArtifact(output, artifact.path));
     if (artifact.sha256 !== digest(bytes) || artifact.bytes !== bytes.length) throw new Error(`native bundle artifact differs: ${artifact.path}`);
   }
-  const bundle = await bundleArtifacts(output);
-  if (JSON.stringify(bundle.artifacts) !== JSON.stringify(artifacts)) throw new Error("native bundle contains unstated or missing generated files");
+  await assertExactInventory(output, new Set([
+    ...artifacts.map(artifact => artifact.path.slice("generated/native/".length)),
+    generationManifestName,
+    "native-targets.json",
+  ]));
   return { metadata, generation, artifacts };
 }
 

@@ -275,6 +275,32 @@ test("native qualification keeps raw producer paths in an external receipt", () 
   assertBuildInputs(published);
 });
 
+test("native qualification ignores diagnostic-only rustc args in the published recipe", () => {
+  const original = validBuildInputs();
+  const normalized = normalizeBuildInputs(original, {
+    targetDir: "C:/runner/_work/target-stream-native",
+    outputDir: "C:/runner/_work/native-bundle",
+  });
+
+  const diagnostic = structuredClone(original);
+  diagnostic.linker.actual.args.push("--diagnostic-width=79");
+  const normalizedDiagnostic = normalizeBuildInputs(diagnostic, {
+    targetDir: "C:/runner/_work/target-stream-native",
+    outputDir: "C:/runner/_work/native-bundle",
+  });
+  assert.deepEqual(normalizedDiagnostic, normalized);
+  assert.equal(buildInputsReceipt(diagnostic, normalizedDiagnostic).raw_build_inputs.linker.actual.args.at(-1), "--diagnostic-width=79");
+  assertMatchingBuildInputs(normalized, normalizedDiagnostic);
+
+  const meaningful = structuredClone(original);
+  meaningful.linker.actual.args.push("--cfg", "feature=stream_recipe_change");
+  const normalizedMeaningful = normalizeBuildInputs(meaningful, {
+    targetDir: "C:/runner/_work/target-stream-native",
+    outputDir: "C:/runner/_work/native-bundle",
+  });
+  assert.throws(() => assertMatchingBuildInputs(normalized, normalizedMeaningful), /build input attestation differs/);
+});
+
 test("native qualification adds stable Rust path remapping flags", () => {
   assert.deepEqual(
     deterministicRustflags("C:/agent/one", "C:/agent/one/target", undefined, { plain: "-C target-cpu=native" }).split("\x1f"),
