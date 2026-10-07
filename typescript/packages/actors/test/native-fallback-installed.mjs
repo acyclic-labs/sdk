@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const packageRoot = process.env.ACTORS_INSTALLED_ROOT === undefined
   ? process.cwd()
@@ -66,6 +67,22 @@ function assertWasmRetry(executable, label) {
   assert.equal(result.status, 0, `${label} WASM retry failed:\n${result.stderr}`);
 }
 
+function assertNativeLoader(executable, label) {
+  const loaderPath = join(nativeRoot, "binding.cjs");
+  const nativeProbe = `
+    const loader = await import(${JSON.stringify(pathToFileURL(loaderPath).href)});
+    const binding = loader.default ?? loader;
+    if ((loader.__napiBindingTarget ?? binding.__napiBindingTarget) !== "native") {
+      throw new Error("installed parent loader did not resolve a native binding");
+    }
+    if (typeof (loader.NativeActorsClient ?? binding.NativeActorsClient) !== "function") {
+      throw new Error("installed native binding did not export NativeActorsClient");
+    }
+  `;
+  const result = spawnSync(executable, ["--input-type=module", "-e", nativeProbe], { cwd: packageRoot, encoding: "utf8" });
+  assert.equal(result.status, 0, `${label} native loader failed:\n${result.stderr}`);
+}
+
 async function withMutations(callback) {
   const moved = [];
   const created = [];
@@ -104,6 +121,7 @@ await withMutations(async ({ move }) => {
 });
 
 for (const executable of executables) assertWasmRetry(executable.command, executable.name);
+for (const executable of executables) assertNativeLoader(executable.command, executable.name);
 
 const localCandidates = (await walk(nativeRoot)).filter(path => /[\\/]index\.[^\\/]+\.(?:node|cjs)$/.test(path));
 const companionDirectories = optionalNames
