@@ -44,6 +44,9 @@ cargo +1.98.1 run --manifest-path rust/crates/sdk-generation/Cargo.toml --offlin
 cargo +1.98.1 run --manifest-path rust/crates/sdk-generation/Cargo.toml --offline --locked -- generate \
   --root <checkout> --rustdoc-json <json-or-dir> --output <bundle> \
   --version <version> --channel preview
+cargo +1.98.1 run --manifest-path rust/crates/sdk-generation/Cargo.toml --offline --locked -- drift \
+  --root <checkout> --rustdoc-json <json-or-dir> --output <bundle> \
+  --version <version> --channel preview
 ```
 
 Run these commands from the repository root. Release qualification also runs
