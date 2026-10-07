@@ -219,9 +219,27 @@ jobs:
           path: ${{ runner.temp }}/native-mount-artifacts/${{ matrix.backend }}.json
           if-no-files-found: error
 
+  sdk-qualification:
+    name: Full SDK qualification
+    needs: build
+    uses: ./.github/workflows/qualification.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    with:
+      force: true
+      source_ref: ${{ github.sha }}
+      release_tag: ${{ startsWith(github.ref, 'refs/tags/acyclic-v') && github.ref_name || '' }}
+
+  agent-host-qualification:
+    name: Agent host qualification
+    needs: build
+    uses: ./.github/workflows/agent-host-qualification.yml
+
   assemble:
     name: Validate and assemble
-    needs: [build, native-mount]
+    needs: [build, native-mount, sdk-qualification, agent-host-qualification]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       attestations: write

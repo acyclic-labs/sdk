@@ -9,7 +9,6 @@ use crate::Error;
 use public_api::tokens::Token;
 use rustdoc_types::{Crate, FORMAT_VERSION, Id, ItemEnum};
 use serde_json::Value;
-use std::fs;
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,9 +20,8 @@ pub struct PublicItemSignature {
     pub path: Vec<String>,
 }
 
-pub fn extract(json_path: &Path) -> Result<Vec<PublicItemSignature>, Error> {
-    let raw = fs::read(json_path)?;
-    let value: Value = serde_json::from_slice(&raw)?;
+pub fn extract(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
+    let value: Value = serde_json::from_slice(raw)?;
     let krate: Crate = serde_json::from_value(value.clone())?;
     if krate.format_version != FORMAT_VERSION {
         return Err(Error::Invalid(format!(
@@ -119,7 +117,8 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
                 | Token::Type(_)
                 | Token::Primitive(_)
                 | Token::Self_(_)
-        ) || matches!(token, Token::Symbol(open) if open == "[") {
+        ) || matches!(token, Token::Symbol(open) if open == "[")
+        {
             Some(index)
         } else {
             None
@@ -267,7 +266,7 @@ fn remove_known_fields(
 mod tests {
     use super::{adapt, exported_path, exported_path_for_item, remove_known_fields};
     use public_api::tokens::Token;
-    use rustdoc_types::{Crate, ItemEnum, FORMAT_VERSION};
+    use rustdoc_types::{Crate, FORMAT_VERSION, ItemEnum};
     use serde_json::json;
     use std::env;
     use std::fs;
@@ -553,7 +552,10 @@ mod tests {
             let raw = match fs::read(&path) {
                 Ok(raw) => raw,
                 Err(error) => {
-                    failures.push(format!("{}: cannot read corpus file: {error}", path.display()));
+                    failures.push(format!(
+                        "{}: cannot read corpus file: {error}",
+                        path.display()
+                    ));
                     continue;
                 }
             };
@@ -567,7 +569,10 @@ mod tests {
             let krate: Crate = match serde_json::from_value(value.clone()) {
                 Ok(krate) => krate,
                 Err(error) => {
-                    failures.push(format!("{}: invalid typed Rustdoc JSON: {error}", path.display()));
+                    failures.push(format!(
+                        "{}: invalid typed Rustdoc JSON: {error}",
+                        path.display()
+                    ));
                     continue;
                 }
             };
@@ -584,19 +589,28 @@ mod tests {
             let adapted = match adapt(value, &krate) {
                 Ok(adapted) => adapted,
                 Err(error) => {
-                    failures.push(format!("{}: format adapter rejected corpus: {error}", path.display()));
+                    failures.push(format!(
+                        "{}: format adapter rejected corpus: {error}",
+                        path.display()
+                    ));
                     continue;
                 }
             };
             let mut temp = match tempfile::NamedTempFile::new() {
                 Ok(temp) => temp,
                 Err(error) => {
-                    failures.push(format!("{}: cannot create parser input: {error}", path.display()));
+                    failures.push(format!(
+                        "{}: cannot create parser input: {error}",
+                        path.display()
+                    ));
                     continue;
                 }
             };
             if let Err(error) = serde_json::to_writer(temp.as_file_mut(), &adapted) {
-                failures.push(format!("{}: cannot write parser input: {error}", path.display()));
+                failures.push(format!(
+                    "{}: cannot write parser input: {error}",
+                    path.display()
+                ));
                 continue;
             }
             let api = match public_api::Builder::from_rustdoc_json(temp.path())
@@ -605,7 +619,10 @@ mod tests {
             {
                 Ok(api) => api,
                 Err(error) => {
-                    failures.push(format!("{}: public-api extraction failed: {error}", path.display()));
+                    failures.push(format!(
+                        "{}: public-api extraction failed: {error}",
+                        path.display()
+                    ));
                     continue;
                 }
             };
