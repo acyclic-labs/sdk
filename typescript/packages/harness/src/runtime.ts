@@ -426,13 +426,17 @@ export async function policyIdentity(name: string, version: string, digest: Uint
 }
 
 async function admitPolicyIdentity(identity: MachineIdentityWire): Promise<ComponentIdentity> {
+  // Detach the caller-owned identity before WASM initialization can yield.
+  // Providers may reuse and mutate the object while the shared Rust runtime
+  // is being acquired; admission must validate this exact observation.
+  const snapshot = structuredClone(identity);
   let admitted: MachineIdentityWire;
   try {
-    admitted = (await NativeContracts.create()).validate("machine_identity", identity);
+    admitted = (await NativeContracts.create()).validate("machine_identity", snapshot);
   } catch (error) {
     // Rust's fixed array deserializer rejects a short digest before the
     // semantic validator can provide its stable field-level message.
-    if (identity.digest.length !== 32) {
+    if (snapshot.digest.length !== 32) {
       throw new TypeError("policy implementation digest must be a nonzero 32-byte value", { cause: error });
     }
     throw error;

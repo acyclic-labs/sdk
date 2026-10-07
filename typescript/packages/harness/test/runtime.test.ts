@@ -1530,7 +1530,7 @@ describe("typed agent runtime", () => {
   });
 
   test("durable hosts reject unpinned or composition-mismatched policies", async () => {
-    await expect(policyIdentity("policy", "1", new Uint8Array(32))).rejects.toThrow("nonzero");
+    await expect(policyIdentity("policy", "1", new Uint8Array(32))).rejects.toThrow("implementation digest");
     await expect(policyIdentity("policy", "1", new Uint8Array(31).fill(1))).rejects.toThrow("32-byte");
     const host: HarnessRuntimeHost = {
       policyIdentity: () => approvalPolicyIdentity,
@@ -1569,6 +1569,67 @@ describe("typed agent runtime", () => {
       version: "1",
       digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
     });
+  });
+
+  test("snapshots policy and execution identities during runtime rechecks", async () => {
+    const identityWithMutation = (name: string, mutation: string): ComponentIdentity => {
+      const identity = {
+        name,
+        version: "1",
+        digest: Array.from({ length: 32 }, () => 6),
+      } as unknown as ComponentIdentity & { name: string };
+      queueMicrotask(() => { identity.name = mutation; });
+      return identity;
+    };
+    const tool = await defineTool<number, number>({
+      name: "admission-snapshot",
+      revision: "1",
+      description: "admission snapshot",
+      inputSchema: { type: "number" },
+      outputSchema: { type: "number" },
+      parseInput: parseNumber,
+      parseOutput: parseNumber,
+    }, (_context, value) => value);
+    const policy = {
+      identity: () => identityWithMutation("runtime-policy", "mutated-policy"),
+      evaluate: async () => ({ kind: "allow" as const }),
+    };
+    const runtime = await Harness.builder(contracts).policy(policy).tool(tool)
+      .grant("tool:call:admission-snapshot").build();
+    expect(await runtime.call(runtime.tool(tool), 7)).toBe(7);
+
+    let routeCalls = 0;
+    const executionIdentity = () => identityWithMutation("execution-route", `mutated-route-${++routeCalls}`);
+    const state: HarnessRuntimeState = {
+      policyIdentity: () => null,
+      executionIdentity,
+      async attach() { throw new Error("not used"); },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const spawner: HarnessRuntimeSpawner = { policyIdentity: () => null, executionIdentity };
+    const execution: HarnessExecutionProvider = {
+      identity: executionIdentity,
+      spawner: () => spawner,
+      state: () => state,
+      async qualifyTask() { throw new Error("not used"); },
+      async qualifyBatch() { throw new Error("not used"); },
+    };
+    const executionRuntime = await Harness.builder(contracts).execution(execution).build();
+    const placement = {
+      provider: {
+        name: "execution-route",
+        version: "1",
+        digest: Array.from({ length: 32 }, () => 6),
+      },
+      build: { kind: "artifact" as const,
+        provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
+      environment: { kind: "sandbox" as const,
+        provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
+      readiness_revision: Array.from({ length: 32 }, () => 3),
+    } as import("../src/index.js").ExecutionPlacementWire;
+    await expect(executionRuntime.validateExecutionPlacement(placement)).resolves.toBeUndefined();
   });
 
   test("policy implementation drift during evaluation cannot dispatch a tool", async () => {
