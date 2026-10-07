@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { ActorId, CodeSha256, CurrentHeadMarker, PositiveU64, ActorsClient, type ActorsRustBinding, type OperationEvent, type semantic } from "../src/index.js";
-import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema, InspectActorResponseSchema } from "../generated/proto/actors/v1/actors_pb.js";
+import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema, InspectActorResponseSchema, SubscriptionStartSchema } from "../generated/proto/actors/v1/actors_pb.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
 describe("Rust-backed Actors client", () => {
@@ -80,6 +80,10 @@ describe("Rust-backed Actors client", () => {
     const response = await client.inspectActor({ actorId: "actor-a" as semantic.ActorId });
     expect(Object.hasOwn(response.actor!, "checkpointUnixMillis")).toBe(true);
     expect(response.actor?.checkpointUnixMillis).toBeUndefined();
+  });
+
+  test("keeps subscription-start alternatives owned by their oneof", () => {
+    expect(SubscriptionStartSchema.fields.every(field => field.oneof !== undefined)).toBe(true);
   });
 
   test("snapshots requests before connecting and exposes AbortSignal cancellation", async () => {

@@ -149,9 +149,12 @@ function normalizeSemantic(value: unknown, schema?: DescMessage): unknown {
   // generated semantic property required while preserving wire presence.
   for (const field of fields) {
     if (field.localName in result) continue;
+    // Oneof alternatives are represented by Buf's discriminated union; adding
+    // absent properties would invent fields outside that union.
+    if (field.oneof !== undefined) continue;
     if (field.fieldKind === "message") {
       result[field.localName] = null;
-    } else if (field.presence === FeatureSet_FieldPresence.EXPLICIT || field.presence === FeatureSet_FieldPresence.LEGACY_REQUIRED) {
+    } else if (field.presence === FeatureSet_FieldPresence.EXPLICIT) {
       result[field.localName] = undefined;
     }
   }
