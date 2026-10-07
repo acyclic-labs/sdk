@@ -1,5 +1,6 @@
 // Canonical generation inputs and their published copies live here.
 // Every family that negotiates a protocol ships the shared handshake schema.
+/** @type {[string, string[]][]} */
 export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
   ["harness/v2/harness_pb", ["harness"]],

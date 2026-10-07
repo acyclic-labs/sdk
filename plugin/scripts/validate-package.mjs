@@ -13,7 +13,7 @@ function fail(message) {
 }
 
 function parseArguments(argv) {
-  const result = { require_target: [] };
+  const result = { require_target: /** @type {string[]} */ ([]) };
   for (const argument of argv) {
     if (!result.package && !argument.startsWith("--")) result.package = argument;
     else if (argument === "--require-universal") result.require_universal = true;

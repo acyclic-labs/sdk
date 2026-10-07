@@ -65,6 +65,7 @@ const wasmSmoke = {
     return [module.validatePath("/check-generated"), module.validateSequence("0")];
   },
 };
+/** @type {[string, string][]} */
 const wasmPackages = [
   ["filesystem", "acyclic_fs_wasm"],
   ["harness", "acyclic_harness_wasm"],
@@ -176,10 +177,8 @@ try {
       throw new Error(`generated descriptor drift: ${destination}`);
     }
   }
-  for (const [relative, declaration] of [
-    ["typescript/packages/filesystem/generated/descriptor-digest.js", false],
-    ["typescript/packages/filesystem/generated/descriptor-digest.d.ts", true],
-  ]) {
+  for (const declaration of [false, true]) {
+    const relative = `typescript/packages/filesystem/generated/descriptor-digest.${declaration ? "d.ts" : "js"}`;
     const expected = filesystemDescriptorDigestSource(root, declaration);
     if (readFileSync(join(root, relative), "utf8") !== expected) {
       throw new Error(`generated filesystem descriptor digest drift: ${relative}`);

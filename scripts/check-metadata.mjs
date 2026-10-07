@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -93,7 +93,9 @@ for (const item of await load("release/npm-packages.json")) {
     throw new Error(`public npm package documentation mismatch: ${item.name}`);
   }
 }
-const lock = Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"));
+const lock = /** @type {{ workspaces: Record<string, { name: string, version?: string }> }} */ (
+  Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"))
+);
 for (const [path, locked] of Object.entries(lock.workspaces)) {
   const manifest = await load(path ? `${path}/package.json` : "package.json");
   if (locked.name !== manifest.name || (path && locked.version !== manifest.version)) {
