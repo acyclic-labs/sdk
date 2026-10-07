@@ -59,9 +59,9 @@ stable release with the greatest SemVer; `releases` contains the stable
 release entries, and `preview` is one independent optional preview entry.
 Resolve each entry's `dataFile` relative to the index root rather than
 reconstructing a path from an untrusted version string. Release data is stored
-under `releases/<version>/sdk-docs-data.v1.json`; preview data is stored under
-`preview/<version>/sdk-docs-data.v1.json`. Each version directory also contains
-its `sdk-docs-data.v1.schema.json`.
+under `releases/<version>/sdk-docs-data.v2.json`; preview data is stored under
+`preview/<version>/sdk-docs-data.v2.json`. Each version directory also contains
+its `sdk-docs-data.v2.schema.json`.
 
 The selected data file contains its own `version`, `channel`, `source`,
 `navigation`, and `families`. The `version`, `channel`, and
@@ -74,6 +74,4 @@ publishers may target the same output directory; each publisher holds this
 lock across index validation, bundle writes, and index replacement so entries
 are not lost.
 
-The current contract is `sdk-docs-data.v1`; optional fields such as `links` are
-omitted when empty and default during deserialization so older v1 bundles remain
-readable.
+The current contract is `sdk-docs-data.v2`; every new bundle includes Rust-derived package and search records alongside navigation and families. The version index remains `sdk-docs-versions.v1` so release selection and latest-version semantics are unchanged. Existing immutable `sdk-docs-data.v1` releases remain valid index entries and are read with their original schema rules when a later v2 release is added.

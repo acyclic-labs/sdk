@@ -15,7 +15,8 @@ use std::path::{Component, Path, PathBuf};
 
 mod public_api;
 
-pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
+pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v2";
+pub const LEGACY_DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
 pub const VERSION_INDEX_SCHEMA_VERSION: &str = "sdk-docs-versions.v1";
 pub const GENERATOR_VERSION: &str = "0.1.0";
 
@@ -51,6 +52,46 @@ pub struct NavigationEntry {
 #[serde(rename_all = "camelCase")]
 pub struct Navigation {
     pub entries: Vec<NavigationEntry>,
+}
+
+/// The Rust crate identities represented by one documentation bundle.
+///
+/// This is derived from the typed Rustdoc families. It is deliberately a
+/// projection of the Rustdoc crate graph, rather than a second package
+/// manifest maintained by a website or language binding. Exact package names
+/// and install instructions require the later Rust-owned package metadata
+/// stage; this record does not guess them from crate spelling.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageEntry {
+    pub crate_name: String,
+    pub family_slug: String,
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageCatalog {
+    pub entries: Vec<PackageEntry>,
+}
+
+/// One deterministic search document derived from the final Rust-owned data.
+/// Consumers can build an in-memory index without parsing website content.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchEntry {
+    pub id: String,
+    pub family_slug: String,
+    pub title: String,
+    pub path: String,
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchIndex {
+    pub entries: Vec<SearchEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
@@ -131,6 +172,10 @@ pub struct DocsData {
     pub channel: Channel,
     pub source: SourceInfo,
     pub navigation: Navigation,
+    #[serde(default)]
+    pub packages: PackageCatalog,
+    #[serde(default)]
+    pub search: SearchIndex,
     pub families: Vec<Family>,
 }
 
@@ -322,6 +367,8 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
     let navigation = Navigation {
         entries: navigation_entries(&families),
     };
+    let packages = package_catalog(&families, &input.version);
+    let search = search_index(&families);
     let data = DocsData {
         schema: DATA_SCHEMA_VERSION.into(),
         schema_version: DATA_SCHEMA_VERSION.into(),
@@ -336,6 +383,8 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             generator: format!("sdk-docs/{GENERATOR_VERSION}"),
         },
         navigation,
+        packages,
+        search,
         families,
     };
     validate_source_info(&data.source, &input.channel)?;
@@ -372,7 +421,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
         .join(channel_dir)
         .join(safe_version(&data.version)?);
     let data_file = format!(
-        "{channel_dir}/{}/sdk-docs-data.v1.json",
+        "{channel_dir}/{}/sdk-docs-data.v2.json",
         safe_version(&data.version)?
     );
     let data_bytes = serde_json::to_vec_pretty(data)?;
@@ -401,7 +450,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     atomic_write(&data_path, &data_bytes, true)?;
     let schema = schemars::schema_for!(DocsData);
     atomic_write(
-        &version_dir.join("sdk-docs-data.v1.schema.json"),
+        &version_dir.join("sdk-docs-data.v2.schema.json"),
         &serde_json::to_vec_pretty(&schema)?,
         true,
     )?;
@@ -572,9 +621,16 @@ fn validate_version_entry(
         Channel::Release => "releases",
         Channel::Preview => "preview",
     };
+    let schema = data_schema_for_file(&entry.data_file).ok_or_else(|| {
+        Error::Invalid(format!(
+            "version index entry {} has an unsupported data file {}",
+            entry.version, entry.data_file
+        ))
+    })?;
     let expected_data_file = format!(
-        "{channel_dir}/{}/sdk-docs-data.v1.json",
-        safe_version(&entry.version)?
+        "{channel_dir}/{}/{}.json",
+        safe_version(&entry.version)?,
+        schema
     );
     if entry.data_file != expected_data_file {
         return Err(Error::Invalid(format!(
@@ -612,7 +668,7 @@ fn validate_version_entry(
             entry.version
         ))
     })?;
-    if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
+    if data.schema != schema || data.schema_version != schema {
         return Err(Error::Invalid(format!(
             "version index entry {} data file has an unsupported docs schema",
             entry.version
@@ -637,7 +693,18 @@ fn validate_version_entry(
         )));
     }
     validate_source_info(&data.source, &data.channel)?;
+    validate_navigation(&data)?;
     Ok(())
+}
+
+fn data_schema_for_file(data_file: &str) -> Option<&'static str> {
+    if data_file.ends_with("/sdk-docs-data.v2.json") {
+        Some(DATA_SCHEMA_VERSION)
+    } else if data_file.ends_with("/sdk-docs-data.v1.json") {
+        Some(LEGACY_DATA_SCHEMA_VERSION)
+    } else {
+        None
+    }
 }
 
 fn merge_version_index(
@@ -847,12 +914,81 @@ fn navigation_entries(families: &[Family]) -> Vec<NavigationEntry> {
     entries
 }
 
+fn package_catalog(families: &[Family], version: &str) -> PackageCatalog {
+    let mut entries = families
+        .iter()
+        .map(|family| PackageEntry {
+            crate_name: family.crate_name.clone(),
+            family_slug: family.slug.clone(),
+            version: version.to_owned(),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.crate_name.cmp(&right.crate_name));
+    PackageCatalog { entries }
+}
+
+fn search_index(families: &[Family]) -> SearchIndex {
+    let mut entries = Vec::new();
+    for family in families {
+        entries.push(SearchEntry {
+            id: format!("family:{}", family.slug),
+            family_slug: family.slug.clone(),
+            title: family.title.clone(),
+            path: family.slug.clone(),
+            kind: "family".into(),
+            text: format!("{} {}", family.title, family.crate_name),
+        });
+        for guide in &family.guides {
+            entries.push(SearchEntry {
+                id: format!("guide:{}:{}", family.slug, guide.path),
+                family_slug: family.slug.clone(),
+                title: guide.title.clone(),
+                path: guide.path.clone(),
+                kind: "guide".into(),
+                text: guide.markdown.clone(),
+            });
+        }
+        for item in &family.items {
+            let docs = item.docs.as_deref().unwrap_or_default();
+            entries.push(SearchEntry {
+                id: format!("item:{}:{}", family.slug, item.id),
+                family_slug: family.slug.clone(),
+                title: item.name.clone(),
+                path: item.path.clone(),
+                kind: item.kind.clone(),
+                text: format!("{} {} {}", item.name, item.signature, docs),
+            });
+        }
+    }
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    SearchIndex { entries }
+}
+
+fn validate_generated_catalog(data: &DocsData) -> Result<(), Error> {
+    let expected_packages = package_catalog(&data.families, &data.version);
+    if data.packages != expected_packages {
+        return Err(Error::Invalid(
+            "package catalog must exactly match the sorted Rustdoc families".into(),
+        ));
+    }
+    let expected_search = search_index(&data.families);
+    if data.search != expected_search {
+        return Err(Error::Invalid(
+            "search index must exactly match the generated Rust-owned data".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_navigation(data: &DocsData) -> Result<(), Error> {
     let expected = navigation_entries(&data.families);
     if data.navigation.entries != expected {
         return Err(Error::Invalid(
             "navigation entries must exactly match the sorted family entries".into(),
         ));
+    }
+    if data.schema == DATA_SCHEMA_VERSION {
+        validate_generated_catalog(data)?;
     }
     Ok(())
 }
@@ -1903,6 +2039,8 @@ mod tests {
                     crate_name: "zeta".into(),
                 }],
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: vec![
                 Family {
                     slug: "zeta".into(),
@@ -2289,6 +2427,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         let error = write_bundle(&data, &output, true)
@@ -2303,6 +2443,115 @@ mod tests {
             .expect_err("publication must include Rustdoc format metadata");
         assert!(error.to_string().contains("format metadata"));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn legacy_v1_release_remains_readable_when_v2_is_added() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-legacy-v1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let family = Family {
+            slug: "legacy".into(),
+            title: "Legacy".into(),
+            crate_name: "legacy".into(),
+            items: Vec::new(),
+            guides: Vec::new(),
+        };
+        let old_data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+                input_sha256: "c".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/0.1.0".into(),
+            },
+            navigation: Navigation {
+                entries: vec![NavigationEntry {
+                    slug: "legacy".into(),
+                    title: "Legacy".into(),
+                    crate_name: "legacy".into(),
+                }],
+            },
+            packages: package_catalog(std::slice::from_ref(&family), "1.0.0"),
+            search: search_index(std::slice::from_ref(&family)),
+            families: vec![family],
+        };
+        let mut old_value = serde_json::to_value(&old_data).expect("old fixture should serialize");
+        old_value["schema"] = LEGACY_DATA_SCHEMA_VERSION.into();
+        old_value["schemaVersion"] = LEGACY_DATA_SCHEMA_VERSION.into();
+        old_value
+            .as_object_mut()
+            .expect("old fixture should be an object")
+            .remove("packages");
+        old_value
+            .as_object_mut()
+            .expect("old fixture should be an object")
+            .remove("search");
+        let old_bytes = serde_json::to_vec_pretty(&old_value).expect("old fixture should encode");
+        let old_path = output.join("releases/1.0.0/sdk-docs-data.v1.json");
+        fs::create_dir_all(old_path.parent().expect("old data parent should exist"))
+            .expect("old data parent should be creatable");
+        fs::write(&old_path, &old_bytes).expect("old data should be writable");
+        let old_entry = VersionEntry {
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            revision: "a".repeat(40),
+            data_file: "releases/1.0.0/sdk-docs-data.v1.json".into(),
+            data_sha256: sha256_hex(&old_bytes),
+        };
+        let old_index = VersionIndex {
+            schema: VERSION_INDEX_SCHEMA_VERSION.into(),
+            latest: Some(old_entry.clone()),
+            releases: vec![old_entry],
+            preview: None,
+        };
+        fs::write(
+            output.join("sdk-docs-versions.v1.json"),
+            serde_json::to_vec_pretty(&old_index).expect("old index should encode"),
+        )
+        .expect("old index should be writable");
+
+        let new_data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "2.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "d".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "e".repeat(64))),
+                input_sha256: "f".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/0.1.0".into(),
+            },
+            navigation: Navigation { entries: Vec::new() },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
+            families: Vec::new(),
+        };
+        write_bundle(&new_data, &output, true).expect("v2 publication should preserve v1 history");
+
+        assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
+        let index: VersionIndex = serde_json::from_slice(
+            &fs::read(output.join("sdk-docs-versions.v1.json")).expect("index should exist"),
+        )
+        .expect("mixed index should deserialize");
+        assert_eq!(index.latest.as_ref().map(|entry| entry.version.as_str()), Some("2.0.0"));
+        assert_eq!(index.releases.len(), 2);
+        assert!(index
+            .releases
+            .iter()
+            .any(|entry| entry.data_file.ends_with("sdk-docs-data.v1.json")));
+        let old_roundtrip: DocsData = serde_json::from_slice(&old_bytes).expect("v1 should read");
+        assert_eq!(old_roundtrip.schema, LEGACY_DATA_SCHEMA_VERSION);
+        assert_eq!(old_roundtrip.version, "1.0.0");
+        validate_version_index(&index, &output).expect("old and new entries should validate");
+        fs::remove_dir_all(output).expect("test output should be removable");
     }
 
     #[test]
@@ -2328,6 +2577,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         let error = write_bundle(&data, &output, true)
@@ -2362,6 +2613,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("initial release should write");
@@ -2386,7 +2639,7 @@ mod tests {
                 version: "1.0.0".into(),
                 channel: Channel::Release,
                 revision: "a".repeat(40),
-                data_file: "releases/1.0.0/sdk-docs-data.v1.json".into(),
+                data_file: "releases/1.0.0/sdk-docs-data.v2.json".into(),
                 data_sha256: "0".repeat(64),
             }],
             preview: None,
@@ -2414,6 +2667,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         let error = write_bundle(&data, &output, true)
@@ -2425,7 +2680,7 @@ mod tests {
         );
         assert!(!output.join("releases").exists());
 
-        let data_path = output.join("releases/1.0.0/sdk-docs-data.v1.json");
+        let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
         fs::create_dir_all(data_path.parent().expect("data file should have a parent"))
             .expect("prior data directory should be creatable");
         fs::write(&data_path, b"prior data").expect("prior data should be writable");
@@ -2465,10 +2720,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("initial release should write");
-        let data_path = output.join("releases/1.0.0/sdk-docs-data.v1.json");
+        let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
         let invalid = b"not DocsData";
         fs::write(&data_path, invalid).expect("invalid bundle should be writable");
         let index_path = output.join("sdk-docs-versions.v1.json");
@@ -2519,6 +2776,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("initial release should write");
@@ -2573,6 +2832,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("first release should write");
@@ -2620,12 +2881,12 @@ mod tests {
         );
         assert!(
             output
-                .join("preview/branch_abc/sdk-docs-data.v1.json")
+                .join("preview/branch_abc/sdk-docs-data.v2.json")
                 .is_file()
         );
         assert!(
             output
-                .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
+                .join("preview/~6272616e63685f414243/sdk-docs-data.v2.json")
                 .is_file()
         );
         fs::remove_dir_all(output).expect("test output should be removable");
@@ -2637,7 +2898,7 @@ mod tests {
             version: version.into(),
             channel: Channel::Release,
             revision: "a".repeat(40),
-            data_file: format!("releases/{version}/sdk-docs-data.v1.json"),
+            data_file: format!("releases/{version}/sdk-docs-data.v2.json"),
             data_sha256: "b".repeat(64),
         };
         let stale = VersionIndex {
@@ -2682,6 +2943,8 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
+            packages: PackageCatalog { entries: Vec::new() },
+            search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
         let first_data = make_data("1.0.0", 'a');
@@ -2774,6 +3037,24 @@ mod tests {
         let first = build_data(&input).expect("typed fixture should build");
         let second = build_data(&input).expect("typed fixture should build deterministically");
         assert_eq!(first, second);
+        assert_eq!(
+            first.packages.entries,
+            vec![PackageEntry {
+                crate_name: "demo".into(),
+                family_slug: "demo".into(),
+                version: "1.0.0".into(),
+            }]
+        );
+        assert!(first
+            .search
+            .entries
+            .iter()
+            .any(|entry| entry.id == "family:demo" && entry.kind == "family"));
+        assert!(first
+            .search
+            .entries
+            .iter()
+            .any(|entry| entry.id == "item:demo:4" && entry.text.contains("links")));
         let mut changed_source = input.clone();
         changed_source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
         let changed = build_data(&changed_source).expect("source identity should be retained");
