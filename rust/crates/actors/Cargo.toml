@@ -24,6 +24,7 @@ uniffi = { version = "=0.31.0", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest.workspace = true
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring", "tls-webpki-roots"] }
+tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
@@ -38,6 +39,7 @@ uniffi = ["dep:uniffi"]
 acyclic-workers = { path = "../workers" }
 tokio.workspace = true
 rcgen = "0.14.10"
+tracing-subscriber.workspace = true
 
 [build-dependencies]
 prost = "=0.14.4"
