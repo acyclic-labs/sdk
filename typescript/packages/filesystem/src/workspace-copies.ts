@@ -5,6 +5,7 @@ import type {
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
+import { isKnownStatus } from "./workspace-results.js";
 
 /** Keep the public copy exhaustive when Rust adds a generated work counter. */
 function exhaustiveKeys<T>() {
@@ -132,13 +133,6 @@ interface RawCommitFields {
   readonly committedFingerprint: unknown;
 }
 
-const commitStatuses: ReadonlySet<CommitResult["status"]> = new Set([
-  "committed", "already-committed", "conflict", "fenced", "idempotency-conflict",
-]);
-const liveStatuses: ReadonlySet<LiveMutationResult["status"]> = new Set([
-  "committed", "already-committed", "conflicted", "retry-limit", "fenced", "idempotency-conflict",
-]);
-
 function copyFixedBytes(value: unknown, length: number, label: string): Uint8Array | undefined {
   if (value === undefined || value === null) return undefined;
   if (value instanceof Uint8Array && value.byteLength === length) return Uint8Array.from(value);
@@ -156,7 +150,7 @@ export function copyRebaseResult(value: {
   readonly truncated: boolean;
 },
   work: WorkCounters): RebaseResult {
-  if (value.status !== "safe" && value.status !== "conflicted") {
+  if (!isKnownStatus<RebaseResult["status"]>(value.status, "rebaseDecision", "checkout rebase")) {
     throw new TypeError("checkout rebase has an invalid status");
   }
   if (!Number.isSafeInteger(value.conflictCount) || value.conflictCount < 0 || typeof value.truncated !== "boolean") {
@@ -175,12 +169,10 @@ export function copyTransactionResult(value: { readonly createdFileIds: readonly
   return { createdFileIds: copyCreatedFileIds(value.createdFileIds), work };
 }
 
-function copyCommitFields<Status extends string>(value: RawCommitFields, work: WorkCounters,
-  statuses: ReadonlySet<Status>): Omit<RawCommitFields, "status"> & { readonly status: Status; readonly generationId: Uint8Array | undefined;
+function copyCommitFields<Status extends string>(value: RawCommitFields, domain: "checkoutCommit" | "liveMutation", work: WorkCounters): Omit<RawCommitFields, "status"> & { readonly status: Status; readonly generationId: Uint8Array | undefined;
     readonly epoch: bigint | undefined; readonly sequence: bigint | undefined; readonly committedFingerprint: Uint8Array | undefined; readonly work: WorkCounters } {
-  if (!statuses.has(value.status as Status)) throw new TypeError("checkout result has an invalid status");
   return {
-    status: value.status as Status,
+    status: isKnownStatus<Status>(value.status, domain, "commit") ? value.status : (() => { throw new TypeError("commit has an invalid status"); })(),
     generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
     epoch: value.epoch === undefined ? undefined : BigInt(value.epoch),
     sequence: value.sequence === undefined ? undefined : BigInt(value.sequence),
@@ -190,13 +182,13 @@ function copyCommitFields<Status extends string>(value: RawCommitFields, work: W
 }
 
 export function copyCheckoutCommit(value: RawCommitFields, work: WorkCounters): CommitResult {
-  return copyCommitFields(value, work, commitStatuses);
+  return copyCommitFields<CommitResult["status"]>(value, "checkoutCommit", work);
 }
 
 type RawLiveMutation = RawCommitFields & Pick<LiveMutationResult, "conflictCount" | "truncated">;
 
 export function copyLiveMutation(value: RawLiveMutation, work: WorkCounters): LiveMutationResult {
-  return { ...copyCommitFields(value, work, liveStatuses), conflictCount: value.conflictCount, truncated: value.truncated };
+  return { ...copyCommitFields<LiveMutationResult["status"]>(value, "liveMutation", work), conflictCount: value.conflictCount, truncated: value.truncated };
 }
 
 export function copyLiveTransaction(value: RawLiveMutation & { readonly createdFileIds: readonly (Uint8Array | undefined)[] },
@@ -218,7 +210,7 @@ function copyTransactionConflict(value: TransactionConflict): TransactionConflic
 }
 
 export function copyTransactionRebase(value: TransactionRebaseResult): TransactionRebaseResult {
-  if (value.status !== "rebased" && value.status !== "conflicted") {
+  if (!isKnownStatus<TransactionRebaseResult["status"]>(value.status, "transactionRebase", "transaction rebase")) {
     throw new TypeError("transaction rebase has an invalid status");
   }
   return {

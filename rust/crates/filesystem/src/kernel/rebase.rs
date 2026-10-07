@@ -7,6 +7,7 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 /// One exact semantic region whose state can affect a checkout.
@@ -410,7 +411,18 @@ pub struct RebaseConflict {
 }
 
 /// Bounded safe-rebase result.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(RebaseDecisionStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum RebaseDecision {
     /// Candidate generation can become the new base without replay ambiguity.
     Safe {

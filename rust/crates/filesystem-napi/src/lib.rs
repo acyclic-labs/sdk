@@ -15,26 +15,28 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, CheckoutCommitOutcome,
-    ConflictSide, Digest, FileCloneRequest, FileId, ForkOptions, Generation,
+    CheckoutCommitStatus, ConflictSide, Digest, FileCloneRequest, FileId, ForkOptions, Generation,
     GenerationExportManifest, GenerationId, GitCommand, GitCommitId, GitCompatRepository,
     GitFilesystemResult, GitTransitionId, GitTreeRef, IdempotencyKey, JoinHistory, JoinOutcome,
-    JoinPlan, LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
-    LocalObjectBackend, LocalOperationWindowStore, LocalOptions, LocalVolume, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions,
-    ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency, OperationId,
-    OperationLeaseId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
-    OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
-    PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
-    ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
-    StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionConflict,
-    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase, TransactionSparseSeek,
+    JoinOutcomeStatus, JoinPlan, LiveMutationOutcome, LiveMutationStatus, LocalAuthorityBackend,
+    LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOperationWindowStore, LocalOptions,
+    LocalVolume, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions, ObjectId,
+    ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId, OperationReconcileLimits,
+    OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease, OperationWindowPhase,
+    PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions, RebaseDecisionStatus,
+    ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
+    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
+    TransactionCommit, TransactionCommitStatus, TransactionConflict, TransactionConflictRegion,
+    TransactionDependencyUse, TransactionRebase, TransactionRebaseStatus, TransactionSparseSeek,
     VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
-    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
-    WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
-    canonicalize_git_output_json, canonicalize_git_pending_transition_json,
-    decode_generation_export_manifest, encode_generation_export_manifest,
-    native_watch_capabilities as sdk_native_watch_capabilities, parse_git_public_command,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDeleteStatus,
+    WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
+    WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase,
+    WorkspaceRebaseStatus, WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
+    canonicalize_git_pending_transition_json, decode_generation_export_manifest,
+    encode_generation_export_manifest, native_watch_capabilities as sdk_native_watch_capabilities,
+    parse_git_public_command,
 };
 use acyclic_fs::{
     CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
@@ -50,6 +52,7 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use strum::IntoEnumIterator;
 
 /// A JavaScript number accepted at the N-API boundary as an exact `u32`.
 ///
@@ -86,6 +89,49 @@ pub enum NativePromotionStatus {
     Planned,
     /// The promotion was rejected by the Rust policy.
     Rejected,
+}
+
+/// Runtime status metadata emitted from the canonical Rust discriminants.
+#[napi(object)]
+pub struct NativeStatusMetadata {
+    pub transaction_commit: Vec<String>,
+    pub transaction_rebase: Vec<String>,
+    pub workspace_rebase: Vec<String>,
+    pub workspace_delete: Vec<String>,
+    pub join_outcome: Vec<String>,
+    pub checkout_commit: Vec<String>,
+    pub live_mutation: Vec<String>,
+    pub rebase_decision: Vec<String>,
+}
+
+#[napi(js_name = "statusMetadata")]
+pub fn status_metadata() -> NativeStatusMetadata {
+    NativeStatusMetadata {
+        transaction_commit: TransactionCommitStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        transaction_rebase: TransactionRebaseStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        workspace_rebase: WorkspaceRebaseStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        workspace_delete: WorkspaceDeleteStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        join_outcome: JoinOutcomeStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        checkout_commit: CheckoutCommitStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        live_mutation: LiveMutationStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+        rebase_decision: RebaseDecisionStatus::iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
+    }
 }
 
 fn validate_napi_u32(number: f64) -> Result<u32> {
@@ -1125,7 +1171,7 @@ pub struct NativeCheckpointResult {
 #[napi(object)]
 pub struct NativeCommitResult {
     /// `committed`, `already-committed`, `conflict`, `fenced`, or `idempotency-conflict`.
-    pub status: String,
+    pub status: CheckoutCommitStatus,
     /// Candidate generation for successful publication.
     pub generation_id: Option<Buffer>,
     /// Relevant active authority epoch.
@@ -1142,7 +1188,7 @@ pub struct NativeCommitResult {
 #[napi(object)]
 pub struct NativeRebaseResult {
     /// `safe` or `conflicted`.
-    pub status: String,
+    pub status: RebaseDecisionStatus,
     /// New base generation when safe.
     pub generation_id: Option<Buffer>,
     /// Number of exact changed regions returned.
@@ -1157,7 +1203,7 @@ pub struct NativeRebaseResult {
 #[napi(object)]
 pub struct NativeLiveMutationResult {
     /// `committed`, `already-committed`, `conflicted`, `retry-limit`, `fenced`, or `idempotency-conflict`.
-    pub status: String,
+    pub status: LiveMutationStatus,
     /// Published generation when successful.
     pub generation_id: Option<Buffer>,
     /// Relevant authority epoch.
@@ -1180,7 +1226,7 @@ pub struct NativeAuthoredLiveMutationResult {
     /// One entry per authored operation; only create operations contain identities.
     pub created_file_ids: Vec<Option<Buffer>>,
     /// Terminal publication status.
-    pub status: String,
+    pub status: LiveMutationStatus,
     /// Published generation identity when committed.
     pub generation_id: Option<Buffer>,
     /// Authority epoch when available.
@@ -1730,7 +1776,7 @@ pub struct NativeJoinOptions {
 pub struct NativeJoinResult {
     /// `applied`, `already-applied`, `no-changes`, `stale-target`, `conflicted`,
     /// `fenced`, or `idempotency-conflict`.
-    pub status: String,
+    pub status: JoinOutcomeStatus,
     /// Exact target generation for generation-bearing outcomes.
     pub generation_id: Option<Buffer>,
     /// Stable path-independent conflict regions.
@@ -1744,7 +1790,7 @@ pub struct NativeJoinResult {
 pub struct NativeWorkspaceRebaseResult {
     /// `rebased`, `already-rebased`, `current`, `stale`, `conflicted`, `fenced`,
     /// or `idempotency-conflict`.
-    pub status: String,
+    pub status: WorkspaceRebaseStatus,
     /// Exact fork generation for generation-bearing outcomes.
     pub generation_id: Option<Buffer>,
     /// Stable path-independent conflict regions.
@@ -1817,7 +1863,7 @@ pub struct NativeWorkspaceUnmountTask {
 #[napi(object)]
 pub struct NativeWorkspaceCommit {
     /// Stable terminal status.
-    pub status: String,
+    pub status: TransactionCommitStatus,
     /// Published or actual generation identity when applicable.
     pub generation_id: Option<Buffer>,
 }
@@ -1826,7 +1872,7 @@ pub struct NativeWorkspaceCommit {
 #[napi(object)]
 pub struct NativeTransactionRebaseResult {
     /// `rebased` or `conflicted`.
-    pub status: String,
+    pub status: TransactionRebaseStatus,
     /// New immutable base generation when safe.
     pub generation_id: Option<Buffer>,
     /// Exact bounded changed regions.
@@ -2057,19 +2103,16 @@ impl NativeWorkspace {
     ///
     /// Returns invalid retry identity, authority, or storage failures.
     #[napi]
-    pub async fn delete(&self, idempotency_key: Option<Buffer>) -> Result<String> {
+    pub async fn delete(&self, idempotency_key: Option<Buffer>) -> Result<WorkspaceDeleteStatus> {
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .delete(idempotency_key)
             .await
-            .map(|outcome| {
-                match outcome {
-                    WorkspaceDelete::Deleted => "deleted",
-                    WorkspaceDelete::AlreadyDeleted => "already-deleted",
-                    WorkspaceDelete::Conflict => "conflict",
-                    WorkspaceDelete::IdempotencyConflict => "idempotency-conflict",
-                }
-                .to_owned()
+            .map(|outcome| match outcome {
+                WorkspaceDelete::Deleted => WorkspaceDeleteStatus::Deleted,
+                WorkspaceDelete::AlreadyDeleted => WorkspaceDeleteStatus::AlreadyDeleted,
+                WorkspaceDelete::Conflict => WorkspaceDeleteStatus::Conflict,
+                WorkspaceDelete::IdempotencyConflict => WorkspaceDeleteStatus::IdempotencyConflict,
             })
             .map_err(napi_error)
     }
@@ -2743,36 +2786,39 @@ fn native_join_history(value: &str) -> Result<JoinHistory> {
 fn native_join_result(
     outcome: JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeJoinResult {
-    let generation = |status: &str, generation: NativeLocalGeneration| NativeJoinResult {
-        status: status.to_owned(),
-        generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        conflicts: Vec::new(),
-        truncated: false,
-    };
+    let generation =
+        |status: JoinOutcomeStatus, generation: NativeLocalGeneration| NativeJoinResult {
+            status,
+            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
+            conflicts: Vec::new(),
+            truncated: false,
+        };
     match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
-        JoinOutcome::AlreadyApplied(value) => {
-            generation("already-applied", value.into_generation())
+        JoinOutcome::Applied(value) => {
+            generation(JoinOutcomeStatus::Applied, value.into_generation())
         }
-        JoinOutcome::NoChanges(value) => generation("no-changes", value),
-        JoinOutcome::StaleTarget(value) => generation("stale-target", value),
+        JoinOutcome::AlreadyApplied(value) => {
+            generation(JoinOutcomeStatus::AlreadyApplied, value.into_generation())
+        }
+        JoinOutcome::NoChanges(value) => generation(JoinOutcomeStatus::NoChanges, value),
+        JoinOutcome::StaleTarget(value) => generation(JoinOutcomeStatus::StaleTarget, value),
         JoinOutcome::Conflicted {
             conflicts,
             truncated,
         } => NativeJoinResult {
-            status: "conflicted".to_owned(),
+            status: JoinOutcomeStatus::Conflicted,
             generation_id: None,
             conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
             truncated,
         },
         JoinOutcome::Fenced => NativeJoinResult {
-            status: "fenced".to_owned(),
+            status: JoinOutcomeStatus::Fenced,
             generation_id: None,
             conflicts: Vec::new(),
             truncated: false,
         },
         JoinOutcome::IdempotencyConflict => NativeJoinResult {
-            status: "idempotency-conflict".to_owned(),
+            status: JoinOutcomeStatus::IdempotencyConflict,
             generation_id: None,
             conflicts: Vec::new(),
             truncated: false,
@@ -2783,35 +2829,38 @@ fn native_join_result(
 fn native_workspace_rebase_result(
     outcome: WorkspaceRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceRebaseResult {
-    let generation =
-        |status: &str, generation: NativeLocalGeneration| NativeWorkspaceRebaseResult {
-            status: status.to_owned(),
+    let generation = |status: WorkspaceRebaseStatus, generation: NativeLocalGeneration| {
+        NativeWorkspaceRebaseResult {
+            status,
             generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
             conflicts: Vec::new(),
             truncated: false,
-        };
+        }
+    };
     match outcome {
-        WorkspaceRebase::Rebased(value) => generation("rebased", value),
-        WorkspaceRebase::AlreadyRebased(value) => generation("already-rebased", value),
-        WorkspaceRebase::Current(value) => generation("current", value),
-        WorkspaceRebase::Stale(value) => generation("stale", value),
+        WorkspaceRebase::Rebased(value) => generation(WorkspaceRebaseStatus::Rebased, value),
+        WorkspaceRebase::AlreadyRebased(value) => {
+            generation(WorkspaceRebaseStatus::AlreadyRebased, value)
+        }
+        WorkspaceRebase::Current(value) => generation(WorkspaceRebaseStatus::Current, value),
+        WorkspaceRebase::Stale(value) => generation(WorkspaceRebaseStatus::Stale, value),
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
         } => NativeWorkspaceRebaseResult {
-            status: "conflicted".to_owned(),
+            status: WorkspaceRebaseStatus::Conflicted,
             generation_id: None,
             conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
             truncated,
         },
         WorkspaceRebase::Fenced => NativeWorkspaceRebaseResult {
-            status: "fenced".to_owned(),
+            status: WorkspaceRebaseStatus::Fenced,
             generation_id: None,
             conflicts: Vec::new(),
             truncated: false,
         },
         WorkspaceRebase::IdempotencyConflict => NativeWorkspaceRebaseResult {
-            status: "idempotency-conflict".to_owned(),
+            status: WorkspaceRebaseStatus::IdempotencyConflict,
             generation_id: None,
             conflicts: Vec::new(),
             truncated: false,
@@ -3237,7 +3286,7 @@ fn native_transaction_rebase(
 ) -> NativeTransactionRebaseResult {
     match outcome {
         TransactionRebase::Rebased(generation) => NativeTransactionRebaseResult {
-            status: "rebased".to_owned(),
+            status: TransactionRebaseStatus::Rebased,
             generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
             conflicts: Vec::new(),
             truncated: false,
@@ -3246,7 +3295,7 @@ fn native_transaction_rebase(
             conflicts,
             truncated,
         } => NativeTransactionRebaseResult {
-            status: "conflicted".to_owned(),
+            status: TransactionRebaseStatus::Conflicted,
             generation_id: None,
             conflicts: conflicts
                 .into_iter()
@@ -3349,23 +3398,23 @@ fn workspace_commit(
 ) -> NativeWorkspaceCommit {
     match outcome {
         TransactionCommit::Committed(generation) => NativeWorkspaceCommit {
-            status: "committed".to_owned(),
+            status: TransactionCommitStatus::Committed,
             generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
         },
         TransactionCommit::AlreadyCommitted(generation) => NativeWorkspaceCommit {
-            status: "already-committed".to_owned(),
+            status: TransactionCommitStatus::AlreadyCommitted,
             generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
         },
         TransactionCommit::Conflict { actual } => NativeWorkspaceCommit {
-            status: "conflict".to_owned(),
+            status: TransactionCommitStatus::Conflict,
             generation_id: Some(Buffer::from(actual.id().digest().into_bytes().to_vec())),
         },
         TransactionCommit::Fenced => NativeWorkspaceCommit {
-            status: "fenced".to_owned(),
+            status: TransactionCommitStatus::Fenced,
             generation_id: None,
         },
         TransactionCommit::IdempotencyConflict => NativeWorkspaceCommit {
-            status: "idempotency-conflict".to_owned(),
+            status: TransactionCommitStatus::IdempotencyConflict,
             generation_id: None,
         },
     }
@@ -6417,7 +6466,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         let (status, generation_id, conflict_count, truncated) = match receipt.value {
             RebaseDecision::Safe { generation } => (
-                "safe",
+                RebaseDecisionStatus::Safe,
                 Some(Buffer::from(generation.digest().into_bytes().to_vec())),
                 0,
                 false,
@@ -6426,14 +6475,14 @@ impl NativeCheckout {
                 conflicts,
                 truncated,
             } => (
-                "conflicted",
+                RebaseDecisionStatus::Conflicted,
                 None,
                 u32::try_from(conflicts.len()).unwrap_or(u32::MAX),
                 truncated,
             ),
         };
         Ok(NativeRebaseResult {
-            status: status.to_owned(),
+            status,
             generation_id,
             conflict_count,
             truncated,
@@ -7781,7 +7830,7 @@ fn commit_result(
             generation_id,
             head,
         } => (
-            "committed",
+            CheckoutCommitStatus::Committed,
             Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
             Some(bigint(head.epoch.get())),
             Some(bigint(head.sequence.get())),
@@ -7791,26 +7840,30 @@ fn commit_result(
             generation_id,
             head,
         } => (
-            "already-committed",
+            CheckoutCommitStatus::AlreadyCommitted,
             Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
             Some(bigint(head.epoch.get())),
             Some(bigint(head.sequence.get())),
             None,
         ),
         CheckoutCommitOutcome::Conflict { actual } => (
-            "conflict",
+            CheckoutCommitStatus::Conflict,
             None,
             Some(bigint(actual.epoch.get())),
             Some(bigint(actual.sequence.get())),
             None,
         ),
-        CheckoutCommitOutcome::Fenced { actual_epoch } => {
-            ("fenced", None, Some(bigint(actual_epoch.get())), None, None)
-        }
+        CheckoutCommitOutcome::Fenced { actual_epoch } => (
+            CheckoutCommitStatus::Fenced,
+            None,
+            Some(bigint(actual_epoch.get())),
+            None,
+            None,
+        ),
         CheckoutCommitOutcome::IdempotencyConflict {
             committed_fingerprint,
         } => (
-            "idempotency-conflict",
+            CheckoutCommitStatus::IdempotencyConflict,
             None,
             None,
             None,
@@ -7818,7 +7871,7 @@ fn commit_result(
         ),
     };
     Ok(NativeCommitResult {
-        status: status.to_owned(),
+        status,
         generation_id,
         epoch,
         sequence,
@@ -7837,7 +7890,7 @@ fn live_mutation_result(
                 generation_id,
                 head,
             } => (
-                "committed",
+                LiveMutationStatus::Committed,
                 Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
                 Some(bigint(head.epoch.get())),
                 Some(bigint(head.sequence.get())),
@@ -7849,7 +7902,7 @@ fn live_mutation_result(
                 generation_id,
                 head,
             } => (
-                "already-committed",
+                LiveMutationStatus::AlreadyCommitted,
                 Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
                 Some(bigint(head.epoch.get())),
                 Some(bigint(head.sequence.get())),
@@ -7861,7 +7914,7 @@ fn live_mutation_result(
                 conflicts,
                 truncated,
             } => (
-                "conflicted",
+                LiveMutationStatus::Conflicted,
                 None,
                 None,
                 None,
@@ -7870,7 +7923,7 @@ fn live_mutation_result(
                 None,
             ),
             LiveMutationOutcome::RetryLimit { actual } => (
-                "retry-limit",
+                LiveMutationStatus::RetryLimit,
                 None,
                 Some(bigint(actual.epoch.get())),
                 Some(bigint(actual.sequence.get())),
@@ -7879,7 +7932,7 @@ fn live_mutation_result(
                 None,
             ),
             LiveMutationOutcome::Fenced { actual_epoch } => (
-                "fenced",
+                LiveMutationStatus::Fenced,
                 None,
                 Some(bigint(actual_epoch.get())),
                 None,
@@ -7890,7 +7943,7 @@ fn live_mutation_result(
             LiveMutationOutcome::IdempotencyConflict {
                 committed_fingerprint,
             } => (
-                "idempotency-conflict",
+                LiveMutationStatus::IdempotencyConflict,
                 None,
                 None,
                 None,
@@ -7900,7 +7953,7 @@ fn live_mutation_result(
             ),
         };
     Ok(NativeLiveMutationResult {
-        status: status.to_owned(),
+        status,
         generation_id,
         epoch,
         sequence,

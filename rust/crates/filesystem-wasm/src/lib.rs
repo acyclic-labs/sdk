@@ -35,20 +35,22 @@ mod bindings {
     use acyclic_fs::workspace_context_wire;
     use acyclic_fs::{
         ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
-        Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
-        ForkOptions, Fs, Generation, GenerationExportManifest, GitCommand, GitCompatRepository,
-        IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome,
-        LogicalObjectStore, MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict,
-        MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectReadRequest,
-        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination,
-        PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
+        Checkout, CheckoutCommitOutcome, CheckoutCommitStatus, Digest, EmbeddedCapabilities,
+        FileCloneRequest, FileId, ForkOptions, Fs, Generation, GenerationExportManifest,
+        GitCommand, GitCompatRepository, IdempotencyKey, JoinHistory, JoinOutcome,
+        JoinOutcomeStatus, JoinPlan, LiveMutationOutcome, LiveMutationStatus, LogicalObjectStore,
+        MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict, MergePreparation,
+        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency,
+        OperationId, PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions,
+        RebaseDecisionStatus, ResidencyAdmission, ResidencyHint, ResidencyReason,
         ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
-        TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-        TransactionRebase, TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace,
-        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+        TransactionCommitStatus, TransactionConflict, TransactionConflictRegion,
+        TransactionDependencyUse, TransactionRebase, TransactionRebaseStatus,
+        TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceContextId,
+        WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDeleteStatus, WorkspaceDirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
-        WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
+        WorkspaceRebaseStatus, WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
         canonicalize_git_pending_transition_json, decode_generation_export_manifest,
         encode_generation_export_manifest, parse_git_public_command,
     };
@@ -56,6 +58,7 @@ mod bindings {
     use operation_windows::browser_publication_permit;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use strum::IntoEnumIterator;
     use tsify::{Ts, Tsify};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
@@ -322,13 +325,57 @@ mod bindings {
         engine: BrowserTransactionEngine,
     }
 
+    /// Runtime status metadata emitted from the canonical Rust discriminants.
+    ///
+    /// Adapters use this object to reject malformed boundary values without
+    /// maintaining a second hand-authored status list in TypeScript.
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "camelCase")]
+    pub struct BrowserStatusMetadata {
+        transaction_commit: Vec<String>,
+        transaction_rebase: Vec<String>,
+        workspace_rebase: Vec<String>,
+        workspace_delete: Vec<String>,
+        join_outcome: Vec<String>,
+        checkout_commit: Vec<String>,
+        live_mutation: Vec<String>,
+        rebase_decision: Vec<String>,
+    }
+
+    #[wasm_bindgen(js_name = statusMetadata)]
+    pub fn status_metadata() -> Result<Ts<BrowserStatusMetadata>, JsValue> {
+        ts(BrowserStatusMetadata {
+            transaction_commit: TransactionCommitStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            transaction_rebase: TransactionRebaseStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            workspace_rebase: WorkspaceRebaseStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            workspace_delete: WorkspaceDeleteStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            join_outcome: JoinOutcomeStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            checkout_commit: CheckoutCommitStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            live_mutation: LiveMutationStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+            rebase_decision: RebaseDecisionStatus::iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect(),
+        })
+    }
+
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     pub struct BrowserWorkspaceCommit {
-        #[tsify(
-            type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: TransactionCommitStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
     }
@@ -336,7 +383,7 @@ mod bindings {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct BrowserTransactionRebase {
-        status: &'static str,
+        status: TransactionRebaseStatus,
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<BrowserTransactionConflict>,
         truncated: bool,
@@ -495,7 +542,7 @@ mod bindings {
     #[cfg(all(test, target_arch = "wasm32"))]
     pub(crate) fn test_checkout_commit_result_js() -> Result<JsValue, JsValue> {
         BrowserCommitResult {
-            status: "committed",
+            status: CheckoutCommitStatus::Committed,
             generation_id: Some(vec![5; 32].into()),
             epoch: Some(9_007_199_254_740_993),
             sequence: None,
@@ -583,10 +630,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     pub struct BrowserJoinResult {
-        #[tsify(
-            type = "\"applied\" | \"already-applied\" | \"no-changes\" | \"stale-target\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: JoinOutcomeStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<MergeConflictResult>,
@@ -596,10 +640,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     pub struct BrowserWorkspaceRebaseResult {
-        #[tsify(
-            type = "\"rebased\" | \"already-rebased\" | \"current\" | \"stale\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: WorkspaceRebaseStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<MergeConflictResult>,
@@ -758,7 +799,10 @@ mod bindings {
 
         /// Terminally removes this mutable workspace head.
         #[wasm_bindgen]
-        pub async fn delete(&self, idempotency_key: Option<Vec<u8>>) -> Result<String, JsValue> {
+        pub async fn delete(
+            &self,
+            idempotency_key: Option<Vec<u8>>,
+        ) -> Result<Ts<WorkspaceDeleteStatus>, JsValue> {
             let key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
@@ -769,13 +813,12 @@ mod bindings {
                 BrowserWorkspaceEngine::Memory(value) => value.delete(key).await,
             }
             .map_err(js_error)?;
-            Ok(match outcome {
-                WorkspaceDelete::Deleted => "deleted",
-                WorkspaceDelete::AlreadyDeleted => "already-deleted",
-                WorkspaceDelete::Conflict => "conflict",
-                WorkspaceDelete::IdempotencyConflict => "idempotency-conflict",
-            }
-            .to_owned())
+            ts(match outcome {
+                WorkspaceDelete::Deleted => WorkspaceDeleteStatus::Deleted,
+                WorkspaceDelete::AlreadyDeleted => WorkspaceDeleteStatus::AlreadyDeleted,
+                WorkspaceDelete::Conflict => WorkspaceDeleteStatus::Conflict,
+                WorkspaceDelete::IdempotencyConflict => WorkspaceDeleteStatus::IdempotencyConflict,
+            })
         }
 
         /// Reads one complete regular file under a byte bound.
@@ -1943,23 +1986,23 @@ mod bindings {
     fn browser_workspace_commit<A, O>(outcome: TransactionCommit<A, O>) -> BrowserWorkspaceCommit {
         match outcome {
             TransactionCommit::Committed(value) => BrowserWorkspaceCommit {
-                status: "committed",
+                status: TransactionCommitStatus::Committed,
                 generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
             },
             TransactionCommit::AlreadyCommitted(value) => BrowserWorkspaceCommit {
-                status: "already-committed",
+                status: TransactionCommitStatus::AlreadyCommitted,
                 generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
             },
             TransactionCommit::Conflict { actual } => BrowserWorkspaceCommit {
-                status: "conflict",
+                status: TransactionCommitStatus::Conflict,
                 generation_id: Some(actual.id().digest().into_bytes().to_vec().into()),
             },
             TransactionCommit::Fenced => BrowserWorkspaceCommit {
-                status: "fenced",
+                status: TransactionCommitStatus::Fenced,
                 generation_id: None,
             },
             TransactionCommit::IdempotencyConflict => BrowserWorkspaceCommit {
-                status: "idempotency-conflict",
+                status: TransactionCommitStatus::IdempotencyConflict,
                 generation_id: None,
             },
         }
@@ -1970,7 +2013,7 @@ mod bindings {
     ) -> BrowserTransactionRebase {
         match outcome {
             TransactionRebase::Rebased(generation) => BrowserTransactionRebase {
-                status: "rebased",
+                status: TransactionRebaseStatus::Rebased,
                 generation_id: Some(generation.id().digest().into_bytes().to_vec().into()),
                 conflicts: Vec::new(),
                 truncated: false,
@@ -1979,7 +2022,7 @@ mod bindings {
                 conflicts,
                 truncated,
             } => BrowserTransactionRebase {
-                status: "conflicted",
+                status: TransactionRebaseStatus::Conflicted,
                 generation_id: None,
                 conflicts: conflicts
                     .into_iter()
@@ -2812,10 +2855,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserCommitResult {
-        #[tsify(
-            type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: CheckoutCommitStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         epoch: Option<u64>,
@@ -2829,8 +2869,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserRebaseResult {
-        #[tsify(type = "\"safe\" | \"conflicted\"")]
-        status: &'static str,
+        status: RebaseDecisionStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflict_count: u32,
@@ -2842,10 +2881,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserLiveMutationResult {
-        #[tsify(
-            type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: LiveMutationStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         epoch: Option<u64>,
@@ -2861,10 +2897,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserLiveTransactionResult {
-        #[tsify(
-            type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: LiveMutationStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         epoch: Option<u64>,
@@ -6406,7 +6439,7 @@ mod bindings {
             };
             let (status, generation_id, conflict_count, truncated) = match receipt.value {
                 RebaseDecision::Safe { generation } => (
-                    "safe",
+                    RebaseDecisionStatus::Safe,
                     Some(generation.digest().into_bytes().to_vec()),
                     0,
                     false,
@@ -6415,7 +6448,7 @@ mod bindings {
                     conflicts,
                     truncated,
                 } => (
-                    "conflicted",
+                    RebaseDecisionStatus::Conflicted,
                     None,
                     u32::try_from(conflicts.len()).unwrap_or(u32::MAX),
                     truncated,
@@ -7159,38 +7192,41 @@ mod bindings {
     }
 
     fn browser_join_result<A, O>(outcome: JoinOutcome<A, O>) -> BrowserJoinResult {
-        let generation = |status, generation: Generation<A, O>| BrowserJoinResult {
-            status,
-            generation_id: Some(serde_bytes::ByteBuf::from(
-                generation.id().digest().into_bytes().to_vec(),
-            )),
-            conflicts: Vec::new(),
-            truncated: false,
-        };
+        let generation =
+            |status: JoinOutcomeStatus, generation: Generation<A, O>| BrowserJoinResult {
+                status,
+                generation_id: Some(serde_bytes::ByteBuf::from(
+                    generation.id().digest().into_bytes().to_vec(),
+                )),
+                conflicts: Vec::new(),
+                truncated: false,
+            };
         match outcome {
-            JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
-            JoinOutcome::AlreadyApplied(value) => {
-                generation("already-applied", value.into_generation())
+            JoinOutcome::Applied(value) => {
+                generation(JoinOutcomeStatus::Applied, value.into_generation())
             }
-            JoinOutcome::NoChanges(value) => generation("no-changes", value),
-            JoinOutcome::StaleTarget(value) => generation("stale-target", value),
+            JoinOutcome::AlreadyApplied(value) => {
+                generation(JoinOutcomeStatus::AlreadyApplied, value.into_generation())
+            }
+            JoinOutcome::NoChanges(value) => generation(JoinOutcomeStatus::NoChanges, value),
+            JoinOutcome::StaleTarget(value) => generation(JoinOutcomeStatus::StaleTarget, value),
             JoinOutcome::Conflicted {
                 conflicts,
                 truncated,
             } => BrowserJoinResult {
-                status: "conflicted",
+                status: JoinOutcomeStatus::Conflicted,
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
                 truncated,
             },
             JoinOutcome::Fenced => BrowserJoinResult {
-                status: "fenced",
+                status: JoinOutcomeStatus::Fenced,
                 generation_id: None,
                 conflicts: Vec::new(),
                 truncated: false,
             },
             JoinOutcome::IdempotencyConflict => BrowserJoinResult {
-                status: "idempotency-conflict",
+                status: JoinOutcomeStatus::IdempotencyConflict,
                 generation_id: None,
                 conflicts: Vec::new(),
                 truncated: false,
@@ -7201,36 +7237,40 @@ mod bindings {
     fn browser_workspace_rebase_result<A, O>(
         outcome: WorkspaceRebase<A, O>,
     ) -> BrowserWorkspaceRebaseResult {
-        let generation = |status, generation: Generation<A, O>| BrowserWorkspaceRebaseResult {
-            status,
-            generation_id: Some(serde_bytes::ByteBuf::from(
-                generation.id().digest().into_bytes().to_vec(),
-            )),
-            conflicts: Vec::new(),
-            truncated: false,
+        let generation = |status: WorkspaceRebaseStatus, generation: Generation<A, O>| {
+            BrowserWorkspaceRebaseResult {
+                status,
+                generation_id: Some(serde_bytes::ByteBuf::from(
+                    generation.id().digest().into_bytes().to_vec(),
+                )),
+                conflicts: Vec::new(),
+                truncated: false,
+            }
         };
         match outcome {
-            WorkspaceRebase::Rebased(value) => generation("rebased", value),
-            WorkspaceRebase::AlreadyRebased(value) => generation("already-rebased", value),
-            WorkspaceRebase::Current(value) => generation("current", value),
-            WorkspaceRebase::Stale(value) => generation("stale", value),
+            WorkspaceRebase::Rebased(value) => generation(WorkspaceRebaseStatus::Rebased, value),
+            WorkspaceRebase::AlreadyRebased(value) => {
+                generation(WorkspaceRebaseStatus::AlreadyRebased, value)
+            }
+            WorkspaceRebase::Current(value) => generation(WorkspaceRebaseStatus::Current, value),
+            WorkspaceRebase::Stale(value) => generation(WorkspaceRebaseStatus::Stale, value),
             WorkspaceRebase::Conflicted {
                 conflicts,
                 truncated,
             } => BrowserWorkspaceRebaseResult {
-                status: "conflicted",
+                status: WorkspaceRebaseStatus::Conflicted,
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
                 truncated,
             },
             WorkspaceRebase::Fenced => BrowserWorkspaceRebaseResult {
-                status: "fenced",
+                status: WorkspaceRebaseStatus::Fenced,
                 generation_id: None,
                 conflicts: Vec::new(),
                 truncated: false,
             },
             WorkspaceRebase::IdempotencyConflict => BrowserWorkspaceRebaseResult {
-                status: "idempotency-conflict",
+                status: WorkspaceRebaseStatus::IdempotencyConflict,
                 generation_id: None,
                 conflicts: Vec::new(),
                 truncated: false,
@@ -7404,7 +7444,7 @@ mod bindings {
                 generation_id,
                 head,
             } => (
-                "committed",
+                CheckoutCommitStatus::Committed,
                 Some(generation_id.digest().into_bytes().to_vec()),
                 Some(head.epoch.get()),
                 Some(head.sequence.get()),
@@ -7414,26 +7454,30 @@ mod bindings {
                 generation_id,
                 head,
             } => (
-                "already-committed",
+                CheckoutCommitStatus::AlreadyCommitted,
                 Some(generation_id.digest().into_bytes().to_vec()),
                 Some(head.epoch.get()),
                 Some(head.sequence.get()),
                 None,
             ),
             CheckoutCommitOutcome::Conflict { actual } => (
-                "conflict",
+                CheckoutCommitStatus::Conflict,
                 None,
                 Some(actual.epoch.get()),
                 Some(actual.sequence.get()),
                 None,
             ),
-            CheckoutCommitOutcome::Fenced { actual_epoch } => {
-                ("fenced", None, Some(actual_epoch.get()), None, None)
-            }
+            CheckoutCommitOutcome::Fenced { actual_epoch } => (
+                CheckoutCommitStatus::Fenced,
+                None,
+                Some(actual_epoch.get()),
+                None,
+                None,
+            ),
             CheckoutCommitOutcome::IdempotencyConflict {
                 committed_fingerprint,
             } => (
-                "idempotency-conflict",
+                CheckoutCommitStatus::IdempotencyConflict,
                 None,
                 None,
                 None,
@@ -7460,7 +7504,7 @@ mod bindings {
                     generation_id,
                     head,
                 } => (
-                    "committed",
+                    LiveMutationStatus::Committed,
                     Some(generation_id.digest().into_bytes().to_vec()),
                     Some(head.epoch.get()),
                     Some(head.sequence.get()),
@@ -7472,7 +7516,7 @@ mod bindings {
                     generation_id,
                     head,
                 } => (
-                    "already-committed",
+                    LiveMutationStatus::AlreadyCommitted,
                     Some(generation_id.digest().into_bytes().to_vec()),
                     Some(head.epoch.get()),
                     Some(head.sequence.get()),
@@ -7484,7 +7528,7 @@ mod bindings {
                     conflicts,
                     truncated,
                 } => (
-                    "conflicted",
+                    LiveMutationStatus::Conflicted,
                     None,
                     None,
                     None,
@@ -7493,7 +7537,7 @@ mod bindings {
                     None,
                 ),
                 LiveMutationOutcome::RetryLimit { actual } => (
-                    "retry-limit",
+                    LiveMutationStatus::RetryLimit,
                     None,
                     Some(actual.epoch.get()),
                     Some(actual.sequence.get()),
@@ -7502,7 +7546,7 @@ mod bindings {
                     None,
                 ),
                 LiveMutationOutcome::Fenced { actual_epoch } => (
-                    "fenced",
+                    LiveMutationStatus::Fenced,
                     None,
                     Some(actual_epoch.get()),
                     None,
@@ -7513,7 +7557,7 @@ mod bindings {
                 LiveMutationOutcome::IdempotencyConflict {
                     committed_fingerprint,
                 } => (
-                    "idempotency-conflict",
+                    LiveMutationStatus::IdempotencyConflict,
                     None,
                     None,
                     None,

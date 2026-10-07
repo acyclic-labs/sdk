@@ -1,8 +1,44 @@
 import type {
-  JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,
-  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus,
+  JoinResult, MergeConflict, MergePreparationResult, WorkCounters,
+  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult,
   WasmRawMergeConflict,
 } from "./contracts.js";
+
+type StatusDomain = "join" | "workspaceRebase" | "workspaceDelete" | "transactionCommit" |
+  "checkoutCommit" | "liveMutation" | "transactionRebase" | "rebaseDecision";
+type RuntimeStatusMetadata = Readonly<Record<StatusDomain, ReadonlySet<string>>>;
+
+let runtimeStatusMetadata: RuntimeStatusMetadata | undefined;
+
+function statusValues(value: unknown, label: string): ReadonlySet<string> {
+  if (typeof value !== "object" || value === null) throw new TypeError(`status metadata ${label} is malformed`);
+  const items = Reflect.get(value, label);
+  if (!Array.isArray(items) || items.length === 0 || items.some(item => typeof item !== "string")) {
+    throw new TypeError(`status metadata ${label} is malformed`);
+  }
+  return new Set(items);
+}
+
+/** Installs the Rust-generated discriminant metadata used by all adapters. */
+export function installStatusMetadata(value: unknown): void {
+  runtimeStatusMetadata = {
+    join: statusValues(value, "joinOutcome"),
+    workspaceRebase: statusValues(value, "workspaceRebase"),
+    workspaceDelete: statusValues(value, "workspaceDelete"),
+    transactionCommit: statusValues(value, "transactionCommit"),
+    checkoutCommit: statusValues(value, "checkoutCommit"),
+    liveMutation: statusValues(value, "liveMutation"),
+    transactionRebase: statusValues(value, "transactionRebase"),
+    rebaseDecision: statusValues(value, "rebaseDecision"),
+  };
+}
+
+export function isKnownStatus<T extends string>(value: string, domain: StatusDomain, label: string): value is T {
+  if (runtimeStatusMetadata?.[domain].has(value) !== true) {
+    throw new TypeError(`${label} returned an invalid status`);
+  }
+  return true;
+}
 
 export function decodeMergeConflict(raw: unknown, origin: string): MergeConflict {
   if (typeof raw !== "object" || raw === null) throw new Error(`${origin} returned a malformed conflict`);
@@ -65,28 +101,12 @@ interface RawResult<Conflict> {
   readonly truncated: boolean;
 }
 
-const joinStatuses: ReadonlySet<JoinStatus> = new Set<JoinStatus>([
-  "applied", "already-applied", "no-changes", "stale-target", "conflicted", "fenced", "idempotency-conflict",
-]);
-const rebaseStatuses: ReadonlySet<WorkspaceRebaseStatus> = new Set<WorkspaceRebaseStatus>([
-  "rebased", "already-rebased", "current", "stale", "conflicted", "fenced", "idempotency-conflict",
-]);
-const deleteStatuses: ReadonlySet<WorkspaceDeleteStatus> = new Set<WorkspaceDeleteStatus>([
-  "deleted", "already-deleted", "conflict", "idempotency-conflict",
-]);
-const commitStatuses: ReadonlySet<WorkspaceCommit["status"]> = new Set<WorkspaceCommit["status"]>([
-  "committed", "already-committed", "conflict", "fenced", "idempotency-conflict",
-]);
-
-function isStatus<Status extends string>(statuses: ReadonlySet<Status>, value: string): value is Status {
-  return statuses.has(value as Status);
-}
-
 function parseResult<Status extends string, Conflict>(
-  value: RawResult<Conflict>, statuses: ReadonlySet<Status>, label: string,
+  value: RawResult<Conflict>, label: string,
   decodeConflict: (value: Conflict) => MergeConflict,
 ): { readonly status: Status; readonly generationId: Uint8Array | undefined; readonly conflicts: readonly MergeConflict[]; readonly truncated: boolean } {
-  if (!isStatus(statuses, value.status)) throw new TypeError(`${label} result has an invalid status`);
+  const domain = label === "join" ? "join" : "workspaceRebase";
+  if (!isKnownStatus<Status>(value.status, domain, label)) throw new TypeError(`${label} returned an invalid status`);
   return {
     status: value.status,
     generationId: copyGenerationId(value.generationId, `${label} result`),
@@ -96,23 +116,28 @@ function parseResult<Status extends string, Conflict>(
 }
 
 export function parseJoinResult<Conflict>(value: RawResult<Conflict>, decodeConflict: (value: Conflict) => MergeConflict): JoinResult {
-  return parseResult(value, joinStatuses, "join", decodeConflict);
+  return parseResult(value, "join", decodeConflict);
 }
 
 export function parseWorkspaceRebaseResult<Conflict>(value: RawResult<Conflict>, decodeConflict: (value: Conflict) => MergeConflict): WorkspaceRebaseResult {
-  return parseResult(value, rebaseStatuses, "workspace rebase", decodeConflict);
+  return parseResult(value, "workspace rebase", decodeConflict);
 }
 
 export function parseWorkspaceDelete(status: string): WorkspaceDeleteStatus {
-  if (!isStatus(deleteStatuses, status)) throw new TypeError("workspace deletion has an invalid status");
+  if (!isKnownStatus<WorkspaceDeleteStatus>(status, "workspaceDelete", "workspace delete")) {
+    throw new TypeError("workspace delete returned an invalid status");
+  }
   return status;
 }
 
 export function parseWorkspaceCommit(value: unknown): WorkspaceCommit {
   if (typeof value !== "object" || value === null) throw new TypeError("workspace commit must be an object");
   const candidate = value as { readonly status?: unknown; readonly generationId?: unknown };
-  if (typeof candidate.status !== "string" || !isStatus(commitStatuses, candidate.status)) {
+  if (typeof candidate.status !== "string") {
     throw new TypeError("workspace commit has an invalid status");
+  }
+  if (!isKnownStatus<WorkspaceCommit["status"]>(candidate.status, "transactionCommit", "workspace commit")) {
+    throw new TypeError("workspace commit returned an invalid status");
   }
   return { status: candidate.status, generationId: copyGenerationId(candidate.generationId, "workspace commit") };
 }
