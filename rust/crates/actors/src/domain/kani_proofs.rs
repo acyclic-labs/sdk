@@ -47,7 +47,9 @@ fn assert_subscription_state_mapping(raw: i32) {
     match SubscriptionState::try_from(raw) {
         Ok(value) => assert_eq!(i32::from(value), raw),
         Err(DomainError::UnknownSubscriptionState(found)) => assert_eq!(found, raw),
-        _ => assert!(false),
+        _ => {
+            assert!(false);
+        },
     }
 }
 
@@ -55,7 +57,9 @@ fn assert_actor_state_mapping(raw: i32) {
     match ActorState::try_from(raw) {
         Ok(value) => assert_eq!(i32::from(value), raw),
         Err(DomainError::UnknownActorState(found)) => assert_eq!(found, raw),
-        _ => assert!(false),
+        _ => {
+            assert!(false);
+        },
     }
 }
 
@@ -63,7 +67,9 @@ fn assert_error_code_mapping(raw: i32) {
     match ErrorCode::try_from(raw) {
         Ok(value) => assert_eq!(i32::from(value), raw),
         Err(DomainError::UnknownErrorCode(found)) => assert_eq!(found, raw),
-        _ => assert!(false),
+        _ => {
+            assert!(false);
+        },
     }
 }
 

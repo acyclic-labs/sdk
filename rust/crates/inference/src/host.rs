@@ -1376,7 +1376,7 @@ mod tests {
             sequence: 0,
             event: Some(wire::run_event::Event::Output(vec![7; 32])),
         };
-        scrub_run_event(&mut event);
+        contract::scrub_run_event(&mut event);
         let Some(wire::run_event::Event::Output(bytes)) = event.event.as_ref() else {
             return Err(Error::Invalid("output event is absent"));
         };
@@ -1388,7 +1388,7 @@ mod tests {
             terminal: wire::RunTerminal::Completed.into(),
             receipt: None,
         };
-        scrub_run_result(&mut result);
+        contract::scrub_run_result(&mut result);
         assert!(result.output.iter().all(|byte| *byte == 0));
         Ok(())
     }

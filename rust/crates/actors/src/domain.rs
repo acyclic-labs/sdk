@@ -336,8 +336,11 @@ impl TryFrom<wire::SubscriptionStart> for SubscriptionStart {
     fn try_from(value: wire::SubscriptionStart) -> Result<Self, Self::Error> {
         match value.start {
             Some(wire::subscription_start::Start::Cursor(cursor)) => Ok(Self::Cursor { cursor }),
-            Some(wire::subscription_start::Start::CurrentHead(current_head)) => {
-                Ok(Self::CurrentHead { current_head })
+            Some(wire::subscription_start::Start::CurrentHead(true)) => {
+                Ok(Self::CurrentHead { current_head: true })
+            }
+            Some(wire::subscription_start::Start::CurrentHead(false)) => {
+                Err(DomainError::InvalidSubscription)
             }
             None => Err(DomainError::InvalidSubscription),
         }
@@ -1593,6 +1596,14 @@ mod tests {
 
     #[test]
     fn subscription_projection_keeps_canonical_current_head_rule() {
+        let invalid_start = wire::SubscriptionStart {
+            start: Some(wire::subscription_start::Start::CurrentHead(false)),
+        };
+        assert_eq!(
+            SubscriptionStart::try_from(invalid_start),
+            Err(DomainError::InvalidSubscription)
+        );
+
         let invalid = wire::SubscriptionSpec {
             subscription_id: "events".into(),
             stream_path: "agents/a/events".into(),

@@ -1621,8 +1621,10 @@ mod tests {
             &self,
             request: Request<wire::RecoverRequest>,
         ) -> Result<Response<wire::RecoveredAdmission>, Status> {
+            let request = request.into_inner();
+            validate_protocol(request.protocol.as_ref())
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
             if request
-                .into_inner()
                 .idempotency_key
                 .as_ref()
                 .map(|value| value.value.as_slice())
@@ -1704,6 +1706,8 @@ mod tests {
 
     impl OperationService {
         fn require_operation(&self, request: &wire::OperationRequest) -> Result<(), Status> {
+            validate_protocol(request.protocol.as_ref())
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
             if request
                 .operation
                 .as_ref()

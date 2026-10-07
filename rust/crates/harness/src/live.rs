@@ -91,18 +91,24 @@ impl TaskGroup {
     {
         match self.try_spawn(future).await {
             Admission::Accepted(handle) => handle,
-            Admission::Rejected { reason } => TaskHandle {
-                id: OperationId::new(),
-                join: Some(tokio::spawn(
-                    async move { Outcome::Failed { message: reason } },
-                )),
-            },
-            Admission::Indeterminate { operation_id } => TaskHandle {
-                id: operation_id,
-                join: Some(tokio::spawn(async move {
-                    Outcome::Indeterminate { operation_id }
-                })),
-            },
+            Admission::Rejected { reason } => {
+                let join = tokio::spawn(async move { Outcome::Failed { message: reason } });
+                let cancel = join.abort_handle();
+                TaskHandle {
+                    id: OperationId::new(),
+                    cancel,
+                    join: Some(join),
+                }
+            }
+            Admission::Indeterminate { operation_id } => {
+                let join = tokio::spawn(async move { Outcome::Indeterminate { operation_id } });
+                let cancel = join.abort_handle();
+                TaskHandle {
+                    id: operation_id,
+                    cancel,
+                    join: Some(join),
+                }
+            }
         }
     }
 
@@ -144,8 +150,10 @@ impl TaskGroup {
             admission.active.insert(id, join.abort_handle());
         }
         let _ = start.send(());
+        let cancel = join.abort_handle();
         Admission::Accepted(TaskHandle {
             id,
+            cancel,
             join: Some(join),
         })
     }
@@ -229,6 +237,7 @@ impl TaskGroup {
 /// Addressable handle for an admitted live task.
 pub struct TaskHandle<T> {
     id: OperationId,
+    cancel: AbortHandle,
     join: Option<JoinHandle<Outcome<T>>>,
 }
 
@@ -241,9 +250,14 @@ impl<T> TaskHandle<T> {
 
     /// Requests cancellation.
     pub fn cancel(&self) {
-        if let Some(join) = &self.join {
-            join.abort();
-        }
+        self.cancel.abort();
+    }
+
+    /// Returns a cancellation capability that remains usable after this
+    /// handle's result future has been consumed.
+    #[must_use]
+    pub fn cancellation_handle(&self) -> AbortHandle {
+        self.cancel.clone()
     }
 
     /// Waits for a terminal outcome.

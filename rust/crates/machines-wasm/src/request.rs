@@ -133,12 +133,7 @@ pub fn image_bytes(bytes: &[u8]) -> Result<Image, ProviderError> {
 pub fn create(bytes: &[u8]) -> Result<CreateMachine, ProviderError> {
     let value = wire::CreateMachineRequest::decode(bytes)
         .map_err(|_| invalid("create protobuf is invalid"))?;
-    let version = value
-        .protocol
-        .ok_or_else(|| invalid("protocol version is missing"))?;
-    if version.major != domain::PROTOCOL_MAJOR || version.minor > domain::PROTOCOL_MINOR {
-        return Err(invalid("unsupported Machines protocol version"));
-    }
+    domain::validate_protocol(value.protocol.as_ref())?;
     let key = value
         .idempotency_key
         .ok_or_else(|| invalid("idempotency key is missing"))?;
@@ -240,6 +235,39 @@ mod tests {
         let mut zero_policy = admitted();
         zero_policy.network_policy_digest = [0; 32].to_vec();
         assert!(create(&zero_policy.encode_to_vec()).is_err());
+
+        let mut missing_protocol = admitted();
+        missing_protocol.protocol = None;
+        assert_eq!(
+            create(&missing_protocol.encode_to_vec()),
+            Err(ProviderError::Invalid("protocol version is missing".into()))
+        );
+
+        let mut wrong_major = admitted();
+        wrong_major
+            .protocol
+            .as_mut()
+            .ok_or_else(|| invalid("fixture protocol missing"))?
+            .major = domain::PROTOCOL_MAJOR + 1;
+        assert_eq!(
+            create(&wrong_major.encode_to_vec()),
+            Err(ProviderError::Invalid(
+                "unsupported Machines protocol version".into()
+            ))
+        );
+
+        let mut newer_minor = admitted();
+        newer_minor
+            .protocol
+            .as_mut()
+            .ok_or_else(|| invalid("fixture protocol missing"))?
+            .minor = domain::PROTOCOL_MINOR + 1;
+        assert_eq!(
+            create(&newer_minor.encode_to_vec()),
+            Err(ProviderError::Invalid(
+                "unsupported Machines protocol version".into()
+            ))
+        );
         Ok(())
     }
 }

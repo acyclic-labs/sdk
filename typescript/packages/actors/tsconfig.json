@@ -15,7 +15,12 @@
     "skipLibCheck": true,
     "types": [
       "node"
-    ]
+    ],
+    "paths": {
+      "@acyclic-labs/actors/types": [
+        "./src/types.ts"
+      ]
+    }
   },
   "include": [
     "src/**/*.ts"

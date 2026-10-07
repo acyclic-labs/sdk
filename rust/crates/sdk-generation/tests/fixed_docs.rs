@@ -9,6 +9,23 @@ use std::{
 #[path = "../src/compiled_generator_inputs.rs"]
 mod compiled_generator_inputs;
 
+const FIXTURE_OWNERS: &[(&str, &str)] = &[
+    ("acyclic-inference", "rust/crates/inference"),
+    (
+        "acyclic-inference-contract",
+        "rust/crates/inference-contract",
+    ),
+    ("acyclic-machines", "rust/crates/machines"),
+    ("acyclic-native-runtime", "rust/crates/native-runtime"),
+    ("acyclic-objects", "rust/crates/objects"),
+    ("acyclic-actors", "rust/crates/actors"),
+    ("acyclic-workers", "rust/crates/workers"),
+    ("acyclic-stream", "rust/crates/stream"),
+    ("acyclic-fs", "rust/crates/filesystem"),
+    ("acyclic-harness", "rust/crates/harness"),
+    ("acyclic-plugin", "plugin"),
+];
+
 fn temp(_name: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -40,10 +57,35 @@ fn fixture_workspace_manifest(source_root: &Path) -> String {
         .unwrap();
     let mut manifest = String::with_capacity(source.len());
     manifest.push_str(&source[..members_start]);
-    manifest
-        .push_str("members = [\n    \"rust/crates/actors\",\n    \"rust/crates/workers\",\n]\n");
+    manifest.push_str("members = [\n");
+    for (_, relative) in FIXTURE_OWNERS {
+        manifest.push_str(&format!("    \"{relative}\",\n"));
+    }
+    manifest.push_str("]\n");
     manifest.push_str(&source[members_close + 1..]);
     manifest
+}
+
+fn write_fixture_owner_packages(root: &Path) {
+    for (package, relative) in FIXTURE_OWNERS {
+        if *package == "acyclic-actors" {
+            continue;
+        }
+        let package_root = root.join(relative);
+        fs::create_dir_all(package_root.join("src")).unwrap();
+        fs::write(
+            package_root.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{package}\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish.workspace = true\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            package_root.join("src/lib.rs"),
+            format!("//! Fixture owner for {package}.\n\npub fn visible() {{}}\n"),
+        )
+        .unwrap();
+    }
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -102,6 +144,7 @@ fn run(
 
 #[test]
 fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let root = temp("sdk-generation-root");
     let rustdoc = temp("sdk-generation-rustdoc");
     let first = temp("sdk-generation-first");
@@ -131,7 +174,11 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     ] {
         fs::write(root.join(path), "rust-owned source\n").unwrap();
     }
-    fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        fixture_workspace_manifest(&source_root),
+    )
+    .unwrap();
     fs::write(root.join("rust/crates/actors/Cargo.toml"), "[package]\n").unwrap();
     fs::write(root.join("rust/crates/actors/README.md"), "Actors\n").unwrap();
     fs::write(root.join("rust/crates/sdk-docs/Cargo.toml"), "[package]\n").unwrap();
@@ -172,7 +219,9 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "tracked guide discovered from the source closure\n",
     )
     .unwrap();
+    write_fixture_owner_packages(&root);
     copy_compiled_generator_sources(&root);
+    fs::copy(source_root.join("Cargo.lock"), root.join("Cargo.lock")).unwrap();
     let actors_lib_path = root.join("rust/crates/actors/src/lib.rs");
     let actors_lib = fs::read(&actors_lib_path).unwrap();
     fs::write(root.join(".gitignore"), "rust/crates/sdk-docs/target/\n").unwrap();
@@ -195,6 +244,20 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         serde_json::to_vec(&fixture).unwrap(),
     )
     .unwrap();
+    for (package, _) in FIXTURE_OWNERS {
+        if *package == "acyclic-actors" {
+            continue;
+        }
+        let crate_name = package.replace('-', "_");
+        let mut owner_fixture = fixture.clone();
+        owner_fixture["index"]["0"]["name"] = json!(crate_name);
+        owner_fixture["paths"]["1"]["path"] = json!([crate_name, "visible"]);
+        fs::write(
+            rustdoc.join(format!("{crate_name}.json")),
+            serde_json::to_vec(&owner_fixture).unwrap(),
+        )
+        .unwrap();
+    }
     git(&root, &["init", "--quiet"]);
     git(&root, &["config", "user.email", "fixture@example.invalid"]);
     git(&root, &["config", "user.name", "fixture"]);
@@ -464,16 +527,6 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     )
     .unwrap();
     fs::write(
-        root.join("rust/crates/workers/Cargo.toml"),
-        "[package]\nname = \"acyclic-workers\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("rust/crates/workers/src/lib.rs"),
-        "//! Fixture-only worker dependency.\n",
-    )
-    .unwrap();
-    fs::write(
         root.join("rust/crates/actors/src/lib.rs"),
         "//! The executable Rust source for the Actors family.\n\npub fn visible() {}\n",
     )
@@ -518,6 +571,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     ] {
         fs::write(root.join(path), contents).unwrap();
     }
+    write_fixture_owner_packages(&root);
     copy_compiled_generator_sources(&root);
     let lock = Command::new("cargo")
         .args([

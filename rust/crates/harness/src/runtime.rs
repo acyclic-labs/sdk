@@ -1512,6 +1512,39 @@ pub enum RuntimeTask<O> {
     },
 }
 
+/// Independent cancellation capability for an admitted runtime task.
+///
+/// The capability is intentionally separate from the result handle.  A
+/// caller may retain it while another consumer waits for or consumes the
+/// task result, which is required by persistent native and WebAssembly
+/// bindings.
+#[derive(Clone)]
+pub struct TaskCancellation {
+    inner: TaskCancellationInner,
+}
+
+#[derive(Clone)]
+enum TaskCancellationInner {
+    Live(tokio::task::AbortHandle),
+    Durable {
+        task_id: TaskId,
+        host: Arc<dyn TaskStateProvider>,
+    },
+}
+
+impl TaskCancellation {
+    /// Requests cancellation without claiming a terminal cancelled outcome.
+    pub async fn cancel(&self) -> Result<()> {
+        match &self.inner {
+            TaskCancellationInner::Live(handle) => {
+                handle.abort();
+                Ok(())
+            }
+            TaskCancellationInner::Durable { task_id, host } => host.cancel(*task_id).await,
+        }
+    }
+}
+
 impl<O> RuntimeTask<O> {
     /// Stable identity of the admitted local operation or durable task.
     #[must_use]
@@ -1519,6 +1552,22 @@ impl<O> RuntimeTask<O> {
         match self {
             Self::Live(handle) => handle.id().to_string(),
             Self::Durable { task_id, .. } => task_id.to_string(),
+        }
+    }
+
+    /// Returns a cancellation capability independent of result observation.
+    #[must_use]
+    pub fn cancellation(&self) -> TaskCancellation {
+        match self {
+            Self::Live(handle) => TaskCancellation {
+                inner: TaskCancellationInner::Live(handle.cancellation_handle()),
+            },
+            Self::Durable { task_id, host, .. } => TaskCancellation {
+                inner: TaskCancellationInner::Durable {
+                    task_id: *task_id,
+                    host: Arc::clone(host),
+                },
+            },
         }
     }
 }
@@ -1627,13 +1676,7 @@ pub async fn quorum_runtime<O: DeserializeOwned + Send + 'static>(
 impl<O: DeserializeOwned> RuntimeTask<O> {
     /// Requests cancellation without claiming a confirmed cancelled outcome.
     pub async fn cancel(&self) -> Result<()> {
-        match self {
-            Self::Live(handle) => {
-                handle.cancel();
-                Ok(())
-            }
-            Self::Durable { task_id, host, .. } => host.cancel(*task_id).await,
-        }
+        self.cancellation().cancel().await
     }
 
     /// Waits for a terminal outcome, preserving uncertainty and cancellation.

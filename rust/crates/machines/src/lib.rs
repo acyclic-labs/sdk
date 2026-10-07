@@ -1710,6 +1710,46 @@ fn transition(
 mod tests {
     use super::*;
 
+    #[test]
+    fn protocol_validation_matches_wasm_boundary_rules() {
+        assert_eq!(
+            validate_protocol(None),
+            Err(ProviderError::Invalid("protocol version is missing".into()))
+        );
+        assert_eq!(
+            validate_protocol(Some(&wire::ProtocolVersion {
+                major: PROTOCOL_MAJOR - 1,
+                minor: PROTOCOL_MINOR,
+            })),
+            Err(ProviderError::Invalid(
+                "unsupported Machines protocol version".into()
+            ))
+        );
+        assert_eq!(
+            validate_protocol(Some(&wire::ProtocolVersion {
+                major: PROTOCOL_MAJOR,
+                minor: PROTOCOL_MINOR + 1,
+            })),
+            Err(ProviderError::Invalid(
+                "unsupported Machines protocol version".into()
+            ))
+        );
+        assert_eq!(
+            validate_protocol(Some(&wire::ProtocolVersion {
+                major: PROTOCOL_MAJOR,
+                minor: PROTOCOL_MINOR,
+            })),
+            Ok(())
+        );
+        assert_eq!(
+            validate_protocol(Some(&wire::ProtocolVersion {
+                major: PROTOCOL_MAJOR,
+                minor: 0,
+            })),
+            Ok(())
+        );
+    }
+
     fn request(key: IdempotencyKey) -> CreateMachine {
         CreateMachine::new(
             key,

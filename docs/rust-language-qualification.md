@@ -71,8 +71,9 @@ Swift remain useful generator/package prototypes rather than qualified SDKs.
 ## Bounded proof obligations
 
 The following are the concrete obligations for the Rust contract and native
-adapter. They are requirements for future evidence; none is recorded here as
-proved.
+adapter. The pure domain subset has a tracked Kani receipt below; the remaining
+wire, boundary, packaging, and runtime obligations still require their own
+evidence.
 
 1. **Wire identity:** each public operation keeps its declared RPC identity,
    field number, enum value, JSON name, and descriptor membership. Regeneration
@@ -102,42 +103,46 @@ consumer tests. Package installation, native loading, remote transport,
 streaming, cancellation, recovery, and OS behavior are runtime integration
 claims; none can be established by a Kani harness alone.
 
-The first bounded harness should stay independent of package generation and
-network code:
+The bounded harness stays independent of package generation and network code:
 
-* `valid_code_sha256(&[u8])` should be checked with a symbolic `[u8; 32]`:
-  it returns true exactly when at least one byte is non-zero. This is the pure
-  predicate used by `CodeSha256::new`; `Vec` allocation and the constructor's
-  conversion are tested separately with runtime property tests.
-* `SubscriptionState::try_from` and `From<SubscriptionState> for i32` should
-  be checked for the three known values `0..=2`, then with a symbolic `i32`
-  constrained outside that set to prove that
-  `DomainError::UnknownSubscriptionState(raw)` preserves the unknown number.
-  The same finite-value harness can be instantiated for `ActorState` and
-  `ErrorCode` after the subscription proof is stable.
+* `valid_code_sha256(&[u8])` is checked with a symbolic `[u8; 32]`: it returns
+  true exactly when at least one byte is non-zero. The same run checks rejection
+  for `[u8; 0]`, `[u8; 31]`, `[u8; 33]`, and `[u8; 64]`. `Vec` allocation and
+  `CodeSha256::new` conversion remain runtime property-test concerns.
+* A symbolic `i32` is checked through `SubscriptionState`, `ActorState`, and
+  `ErrorCode` conversions. Known values round-trip, while unknown values remain
+  observable in the corresponding `DomainError` payload.
 
 These harnesses target exact functions already present in
 `rust/crates/actors/src/domain.rs`; they do not introduce a second contract or
-validation rule. The proposed proof is bounded to fixed arrays, finite enum
+validation rule. The recorded proof is bounded to fixed arrays, finite enum
 domains, and one symbolic `i32`; it does not claim an unbounded theorem.
 
 [Kani](https://github.com/model-checking/kani) is the maintained OSS candidate
 for bounded model checking of small, pure Rust conversion and validation
 functions. It can provide proof within explicit finite bounds; it cannot prove
-native package loading, a remote service, or an unbounded stream. 
+native package loading, a remote service, or an unbounded stream.
 
-An attempted Actors run did not produce a proof receipt: the Kani execution
-used a Rust 1.93 nightly compiler path while the product checkout is pinned to
-Rust 1.98.1, so the run failed at toolchain compatibility before proving a
-harness. The bounded obligations below remain unproved until Kani is run in an
-isolated environment matching the product toolchain and its output records the
-exact compiler, solver, harness, and unwind settings.
+### Current bounded proof status
+
+The receipt `rust/crates/actors/proofs/kani-domain-invariants.json` records Kani
+0.68.0 with CBMC 6.11.0, Rust nightly 1.100.0, unwind 65, and one verifier
+worker. All six listed harnesses passed with exit code 0: the symbolic digest
+equivalence, four wrong-length rejection cases, and the numeric enum mapping
+invariant. The receipt identifies the exact Rust source hashes and points to
+the external log `foundation-kani-068/domain-invariant-proof.log`.
+
+The earlier Kani 0.67 attempt is retained as historical failed evidence: it
+used a Rust 1.93 nightly compiler path and stopped before proving a harness.
+The current isolated Kani 0.68 run uses its pinned nightly compiler and records
+the exact compiler, solver, harness, source hashes, and unwind setting in
+`rust/crates/actors/proofs/kani-domain-invariants.json`.
 
 [Proptest](https://github.com/proptest-rs/proptest) is the maintained OSS
 candidate for executable property tests over larger generated value spaces. It
 provides shrinking counterexamples and repeatable seeds, but passing runs are
 testing evidence rather than a mathematical proof. Use it for codec, presence,
 unknown-enum, error, cancellation, and generated-binding cases that are not
-tractable as Kani harnesses. The Kani and Proptest obligations above remain
-unfulfilled until receipts identify the exact Rust revision, bounds or seeds,
-and observed results.
+tractable as Kani harnesses. The remaining Kani and Proptest obligations stay
+open until receipts identify the exact Rust revision, bounds or seeds, and
+observed results.

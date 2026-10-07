@@ -16,17 +16,12 @@ mod compiled_generator_inputs;
 const MANIFEST: &str = "generation-manifest.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTORS_CRATE: &str = "acyclic_actors";
-const ACTORS_PACKAGE: &str = "acyclic-actors";
 const SOURCE_PATHS: &[&str] = &[
     "Cargo.toml",
+    "release/cargo-crates.json",
     "docs/objects-v2-http.md",
     "docs/rust-source-generation.md",
     "Cargo.lock",
-    "rust/crates/actors/Cargo.toml",
-    "rust/crates/actors/build.rs",
-    "rust/crates/actors/README.md",
-    "rust/crates/actors/examples",
-    "rust/crates/actors/src",
     "rust/crates/sdk-docs/Cargo.toml",
     "rust/crates/sdk-docs/Cargo.lock",
     "rust/crates/sdk-docs/src",
@@ -59,7 +54,10 @@ struct ToolRecord {
 struct Manifest {
     schema: String,
     generator_version: String,
+    /// Kept as the Actors staging marker for the existing TypeScript stage.
     family: String,
+    /// The complete ordered set of published Rust documentation families.
+    families: Vec<String>,
     revision: String,
     source: Vec<FileHash>,
     source_sha256: String,
@@ -87,8 +85,38 @@ struct PinnedToolchain {
 }
 
 struct RustdocInput {
-    path: PathBuf,
+    paths: Vec<PathBuf>,
     markdown_dependencies: Vec<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoPackage {
+    name: String,
+    version: String,
+    manifest_path: PathBuf,
+    publish: Option<Vec<String>>,
+    targets: Vec<CargoTarget>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoTarget {
+    name: String,
+    kind: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RustdocOwner {
+    package: String,
+    version: String,
+    crate_name: String,
+    target_kind: String,
+    target_name: String,
+    package_root: PathBuf,
 }
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
@@ -124,6 +152,180 @@ fn verify_compiled_generator_source(root: &Path) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+fn cargo_metadata(root: &Path) -> io::Result<CargoMetadata> {
+    let cargo = rustup_tool("cargo")?;
+    verify_tool_version(&cargo, "cargo")?;
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(root)
+        .args([
+            "metadata",
+            "--locked",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--manifest-path",
+        ])
+        .arg(root.join("Cargo.toml"));
+    command.env_remove("RUSTUP_TOOLCHAIN");
+    let output = command
+        .output()
+        .map_err(|error| io::Error::other(format!("failed to run pinned cargo metadata: {error}")))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "pinned cargo metadata exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice(&output.stdout).map_err(io::Error::other)
+}
+
+fn published_package(publish: &Option<Vec<String>>) -> bool {
+    publish
+        .as_ref()
+        .is_none_or(|targets| targets.iter().any(|target| target == "crates-io"))
+}
+
+fn is_library_target(target: &CargoTarget) -> bool {
+    target.kind.iter().any(|kind| {
+        matches!(kind.as_str(), "lib" | "rlib" | "cdylib" | "dylib" | "proc-macro")
+    })
+}
+
+fn load_rustdoc_owners(root: &Path) -> io::Result<Vec<RustdocOwner>> {
+    let declared: Vec<String> = serde_json::from_slice(
+        &fs::read(root.join("release/cargo-crates.json"))?,
+    )
+    .map_err(io::Error::other)?;
+    if declared.is_empty() {
+        return Err(io::Error::other(
+            "release/cargo-crates.json must declare at least one package",
+        ));
+    }
+    let mut declared_set = BTreeSet::new();
+    for package in &declared {
+        if package.is_empty() || !declared_set.insert(package) {
+            return Err(io::Error::other(format!(
+                "release/cargo-crates.json contains an empty or duplicate package: {package:?}"
+            )));
+        }
+    }
+
+    let root = canonical(root)?;
+    let metadata = cargo_metadata(&root)?;
+    let mut packages = BTreeMap::new();
+    for package in metadata.packages {
+        if packages.insert(package.name.clone(), package).is_some() {
+            return Err(io::Error::other("cargo metadata contains duplicate packages"));
+        }
+    }
+
+    let publishable: BTreeSet<String> = packages
+        .values()
+        .filter(|package| published_package(&package.publish))
+        .map(|package| package.name.clone())
+        .collect();
+    let declared_set: BTreeSet<String> = declared.iter().cloned().collect();
+    if declared_set != publishable {
+        return Err(io::Error::other(format!(
+            "release/cargo-crates.json does not exactly match publishable cargo packages; declared={declared_set:?}, metadata={publishable:?}"
+        )));
+    }
+
+    let mut owners = Vec::with_capacity(declared.len());
+    let mut crates = BTreeSet::new();
+    for package_name in declared {
+        let package = packages.get(&package_name).ok_or_else(|| {
+            io::Error::other(format!(
+                "release/cargo-crates.json names missing cargo package: {package_name}"
+            ))
+        })?;
+        reject_reparse_ancestors(&package.manifest_path, true)?;
+        let manifest = canonical(&package.manifest_path)?;
+        let package_root = manifest
+            .parent()
+            .ok_or_else(|| io::Error::other("cargo package manifest has no parent"))?;
+        if !package_root.starts_with(&root) {
+            return Err(io::Error::other(format!(
+                "cargo package escapes checkout: {}",
+                package_root.display()
+            )));
+        }
+        let package_root = package_root
+            .strip_prefix(&root)
+            .map_err(|_| io::Error::other("cargo package escapes checkout"))?
+            .to_owned();
+
+        let libraries: Vec<&CargoTarget> = package
+            .targets
+            .iter()
+            .filter(|target| is_library_target(target))
+            .collect();
+        let (target_kind, target) = if libraries.len() == 1 {
+            ("lib", libraries[0])
+        } else if libraries.len() > 1 {
+            return Err(io::Error::other(format!(
+                "published package has multiple library targets: {package_name}"
+            )));
+        } else {
+            let binaries: Vec<&CargoTarget> = package
+                .targets
+                .iter()
+                .filter(|target| target.kind.iter().any(|kind| kind == "bin"))
+                .collect();
+            if binaries.len() != 1 {
+                return Err(io::Error::other(format!(
+                    "published package must have one library or one binary target: {package_name}"
+                )));
+            }
+            ("bin", binaries[0])
+        };
+        let crate_name = target.name.replace('-', "_");
+        if !crates.insert(crate_name.clone()) {
+            return Err(io::Error::other(format!(
+                "published packages resolve to duplicate rustdoc crate: {}",
+                crate_name
+            )));
+        }
+        owners.push(RustdocOwner {
+            package: package.name.clone(),
+            version: package.version.clone(),
+            crate_name,
+            target_kind: target_kind.into(),
+            target_name: target.name.clone(),
+            package_root,
+        });
+    }
+    if !crates.contains(ACTORS_CRATE) {
+        return Err(io::Error::other(
+            "release/cargo-crates.json must include the Actors crate for the existing staging contract",
+        ));
+    }
+    Ok(owners)
+}
+
+fn validate_owner_versions(config: &Config, owners: &[RustdocOwner]) -> io::Result<()> {
+    if config.channel == "release" {
+        for owner in owners {
+            if owner.version != config.version {
+                return Err(io::Error::other(format!(
+                    "published package {} has version {}, expected release {}",
+                    owner.package, owner.version, config.version
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn owner_package_roots(owners: &[RustdocOwner]) -> Vec<PathBuf> {
+    owners
+        .iter()
+        .map(|owner| owner.package_root.clone())
+        .collect()
 }
 
 fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
@@ -327,7 +529,11 @@ fn collect_dir(
     Ok(())
 }
 
-fn collect_sources(root: &Path, markdown_dependencies: &[PathBuf]) -> io::Result<Vec<FileHash>> {
+fn collect_sources(
+    root: &Path,
+    markdown_dependencies: &[PathBuf],
+    owner_roots: &[PathBuf],
+) -> io::Result<Vec<FileHash>> {
     let root_metadata = fs::symlink_metadata(root)?;
     if root_metadata.file_type().is_symlink() || is_reparse_point(&root_metadata) {
         return Err(io::Error::other(
@@ -336,15 +542,21 @@ fn collect_sources(root: &Path, markdown_dependencies: &[PathBuf]) -> io::Result
     }
     let root = canonical(root)?;
     let mut files = BTreeMap::new();
-    for declaration in SOURCE_PATHS {
-        let declaration_metadata = fs::symlink_metadata(root.join(declaration))?;
+    let declarations = SOURCE_PATHS
+        .iter()
+        .map(PathBuf::from)
+        .chain(owner_roots.iter().cloned());
+    for declaration in declarations {
+        let declaration_path = root.join(&declaration);
+        let declaration_metadata = fs::symlink_metadata(&declaration_path)?;
         if declaration_metadata.file_type().is_symlink() || is_reparse_point(&declaration_metadata)
         {
             return Err(io::Error::other(format!(
-                "source symlink is not allowed: {declaration}"
+                "source symlink is not allowed: {}",
+                declaration.display()
             )));
         }
-        let path = canonical(&root.join(declaration))?;
+        let path = canonical(&declaration_path)?;
         if !path.starts_with(&root) {
             return Err(io::Error::other("source declaration escapes checkout"));
         }
@@ -366,7 +578,8 @@ fn collect_sources(root: &Path, markdown_dependencies: &[PathBuf]) -> io::Result
             }
         } else {
             return Err(io::Error::other(format!(
-                "declared source does not exist: {declaration}"
+                "declared source does not exist: {}",
+                declaration.display()
             )));
         }
     }
@@ -537,6 +750,40 @@ fn collect_rustdoc(path: &Path) -> io::Result<(Vec<FileHash>, Vec<PathBuf>)> {
     Ok((files.into_values().collect(), paths))
 }
 
+fn collect_rustdoc_files(paths: &[PathBuf]) -> io::Result<Vec<FileHash>> {
+    let mut files = BTreeMap::new();
+    for path in paths {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+            return Err(io::Error::other(format!(
+                "rustdoc symlink or reparse point is not allowed: {}",
+                path.display()
+            )));
+        }
+        let path = canonical(path)?;
+        if !path.is_file() {
+            return Err(io::Error::other(format!(
+                "rustdoc input is not a file: {}",
+                path.display()
+            )));
+        }
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("rustdoc input has no file name"))?
+            .to_string_lossy()
+            .into_owned();
+        if files.insert(name.clone(), hash_file(&path, name.clone())?).is_some() {
+            return Err(io::Error::other(format!(
+                "duplicate rustdoc crate file: {name}"
+            )));
+        }
+    }
+    if files.is_empty() {
+        return Err(io::Error::other("rustdoc input contains no JSON files"));
+    }
+    Ok(files.into_values().collect())
+}
+
 fn rustdoc_markdown_dependencies(
     dep_info: &Path,
     checkout: &Path,
@@ -660,10 +907,18 @@ fn docs_channel(channel: &str) -> Channel {
     }
 }
 
-fn validate_actors_data(data: &DocsData) -> io::Result<()> {
-    if data.families.len() != 1 || data.families[0].crate_name != ACTORS_CRATE {
+fn validate_rustdoc_data(data: &DocsData, owners: &[RustdocOwner]) -> io::Result<()> {
+    let mut expected: Vec<&str> = owners.iter().map(|owner| owner.crate_name.as_str()).collect();
+    expected.sort_unstable();
+    let mut actual: Vec<&str> = data
+        .families
+        .iter()
+        .map(|family| family.crate_name.as_str())
+        .collect();
+    actual.sort_unstable();
+    if actual != expected {
         return Err(io::Error::other(format!(
-            "rustdoc input must contain exactly the {ACTORS_CRATE} family"
+            "rustdoc input families do not match release/cargo-crates.json: expected {expected:?}, got {actual:?}"
         )));
     }
     Ok(())
@@ -791,19 +1046,25 @@ fn rustdoc_target_named(config: &Config, name: &str) -> io::Result<PathBuf> {
 fn run_pinned_rustdoc(
     tools: &PinnedToolchain,
     manifest: &Path,
-    actors_root: &Path,
+    workspace_root: &Path,
+    package: &str,
+    target_kind: &str,
+    target_name: &str,
     target: &Path,
     rustdoc_args: &[&str],
 ) -> io::Result<()> {
     let mut cargo = Command::new(&tools.cargo);
     cargo
-        .current_dir(actors_root)
+        .current_dir(workspace_root)
         .args(["rustdoc", "--locked", "--manifest-path"])
         .arg(manifest)
-        .args(["--package", ACTORS_PACKAGE, "--lib", "--target-dir"])
-        .arg(target)
-        .arg("--")
-        .args(rustdoc_args);
+        .args(["--package", package]);
+    if target_kind == "lib" {
+        cargo.arg("--lib");
+    } else {
+        cargo.args(["--bin", target_name]);
+    }
+    cargo.args(["--target-dir"]).arg(target).arg("--").args(rustdoc_args);
     sanitize_compiler_environment(&mut cargo, tools);
     let status = cargo
         .status()
@@ -832,72 +1093,91 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
     }
 }
 
-fn generate_rustdoc(config: &Config) -> io::Result<RustdocInput> {
+fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<RustdocInput> {
     let json_target = rustdoc_target(config)?;
-    let dep_info_target = rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
+    let dep_info_target =
+        rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
     let manifest = config.root.join("Cargo.toml");
     let tools = pinned_toolchain()?;
-    let actors_root = config.root.join("rust/crates/actors");
-    let json = json_target.join("doc").join(format!("{ACTORS_CRATE}.json"));
-    let dep_json = dep_info_target
-        .join("doc")
-        .join(format!("{ACTORS_CRATE}.json"));
-    let dep_info = dep_info_target
-        .join("doc")
-        .join(format!("{ACTORS_CRATE}.d"));
-    clear_rustdoc_output(&json)?;
-    clear_rustdoc_output(&dep_json)?;
-    clear_rustdoc_output(&dep_info)?;
-    run_pinned_rustdoc(
-        &tools,
-        &manifest,
-        &actors_root,
-        &json_target,
-        &["-Z", "unstable-options", "--output-format", "json"],
-    )?;
-    if !json.is_file() {
-        return Err(io::Error::other(format!(
-            "pinned rustdoc did not produce {}",
-            json.display()
-        )));
+    let mut paths = Vec::with_capacity(owners.len());
+    let mut markdown_dependencies = Vec::new();
+    for owner in owners {
+        let json = json_target.join("doc").join(format!("{}.json", owner.crate_name));
+        let dep_json = dep_info_target
+            .join("doc")
+            .join(format!("{}.json", owner.crate_name));
+        let dep_info = dep_info_target
+            .join("doc")
+            .join(format!("{}.d", owner.crate_name));
+        clear_rustdoc_output(&json)?;
+        clear_rustdoc_output(&dep_json)?;
+        clear_rustdoc_output(&dep_info)?;
+        run_pinned_rustdoc(
+            &tools,
+            &manifest,
+            &config.root,
+            &owner.package,
+            &owner.target_kind,
+            &owner.target_name,
+            &json_target,
+            &["-Z", "unstable-options", "--output-format", "json"],
+        )?;
+        if !json.is_file() {
+            return Err(io::Error::other(format!(
+                "pinned rustdoc did not produce {}",
+                json.display()
+            )));
+        }
+        paths.push(canonical(&json)?);
+        run_pinned_rustdoc(
+            &tools,
+            &manifest,
+            &config.root,
+            &owner.package,
+            &owner.target_kind,
+            &owner.target_name,
+            &dep_info_target,
+            &["-Z", "unstable-options", "--emit", "dep-info"],
+        )?;
+        if dep_json.exists() {
+            return Err(io::Error::other(
+                "pinned dep-info rustdoc unexpectedly produced JSON",
+            ));
+        }
+        if !dep_info.is_file() {
+            return Err(io::Error::other(format!(
+                "pinned rustdoc did not produce {}",
+                dep_info.display()
+            )));
+        }
+        let package_root = config.root.join(&owner.package_root);
+        markdown_dependencies.extend(rustdoc_markdown_dependencies(
+            &dep_info,
+            &config.root,
+            &package_root,
+        )?);
     }
-    let json = canonical(&json)?;
-    run_pinned_rustdoc(
-        &tools,
-        &manifest,
-        &actors_root,
-        &dep_info_target,
-        &["-Z", "unstable-options", "--emit", "dep-info"],
-    )?;
-    if dep_json.exists() {
-        return Err(io::Error::other(
-            "pinned dep-info rustdoc unexpectedly produced JSON",
-        ));
-    }
-    if !dep_info.is_file() {
-        return Err(io::Error::other(format!(
-            "pinned rustdoc did not produce {}",
-            dep_info.display()
-        )));
-    }
-    let markdown_dependencies =
-        rustdoc_markdown_dependencies(&dep_info, &config.root, &actors_root)?;
+    markdown_dependencies.sort();
+    markdown_dependencies.dedup();
     Ok(RustdocInput {
-        path: json,
+        paths,
         markdown_dependencies,
     })
 }
 
-fn resolve_rustdoc(config: &Config) -> io::Result<RustdocInput> {
+fn resolve_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<RustdocInput> {
     match (&config.channel[..], &config.rustdoc_json) {
         ("release", Some(_)) => Err(io::Error::other(
             "release generation owns rustdoc input; omit --rustdoc-json",
         )),
-        ("release", None) => generate_rustdoc(config),
-        (_, Some(path)) => Ok(RustdocInput {
-            path: path.clone(),
-            markdown_dependencies: Vec::new(),
-        }),
+        ("release", None) => generate_rustdoc(config, owners),
+        (_, Some(path)) => {
+            let (_, paths) = collect_rustdoc(path)?;
+            Ok(RustdocInput {
+                paths,
+                markdown_dependencies: Vec::new(),
+            })
+        }
         (_, None) => Err(io::Error::other(
             "preview generation requires --rustdoc-json",
         )),
@@ -953,21 +1233,26 @@ fn generate(config: &Config) -> io::Result<()> {
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
     verify_compiled_generator_source(&config.root)?;
+    let owners = load_rustdoc_owners(&config.root)?;
+    validate_owner_versions(config, &owners)?;
+    let owner_roots = owner_package_roots(&owners);
     let source_extras_before = baseline_source_extras(&config.root)?;
-    let source_before_stage = collect_sources(&config.root, &source_extras_before)?;
+    let source_before_stage =
+        collect_sources(&config.root, &source_extras_before, &owner_roots)?;
     generate_actors_contract_artifacts(config)?;
     generate_actors_typescript_artifacts(config)?;
-    let rustdoc_input = resolve_rustdoc(config)?;
+    let rustdoc_input = resolve_rustdoc(config, &owners)?;
     let source_extras_after = baseline_source_extras(&config.root)?;
-    if collect_sources(&config.root, &source_extras_after)? != source_before_stage {
+    if collect_sources(&config.root, &source_extras_after, &owner_roots)? != source_before_stage {
         return Err(io::Error::other(
             "source changed during pinned rustdoc generation",
         ));
     }
     let mut markdown_dependencies = source_extras_after;
     markdown_dependencies.extend(rustdoc_input.markdown_dependencies.iter().cloned());
-    let source = collect_sources(&config.root, &markdown_dependencies)?;
-    let (rustdoc, rustdoc_paths) = collect_rustdoc(&rustdoc_input.path)?;
+    let source = collect_sources(&config.root, &markdown_dependencies, &owner_roots)?;
+    let rustdoc = collect_rustdoc_files(&rustdoc_input.paths)?;
+    let rustdoc_paths = rustdoc_input.paths.clone();
     let tool_sha256 = current_tool_hash()?;
     let source_sha256 = tree_digest(&source);
     let input = BuildInput {
@@ -985,7 +1270,7 @@ fn generate(config: &Config) -> io::Result<()> {
         mark_latest: false,
     };
     let data = build_data(&input).map_err(io::Error::other)?;
-    validate_actors_data(&data)?;
+    validate_rustdoc_data(&data, &owners)?;
     if current_tool_hash()? != tool_sha256 {
         return Err(io::Error::other(
             "generation tool changed during generation",
@@ -999,8 +1284,8 @@ fn generate(config: &Config) -> io::Result<()> {
     require_clean_release(&config.root, &config.channel)?;
     let mut markdown_after = baseline_source_extras(&config.root)?;
     markdown_after.extend(rustdoc_input.markdown_dependencies.iter().cloned());
-    let source_after = collect_sources(&config.root, &markdown_after)?;
-    let (rustdoc_after, _) = collect_rustdoc(&rustdoc_input.path)?;
+    let source_after = collect_sources(&config.root, &markdown_after, &owner_roots)?;
+    let rustdoc_after = collect_rustdoc_files(&rustdoc_input.paths)?;
     if source_after != source {
         return Err(io::Error::other(
             "source changed during documentation generation",
@@ -1017,6 +1302,7 @@ fn generate(config: &Config) -> io::Result<()> {
         schema: "acyclic.sdk.generation.v1".into(),
         generator_version: VERSION.into(),
         family: ACTORS_CRATE.into(),
+        families: owners.iter().map(|owner| owner.crate_name.clone()).collect(),
         revision,
         source_sha256: tree_digest(&source),
         source,
@@ -1036,26 +1322,34 @@ fn generate(config: &Config) -> io::Result<()> {
 
 fn drift(config: &Config) -> io::Result<()> {
     verify_compiled_generator_source(&config.root)?;
+    let owners = load_rustdoc_owners(&config.root)?;
+    validate_owner_versions(config, &owners)?;
+    let owner_roots = owner_package_roots(&owners);
     let manifest: Manifest = serde_json::from_slice(&fs::read(config.output.join(MANIFEST))?)
         .map_err(io::Error::other)?;
     let revision = git_revision(&config.root)?;
     if manifest.schema != "acyclic.sdk.generation.v1"
         || manifest.generator_version != VERSION
         || manifest.family != ACTORS_CRATE
+        || manifest.families
+            != owners
+                .iter()
+                .map(|owner| owner.crate_name.clone())
+                .collect::<Vec<_>>()
         || manifest.revision != revision
     {
         return Err(io::Error::other(
             "generation identity differs from manifest",
         ));
     }
-    let rustdoc_input = resolve_rustdoc(config)?;
+    let rustdoc_input = resolve_rustdoc(config, &owners)?;
     let mut source_extras = baseline_source_extras(&config.root)?;
     source_extras.extend(rustdoc_input.markdown_dependencies.iter().cloned());
-    let source = collect_sources(&config.root, &source_extras)?;
+    let source = collect_sources(&config.root, &source_extras, &owner_roots)?;
     if manifest.source != source || manifest.source_sha256 != tree_digest(&source) {
         return Err(io::Error::other("source drift detected"));
     }
-    let (rustdoc, _) = collect_rustdoc(&rustdoc_input.path)?;
+    let rustdoc = collect_rustdoc_files(&rustdoc_input.paths)?;
     if manifest.rustdoc != rustdoc || manifest.rustdoc_sha256 != tree_digest(&rustdoc) {
         return Err(io::Error::other("rustdoc input drift detected"));
     }

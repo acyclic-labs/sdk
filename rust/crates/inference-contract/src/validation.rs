@@ -752,7 +752,11 @@ fn validate_customer_wire_inner(
             validate_context_view(&decode!(wire::ContextView), fixed::<32>(expected)?)
         }
         "warm_context" => {
-            validate_warm_view(&decode!(wire::WarmView), Some(fixed::<32>(expected)?), None)
+            let view = decode!(wire::WarmView);
+            if view.idle_kv.is_some() {
+                return Err(Error::Invalid("retention mode differs"));
+            }
+            validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
         }
         "warm_view" => validate_warm_view(&decode!(wire::WarmView), None, None),
         "warm_commitment" => {
@@ -846,7 +850,7 @@ mod tests {
         );
         // Inspect remains mode-neutral for recovered handles.
         assert!(
-            validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_ok()
+            validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_err()
         );
         assert!(
             validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[1; 32], &[]).is_ok()

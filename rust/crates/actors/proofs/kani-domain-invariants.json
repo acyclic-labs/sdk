@@ -1,0 +1,77 @@
+{
+  "schema": "acyclic.kani-proof/v1",
+  "captured_at_utc": "2026-10-07T01:02:27.6101993Z",
+  "status": "proved",
+  "source": {
+    "revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "files_sha256": {
+      "rust\\crates\\actors\\src\\domain.rs": "223C2C0C2F48A28FD0A6F1E9A18125B3A4DAEF429863F3EBC70016BA913C310B",
+      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "5A493F211B6CD6B2D51B886C3777B87BD90023EC3FA8B98CE6A23DBCC018DFA4",
+      "rust\\crates\\actors\\build.rs": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C",
+      "rust\\crates\\actors\\Cargo.toml": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
+      "Cargo.toml": "F48D5BD3D03513DBA45EC66DD01223CD9CBAAE02AC919503C864B68AD822F765"
+    },
+    "note": "The checkout was dirty during the run; these hashes identify the source snapshot used."
+  },
+  "tools": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "cargo": "1.100.0-nightly (514c56dd7 2026-08-19)",
+    "toolchain": "nightly-2026-08-21-x86_64-unknown-linux-gnu"
+  },
+  "command": {
+    "template": "cd <sdk>; export RUSTUP_HOME=<isolated>/rustup-home KANI_HOME=<isolated>/kani-home CARGO_HOME=<isolated>/cargo-home CARGO_TARGET_DIR=<isolated>/target; cargo-kani --manifest-path rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::code_sha256_fixed_length_matches_contract --harness domain::kani_proofs::code_sha256_rejects_empty --harness domain::kani_proofs::code_sha256_rejects_31_bytes --harness domain::kani_proofs::code_sha256_rejects_33_bytes --harness domain::kani_proofs::code_sha256_rejects_64_bytes --harness domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless --exact --default-unwind 65 -j1",
+    "jobs": 1,
+    "default_unwind": 65
+  },
+  "harnesses": [
+    {
+      "status": "successful",
+      "obligation": "For every symbolic [u8; 32], valid_code_sha256(bytes) == bytes != [0; 32].",
+      "name": "domain::kani_proofs::code_sha256_fixed_length_matches_contract"
+    },
+    {
+      "status": "successful",
+      "obligation": "valid_code_sha256 rejects every [u8; 0].",
+      "name": "domain::kani_proofs::code_sha256_rejects_empty"
+    },
+    {
+      "status": "successful",
+      "obligation": "valid_code_sha256 rejects every [u8; 31].",
+      "name": "domain::kani_proofs::code_sha256_rejects_31_bytes"
+    },
+    {
+      "status": "successful",
+      "obligation": "valid_code_sha256 rejects every [u8; 33].",
+      "name": "domain::kani_proofs::code_sha256_rejects_33_bytes"
+    },
+    {
+      "status": "successful",
+      "obligation": "valid_code_sha256 rejects every [u8; 64].",
+      "name": "domain::kani_proofs::code_sha256_rejects_64_bytes"
+    },
+    {
+      "status": "successful",
+      "obligation": "SubscriptionState, ActorState, and ErrorCode numeric conversions preserve known values and unknown raw i32 values.",
+      "name": "domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless"
+    }
+  ],
+  "result": {
+    "successful_harnesses": 6,
+    "failed_harnesses": 0,
+    "total_harnesses": 6,
+    "verifier_result": "VERIFICATION:- SUCCESSFUL",
+    "exit_code": 0
+  },
+  "evidence": {
+    "external_log": "foundation-kani-068/domain-invariant-proof.log",
+    "log_sha256": "17CEBDC588E3C43E1EDC4DE3B1950764D0516343910AF5D4D07D516E4001DCB9",
+    "source_checkout": "C foundation worktree",
+    "unsupported_constructs": "Kani reported reachable caller_location (1) and foreign function (1) in the crate; no selected harness failed."
+  },
+  "scope": {
+    "formal": "Only the six listed pure domain harnesses are proved; this receipt says nothing about wire identity, codecs, native loading, package installation, network transport, streaming, cancellation, recovery, or platform behavior.",
+    "runtime_followups": "Those integration properties remain runtime/artifact obligations."
+  }
+}
