@@ -189,9 +189,7 @@ fn compiled_generator_digest(root: &Path) -> io::Result<String> {
         let path = root.join(relative);
         hasher.update(relative.as_bytes());
         hasher.update([0]);
-        let mut file = File::open(&path).map_err(|error| {
-            io::Error::other(format!("cannot read compiled generator input {}: {error}", path.display()))
-        })?;
+        let mut file = File::open(&path)?;
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let read = file.read(&mut buffer)?;
@@ -525,7 +523,10 @@ fn package_metadata_for_rustdoc(
             .enumerate()
             .find(|(index, owner)| {
                 !matched.contains(index)
-                    && (owner.crate_name == stem || owner.target_name == stem)
+                    && (owner.crate_name == stem
+                        || owner.target_name == stem
+                        || owner.crate_name.strip_prefix("acyclic_") == Some(stem)
+                        || owner.target_name.strip_prefix("acyclic_") == Some(stem))
             })
             .map(|(index, owner)| {
                 matched.insert(index);
@@ -742,13 +743,15 @@ fn collect_dir(
                 .map_err(|_| io::Error::other("path escapes declared root"))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if files
-                .insert(relative.clone(), hash_file(&path, relative.clone())?)
-                .is_some()
-            {
-                return Err(io::Error::other(format!(
-                    "duplicate source path: {relative}"
-                )));
+            let file = hash_file(&path, relative.clone())?;
+            if let Some(existing) = files.get(&relative) {
+                if existing != &file {
+                    return Err(io::Error::other(format!(
+                        "source path changed while collecting: {relative}"
+                    )));
+                }
+            } else {
+                files.insert(relative, file);
             }
         }
     }
@@ -794,13 +797,15 @@ fn collect_sources(
                 .map_err(|_| io::Error::other("source declaration escapes checkout"))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if files
-                .insert(relative.clone(), hash_file(&path, relative.clone())?)
-                .is_some()
-            {
-                return Err(io::Error::other(format!(
-                    "duplicate source path: {relative}"
-                )));
+            let file = hash_file(&path, relative.clone())?;
+            if let Some(existing) = files.get(&relative) {
+                if existing != &file {
+                    return Err(io::Error::other(format!(
+                        "source path changed while collecting: {relative}"
+                    )));
+                }
+            } else {
+                files.insert(relative, file);
             }
         } else {
             return Err(io::Error::other(format!(
@@ -2166,12 +2171,9 @@ fn generate(config: &Config) -> io::Result<()> {
     }
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
-    verify_compiled_generator_source(&config.root)
-        .map_err(|error| io::Error::other(format!("verify generator source: {error}")))?;
-    let metadata = cargo_metadata(&config.root)
-        .map_err(|error| io::Error::other(format!("cargo metadata: {error}")))?;
-    let owners = load_rustdoc_owners(&config.root, &metadata)
-        .map_err(|error| io::Error::other(format!("load Rustdoc owners: {error}")))?;
+    verify_compiled_generator_source(&config.root)?;
+    let metadata = cargo_metadata(&config.root)?;
+    let owners = load_rustdoc_owners(&config.root, &metadata)?;
     validate_owner_versions(config, &owners)?;
     let external_generators = external_generator_records(&config.root)?;
     let owner_roots = owner_package_roots(&owners);
@@ -2179,8 +2181,7 @@ fn generate(config: &Config) -> io::Result<()> {
     let source_before_stage = collect_sources(&config.root, &source_extras_before, &owner_roots)?;
     generate_actors_contract_artifacts(config)?;
     generate_actors_typescript_artifacts(config)?;
-    let rustdoc_input = resolve_rustdoc(config, &owners)
-        .map_err(|error| io::Error::other(format!("resolve Rustdoc: {error}")))?;
+    let rustdoc_input = resolve_rustdoc(config, &owners)?;
     let source_extras_after = baseline_source_extras(&config.root)?;
     if collect_sources(&config.root, &source_extras_after, &owner_roots)? != source_before_stage {
         return Err(io::Error::other(

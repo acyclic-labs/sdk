@@ -37,13 +37,21 @@ The barrel is included in the artifact digest and is the package `./types`
 entrypoint source.
 
 ```text
-cargo +1.98.1 test --offline --locked
-cargo +1.98.1 run --offline --locked -- generate \
+cargo +1.98.1 test --manifest-path rust/crates/sdk-generation/Cargo.toml --offline --locked
+cargo +1.98.1 run --manifest-path rust/crates/sdk-generation/Cargo.toml --offline --locked -- generate \
   --root <checkout> --output <bundle> \
   --version <version> --channel release
-cargo +1.98.1 run --offline --locked -- generate \
+cargo +1.98.1 run --manifest-path rust/crates/sdk-generation/Cargo.toml --offline --locked -- generate \
   --root <checkout> --rustdoc-json <json-or-dir> --output <bundle> \
   --version <version> --channel preview
+```
+
+Run these commands from the repository root. Release qualification also runs
+the pinned ten-owner Rustdoc integration explicitly:
+
+```text
+cargo +1.98.1 test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked \
+  --test fixed_docs release_generation_builds_rustdoc_from_the_pinned_workspace -- --ignored
 ```
 
 This launcher is the generation authority for the Rust-owned documentation

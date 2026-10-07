@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 //! Native file and owned-process primitives shared by SDK host consumers.
 
 use bytes::Bytes;

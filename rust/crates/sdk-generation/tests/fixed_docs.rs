@@ -154,6 +154,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "rust/crates/actors/tests",
         "rust/crates/sdk-docs/src",
         "rust/crates/sdk-generation/src",
+        "rust/crates/sdk-generation/examples",
         "rust/crates/sdk-generation/tests",
         "docs",
     ] {
@@ -231,7 +232,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     fs::create_dir_all(&rustdoc).unwrap();
     let fixture = json!({
         "root": 0,
-        "crate_version": null,
+        "crate_version": "0.2.0",
         "includes_private": false,
         "index": {
             "0": {"id": 0, "crate_id": 0, "name": "acyclic_actors", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1], "is_stripped": false}}},
@@ -352,19 +353,19 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .any(|artifact| { artifact["path"] == "generated/typescript/actors/types.ts" })
     );
     assert_eq!(
-        fs::read(first.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap(),
-        fs::read(second.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap()
+        fs::read(first.join("preview/0.2.0/sdk-docs-data.v2.json")).unwrap(),
+        fs::read(second.join("preview/0.2.0/sdk-docs-data.v2.json")).unwrap()
     );
     assert_eq!(
-        fs::read(first.join("preview/0.2.0/sdk-docs-data.v1.schema.json")).unwrap(),
-        fs::read(second.join("preview/0.2.0/sdk-docs-data.v1.schema.json")).unwrap()
+        fs::read(first.join("preview/0.2.0/sdk-docs-data.v2.schema.json")).unwrap(),
+        fs::read(second.join("preview/0.2.0/sdk-docs-data.v2.schema.json")).unwrap()
     );
     let index: serde_json::Value =
         serde_json::from_slice(&fs::read(first.join("sdk-docs-versions.v1.json")).unwrap())
             .unwrap();
     assert_eq!(index["preview"]["version"], "0.2.0");
-    let data = fs::read_to_string(first.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap();
-    assert!(data.contains("sdk-docs-data.v1"));
+    let data = fs::read_to_string(first.join("preview/0.2.0/sdk-docs-data.v2.json")).unwrap();
+    assert!(data.contains("sdk-docs-data.v2"));
     let typescript = first.join("generated/typescript/actors/InvokeActorRequest.ts");
     assert!(typescript.is_file());
     assert!(
@@ -405,12 +406,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .success()
     );
     fs::write(&guide_path, guide).unwrap();
-    assert!(
-        run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
-            .status
-            .success()
+    let restored_guide_drift = run(binary, "drift", &root, Some(&rustdoc), &first, "preview");
+    eprintln!(
+        "restored guide drift: status={}, stdout={}, stderr={}",
+        restored_guide_drift.status,
+        String::from_utf8_lossy(&restored_guide_drift.stdout),
+        String::from_utf8_lossy(&restored_guide_drift.stderr)
     );
-    let data_path = first.join("preview/0.2.0/sdk-docs-data.v1.json");
+    assert!(restored_guide_drift.status.success());
+    let data_path = first.join("preview/0.2.0/sdk-docs-data.v2.json");
     let data_bytes = fs::read(&data_path).unwrap();
     fs::write(&data_path, b"tampered generated data\n").unwrap();
     assert!(
@@ -424,7 +428,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .status
             .success()
     );
-    let schema_path = first.join("preview/0.2.0/sdk-docs-data.v1.schema.json");
+    let schema_path = first.join("preview/0.2.0/sdk-docs-data.v2.schema.json");
     let schema_bytes = fs::read(&schema_path).unwrap();
     fs::write(&schema_path, b"tampered generated schema\n").unwrap();
     assert!(
@@ -502,12 +506,11 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
         .args(["run", "1.98.1", "rustdoc", "--version"])
         .output()
         .unwrap();
-    if !probe.status.success()
-        && String::from_utf8_lossy(&probe.stderr).contains("rustdoc.exe' is not installed")
-    {
-        eprintln!("skipping pinned Rustdoc integration test: Rustdoc is not installed");
-        return;
-    }
+    assert!(
+        probe.status.success(),
+        "pinned Rustdoc 1.98.1 is required for release qualification: {}",
+        String::from_utf8_lossy(&probe.stderr).trim()
+    );
     let sandbox = temp("sdk-generation-rustdoc-stage");
     let root = sandbox.join("root");
     let output = sandbox.join("bundle");

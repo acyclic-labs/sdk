@@ -328,9 +328,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         input_digest.update([0]);
         input_digest.update(metadata.version.as_bytes());
         input_digest.update([0]);
-        let bytes = fs::read(path).map_err(|error| {
-            Error::Invalid(format!("cannot read rustdoc input {}: {error}", path.display()))
-        })?;
+        let bytes = fs::read(path)?;
         if let Some(name) = path.file_name() {
             input_digest.update(name.to_string_lossy().as_bytes());
         }
