@@ -24,6 +24,10 @@ metadata. `HttpActorsClient` remains a compatibility alias while callers move
 to the platform-neutral name. Actor invocation includes request and response
 headers.
 
+Native callers connecting to a private endpoint may additionally provide
+`caCertificate` as DER or PEM bytes. The option is carried to the Rust N-API
+TLS connector; browser calls continue to use the browser trust store.
+
 `bun run build` rebuilds the WASM bridge before TypeScript declarations. The
 package tarball includes that bridge and the generated Protobuf artifacts; no
 Cloud deployment is implied by local client qualification.
