@@ -38,6 +38,11 @@ this loop.
   settles promptly, but tonic's background connection retains a TLS socket.
   Rust connection lifetime cleanup, a rebuilt installed artifact, and exact-source
   independent review gate the final candidate.
+  Independent installed review of candidate 4de145822497881c4dd27b56ad208c0c2e0cc822
+  failed the socket cleanup assertion twice. Its archive also differs from the
+  latest checkout. Eager tonic connection alone is not qualifying evidence.
+  Additional source tests passed in the older rust-sdk-docs-source checkout;
+  they must be ported to the production stream-napi candidate and rebuilt.
 - Filesystem staging passes 70 tests, strict native/browser input matrices,
   Rust u64 preservation and extracted-package finite-type compile negatives.
   This proves that snapshot only. The old 0D29 archive cannot be relabeled with

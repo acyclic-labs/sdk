@@ -13,7 +13,11 @@ $assembly = [Reflection.Assembly]::LoadFrom($managed)
 
 function New-Managed([string]$Name, [object[]]$Arguments = @()) {
     $type = $assembly.GetType("Acyclic.Actors.$Name", $true)
-    return [Activator]::CreateInstance($type, $Arguments)
+    foreach ($constructor in $type.GetConstructors([Reflection.BindingFlags]'Public,Instance')) {
+        if ($constructor.GetParameters().Count -ne $Arguments.Count) { continue }
+        try { return $constructor.Invoke($Arguments) } catch { }
+    }
+    throw "constructor not found: $Name"
 }
 
 function Await([object]$Task) {
@@ -21,7 +25,8 @@ function Await([object]$Task) {
 }
 
 function Invoke-Method([object]$Target, [string]$Name, [object[]]$Arguments) {
-    $method = $Target.GetType().GetMethod($Name, [Reflection.BindingFlags]'Public,Instance')
+    $method = $Target.GetType().GetMethods([Reflection.BindingFlags]'Public,Instance') |
+        Where-Object Name -eq $Name | Select-Object -First 1
     if ($null -eq $method) { throw "method not found: $Name" }
     return Await ($method.Invoke($Target, $Arguments))
 }
@@ -40,12 +45,12 @@ $client = Await ($connect.Invoke($null, [object[]]@(
 Write-Output 'CHECKPOINT_CONNECTED'
 
 $actorId = New-Managed 'ActorId' ([object[]]@('actor-a'))
-$digest = New-Managed 'CodeSha256' ([object[]]@([byte[]](1..32)))
+$digest = New-Managed 'CodeSha256' ([object[]]@(,([byte[]](1..32))))
 $limits = New-Managed 'ActorLimits' ([object[]]@([UInt64]1, [UInt64]2, [UInt64]3))
 $binding = New-Managed 'Binding' ([object[]]@('binding-a', 'capability-a', 'resource-a'))
 $bindings = [Array]::CreateInstance($binding.GetType(), 1); $bindings.SetValue($binding, 0)
 $cursor = New-Managed 'SubscriptionStart+Cursor' ([object[]]@([UInt64]9007199254740993))
-$start = New-Managed 'SubscriptionStart' ([object[]]@($cursor))
+$start = $cursor
 $subscription = New-Managed 'SubscriptionSpec' ([object[]]@('subscription-a', 'events/input', $start, $true))
 $subscriptions = [Array]::CreateInstance($subscription.GetType(), 1); $subscriptions.SetValue($subscription, 0)
 $create = New-Managed 'CreateActorRequest' ([object[]]@($digest, 'eu', $bindings, $limits, $subscriptions, 'csharp-create-a'))
@@ -57,7 +62,7 @@ $resume = New-Managed 'ResumeSubscriptionRequest' ([object[]]@($actorId, 'subscr
 $checkpoint = New-Managed 'CheckpointActorRequest' ([object[]]@($actorId, 'checkpoint-a'))
 $header = New-Managed 'Header' ([object[]]@('content-type', 'application/json'))
 $headers = [Array]::CreateInstance($header.GetType(), 1); $headers.SetValue($header, 0)
-$invoke = New-Managed 'InvokeActorRequest' ([object[]]@($actorId, 'POST', '/invoke', [byte[]][Text.Encoding]::UTF8.GetBytes('request-body'), $headers))
+$invoke = New-Managed 'InvokeActorRequest' ([object[]]@($actorId, 'POST', '/invoke', ,([byte[]][Text.Encoding]::UTF8.GetBytes('request-body')), $headers))
 Write-Output 'CHECKPOINT_REQUESTS'
 
 Invoke-Method $client 'CreateActor' ([object[]]@($create, $null, [Threading.CancellationToken]::None))

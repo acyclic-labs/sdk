@@ -11,6 +11,8 @@ let inspectStarted = false;
 let inspectAborted = false;
 let inspectCount = 0;
 let finish;
+let closeAndExit;
+let closed = false;
 const aborted = new Promise(resolve => { finish = resolve; });
 const fixture = await startConformanceFixture({
   onUnaryRequest: async (method, _request, context) => {
@@ -22,15 +24,25 @@ const fixture = await startConformanceFixture({
     if (signal?.aborted) {
       inspectAborted = true;
       finish();
+      void closeAndExit();
       return;
     }
     signal?.addEventListener("abort", () => {
       inspectAborted = true;
       finish();
+      void closeAndExit();
     }, { once: true });
     await aborted;
   },
 });
+
+closeAndExit = async () => {
+  if (closed) return;
+  closed = true;
+  await fixture.close();
+  process.stderr.write(JSON.stringify({ inspectStarted, inspectAborted }) + "\n");
+  process.exit(inspectAborted ? 0 : 2);
+};
 
 process.stdout.write(JSON.stringify({
   endpoint: fixture.options.endpoint,
@@ -42,8 +54,6 @@ if (process.env.ACYCLIC_CA_PATH) {
 }
 
 const timeout = setTimeout(async () => {
-  await fixture.close();
-  process.stderr.write(JSON.stringify({ inspectStarted, inspectAborted }) + "\n");
-  process.exit(inspectAborted ? 0 : 2);
+  await closeAndExit();
 }, 120000);
 timeout.unref();

@@ -13,7 +13,8 @@ output="$1"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prototype="$root/rust/crates/sdk-generation/research/qualified-prototypes/cpp-actors-oss"
 work="$(mktemp -d -t sdk-cpp-actors-package.XXXXXXXX)"
-trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
+fixture_pid=""
+trap 'status=$?; if [[ -n "${fixture_pid:-}" ]]; then kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true; fi; rm -rf -- "$work"; exit "$status"' EXIT
 
 cd "$root"
 metadata="$(cargo metadata --locked --no-deps --format-version 1)"
@@ -84,6 +85,40 @@ cmake -S "$cxx_path/consumer/cmake" -B "$work/external-build" \
 cmake --build "$work/external-build" --config Release
 "$work/external-build/cpp-actors-external-positive"
 
+# Exercise the installed all-eight consumer against the canonical authenticated
+# TLS fixture. The fixture deliberately blocks the second InspectActor request;
+# live-remote.cc cancels that opaque Rust operation and the fixture exits only
+# after observing the server-side HTTP/2 abort.
+fixture_json="$work/fixture.json"
+fixture_ca="$work/fixture-ca.pem"
+ACYCLIC_SDK_ROOT="$root" ACYCLIC_CA_PATH="$fixture_ca" \
+  node "$cxx_path/consumer/live-cancel-fixture.mjs" >"$fixture_json" \
+  2>"$work/fixture.log" &
+fixture_pid=$!
+for _ in $(seq 1 120); do
+  [[ -s "$fixture_json" ]] && break
+  sleep 1
+done
+[[ -s "$fixture_json" && -s "$fixture_ca" ]] || {
+  echo 'canonical Actors fixture did not publish endpoint and CA' >&2
+  cat "$work/fixture.log" >&2 || true
+  exit 1
+}
+fixture_endpoint="$(node -e '
+const fs = require("fs");
+const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8").split("\n", 1)[0]);
+process.stdout.write(value.endpoint);
+' "$fixture_json")"
+fixture_token="$(node -e '
+const fs = require("fs");
+const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8").split("\n", 1)[0]);
+process.stdout.write(value.token);
+' "$fixture_json")"
+"$work/external-build/cpp-actors-external-live" \
+  "$fixture_endpoint" "$fixture_token" "$fixture_ca"
+wait "$fixture_pid"
+grep -q '"inspectStarted":true,"inspectAborted":true' "$work/fixture.log"
+
 cxx_compiler="${CXX:-c++}"
 if "$cxx_compiler" -std=c++11 -I"$install_root/include" -fsyntax-only \
   "$cxx_path/consumer/negative.cc" >"$work/negative.log" 2>&1; then
@@ -115,4 +150,4 @@ if source_commit="$(git rev-parse --verify HEAD 2>/dev/null)"; then
 else
   printf 'unavailable (checkout does not expose a resolvable Git worktree)\n' > "$output/SOURCE_COMMIT"
 fi
-printf 'find_package:PASS\nexternal_positive:PASS\nexternal_all8_link:PASS\nnegative_u64:PASS\nnegative_nominal:PASS\n' > "$output/QUALIFICATION"
+printf 'find_package_install:PASS\nexternal_positive_runtime_typed_error_cancel:PASS\nexternal_all8_link:PASS\nexternal_all8_runtime_tls_auth:PASS\nexternal_inflight_cancel_server_abort:PASS\nnegative_u64:PASS\nnegative_nominal:PASS\n' > "$output/QUALIFICATION"
