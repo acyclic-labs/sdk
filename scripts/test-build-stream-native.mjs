@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -57,6 +57,22 @@ test("native staging rejects symlinked or non-regular artifacts", async () => {
     await rm(link, { recursive: true, force: true });
     await rm(output, { recursive: true, force: true });
     await rm(target, { recursive: true, force: true });
+  }
+});
+
+test("native staging refuses an external output root before touching the prior bundle", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-staging-root-"));
+  const external = await mkdtemp(resolve(tmpdir(), "stream-native-staging-external-"));
+  const output = resolve(parent, "generated-native");
+  try {
+    await writeFile(resolve(external, "previous.node"), "previous\n");
+    await symlink(external, output, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(assertOwnedDirectory(output, { allowMissing: true }), /owned directory/);
+    assert.equal((await readFile(resolve(external, "previous.node"))).toString(), "previous\n");
+  } finally {
+    await rm(output, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
   }
 });
 

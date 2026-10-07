@@ -705,6 +705,17 @@ export async function assertExactInventory(output, allowed) {
   if (nonRegular.length > 0) throw new Error(`native bundle ${output} contains a symlink or reparse point/non-regular artifact: ${nonRegular.join(", ")}`);
 }
 
+export async function assertOwnedDirectory(output, { allowMissing = false } = {}) {
+  try {
+    const metadata = await lstat(output);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`native bundle output is not an owned directory: ${output}`);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" && allowMissing) return false;
+    throw error;
+  }
+}
+
 async function bundleArtifacts(output) {
   const names = (await readdir(output)).filter(name => name === "binding.cjs" || name === "binding.d.ts" || name.endsWith(".node")).sort();
   await assertExactInventory(output, new Set([...names, generationManifestName, "native-targets.json"]));
@@ -774,13 +785,7 @@ async function assertBundle(output, { expectedTarget, verifySource = true } = {}
 }
 
 async function assertExistingBundle(output) {
-  try {
-    const metadata = await lstat(output);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`native bundle output is not an owned directory: ${output}`);
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  }
+  if (!(await assertOwnedDirectory(output, { allowMissing: true }))) return false;
   await assertBundle(output, { verifySource: false });
   return true;
 }
@@ -953,7 +958,9 @@ async function stage(options) {
   catch { input = resolve(bundle, "generated/native"); }
   await assertBundle(input);
   const output = resolve(options.output ?? defaultOutput);
+  await assertOwnedDirectory(output, { allowMissing: true });
   await mkdir(output, { recursive: true });
+  await assertOwnedDirectory(output);
   const metadata = JSON.parse((await readFile(resolve(input, "native-targets.json"))).toString("utf8"));
   const expectedNames = new Set([
     ...metadata.artifacts.map(artifact => artifact.path.slice("generated/native/".length)),
