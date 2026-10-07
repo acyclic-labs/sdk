@@ -46,6 +46,8 @@ Beyond rustfmt and clippy's defaults, the workspace enables an additional lint s
   the panic unreachable.
 - **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
   naming the invariant.
+- **Tracing follows [docs/observability.md](docs/observability.md)**: span names, levels,
+  forbidden fields, cost rules, and no `tracing` in wasm32 builds.
 - **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
   into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json .`).
 
