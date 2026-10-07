@@ -26,19 +26,19 @@ impl From<std::convert::Infallible> for ContractError {
 // The semantic source is included by the build-time schema module. These
 // declarations satisfy its runtime admission hooks; the real validators live
 // in the library crate and are never used while rendering metadata.
-#[allow(unused_imports, reason = "Protify's build-time registration resolves these aliases from generated declarations")]
+#[allow(
+    unused_imports,
+    reason = "Protify's build-time registration resolves these aliases from generated declarations"
+)]
 mod wire {
     pub use crate::contract::{
         ActorLimitsProto as ActorLimits, ActorObservationProto as ActorObservation,
         AddSubscriptionRequestProto as AddSubscriptionRequest,
-        AddSubscriptionResponseProto as AddSubscriptionResponse,
-        BindingProto as Binding,
+        AddSubscriptionResponseProto as AddSubscriptionResponse, BindingProto as Binding,
         CheckpointActorRequestProto as CheckpointActorRequest,
         CheckpointActorResponseProto as CheckpointActorResponse,
         CreateActorRequestProto as CreateActorRequest,
-        CreateActorResponseProto as CreateActorResponse,
-        ServiceErrorProto as Error,
-        HeaderProto as Header,
+        CreateActorResponseProto as CreateActorResponse, HeaderProto as Header,
         InspectActorRequestProto as InspectActorRequest,
         InspectActorResponseProto as InspectActorResponse,
         InvokeActorRequestProto as InvokeActorRequest,
@@ -46,10 +46,9 @@ mod wire {
         RemoveSubscriptionRequestProto as RemoveSubscriptionRequest,
         RemoveSubscriptionResponseProto as RemoveSubscriptionResponse,
         ResumeSubscriptionRequestProto as ResumeSubscriptionRequest,
-        ResumeSubscriptionResponseProto as ResumeSubscriptionResponse,
+        ResumeSubscriptionResponseProto as ResumeSubscriptionResponse, ServiceErrorProto as Error,
         SubscriptionObservationProto as SubscriptionObservation,
-        SubscriptionSpecProto as SubscriptionSpec,
-        SubscriptionStartProto as SubscriptionStart,
+        SubscriptionSpecProto as SubscriptionSpec, SubscriptionStartProto as SubscriptionStart,
         UpdateActorRequestProto as UpdateActorRequest,
         UpdateActorResponseProto as UpdateActorResponse,
     };
@@ -58,11 +57,24 @@ mod wire {
     }
 }
 
-#[allow(dead_code, reason = "The build-time Protify schema references these validator hooks by path")]
-fn validate_create(_: &wire::CreateActorRequest) -> Result<(), ContractError> { Ok(()) }
-#[allow(dead_code, reason = "The build-time Protify schema references these validator hooks by path")]
-fn validate_update(_: &wire::UpdateActorRequest) -> Result<(), ContractError> { Ok(()) }
-#[allow(dead_code, reason = "The build-time Protify schema references these validator hooks by path")]
+#[allow(
+    dead_code,
+    reason = "The build-time Protify schema references these validator hooks by path"
+)]
+fn validate_create(_: &wire::CreateActorRequest) -> Result<(), ContractError> {
+    Ok(())
+}
+#[allow(
+    dead_code,
+    reason = "The build-time Protify schema references these validator hooks by path"
+)]
+fn validate_update(_: &wire::UpdateActorRequest) -> Result<(), ContractError> {
+    Ok(())
+}
+#[allow(
+    dead_code,
+    reason = "The build-time Protify schema references these validator hooks by path"
+)]
 fn validate_add_subscription(_: &wire::AddSubscriptionRequest) -> Result<(), ContractError> {
     Ok(())
 }

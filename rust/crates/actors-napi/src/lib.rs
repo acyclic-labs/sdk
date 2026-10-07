@@ -62,7 +62,10 @@ pub struct NativeActorsConnectResult {
     pub error: Option<NativeActorsErrorMetadata>,
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "N-API error conversion receives owned metadata from fallible boundary adapters")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API error conversion receives owned metadata from fallible boundary adapters"
+)]
 fn napi_error(metadata: NativeActorsErrorMetadata) -> Error {
     let reason = serde_json::to_string(&metadata)
         .unwrap_or_else(|_| String::from(r#"{"code":"internal","message":"Actors error"}"#));
@@ -98,7 +101,10 @@ pub fn actor_id(value: String) -> Result<String> {
 
 /// Validate and return a nominal SHA-256 digest.
 #[napi(js_name = "CodeSha256")]
-#[allow(clippy::needless_pass_by_value, reason = "N-API receives typed byte buffers by value")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API receives typed byte buffers by value"
+)]
 pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
     domain::CodeSha256::new(value.as_ref().to_vec())
         .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
@@ -107,7 +113,10 @@ pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
 
 /// Validate and return a nominal positive integer.
 #[napi(js_name = "PositiveU64")]
-#[allow(clippy::needless_pass_by_value, reason = "N-API receives BigInt handles by value")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API receives BigInt handles by value"
+)]
 pub fn positive_u64(value: BigInt) -> Result<BigInt> {
     let (sign, raw, lossless) = value.get_u64();
     if sign || !lossless {
@@ -228,7 +237,10 @@ where
     })
 }
 
-#[allow(clippy::result_large_err, reason = "The structured N-API error is intentionally lossless at the ABI boundary")]
+#[allow(
+    clippy::result_large_err,
+    reason = "The structured N-API error is intentionally lossless at the ABI boundary"
+)]
 fn encode<T: Message>(
     value: &T,
     operation: &str,
@@ -282,7 +294,10 @@ impl NativeActorsCancellation {
     }
 }
 
-#[allow(clippy::result_large_err, reason = "The structured N-API error is intentionally lossless at the ABI boundary")]
+#[allow(
+    clippy::result_large_err,
+    reason = "The structured N-API error is intentionally lossless at the ABI boundary"
+)]
 async fn cancellable<T, F: Future<Output = std::result::Result<T, client::Error>>>(
     future: F,
     cancellation: Option<CancellationState>,

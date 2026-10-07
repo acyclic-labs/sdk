@@ -7,17 +7,35 @@
 use protify::*;
 
 mod generated {
-    #![allow(missing_docs, reason = "Protify emits the public schema declarations and documentation belongs to the semantic Rust source")]
+    #![allow(
+        missing_docs,
+        reason = "Protify emits the public schema declarations and documentation belongs to the semantic Rust source"
+    )]
 
     use super::*;
 
     // Semantic declarations own the message fields and Proto shadows. The
     // registration file below contains only package/file/service wiring.
-    #[allow(dead_code, reason = "Public semantic constructors and accessors are consumed by SDK bridges")]
-    #[allow(unexpected_cfgs, reason = "Kani supplies the cfg predicate during formal verification")]
-    #[allow(clippy::needless_pass_by_value, reason = "Protify conversion signatures preserve owned semantic values")]
-    #[allow(clippy::redundant_closure, reason = "Protify conversion attributes require closure-shaped validators")]
-    #[allow(clippy::unnecessary_fallible_conversions, reason = "Protify conversion attributes preserve fallible ingress boundaries")]
+    #[allow(
+        dead_code,
+        reason = "Public semantic constructors and accessors are consumed by SDK bridges"
+    )]
+    #[allow(
+        unexpected_cfgs,
+        reason = "Kani supplies the cfg predicate during formal verification"
+    )]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Protify conversion signatures preserve owned semantic values"
+    )]
+    #[allow(
+        clippy::redundant_closure,
+        reason = "Protify conversion attributes require closure-shaped validators"
+    )]
+    #[allow(
+        clippy::unnecessary_fallible_conversions,
+        reason = "Protify conversion attributes preserve fallible ingress boundaries"
+    )]
     pub mod domain {
         include!("domain.rs");
     }
@@ -26,10 +44,13 @@ mod generated {
     include!("contract_definitions.rs");
 }
 
+pub(crate) use generated::ACTORS_FILE;
 #[doc = "Actors protobuf package schema handle."]
 pub use generated::ACTORS_PACKAGE;
-pub(crate) use generated::ACTORS_FILE;
-#[allow(unused_imports, reason = "The semantic domain module is a public bridge namespace for SDK consumers")]
+#[allow(
+    unused_imports,
+    reason = "The semantic domain module is a public bridge namespace for SDK consumers"
+)]
 pub use generated::domain;
 
 /// Renders the canonical Actors protobuf input for the maintained prost/tonic
@@ -41,21 +62,26 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
     ACTORS_PACKAGE::get_package().render_files(root)
 }
 
-#[allow(unused_imports, reason = "These generated Proto aliases are consumed by the native, WASM, and UniFFI bridges")]
+#[allow(
+    unused_imports,
+    reason = "These generated Proto aliases are consumed by the native, WASM, and UniFFI bridges"
+)]
 pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
-    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
-    ErrorCode, ServiceErrorProto, HeaderProto, InspectActorRequestProto, InspectActorResponseProto,
-    InvokeActorRequestProto, InvokeActorResponseProto, RemoveSubscriptionRequestProto,
-    RemoveSubscriptionResponseProto, ResumeSubscriptionRequestProto,
-    ResumeSubscriptionResponseProto, SubscriptionObservationProto, SubscriptionSpecProto,
-    SubscriptionStartProto, SubscriptionState, UpdateActorRequestProto, UpdateActorResponseProto,
-    subscription_start,
+    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto, ErrorCode,
+    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
+    InvokeActorResponseProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
+    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
+    SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,
+    UpdateActorRequestProto, UpdateActorResponseProto, subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.
-#[allow(unused_imports, reason = "The generated service descriptor is consumed by transport adapters")]
+#[allow(
+    unused_imports,
+    reason = "The generated service descriptor is consumed by transport adapters"
+)]
 pub use generated::ActorsService;
 
 #[cfg(test)]

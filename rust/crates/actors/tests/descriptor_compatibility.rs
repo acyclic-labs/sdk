@@ -460,8 +460,7 @@ fn archived_contract_identities_cover_tags_presence_oneofs_enums_and_rpcs() {
     let start_oneof = named_declaration(subscription_start, "oneof_decl", "start");
     assert_field_value(start_oneof, "name", Value::String("start".to_owned()));
 
-    let observation =
-        named_declaration(file, "message_type", "SubscriptionObservation");
+    let observation = named_declaration(file, "message_type", "SubscriptionObservation");
     let failed_cursor = named_field(observation, "field", "failed_cursor");
     assert_field_value(failed_cursor, "number", Value::I32(10));
     assert_field_value(failed_cursor, "proto3_optional", Value::Bool(true));
