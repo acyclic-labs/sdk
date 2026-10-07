@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,11 +12,14 @@ const packageRelative = "typescript/packages/stream/package.json";
 const defaultOutput = resolve(root, "typescript/packages/stream/generated/native");
 const nativeTargetsSchema = "acyclic.stream.native-targets.v1";
 const generationSchema = "acyclic.stream.native-generation.v1";
+const buildInputsSchema = "acyclic.stream.native-build-inputs.v1";
 const generationManifestName = "generation-manifest.json";
+const require = createRequire(import.meta.url);
 const sourceRoots = [
   "Cargo.toml",
   "Cargo.lock",
   "rust-toolchain.toml",
+  ".cargo/config.toml",
   // acyclic-stream links this crate under non-WASM targets. Keep its source
   // in the attestation so a native build cannot silently use another tree.
   "rust/crates/native-runtime",
@@ -27,6 +31,8 @@ const sourceRoots = [
   "typescript/packages/stream/src",
   "typescript/packages/stream/generated/proto",
   "scripts/build-stream-native.mjs",
+  "scripts/ensure-bun.ps1",
+  "scripts/ensure-bun.sh",
 ];
 
 function usage() {
@@ -125,6 +131,242 @@ function sourceRevision() {
   return revision;
 }
 
+function commandOutput(command, args) {
+  return execFileSync(command, args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function requiredCommandIdentity(command, args) {
+  const output = commandOutput(command, args);
+  if (output.length === 0) throw new Error(`${command} did not report a version`);
+  return { command, args, output };
+}
+
+function optionalCommandIdentity(command, args) {
+  try {
+    return requiredCommandIdentity(command, args);
+  } catch (error) {
+    const output = `${error.stdout ?? ""}${error.stderr ?? ""}`.trim();
+    return output.length === 0 ? null : { command, args, output };
+  }
+}
+
+function versionIdentity(command, args) {
+  const identity = optionalCommandIdentity(command, args);
+  if (identity === null || !/(?:version|GNU|LLD|clang|gcc)/iu.test(identity.output)) return null;
+  return identity;
+}
+
+function envValue(name) {
+  return Object.prototype.hasOwnProperty.call(process.env, name) ? process.env[name] : null;
+}
+
+function targetEnvName(target, suffix) {
+  return `CARGO_TARGET_${target.replaceAll("-", "_").toUpperCase()}_${suffix}`;
+}
+
+function executableIdentity(command) {
+  if (command.includes("\\") || command.includes("/")) return { command: "configured", args: [], output: command };
+  return optionalCommandIdentity("where.exe", [command]);
+}
+
+function linkerInputs(target) {
+  const targetLinkerName = targetEnvName(target, "LINKER");
+  const configured = {
+    target: envValue(targetLinkerName),
+    rustc: envValue("RUSTC_LINKER"),
+  };
+  const linkerCommand = configured.target ?? configured.rustc;
+  const defaultCommand = linkerCommand === null
+    ? (target.endsWith("-msvc") ? "link.exe" : target.endsWith("-gnu") ? "cc" : null)
+    : null;
+  const command = linkerCommand ?? defaultCommand;
+  return {
+    configured,
+    environment: {
+      LINK: envValue("LINK"),
+      CC: envValue("CC"),
+      AR: envValue("AR"),
+      VCINSTALLDIR: envValue("VCINSTALLDIR"),
+      VCToolsInstallDir: envValue("VCToolsInstallDir"),
+      WindowsSdkDir: envValue("WindowsSdkDir"),
+      VisualStudioVersion: envValue("VisualStudioVersion"),
+    },
+    command,
+    path: command === null ? null : executableIdentity(command),
+    version: command === null ? null : versionIdentity(command, command.toLowerCase().includes("lld-link") ? ["--version"] : target.endsWith("-msvc") ? ["/?"] : ["--version"]),
+  };
+}
+
+async function napiGeneratorIdentity() {
+  const packagePath = require.resolve("@napi-rs/cli/package.json");
+  const entryPath = require.resolve("@napi-rs/cli");
+  const packageBytes = await readFile(packagePath);
+  const entryBytes = await readFile(entryPath);
+  const packageManifest = JSON.parse(packageBytes.toString("utf8"));
+  if (typeof packageManifest.version !== "string" || packageManifest.version.length === 0) {
+    throw new Error("@napi-rs/cli package version is unavailable");
+  }
+  return {
+    package: "@napi-rs/cli",
+    version: packageManifest.version,
+    package_sha256: digest(packageBytes),
+    entry_sha256: digest(entryBytes),
+    lock_sha256: digest(await readFile(resolve(root, "bun.lock"))),
+  };
+}
+
+async function maintainedBunVersion() {
+  const versions = [];
+  for (const relativePath of ["scripts/ensure-bun.ps1", "scripts/ensure-bun.sh"]) {
+    const source = await readFile(resolve(root, relativePath), "utf8");
+    const match = source.match(/(?:\$?version)\s*=\s*["']?([0-9]+(?:\.[0-9]+)+)/iu);
+    if (match === null) throw new Error(`${relativePath} does not declare a Bun version`);
+    versions.push(match[1]);
+  }
+  if (new Set(versions).size !== 1) throw new Error("Bun bootstrap scripts disagree on their maintained version");
+  return versions[0];
+}
+
+export async function buildInputs(target, targetDir, outputDir, packageName) {
+  if (typeof target !== "string" || target.length === 0) throw new Error("native build inputs require a target");
+  const wrapper = envValue("RUSTC_WRAPPER");
+  const wrapperCommand = wrapper === null || /\s/u.test(wrapper.trim()) ? null : wrapper.trim();
+  const maintainedBun = await maintainedBunVersion();
+  const bunIdentity = optionalCommandIdentity("bun", ["--version"]);
+  if (bunIdentity !== null && bunIdentity.output !== maintainedBun) throw new Error(`loaded Bun ${bunIdentity.output} does not match maintained version ${maintainedBun}`);
+  return {
+    schema: buildInputsSchema,
+    target,
+    target_dir: resolve(targetDir),
+    runtime: {
+      node: process.version,
+      node_path: process.execPath,
+      platform: process.platform,
+      arch: process.arch,
+      bun: { maintained: maintainedBun, actual: bunIdentity },
+    },
+    invocation: {
+      script: "scripts/build-stream-native.mjs",
+      runtime: process.execPath,
+      args: process.argv.slice(2),
+    },
+    compiler: {
+      rustc: requiredCommandIdentity("rustc", ["--version", "--verbose"]),
+      cargo: requiredCommandIdentity("cargo", ["--version", "--verbose"]),
+    },
+    generator: {
+      ...await napiGeneratorIdentity(),
+      options: {
+        release: true,
+        platform: true,
+        target,
+        output_dir: resolve(outputDir),
+        target_dir: resolve(targetDir),
+        js_package_name: packageName,
+        js_binding: "binding.cjs",
+        dts: "binding.d.ts",
+      },
+    },
+    linker: linkerInputs(target),
+    profile: {
+      name: "release",
+      cargo_incremental: envValue("CARGO_INCREMENTAL"),
+      release_incremental: envValue("CARGO_PROFILE_RELEASE_INCREMENTAL"),
+      manifest_sha256: digest(await readFile(resolve(root, "Cargo.toml"))),
+      config_sha256: digest(await readFile(resolve(root, ".cargo/config.toml"))),
+    },
+    environment: {
+      RUSTFLAGS: envValue("RUSTFLAGS"),
+      CARGO_ENCODED_RUSTFLAGS: envValue("CARGO_ENCODED_RUSTFLAGS"),
+      RUSTC_WRAPPER: wrapper,
+      CARGO_TARGET_DIR: envValue("CARGO_TARGET_DIR"),
+    },
+    cache: {
+      wrapper,
+      wrapper_command: wrapperCommand,
+      wrapper_version: wrapperCommand === null ? null : optionalCommandIdentity(wrapperCommand, ["--version"]),
+      directory: envValue("SCCACHE_DIR"),
+      size: envValue("SCCACHE_CACHE_SIZE"),
+    },
+  };
+}
+
+function assertString(value, label) {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`native build input ${label} is missing`);
+}
+
+function assertDigest(value, label) {
+  if (canonicalSha256(value) === undefined) throw new Error(`native build input ${label} is invalid`);
+}
+
+export function assertBuildInputs(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("native build inputs are invalid");
+  if (value.schema !== buildInputsSchema) throw new Error("native build inputs have unsupported schema");
+  assertString(value.target, "target");
+  assertString(value.target_dir, "target_dir");
+  for (const label of ["node", "node_path", "platform", "arch"]) assertString(value.runtime?.[label], `runtime.${label}`);
+  if (value.runtime?.bun === null || typeof value.runtime?.bun !== "object") throw new Error("native build Bun identity is missing");
+  assertString(value.runtime.bun.maintained, "runtime.bun.maintained");
+  if (value.runtime.bun.actual !== null && (typeof value.runtime.bun.actual !== "object" || typeof value.runtime.bun.actual.output !== "string")) throw new Error("native build Bun identity is invalid");
+  assertString(value.invocation?.script, "invocation.script");
+  assertString(value.invocation?.runtime, "invocation.runtime");
+  if (!Array.isArray(value.invocation.args) || value.invocation.args.some(item => typeof item !== "string")) throw new Error("native build invocation arguments are invalid");
+  for (const compiler of ["rustc", "cargo"]) {
+    if (value.compiler?.[compiler] === null || typeof value.compiler?.[compiler] !== "object") throw new Error(`native build input compiler.${compiler} is missing`);
+    assertString(value.compiler[compiler].command, `compiler.${compiler}.command`);
+    assertString(value.compiler[compiler].output, `compiler.${compiler}.output`);
+    if (!Array.isArray(value.compiler[compiler].args)) throw new Error(`native build input compiler.${compiler}.args is invalid`);
+  }
+  assertString(value.generator?.package, "generator.package");
+  if (value.generator.package !== "@napi-rs/cli") throw new Error("native build generator package is unsupported");
+  assertString(value.generator?.version, "generator.version");
+  assertString(value.generator?.package_sha256, "generator.package_sha256");
+  assertString(value.generator?.entry_sha256, "generator.entry_sha256");
+  assertString(value.generator?.lock_sha256, "generator.lock_sha256");
+  for (const field of ["package_sha256", "entry_sha256", "lock_sha256"]) assertDigest(value.generator[field], `generator.${field}`);
+  const generatorOptions = value.generator.options;
+  if (generatorOptions === null || typeof generatorOptions !== "object") throw new Error("native build generator options are missing");
+  for (const field of ["output_dir", "target_dir", "js_package_name", "js_binding", "dts"]) assertString(generatorOptions[field], `generator.options.${field}`);
+  if (generatorOptions.release !== true || generatorOptions.platform !== true) throw new Error("native build generator options are invalid");
+  if (generatorOptions.target !== value.target) throw new Error("native build generator target differs");
+  if (generatorOptions.target_dir !== value.target_dir) throw new Error("native build generator target directory differs");
+  assertString(value.profile?.name, "profile.name");
+  if (value.profile.name !== "release") throw new Error("native build profile is not release");
+  for (const field of ["manifest_sha256", "config_sha256"]) {
+    assertString(value.profile?.[field], `profile.${field}`);
+    assertDigest(value.profile[field], `profile.${field}`);
+  }
+  for (const field of ["cargo_incremental", "release_incremental", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "CARGO_TARGET_DIR"]) {
+    const section = ["cargo_incremental", "release_incremental"].includes(field) ? value.profile : value.environment;
+    if (section[field] !== null && typeof section[field] !== "string") throw new Error(`native build input ${field} is invalid`);
+  }
+  if (value.cache === null || typeof value.cache !== "object") throw new Error("native build cache inputs are missing");
+  for (const field of ["wrapper", "wrapper_command", "directory", "size"]) {
+    if (value.cache[field] !== null && typeof value.cache[field] !== "string") throw new Error(`native build cache input ${field} is invalid`);
+  }
+  if (value.cache.wrapper_version !== null && (typeof value.cache.wrapper_version !== "object" || typeof value.cache.wrapper_version.output !== "string")) throw new Error("native build cache wrapper identity is invalid");
+  if (value.linker === null || typeof value.linker !== "object") throw new Error("native build linker inputs are missing");
+  for (const section of ["configured", "environment"]) {
+    if (value.linker[section] === null || typeof value.linker[section] !== "object") throw new Error(`native build linker ${section} inputs are missing`);
+    for (const item of Object.values(value.linker[section])) if (item !== null && typeof item !== "string") throw new Error("native build linker environment input is invalid");
+  }
+  if (value.linker.command !== null && typeof value.linker.command !== "string") throw new Error("native build linker command is invalid");
+  for (const field of ["path", "version"]) {
+    if (value.linker[field] !== null && (typeof value.linker[field] !== "object" || typeof value.linker[field].output !== "string")) throw new Error(`native build linker ${field} identity is invalid`);
+  }
+  return value;
+}
+
+export function assertMatchingBuildInputs(left, right) {
+  assertBuildInputs(left);
+  assertBuildInputs(right);
+  if (JSON.stringify(left) !== JSON.stringify(right)) throw new Error("native bundle build input attestation differs");
+}
+
 function assertCleanSource() {
   const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...sourceRoots], { cwd: root, encoding: "utf8" });
   if (status.trim() !== "") throw new Error("Stream native build requires a clean source closure; commit or stage source changes before building");
@@ -142,6 +384,10 @@ function rustMetadata() {
 
 async function packageJson() {
   return JSON.parse(await readFile(resolve(root, packageRelative), "utf8"));
+}
+
+async function rootPackageJson() {
+  return JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 }
 
 function assertVersion(rustPackage, packageManifest) {
@@ -191,6 +437,7 @@ async function assertBundle(output, { expectedTarget } = {}) {
   const { rustPackage, targets } = rustMetadata();
   assertVersion(rustPackage, packageManifest);
   if (metadata.schema !== nativeTargetsSchema || generation.schema !== generationSchema) throw new Error(`native bundle ${output} has unsupported provenance schema`);
+  assertMatchingBuildInputs(metadata.build_inputs, generation.build_inputs);
   if (metadata.package !== rustPackage.name || generation.package !== rustPackage.name) throw new Error(`native bundle ${output} names the wrong Rust package`);
   if (metadata.version !== packageManifest.version || generation.version !== packageManifest.version) throw new Error(`native bundle ${output} version does not match ${packageRelative}`);
   if (metadata.source_path !== manifestRelative || generation.source_path !== manifestRelative) throw new Error(`native bundle ${output} has the wrong Rust source path`);
@@ -226,6 +473,16 @@ async function build(options) {
   if (!targets.includes(options.target)) throw new Error(`unsupported Stream N-API target ${JSON.stringify(options.target)}; expected one of ${targets.join(", ")}`);
   const revision = sourceRevision();
   const source = await sourceSnapshot();
+  const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
+  const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
+  if (options.target.endsWith("-msvc") && (attestedInputs.linker.path === null || attestedInputs.linker.version === null)) {
+    throw new Error("MSVC native build requires a discovered linker path and version");
+  }
+  const rootManifest = await rootPackageJson();
+  const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
+  if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
+    throw new Error(`loaded @napi-rs/cli ${attestedInputs.generator.version} does not match package.json ${expectedGeneratorVersion}`);
+  }
   await mkdir(output, { recursive: true });
   const temporary = await mkdtemp(resolve(tmpdir(), "acyclic-stream-napi-package-"));
   const packagePath = resolve(temporary, `${randomUUID()}.json`);
@@ -245,7 +502,7 @@ async function build(options) {
       manifestPath: resolve(root, manifestRelative),
       outputDir: output,
       target: options.target,
-      targetDir: resolve(options.targetDir ?? resolve(root, "target")),
+      targetDir,
       platform: true,
       jsPackageName: packageManifest.name,
       jsBinding: "binding.cjs",
@@ -269,6 +526,7 @@ async function build(options) {
     source_files: source.files,
     targets,
     selected_target: options.target,
+    build_inputs: attestedInputs,
     artifacts: bundle.artifacts,
   };
   const generationBytes = Buffer.from(`${JSON.stringify(generation, null, 2)}\n`);
@@ -283,6 +541,7 @@ async function build(options) {
     source_files: source.files,
     targets,
     selected_target: options.target,
+    build_inputs: attestedInputs,
     generation_manifest: `generated/native/${generationManifestName}`,
     generation_sha256: digest(generationBytes),
     artifacts: bundle.artifacts,
