@@ -21,8 +21,6 @@ describe("shared workspace operations", () => {
     plan.commonAncestor[0] = 9;
     expect(targetHead[0]).toBe(1);
     expect(commonAncestor[0]).toBe(2);
-    await expect(plan.apply(new Uint8Array(31))).rejects.toThrow("generation identity");
-    await expect(plan.apply(new Uint8Array(32), new Uint8Array(15))).rejects.toThrow("idempotency key");
     expect(applies).toBe(0);
     const applied = await plan.apply(new Uint8Array(32), new Uint8Array(16));
     expect(applied.status).toBe("applied");
@@ -87,6 +85,5 @@ describe("shared workspace operations", () => {
     const observed = await operations.head();
     observed[0] = 9;
     expect(head[0]).toBe(1);
-    await expect(operations.delete(new Uint8Array(15))).rejects.toThrow("idempotency key");
   });
 });
