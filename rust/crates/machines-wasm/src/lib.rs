@@ -145,6 +145,34 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
     Ok(Uuid::from_bytes(bytes).to_string())
 }
 
+/// Validates transport-only options before the HTTP adapter constructs a
+/// request. Endpoint URL policy remains in JavaScript because this crate does
+/// not carry a URL parser; token and response-bound policy stay Rust-owned.
+#[wasm_bindgen(js_name = validateTransportOptions)]
+pub fn validate_transport_options(
+    token: String,
+    maximum_response_bytes: f64,
+) -> Result<(), JsValue> {
+    if token.trim().is_empty()
+        || token.as_bytes().len() > 8192
+        || token
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return Err(js_error(
+            "invalid-token",
+            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+        ));
+    }
+    if !public::is_safe_integer(maximum_response_bytes) || maximum_response_bytes <= 0.0 {
+        return Err(js_error(
+            "invalid-maximum",
+            "maximumResponseBytes must be a positive safe integer",
+        ));
+    }
+    Ok(())
+}
+
 /// Parses and normalizes an immutable OCI image reference using the canonical
 /// Machines image constructor.
 #[wasm_bindgen(js_name = managedOci, unchecked_return_type = "ImageOut")]

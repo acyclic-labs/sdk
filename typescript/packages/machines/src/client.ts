@@ -37,7 +37,6 @@ export class Machines {
   async *list(options: MachineListOptions = {}): AsyncIterable<Machine> {
     const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
     const maximum = options.maximum ?? 1024;
-    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MANAGED_OCI_CONTRACT.maxPageSize) throw new RangeError(`pageSize must be 1..=${MANAGED_OCI_CONTRACT.maxPageSize}`);
     if (!Number.isSafeInteger(maximum) || maximum < 0) throw new RangeError("maximum must be a nonnegative safe integer");
     let cursor = options.after ?? null;
     let yielded = 0;
