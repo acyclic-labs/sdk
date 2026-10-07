@@ -52,7 +52,7 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use strum::{AsRefStr, IntoEnumIterator};
+use strum::IntoEnumIterator;
 
 /// A JavaScript number accepted at the N-API boundary as an exact `u32`.
 ///

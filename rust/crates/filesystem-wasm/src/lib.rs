@@ -58,7 +58,7 @@ mod bindings {
     use operation_windows::browser_publication_permit;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
-    use strum::{AsRefStr, IntoEnumIterator};
+    use strum::IntoEnumIterator;
     use tsify::{Ts, Tsify};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
@@ -7504,7 +7504,7 @@ mod bindings {
                     generation_id,
                     head,
                 } => (
-                    "committed",
+                    LiveMutationStatus::Committed,
                     Some(generation_id.digest().into_bytes().to_vec()),
                     Some(head.epoch.get()),
                     Some(head.sequence.get()),
@@ -7516,7 +7516,7 @@ mod bindings {
                     generation_id,
                     head,
                 } => (
-                    "already-committed",
+                    LiveMutationStatus::AlreadyCommitted,
                     Some(generation_id.digest().into_bytes().to_vec()),
                     Some(head.epoch.get()),
                     Some(head.sequence.get()),

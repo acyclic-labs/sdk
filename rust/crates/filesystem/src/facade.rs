@@ -86,7 +86,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
-use strum::EnumDiscriminants;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 const MAXIMUM_VOLUME_EVENT_BYTES: u64 = 4 * 1024;

@@ -2,7 +2,7 @@
 
 use super::{RebaseConflict, RebaseDecision};
 use crate::foundation::{Digest, Epoch, GenerationId, Head};
-use strum::EnumDiscriminants;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 /// One authority publication observation consumed by live retry orchestration.

@@ -7,7 +7,7 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
-use strum::EnumDiscriminants;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 /// One exact semantic region whose state can affect a checkout.

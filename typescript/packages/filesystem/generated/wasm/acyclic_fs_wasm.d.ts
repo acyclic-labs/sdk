@@ -6,9 +6,66 @@
 export type FileKind = "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
 
 /**
+ * Runtime status metadata emitted from the canonical Rust discriminants.
+ *
+ * Adapters use this object to reject malformed boundary values without
+ * maintaining a second hand-authored status list in TypeScript.
+ */
+export interface BrowserStatusMetadata {
+    transactionCommit: string[];
+    transactionRebase: string[];
+    workspaceRebase: string[];
+    workspaceDelete: string[];
+    joinOutcome: string[];
+    checkoutCommit: string[];
+    liveMutation: string[];
+    rebaseDecision: string[];
+}
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type CheckoutCommitStatus = "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+
+/**
  *Auto-generated discriminant enum variants
  */
 export type FilePayloadKind = "inline-regular" | "regular" | "directory" | "symbolic-link" | "empty" | "device" | "reparse-point";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type JoinOutcomeStatus = "applied" | "already-applied" | "no-changes" | "stale-target" | "conflicted" | "fenced" | "idempotency-conflict";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type LiveMutationStatus = "committed" | "already-committed" | "conflicted" | "retry-limit" | "fenced" | "idempotency-conflict";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type RebaseDecisionStatus = "safe" | "conflicted";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type TransactionCommitStatus = "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type TransactionRebaseStatus = "rebased" | "conflicted";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type WorkspaceDeleteStatus = "deleted" | "already-deleted" | "conflict" | "idempotency-conflict";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type WorkspaceRebaseStatus = "rebased" | "already-rebased" | "current" | "stale" | "conflicted" | "fenced" | "idempotency-conflict";
 
 export interface BrowserAdmissionResult {
     status: "admitted" | "rejected";
@@ -47,7 +104,7 @@ export interface BrowserCheckpointResult {
 }
 
 export interface BrowserCommitResult {
-    status: "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+    status: CheckoutCommitStatus;
     generationId: Uint8Array | undefined;
     epoch: bigint | undefined;
     sequence: bigint | undefined;
@@ -150,14 +207,14 @@ export interface BrowserJoinOptions {
 }
 
 export interface BrowserJoinResult {
-    status: "applied" | "already-applied" | "no-changes" | "stale-target" | "conflicted" | "fenced" | "idempotency-conflict";
+    status: JoinOutcomeStatus;
     generationId: Uint8Array | undefined;
     conflicts: MergeConflictResult[];
     truncated: boolean;
 }
 
 export interface BrowserLiveMutationResult {
-    status: "committed" | "already-committed" | "conflicted" | "retry-limit" | "fenced" | "idempotency-conflict";
+    status: LiveMutationStatus;
     generationId: Uint8Array | undefined;
     epoch: bigint | undefined;
     sequence: bigint | undefined;
@@ -168,7 +225,7 @@ export interface BrowserLiveMutationResult {
 }
 
 export interface BrowserLiveTransactionResult {
-    status: "committed" | "already-committed" | "conflicted" | "retry-limit" | "fenced" | "idempotency-conflict";
+    status: LiveMutationStatus;
     generationId: Uint8Array | undefined;
     epoch: bigint | undefined;
     sequence: bigint | undefined;
@@ -258,7 +315,7 @@ export interface BrowserPromotionMetrics {
 }
 
 export interface BrowserRebaseResult {
-    status: "safe" | "conflicted";
+    status: RebaseDecisionStatus;
     generationId: Uint8Array | undefined;
     conflictCount: number;
     truncated: boolean;
@@ -368,7 +425,7 @@ export interface BrowserWorkCounters {
 }
 
 export interface BrowserWorkspaceCommit {
-    status: "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+    status: TransactionCommitStatus;
     generationId: Uint8Array | undefined;
 }
 
@@ -415,7 +472,7 @@ export interface BrowserWorkspaceName {
 }
 
 export interface BrowserWorkspaceRebaseResult {
-    status: "rebased" | "already-rebased" | "current" | "stale" | "conflicted" | "fenced" | "idempotency-conflict";
+    status: WorkspaceRebaseStatus;
     generationId: Uint8Array | undefined;
     conflicts: MergeConflictResult[];
     truncated: boolean;
@@ -1507,7 +1564,7 @@ export class BrowserWorkspace {
     /**
      * Terminally removes this mutable workspace head.
      */
-    delete(idempotency_key?: Uint8Array | null): Promise<string>;
+    delete(idempotency_key?: Uint8Array | null): Promise<WorkspaceDeleteStatus>;
     /**
      * Computes one immutable bounded semantic delta between exact generations.
      */
@@ -1682,6 +1739,8 @@ export function openBrowserFs(options: any): Promise<BrowserFs>;
  * Returns a JavaScript error when the memory options are invalid.
  */
 export function openMemoryFs(options: any): BrowserFs;
+
+export function statusMetadata(): BrowserStatusMetadata;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -1880,11 +1939,12 @@ export interface InitOutput {
     readonly encodePublicationJson: (a: number, b: number) => [number, number, number, number];
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly statusMetadata: () => [number, number, number];
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___wasm_bindgen_93a73551dbc7fbb7___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_93a73551dbc7fbb7___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___web_sys_59e32a0ab2552162___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_93a73551dbc7fbb7___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___js_sys_7609a9cad0aceba7___Function_fn_wasm_bindgen_93a73551dbc7fbb7___JsValue_____wasm_bindgen_93a73551dbc7fbb7___sys__Undefined___js_sys_7609a9cad0aceba7___Function_fn_wasm_bindgen_93a73551dbc7fbb7___JsValue_____wasm_bindgen_93a73551dbc7fbb7___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke___web_sys_59e32a0ab2552162___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_93a73551dbc7fbb7___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
