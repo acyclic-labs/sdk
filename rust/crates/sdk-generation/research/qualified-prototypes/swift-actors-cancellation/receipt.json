@@ -67,7 +67,7 @@
   },
   "typedAll8": {
     "generatedConsumerBuild": "PASS",
-    "ordinaryAndEightOperationRuntime": "pending standard-fixture rerun: Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json at https://localhost:55755; the 60389 gate is general all-eight with an optional pending hook",
+    "ordinaryAndEightOperationRuntime": "NOT_RUN: standard fixture https://localhost:55755 was unavailable during this receipt update; run the ready external consumer against Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json when the shared fixture is live",
     "serviceErrorShape": "Generated BindingError.Service and u64 cursor remain compile-qualified in fresh output"
   },
   "generatedOutputsExcluded": true,
