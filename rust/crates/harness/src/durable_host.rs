@@ -495,6 +495,54 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ))
     }
 
+    /// Publishes ref-only mail under the sender's exact uncancelled lease.
+    #[cfg(feature = "filesystem")]
+    pub async fn send_owned(
+        self: &Arc<Self>,
+        sender: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    ) -> Result<()> {
+        let owner = self.journal_owner(sender, fence.clone()).await?;
+        let bytes = Bytes::from(
+            self.mail_bytes(sender, recipient, message_id, payload)
+                .await?,
+        );
+        let path = acyclic_stream::StreamPath::new(format!("harness/v2/mail/{recipient}"))?;
+        let key = Self::event_key("mail", recipient, message_id)?;
+        for _ in 0..64 {
+            self.verify_owner(sender, &fence, false).await?;
+            let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
+            if found {
+                self.verify_owner(sender, &fence, false).await?;
+                return Ok(());
+            }
+            if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
+                return Err(Error::Invalid(
+                    "task mail history exceeds identity limit".into(),
+                ));
+            }
+            if owner
+                .append(
+                    path.clone(),
+                    tail,
+                    &key,
+                    bytes.clone(),
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?
+            {
+                self.verify_owner(sender, &fence, false).await?;
+                return Ok(());
+            }
+        }
+        Err(Error::Conflict(
+            "mail publication retry limit reached".into(),
+        ))
+    }
+
     /// Starts or reattaches the exact already-admitted lease. This does not
     /// acquire another reservation or infer that an uncertain provider stopped.
     pub async fn start_task(&self, lease: &crate::distributed::WorkLease) -> Result<()> {
@@ -1194,6 +1242,88 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
+    async fn mail_bytes(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    ) -> Result<Vec<u8>> {
+        payload.validate()?;
+        let sender_admission = self
+            .admission(OperationId::from_bytes(sender.into_bytes()))
+            .await?;
+        if !sender_admission.grants.contains("mail:send") {
+            return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
+        }
+        let recipient_admission = self
+            .admission(OperationId::from_bytes(recipient.into_bytes()))
+            .await?;
+        recipient_admission.limits.validate_file(&payload)?;
+        if !read_granted(&recipient_admission.grants, &payload)? {
+            return Err(Error::Unauthorized(
+                "recipient cannot read the mailed file".into(),
+            ));
+        }
+        self.reader.verify(&payload).await?;
+        let event = MailEvent {
+            sender,
+            message_id,
+            payload,
+        };
+        crate::contract::canonical_json_bytes(&event)
+    }
+
+    async fn mail_state(
+        &self,
+        recipient: TaskId,
+        message_id: OperationId,
+        bytes: &[u8],
+    ) -> Result<(u64, bool)> {
+        let mailbox = self.mailbox(recipient)?;
+        let tail = match mailbox.bounds().await {
+            Ok(bounds) => bounds.tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        if tail > crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
+            return Err(Error::Invalid(
+                "task mail history exceeds identity limit".into(),
+            ));
+        }
+        let mut after = 0;
+        let mut found = false;
+        while after < tail {
+            let page = mailbox
+                .read(after, (tail - after).min(64) as u32)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            if page.is_empty() || page.len() > 64 {
+                return Err(Error::Storage("invalid mail replay page".into()));
+            }
+            for record in page {
+                if record.sequence != after || after >= tail {
+                    return Err(Error::Storage("mail replay sequence differs".into()));
+                }
+                let event: MailEvent = serde_json::from_slice(&record.value)
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                event.payload.validate()?;
+                if crate::contract::canonical_json_bytes(&event)? != record.value.as_ref() {
+                    return Err(Error::Storage("mail event is not canonical JSON".into()));
+                }
+                if event.message_id == message_id {
+                    if found || record.value.as_ref() != bytes {
+                        return Err(Error::Conflict("mail identity reused".into()));
+                    }
+                    found = true;
+                }
+                after += 1;
+            }
+        }
+        Ok((tail, found))
+    }
+
     async fn timer_state(
         &self,
         task: TaskId,
@@ -1856,32 +1986,30 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            payload.validate()?;
-            let sender_admission = self
-                .admission(OperationId::from_bytes(sender.into_bytes()))
+            let bytes = self
+                .mail_bytes(sender, recipient, message_id, payload)
                 .await?;
-            if !sender_admission.grants.contains("mail:send") {
-                return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
-            }
-            let recipient_admission = self
-                .admission(OperationId::from_bytes(recipient.into_bytes()))
-                .await?;
-            recipient_admission.limits.validate_file(&payload)?;
-            if !read_granted(&recipient_admission.grants, &payload)? {
-                return Err(Error::Unauthorized(
-                    "recipient cannot read the mailed file".into(),
-                ));
-            }
-            self.reader.verify(&payload).await?;
-            let event = MailEvent {
-                sender,
-                message_id,
-                payload,
-            };
-            let bytes = crate::contract::canonical_json_bytes(&event)?;
             let mailbox = self.mailbox(recipient)?;
-            self.publish_control(&mailbox, "mail", recipient, message_id, &bytes)
-                .await
+            for _ in 0..64 {
+                let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
+                if found {
+                    return Ok(());
+                }
+                if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
+                    return Err(Error::Invalid(
+                        "task mail history exceeds identity limit".into(),
+                    ));
+                }
+                if self
+                    .publish_control_at(&mailbox, "mail", recipient, message_id, &bytes, Some(tail))
+                    .await?
+                {
+                    return Ok(());
+                }
+            }
+            Err(Error::Conflict(
+                "mail publication retry limit reached".into(),
+            ))
         })
     }
 
@@ -1919,8 +2047,19 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 Err(StreamError::NotFound) => return Ok(Vec::new()),
                 Err(error) => return Err(Error::Storage(error.to_string())),
             };
+            if page.len() > limit {
+                return Err(Error::Storage("inbox page exceeds requested limit".into()));
+            }
+            let mut expected = after;
             let mut items = Vec::with_capacity(page.len());
             for record in page {
+                if record.sequence != expected {
+                    return Err(Error::Storage("inbox replay sequence differs".into()));
+                }
+                expected = expected
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?;
+
                 let value: Value = serde_json::from_slice(&record.value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 if crate::contract::canonical_json_bytes(&value)? != record.value.as_ref() {

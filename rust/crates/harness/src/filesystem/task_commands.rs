@@ -4,6 +4,7 @@ use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress};
 use crate::{
     Error, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
+    conversation::FileRef,
     durable_tool::DurableToolRunner,
     executor::TurnInput,
     model::{Model, ModelContent, ModelProvider},
@@ -32,6 +33,29 @@ pub const TIMER_TASK_COMMAND_KIND: &str = "acyclic.timer.v1";
 pub struct TimerTaskCommand {
     /// Absolute deadline under the composed host's trusted clock.
     pub deadline_unix_ms: u64,
+}
+
+/// Versioned fenced ref-only mail publication command.
+pub const MAIL_SEND_TASK_COMMAND_KIND: &str = "acyclic.mail.send.v1";
+/// Versioned nonblocking single-item mailbox selection command.
+pub const MAIL_RECEIVE_TASK_COMMAND_KIND: &str = "acyclic.mail.receive.v1";
+
+/// Sends a pinned readable file to an admitted recipient. Identity is derived.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MailSendTaskCommand {
+    /// Recipient's retained task identity.
+    pub recipient: TaskId,
+    /// Exact immutable file, validated against recipient grants and limits.
+    pub payload: FileRef,
+}
+
+/// Selects the first immutable inbox item after an acknowledged sequence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MailReceiveTaskCommand {
+    /// Exclusive one-based cursor; zero selects the first message.
+    pub after: u64,
 }
 
 /// Ref-resolved model input. The worker supplies the stable execution identity.
@@ -146,6 +170,10 @@ where
                     self.tool_command(task, context, fence.clone(), command.operation_id, payload)
                         .await
                 }
+                MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
+                    self.mail_command(task, &context, fence.clone(), &command, payload)
+                        .await
+                }
                 TIMER_TASK_COMMAND_KIND => {
                     let input: TimerTaskCommand =
                         serde_json::from_value(payload).map_err(|error| {
@@ -187,6 +215,42 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    async fn mail_command(
+        &self,
+        task: TaskId,
+        context: &TaskContext,
+        fence: LeaseFence,
+        command: &WorkflowCommand,
+        payload: Value,
+    ) -> Result<TaskCommandProgress> {
+        if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
+            let input: MailSendTaskCommand = serde_json::from_value(payload)
+                .map_err(|error| Error::Invalid(format!("invalid mail send: {error}")))?;
+            self.runtime
+                .task_host()
+                .send_owned(
+                    task,
+                    fence,
+                    input.recipient,
+                    super::task_runtime::execution_operation(task, command.operation_id),
+                    input.payload,
+                )
+                .await?;
+            ready(Outcome::Succeeded(Value::Null))
+        } else {
+            let input: MailReceiveTaskCommand = serde_json::from_value(payload)
+                .map_err(|error| Error::Invalid(format!("invalid mail receive: {error}")))?;
+            let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
+            let Some(item) = items.into_iter().next() else {
+                return Ok(TaskCommandProgress::Pending);
+            };
+            // The immutable first item is stable across a crash before checkpoint
+            // publication. Later appends cannot change this selected result.
+            context.read_file(&item.payload).await?;
+            ready(Outcome::Succeeded(item))
+        }
+    }
+
     async fn model_command(
         &self,
         task: TaskId,

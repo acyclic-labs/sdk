@@ -13,9 +13,10 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
-    FilesystemTaskRuntime, MODEL_TASK_COMMAND_KIND, ModelTaskCommand, TIMER_TASK_COMMAND_KIND,
-    TOOL_TASK_COMMAND_KIND, TaskCommandHost, TaskCommandProgress, TaskWorkerOutcome,
-    TimerTaskCommand, ToolTaskCommand,
+    FilesystemTaskRuntime, MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND,
+    MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
+    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskCommandHost, TaskCommandProgress,
+    TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -191,6 +192,21 @@ async fn worker_timer_releases_capacity_and_completes_after_reopen() -> Result<(
     worker_restart(WorkerCommand::Timer).await
 }
 
+#[tokio::test]
+async fn worker_mail_send_replays_after_publication_before_checkpoint() -> Result<()> {
+    worker_restart(WorkerCommand::MailSend).await
+}
+
+#[tokio::test]
+async fn worker_mail_receive_releases_capacity_until_committed_item() -> Result<()> {
+    worker_restart(WorkerCommand::MailReceive).await
+}
+
+#[tokio::test]
+async fn worker_mail_receive_requires_retained_read_grant() -> Result<()> {
+    worker_restart_with_mail_read(WorkerCommand::MailReceive, false).await
+}
+
 struct TestClock(AtomicU64);
 impl UnixMillisClock for TestClock {
     fn now_unix_millis(&self) -> u64 {
@@ -204,6 +220,8 @@ enum WorkerCommand {
     Model,
     Tool,
     Timer,
+    MailSend,
+    MailReceive,
 }
 
 struct CommandMachine {
@@ -227,7 +245,11 @@ impl ResumableMachine for CommandMachine {
                 state: state.clone(),
                 commands: vec![WorkflowCommand {
                     operation_id: OperationId::from_bytes([26; 16]),
-                    kind: if self.command == WorkerCommand::Timer {
+                    kind: if self.command == WorkerCommand::MailSend {
+                        MAIL_SEND_TASK_COMMAND_KIND
+                    } else if self.command == WorkerCommand::MailReceive {
+                        MAIL_RECEIVE_TASK_COMMAND_KIND
+                    } else if self.command == WorkerCommand::Timer {
                         TIMER_TASK_COMMAND_KIND
                     } else if self.command == WorkerCommand::Tool {
                         TOOL_TASK_COMMAND_KIND
@@ -253,7 +275,10 @@ impl ResumableMachine for CommandMachine {
             let Outcome::Succeeded(value) = outcome else {
                 return Err(Error::Invalid("unexpected command outcome".into()));
             };
-            if self.command == WorkerCommand::Timer {
+            if self.command == WorkerCommand::MailReceive {
+                assert_eq!(value.get("sequence"), Some(&json!(1)));
+                assert!(value.get("payload").is_some());
+            } else if matches!(self.command, WorkerCommand::Timer | WorkerCommand::MailSend) {
                 assert!(value.is_null());
             } else if self.command == WorkerCommand::Tool {
                 assert_eq!(value, json!("tool-restored"));
@@ -274,7 +299,20 @@ impl ResumableMachine for CommandMachine {
     reason = "parallel restart assertions for suspended and uncertain ownership"
 )]
 async fn worker_restart(command: WorkerCommand) -> Result<()> {
+    worker_restart_with_mail_read(command, true).await
+}
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "restart ownership and authority boundary cases"
+)]
+async fn worker_restart_with_mail_read(
+    command: WorkerCommand,
+    allow_mail_read: bool,
+) -> Result<()> {
     let with_command = command != WorkerCommand::Wait;
+    let with_mail_send = command == WorkerCommand::MailSend;
+    let with_mail_receive = command == WorkerCommand::MailReceive;
     let with_timer = command == WorkerCommand::Timer;
     let uncertain = matches!(command, WorkerCommand::Model | WorkerCommand::Tool);
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
@@ -305,13 +343,22 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
             "operation:wake".to_owned(),
             "model:generate".to_owned(),
             "timer:wait".to_owned(),
+            "mail:send".to_owned(),
+            "mail:read".to_owned(),
             "tool:call:test.restore".to_owned(),
             "task:spawn:test.restart@1".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
+    let grants = if allow_mail_read {
+        signed.capabilities().clone()
+    } else {
+        signed
+            .capabilities()
+            .without(&Capabilities::new(["mail:read"]))
+    };
+    let scope = RuntimeScope::new(grants, Limits::default())?;
     let base = TaskMachine {
         identity: MachineIdentity {
             name: "test.restart".into(),
@@ -418,7 +465,14 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
         .await?;
         if !reopened {
             let input = if with_command {
-                let payload = if with_timer {
+                let payload = if with_mail_send {
+                    serde_json::to_value(MailSendTaskCommand {
+                        recipient: task,
+                        payload: payloads.stage(operation, "mail-body", b"7").await?,
+                    })
+                } else if with_mail_receive {
+                    serde_json::to_value(MailReceiveTaskCommand { after: 0 })
+                } else if with_timer {
                     serde_json::to_value(TimerTaskCommand {
                         deadline_unix_ms: 200,
                     })
@@ -455,7 +509,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
         let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
             .await?
             .with_payload_store(payloads.clone());
-        if reopened && !uncertain {
+        if reopened && !uncertain && !with_mail_send {
             clock.0.store(200, Ordering::SeqCst);
             let retained = coordinator
                 .scheduler()
@@ -467,6 +521,17 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
             );
             assert!(retained.reservation.is_none());
             assert!(coordinator.pull(&worker).await?.is_none());
+            if with_mail_receive {
+                for index in [30u8, 31] {
+                    let file = payloads
+                        .stage(operation, &format!("mail-incoming-{index}"), b"7")
+                        .await?;
+                    runtime
+                        .task_host()
+                        .send(task, task, OperationId::from_bytes([index; 16]), file)
+                        .await?;
+                }
+            }
             let input = payloads.stage(operation, "wake-seven", b"7").await?;
             assert!(
                 runtime
@@ -490,14 +555,18 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                 .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
                 .await?;
         }
-        let lease = if reopened && uncertain {
+        let lease = if reopened && (uncertain || with_mail_send) {
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
                 .ok_or_else(|| Error::NotFound("uncertain task".into()))?;
             assert_eq!(
                 retained.phase,
-                acyclic_harness::scheduler::OperationPhase::Reconciling
+                if uncertain {
+                    acyclic_harness::scheduler::OperationPhase::Reconciling
+                } else {
+                    acyclic_harness::scheduler::OperationPhase::Running
+                }
             );
             assert!(retained.reservation.is_some());
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -512,6 +581,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
         };
         if let Some(old) = &old_lease
             && !uncertain
+            && !with_mail_send
         {
             assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
         }
@@ -538,6 +608,90 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                     acyclic_harness::scheduler::OperationPhase::Running
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+                if with_mail_send {
+                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let file = serde_json::from_value(
+                        runtime.task_host().observe_admission(task).await?.input,
+                    )
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let input: MailSendTaskCommand =
+                        serde_json::from_slice(&context.read_file(&file).await?)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let fence = LeaseFence::from(&lease.reservation);
+                    for index in 100..170u8 {
+                        runtime
+                            .task_host()
+                            .send(
+                                task,
+                                task,
+                                OperationId::from_bytes([index; 16]),
+                                input.payload.clone(),
+                            )
+                            .await?;
+                    }
+                    let probe = OperationId::from_bytes([99; 16]);
+                    let (stock, legacy) = tokio::join!(
+                        runtime.task_host().send_owned(
+                            task,
+                            fence.clone(),
+                            task,
+                            probe,
+                            input.payload.clone()
+                        ),
+                        runtime
+                            .task_host()
+                            .send(task, task, probe, input.payload.clone())
+                    );
+                    stock?;
+                    legacy?;
+                    let command = WorkflowCommand {
+                        operation_id: OperationId::from_bytes([26; 16]),
+                        kind: MAIL_SEND_TASK_COMMAND_KIND.into(),
+                        payload: file,
+                    };
+                    let payload = serde_json::to_value(&input)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    assert!(matches!(
+                        runtime
+                            .commands()
+                            .execute(context.clone(), fence.clone(), command.clone(), payload)
+                            .await?,
+                        TaskCommandProgress::Ready(_)
+                    ));
+                    let other = payloads.stage(operation, "mail-conflict", b"8").await?;
+                    let changed = serde_json::to_value(MailSendTaskCommand {
+                        payload: other,
+                        ..input
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                    assert!(matches!(
+                        runtime
+                            .commands()
+                            .execute(context, fence, command, changed)
+                            .await,
+                        Err(Error::Conflict(_))
+                    ));
+                    assert_eq!(
+                        stream
+                            .stream(format!("harness/v2/mail/{task}"))?
+                            .bounds()
+                            .await?
+                            .tail,
+                        72
+                    );
+                    coordinator.refresh().await?;
+                    assert_eq!(
+                        coordinator
+                            .scheduler()
+                            .operation(operation)
+                            .and_then(|state| state.reservation.as_ref()),
+                        Some(&lease.reservation)
+                    );
+                    // Simulate process loss after committed send, before the
+                    // machine consumes its result. All handles drop on continue.
+                    old_lease = Some(lease.clone());
+                    continue;
+                }
                 if with_timer {
                     let fence = LeaseFence::from(&lease.reservation);
                     let probe = OperationId::from_bytes([99; 16]);
@@ -642,6 +796,31 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
         } else {
             runtime.run_task(lease.clone(), &NoCommands, 1).await?
         };
+        if with_mail_receive && !allow_mail_read {
+            assert!(
+                matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
+            );
+            coordinator.refresh().await?;
+            assert_eq!(
+                coordinator
+                    .scheduler()
+                    .operation(operation)
+                    .and_then(|state| state.reservation.as_ref()),
+                Some(&lease.reservation)
+            );
+            assert!(matches!(
+                runtime.task_host().inbox(task, 0, 1).await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert!(
+                stream
+                    .stream(format!("harness/v2/mail/{task}"))?
+                    .bounds()
+                    .await
+                    .is_err()
+            );
+            return Ok(());
+        }
         if reopened {
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Completed { task: completed } if completed == task)
@@ -692,7 +871,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                     matches!(outcome, TaskWorkerOutcome::Suspended { task: suspended, revision:1 } if suspended == task)
                 );
             }
-            old_lease = Some(lease);
+            old_lease = Some(lease.clone());
         }
         if with_timer {
             let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
@@ -706,6 +885,29 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                             LeaseFence::from(&old.reservation),
                             OperationId::from_bytes([26; 16]),
                             200
+                        )
+                        .await
+                        .is_err()
+                );
+            }
+        }
+        if with_mail_send || (with_mail_receive && reopened) {
+            let inbox = runtime.task_host().inbox(task, 0, 1024).await?;
+            assert_eq!(inbox.len(), if with_mail_send { 72 } else { 2 });
+            let first = inbox
+                .first()
+                .ok_or_else(|| Error::NotFound("committed mail item".into()))?;
+            assert_eq!(reader.read(&first.payload).await?, b"7");
+            if with_mail_send {
+                assert!(
+                    runtime
+                        .task_host()
+                        .send_owned(
+                            task,
+                            LeaseFence::from(&lease.reservation),
+                            task,
+                            OperationId::from_bytes([99; 16]),
+                            first.payload.clone()
                         )
                         .await
                         .is_err()

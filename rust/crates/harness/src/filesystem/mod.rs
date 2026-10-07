@@ -51,8 +51,9 @@ pub use memory::{LocalHarness, MemoryHarnessStorage};
 mod task_commands;
 mod task_runtime;
 pub use task_commands::{
-    FilesystemTaskCommands, MODEL_TASK_COMMAND_KIND, ModelTaskCommand, TIMER_TASK_COMMAND_KIND,
-    TOOL_TASK_COMMAND_KIND, TimerTaskCommand, ToolTaskCommand,
+    FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND,
+    MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
+    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TimerTaskCommand, ToolTaskCommand,
 };
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
