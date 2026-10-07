@@ -2,7 +2,9 @@
   "name": "@acyclic-labs/sdk-workspace",
   "private": true,
   "version": "0.0.0",
-  "workspaces": ["typescript/packages/*"],
+  "workspaces": [
+    "typescript/packages/*"
+  ],
   "scripts": {
     "build:wasm": "bun scripts/build-wasm.mjs",
     "build": "bun run build:wasm && tsc -b --force",
@@ -26,5 +28,15 @@
     "ajv": "8.20.0",
     "fast-check": "4.10.2",
     "typescript": "7.0.2"
-  }
+  },
+  "description": "The Acyclic SDK is the open contract and composition layer for building recursive, fork-join agent systems. It contains the Rust harness, public service interfaces, customer-machine implementations, conformance suites, and TypeScript packages.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
 }
