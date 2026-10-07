@@ -182,32 +182,30 @@ fn grouping_search_and_child_routing_cover_every_boundary() -> Result<(), Box<dy
 fn page_bounds_are_exact_for_leaf_and_internal_frontiers() -> Result<(), Box<dyn std::error::Error>>
 {
     let values = [entry(1)?, entry(3)?];
-    assert!(validate_values::<AttributeFormat>(&values, None, None).is_ok());
-    assert!(validate_values::<AttributeFormat>(&values, Some(&name(1)?), Some(&name(4)?)).is_ok());
-    assert!(matches!(
-        validate_values::<AttributeFormat>(&values, Some(&name(2)?), None),
-        Err(Error::ChildBoundsMismatch)
+    assert!(leaf_within::<AttributeFormat>(&values, None, None));
+    assert!(leaf_within::<AttributeFormat>(
+        &values,
+        Some(&name(1)?),
+        Some(&name(4)?)
     ));
-    assert!(matches!(
-        validate_values::<AttributeFormat>(&values, None, Some(&name(3)?)),
-        Err(Error::ChildBoundsMismatch)
+    assert!(!leaf_within::<AttributeFormat>(
+        &values,
+        Some(&name(2)?),
+        None
     ));
-    assert!(validate_values::<AttributeFormat>(&[], None, Some(&name(1)?)).is_ok());
+    assert!(!leaf_within::<AttributeFormat>(
+        &values,
+        None,
+        Some(&name(3)?)
+    ));
+    assert!(leaf_within::<AttributeFormat>(&[], None, Some(&name(1)?)));
 
     let children = [child(1)?, child(3)?];
-    assert!(validate_children::<AttributeFormat>(&children, None, None).is_ok());
-    assert!(
-        validate_children::<AttributeFormat>(&children, Some(&name(1)?), Some(&name(4)?)).is_ok()
-    );
-    assert!(matches!(
-        validate_children::<AttributeFormat>(&children, Some(&name(2)?), None),
-        Err(Error::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_children::<AttributeFormat>(&children, None, Some(&name(3)?)),
-        Err(Error::ChildBoundsMismatch)
-    ));
-    assert!(validate_children::<AttributeFormat>(&[], None, Some(&name(1)?)).is_ok());
+    assert!(children_within(&children, None, None));
+    assert!(children_within(&children, Some(&name(1)?), Some(&name(4)?)));
+    assert!(!children_within(&children, Some(&name(2)?), None));
+    assert!(!children_within(&children, None, Some(&name(3)?)));
+    assert!(children_within(&[], None, Some(&name(1)?)));
     Ok(())
 }
 

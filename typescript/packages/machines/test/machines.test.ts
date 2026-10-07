@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
 import { normalize_identity as rustNormalizeIdentity, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
-import { ensureMachinesWasm } from "../src/wasm-runtime.ts";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -15,7 +14,6 @@ const request = (idempotencyKey: string): CreateMachine => ({
 
 describe("Machines simulation", () => {
   test("uses the Rust OCI constructor and preserves its public image shape", async () => {
-    await ensureMachinesWasm();
     expect(managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`)).toEqual({ kind: "managed-oci", digestHex: "a".repeat(64) });
     expect(managedOci(`registry.example/app@sha256:${"AB".repeat(32)}`)).toEqual({ kind: "managed-oci", digestHex: "ab".repeat(32) });
     expect(managedOci(`registry.example/one@sha256:${"0".repeat(63)}1`)).toEqual({ kind: "managed-oci", digestHex: `${"0".repeat(63)}1` });
@@ -26,7 +24,6 @@ describe("Machines simulation", () => {
   });
 
   test("normalizes public identities through the Rust contract", async () => {
-    await ensureMachinesWasm();
     expect(idempotencyKey("caller-key")).toBe(rustNormalizeIdentity("idempotency", "caller-key"));
     expect(machineId("machine-label")).toBe(rustNormalizeIdentity("machine", "machine-label"));
     expect(checkpointId("checkpoint-label")).toBe(rustNormalizeIdentity("checkpoint", "checkpoint-label"));
@@ -37,7 +34,6 @@ describe("Machines simulation", () => {
   });
 
   test("rejects malformed WASM inputs through the async boundary", async () => {
-    await ensureMachinesWasm();
     const wasm = new WasmSimulatedMachines();
     expect(JSON.parse(WasmSimulatedMachines.encodeHttpRequest({ count: 7n, bytes: Uint8Array.of(0, 255, 128) }))).toEqual({ count: { $bigint: "7" }, bytes: { $bytes: "AP+A" } });
     const cyclic: Record<string, unknown> = {};
@@ -106,6 +102,12 @@ describe("Machines simulation", () => {
       { kind: "state", state: "running" }, { kind: "state", state: "suspended" }, { kind: "state", state: "running" },
     ]);
     expect((await provider.events(id, 1, 16)).events.map(event => event.sequence)).toEqual([2, 3]);
+    for (const unsafe of [-1, 1.5, 2 ** 53]) {
+      await expect(provider.events(id, unsafe, 16)).rejects.toBeInstanceOf(RangeError);
+      await expect(provider.usage(id, unsafe, 2 ** 53 - 1)).rejects.toBeInstanceOf(RangeError);
+      await expect(new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { throw new Error("unexpected fetch"); } })
+        .usage(id, 1, unsafe)).rejects.toBeInstanceOf(RangeError);
+    }
     const captured = await provider.checkpoint(id, idempotencyKey("checkpoint-full"));
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     expect(await provider.inspectCheckpoint(captured.checkpoint.id)).toEqual(captured.checkpoint);
@@ -300,6 +302,19 @@ describe("Machines simulation", () => {
     await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
     const invalidUtf8 = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([0xff])) });
     await expect(invalidUtf8.inspectMachine("machine" as never)).rejects.toThrow("valid UTF-8");
+  });
+
+  test("managed transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+      expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
+    }
+    let redirect: RequestRedirect | undefined;
+    const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response("{}", { status: 503 });
+    } });
+    await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
+    expect(redirect).toBe("error");
   });
 
   test("managed transport rejects substituted identities and impossible machine evidence", async () => {

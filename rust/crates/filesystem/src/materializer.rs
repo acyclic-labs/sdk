@@ -6,17 +6,15 @@
 //! capture every preimage before the first mutation, record progress after each
 //! operation, and complete or roll back deterministically after interruption.
 
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
 use crate::{GenerationId, OperationId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use thiserror::Error;
 
 const JOURNAL_VERSION: u32 = 2;
-const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
 
 /// One declarative pathwise checkout edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -381,6 +379,15 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         if journal.phase == MaterializationPhase::RolledBack {
             return Ok(journal);
         }
+        // An interrupted forward pass may have applied the edit after the
+        // last durable one before recording it. Include that edit; the
+        // observation below skips it when it is still at its preimage.
+        if journal.phase == MaterializationPhase::Applying
+            && usize::try_from(journal.applied)
+                .is_ok_and(|applied| applied < journal.plan.edits.len())
+        {
+            journal.applied = journal.applied.saturating_add(1);
+        }
         journal.phase = MaterializationPhase::RollingBack;
         journal = self.persist(journal).await?;
         while journal.restored < journal.applied {
@@ -472,8 +479,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let expected = journal.revision;
-            journal.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut journal.revision);
             if self
                 .store
                 .compare_and_swap(journal.plan.operation_id, expected, journal.clone())
@@ -549,17 +555,9 @@ fn validate_plan(plan: &MaterializationPlan) -> Result<(), ()> {
 }
 
 fn validate_materialization_path(path: &str) -> Result<(), ()> {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.starts_with('\\')
-        || path.contains('\\')
-        || path
-            .split('/')
-            .any(|component| component.is_empty() || component == "." || component == "..")
-    {
-        return Err(());
-    }
-    Ok(())
+    crate::path::is_canonical_relative(path)
+        .then_some(())
+        .ok_or(())
 }
 
 /// Native same-volume tree publisher used for root checkout application.
@@ -1911,7 +1909,7 @@ pub enum NativeWorkspacePublicationError {
 /// Process-local materialization journal adapter.
 #[derive(Default)]
 pub struct MemoryMaterializationJournalStore {
-    journals: Mutex<BTreeMap<OperationId, MaterializationJournal>>,
+    journals: MemoryRecords<OperationId, MaterializationJournal>,
 }
 
 impl MaterializationJournalStore for MemoryMaterializationJournalStore {
@@ -1922,9 +1920,8 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
         self.journals
-            .lock()
+            .load(&operation_id)
             .map_err(|_| MemoryMaterializationJournalStoreError)
-            .map(|journals| journals.get(&operation_id).cloned())
     }
 
     async fn compare_and_swap(
@@ -1933,18 +1930,9 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         expected_revision: u64,
         replacement: MaterializationJournal,
     ) -> Result<bool, Self::Error> {
-        let mut journals = self
-            .journals
-            .lock()
-            .map_err(|_| MemoryMaterializationJournalStoreError)?;
-        let revision = journals
-            .get(&operation_id)
-            .map_or(0, |journal| journal.revision);
-        if revision != expected_revision {
-            return Ok(false);
-        }
-        journals.insert(operation_id, replacement);
-        Ok(true)
+        self.journals
+            .compare_and_swap(operation_id, expected_revision, replacement)
+            .map_err(|_| MemoryMaterializationJournalStoreError)
     }
 }
 
@@ -1958,6 +1946,12 @@ pub struct MemoryMaterializationJournalStoreError;
 mod tests {
     use super::*;
     use crate::Digest;
+    use proptest::collection::btree_map;
+    use proptest::option;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
     #[derive(Default)]
     struct Backend(Mutex<Vec<Vec<u8>>>);
@@ -1998,6 +1992,212 @@ mod tests {
                 .map_err(|_| BackendError)?
                 .push(preimage.image.clone());
             Ok(())
+        }
+    }
+
+    /// Flat path model whose writes, like every journal CAS, are durable
+    /// steps; the step numbered `crash_at` takes effect and then "crashes".
+    #[derive(Default)]
+    struct Crashing {
+        tree: Mutex<BTreeMap<String, u8>>,
+        steps: AtomicU64,
+        crash_at: AtomicU64,
+    }
+
+    impl Crashing {
+        fn step(&self) -> Result<(), BackendError> {
+            let step = self.steps.fetch_add(1, SeqCst) + 1;
+            if step == self.crash_at.load(SeqCst) {
+                return Err(BackendError);
+            }
+            Ok(())
+        }
+
+        fn tree(&self) -> BTreeMap<String, u8> {
+            self.tree.lock().expect("tree lock").clone()
+        }
+
+        fn current(&self, path: &str) -> Result<Option<u8>, BackendError> {
+            Ok(self
+                .tree
+                .lock()
+                .map_err(|_| BackendError)?
+                .get(path)
+                .copied())
+        }
+
+        fn set(&self, path: &str, value: Option<u8>) -> Result<(), BackendError> {
+            let mut tree = self.tree.lock().map_err(|_| BackendError)?;
+            match value {
+                Some(value) => tree.insert(path.to_owned(), value),
+                None => tree.remove(path),
+            };
+            drop(tree);
+            self.step()
+        }
+    }
+
+    fn endpoints(edit: &MaterializationEdit) -> (&str, Option<u8>) {
+        match edit {
+            MaterializationEdit::Install { path, image } => (path, image.first().copied()),
+            MaterializationEdit::Remove { path } => (path, None),
+            _ => ("", None),
+        }
+    }
+
+    impl MaterializationBackend for &Crashing {
+        type Error = BackendError;
+
+        async fn capture(
+            &self,
+            edit: &MaterializationEdit,
+        ) -> Result<MaterializationPreimage, Self::Error> {
+            let value = self.current(endpoints(edit).0)?;
+            Ok(MaterializationPreimage {
+                image: value.into_iter().collect(),
+            })
+        }
+
+        async fn observe(
+            &self,
+            edit: &MaterializationEdit,
+            preimage: &MaterializationPreimage,
+        ) -> Result<MaterializationObservation, Self::Error> {
+            let (path, postimage) = endpoints(edit);
+            let current = self.current(path)?;
+            Ok(if current == postimage {
+                MaterializationObservation::Postimage
+            } else if current == preimage.image.first().copied() {
+                MaterializationObservation::Preimage
+            } else {
+                MaterializationObservation::Diverged
+            })
+        }
+
+        async fn apply(
+            &self,
+            edit: &MaterializationEdit,
+            _preimage: &MaterializationPreimage,
+        ) -> Result<(), Self::Error> {
+            let (path, postimage) = endpoints(edit);
+            self.set(path, postimage)
+        }
+
+        async fn restore(
+            &self,
+            edit: &MaterializationEdit,
+            preimage: &MaterializationPreimage,
+        ) -> Result<(), Self::Error> {
+            self.set(endpoints(edit).0, preimage.image.first().copied())
+        }
+    }
+
+    /// Journal store whose compare-and-swaps are durable steps of `.1`.
+    struct CrashingStore<'a>(&'a MemoryMaterializationJournalStore, &'a Crashing);
+
+    impl MaterializationJournalStore for CrashingStore<'_> {
+        type Error = BackendError;
+
+        async fn load(
+            &self,
+            operation_id: OperationId,
+        ) -> Result<Option<MaterializationJournal>, Self::Error> {
+            self.0.load(operation_id).await.map_err(|_| BackendError)
+        }
+
+        async fn compare_and_swap(
+            &self,
+            operation_id: OperationId,
+            expected_revision: u64,
+            replacement: MaterializationJournal,
+        ) -> Result<bool, Self::Error> {
+            let swapped = self
+                .0
+                .compare_and_swap(operation_id, expected_revision, replacement)
+                .await
+                .map_err(|_| BackendError)?;
+            self.1.step()?;
+            Ok(swapped)
+        }
+    }
+
+    /// Applies `plan` to `original`, crashing after durable step `crash_at`
+    /// (zero never crashes).
+    fn crashing_apply(
+        plan: &MaterializationPlan,
+        original: &BTreeMap<String, u8>,
+        crash_at: u64,
+    ) -> (Crashing, MemoryMaterializationJournalStore, bool) {
+        let backend = Crashing::default();
+        original.clone_into(&mut backend.tree.lock().expect("tree lock"));
+        backend.crash_at.store(crash_at, SeqCst);
+        let journals = MemoryMaterializationJournalStore::default();
+        let crashed = futures::executor::block_on(
+            JournaledMaterializer::new(CrashingStore(&journals, &backend), &backend)
+                .apply(plan.clone()),
+        )
+        .is_err();
+        (backend, journals, crashed)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// A crash after any durable step, followed by either recovery,
+        /// leaves exactly the planned tree or exactly the original one.
+        #[test]
+        fn recovery_after_a_crash_at_any_durable_step_is_all_or_nothing(
+            original in btree_map("[a-e]", any::<u8>(), 0..5),
+            targets in btree_map("[a-e]", option::of(any::<u8>()), 1..5),
+            crash in any::<u64>(),
+            forward in any::<bool>(),
+        ) {
+            let plan = MaterializationPlan {
+                operation_id: OperationId::from_bytes([7; 16]),
+                from: GenerationId::new(Digest::from_bytes([1; 32])),
+                to: GenerationId::new(Digest::from_bytes([2; 32])),
+                edits: targets
+                    .iter()
+                    .map(|(path, value)| match value {
+                        Some(value) => MaterializationEdit::Install {
+                            path: path.clone(),
+                            image: vec![*value],
+                        },
+                        None => MaterializationEdit::Remove { path: path.clone() },
+                    })
+                    .collect(),
+            };
+            let mut planned = original.clone();
+            for (path, value) in &targets {
+                match value {
+                    Some(value) => planned.insert(path.clone(), *value),
+                    None => planned.remove(path),
+                };
+            }
+            let (clean, _, crashed) = crashing_apply(&plan, &original, 0);
+            prop_assert!(!crashed);
+            prop_assert_eq!(clean.tree(), planned.clone());
+            let steps = clean.steps.load(SeqCst);
+
+            let (backend, journals, crashed) = crashing_apply(&plan, &original, 1 + crash % steps);
+            prop_assert!(crashed);
+            backend.crash_at.store(0, SeqCst);
+            let restarted = JournaledMaterializer::new(CrashingStore(&journals, &backend), &backend);
+            let recovery = if forward {
+                MaterializationRecovery::Complete
+            } else {
+                MaterializationRecovery::RollBack
+            };
+            let journal = futures::executor::block_on(restarted.recover(plan.operation_id, recovery))
+                .expect("recover")
+                .expect("journal");
+            if forward {
+                prop_assert_eq!(journal.phase, MaterializationPhase::Applied);
+                prop_assert_eq!(backend.tree(), planned);
+            } else {
+                prop_assert_eq!(journal.phase, MaterializationPhase::RolledBack);
+                prop_assert_eq!(backend.tree(), original);
+            }
         }
     }
 

@@ -2,7 +2,7 @@
 
 use super::{DecodeLimits, GenerationRoot, decode_generation_root, encode_generation_root};
 use crate::cancellation::CancellationToken;
-use crate::foundation::GenerationId;
+use crate::foundation::{GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStore, ObjectStoreError,
@@ -236,15 +236,14 @@ fn encode_checkpoint(
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    let encoded_capacity = u64::try_from(encoded.capacity()).unwrap_or(u64::MAX);
-    let parent_capacity = u64::try_from(root.parents.capacity())
-        .unwrap_or(u64::MAX)
-        .checked_mul(u64::try_from(size_of::<GenerationId>()).unwrap_or(u64::MAX))
+    let encoded_capacity = usize_to_u64(encoded.capacity());
+    let parent_capacity = usize_to_u64(root.parents.capacity())
+        .checked_mul(usize_to_u64(size_of::<GenerationId>()))
         .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
     let peak_allocation_bytes = encoded_capacity
         .checked_add(parent_capacity)
         .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
-    let encoded_length = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+    let encoded_length = usize_to_u64(encoded.len());
     let prospective = work
         .checked_add(WorkCounters {
             bytes_encoded: encoded_length,

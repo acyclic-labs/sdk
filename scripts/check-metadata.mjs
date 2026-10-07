@@ -54,6 +54,10 @@ const documents = [
   ["provenance/manifest.json", "compatibility/schemas/provenance.schema.json"],
   ["languages/package-names.json", "compatibility/schemas/package-names.schema.json"],
   ["compatibility/manifest.json", "compatibility/schemas/compatibility.schema.json"],
+  [".github/qualification-lanes.json", "compatibility/schemas/qualification-lanes.schema.json"],
+  ["release/cargo-crates.json", "compatibility/schemas/release-cargo-crates.schema.json"],
+  ["release/cargo-equivalent-archives.json", "compatibility/schemas/release-cargo-equivalent-archives.schema.json"],
+  ["release/npm-packages.json", "compatibility/schemas/release-npm-packages.schema.json"],
 ];
 for (const [documentPath, schemaPath] of documents) {
   const validate = ajv.compile(await load(schemaPath));
@@ -161,10 +165,6 @@ if ((await load("typescript/packages/inference/package.json")).version !== infer
 const rustInferenceManifest = await readFile(new URL("rust/crates/inference/Cargo.toml", root), "utf8");
 if (rustInferenceManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
   throw new Error("Rust inference package version mismatch");
-}
-const inferenceContractManifest = await readFile(new URL("rust/crates/inference-contract/Cargo.toml", root), "utf8");
-if (inferenceContractManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
-  throw new Error("Rust inference contract version mismatch");
 }
 const inferenceWasmManifest = await readFile(new URL("rust/crates/inference-wasm/Cargo.toml", root), "utf8");
 if (inferenceWasmManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {

@@ -260,6 +260,8 @@ mod platform {
             // child's ID. WNOWAIT retains the leader until group termination,
             // preventing its PID/PGID from being reused for an unrelated group.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: `info` is writable storage owned by this frame and `id`
+            // names the exclusively owned child.
             if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } != 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -271,6 +273,7 @@ mod platform {
             if unsafe { info.si_pid() } == 0 {
                 return Ok(None);
             }
+            // SAFETY: the same WEXITED observation initialized the status field.
             let status = unsafe { info.si_status() };
             let raw = match info.si_code {
                 libc::CLD_EXITED => status << 8,
@@ -289,10 +292,12 @@ mod platform {
         // SAFETY: this owned pipe is used exclusively by the collector. Setting
         // O_NONBLOCK prevents an escaped descendant from holding up cleanup.
         let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
-        if flags == -1
-            || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
-                == -1
-        {
+        if flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the same owned pipe; only O_NONBLOCK is added to the flags
+        // just read from it.
+        if unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
             return Err(io::Error::last_os_error());
         }
         match pipe.read(buffer) {
@@ -905,6 +910,8 @@ mod platform {
                 // SAFETY: this plain Win32 structure is initialized before the
                 // query writes its exact size through an owned live Job handle.
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+                // SAFETY: `job` is owned and live, and `accounting` is a writable
+                // structure of exactly the size passed to the query.
                 if unsafe {
                     QueryInformationJobObject(
                         self.job,
@@ -957,20 +964,18 @@ mod platform {
         let mut restricted = std::ptr::null_mut();
         // SAFETY: both source and target are this process; the duplicate has
         // zero access rights. Keep the original handle for mandatory cleanup.
-        assert_ne!(
-            unsafe {
-                DuplicateHandle(
-                    GetCurrentProcess(),
-                    tree.guard.job,
-                    GetCurrentProcess(),
-                    &raw mut restricted,
-                    0,
-                    0,
-                    0,
-                )
-            },
-            0
-        );
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                tree.guard.job,
+                GetCurrentProcess(),
+                &raw mut restricted,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_ne!(duplicated, 0);
         let original = std::mem::replace(
             &mut tree.guard,
             Guard {
@@ -1011,20 +1016,18 @@ mod platform {
         let mut restricted = std::ptr::null_mut();
         // SAFETY: duplicate the live Job into this process without assign or
         // terminate authority; the original guard remains independently owned.
-        assert_ne!(
-            unsafe {
-                DuplicateHandle(
-                    GetCurrentProcess(),
-                    guard.job,
-                    GetCurrentProcess(),
-                    &raw mut restricted,
-                    0,
-                    0,
-                    0,
-                )
-            },
-            0
-        );
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                guard.job,
+                GetCurrentProcess(),
+                &raw mut restricted,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_ne!(duplicated, 0);
         let mut restricted = Guard {
             job: restricted,
             active: true,
@@ -1033,10 +1036,9 @@ mod platform {
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn().expect("spawn suspended child");
         // SAFETY: live handles; this real assignment must fail for lack of rights.
-        assert_eq!(
-            unsafe { AssignProcessToJobObject(restricted.job, child.as_raw_handle().cast()) },
-            0
-        );
+        let assigned =
+            unsafe { AssignProcessToJobObject(restricted.job, child.as_raw_handle().cast()) };
+        assert_eq!(assigned, 0);
         let admission = io::Error::last_os_error();
         let error = failed_admission(&mut child, &mut restricted, admission);
         assert!(

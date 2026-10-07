@@ -43,7 +43,7 @@ export interface InferenceOperations {
   inspectWarm(commitment: Uint8Array): Promise<WarmView>;
   renewWarm(request: Parameters<import("./index.js").InferenceTransport["renewWarm"]>[0]): Promise<WarmView>;
   releaseWarm(request: Parameters<import("./index.js").InferenceTransport["releaseWarm"]>[0]): Promise<WarmView>;
-  generate(request: Parameters<import("./index.js").InferenceTransport["generateRun"]>[0]): Promise<{ readonly run?: RunView }>;
+  generate(request: Parameters<import("./index.js").InferenceTransport["generateRun"]>[0]): Promise<{ readonly run?: RunView | undefined }>;
   inspectRun(runId: Uint8Array): Promise<RunView>;
   watchRun(runId: Uint8Array, fromSequence?: bigint, signal?: AbortSignal): AsyncIterable<RunEvent>;
   cancelRun(runId: Uint8Array): Promise<RunView>;
@@ -90,7 +90,7 @@ export class Run {
   constructor(readonly inference: Inference, readonly runId: RunId) {}
   id(): RunId { return this.runId; }
   inspect(): Promise<RunView> { return this.inference.client.inspectRun(this.runId); }
-  events(options: { readonly from?: bigint; readonly signal?: AbortSignal } = {}): AsyncIterable<RunEvent> { return this.inference.client.watchRun(this.runId, options.from ?? 0n, options.signal); }
+  events(options: { readonly from?: bigint; readonly signal?: AbortSignal | undefined } = {}): AsyncIterable<RunEvent> { return this.inference.client.watchRun(this.runId, options.from ?? 0n, options.signal); }
   async result(options: { readonly signal?: AbortSignal } = {}): Promise<RunOutcome> {
     let view = await this.inspect();
     if (view.result === undefined) {

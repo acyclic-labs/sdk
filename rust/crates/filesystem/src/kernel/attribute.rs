@@ -4,6 +4,7 @@ use super::codec::{
     CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder,
 };
 use super::types::digest_object;
+use crate::foundation::usize_to_u64;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use thiserror::Error;
 
@@ -297,7 +298,7 @@ pub(crate) fn attribute_page_decode_shape(
                 decoder.u8()?;
                 let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
                 nested_bytes = nested_bytes
-                    .checked_add(u64::try_from(name_bytes).unwrap_or(u64::MAX))
+                    .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
                 if tag == 1 {
                     decoder.u64()?;

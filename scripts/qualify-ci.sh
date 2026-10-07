@@ -13,6 +13,27 @@ full_qualification="${FORCE:-false}"
 case "${GITHUB_EVENT_NAME:-}" in
   release|workflow_dispatch|schedule) full_qualification=true ;;
 esac
+# Fetches a pinned release archive into $TOOLS_DIR once, verifies its SHA-256
+# on every use, and extracts MEMBER into DESTINATION.
+install_tool() {
+  local archive="$TOOLS_DIR/$1" url="$2" checksum="$3" destination="$4" member="$5"
+  local strip="${6:-0}" temporary
+  if [[ ! -f "$archive" ]] ||
+    ! echo "$checksum  $archive" | sha256sum --check --status; then
+    temporary="$(mktemp "${archive}.XXXXXXXX")"
+    if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      --max-time 30 "$url" --output "$temporary" ||
+      ! echo "$checksum  $temporary" | sha256sum --check --status; then
+      rm -f -- "$temporary"
+      echo "could not fetch a verified $url" >&2
+      return 1
+    fi
+    mv -- "$temporary" "$archive"
+  fi
+  mkdir -p "$destination"
+  tar --extract --gzip --file "$archive" --directory "$destination" \
+    --strip-components="$strip" "$member"
+}
 
 # Independent builds run beside the main test build in their own target
 # directories so Cargo's build lock never serializes them; the shared compiler
@@ -95,16 +116,10 @@ case "$lane" in
     fi
     if [[ "$(cargo-llvm-cov llvm-cov --version 2>/dev/null)" != *" 0.9.1" ]]; then
       # The pinned release archive avoids compiling cargo-llvm-cov on a cold cache.
-      archive="$TOOLS_DIR/cargo-llvm-cov-0.9.1-x86_64-unknown-linux-gnu.tar.gz"
-      if [[ ! -f "$archive" ]] ||
-        ! echo "b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a  $archive" | sha256sum --check --status; then
-        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 30 \
-          https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz \
-          --output "$archive"
-      fi
-      echo "b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a  $archive" | sha256sum --check
-      mkdir -p "$TOOLS_DIR/cargo/bin"
-      tar --extract --gzip --file "$archive" --directory "$TOOLS_DIR/cargo/bin" cargo-llvm-cov
+      install_tool cargo-llvm-cov-0.9.1-x86_64-unknown-linux-gnu.tar.gz \
+        https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz \
+        b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a \
+        "$TOOLS_DIR/cargo/bin" cargo-llvm-cov
       [[ "$(cargo-llvm-cov llvm-cov --version)" == *" 0.9.1" ]]
     fi
     mkdir -p "$SDK_ARTIFACT_DIR/coverage"
@@ -211,16 +226,10 @@ case "$lane" in
       trap - EXIT
     fi
 
-    archive="$TOOLS_DIR/gitleaks_8.30.1_linux_x64.tar.gz"
-    mkdir -p "$TOOLS_DIR/gitleaks-8.30.1"
-    if [[ ! -x "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" ]]; then
-      curl --fail --silent --show-error --location --max-time 30 \
-        https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
-        --output "$archive"
-      echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $archive" | sha256sum --check
-      tar --extract --gzip --file "$archive" --directory \
-        "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
-    fi
+    install_tool gitleaks_8.30.1_linux_x64.tar.gz \
+      https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+      551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb \
+      "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
     "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
       --log-opts "$range"
     ;;
@@ -304,25 +313,11 @@ case "$lane" in
     bash scripts/test-qualify-gate-rustup.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
-    actionlint_archive="$TOOLS_DIR/actionlint_1.7.7_linux_amd64.tar.gz"
-    actionlint_checksum="023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
-    if [[ ! -f "$actionlint_archive" ]] ||
-      ! echo "$actionlint_checksum  $actionlint_archive" | sha256sum --check --status; then
-      temporary_archive="$(mktemp "${actionlint_archive}.XXXXXXXX")"
-      if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --max-time 30 \
-        https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
-        --output "$temporary_archive" ||
-        ! echo "$actionlint_checksum  $temporary_archive" | sha256sum --check --status; then
-        rm -f -- "$temporary_archive"
-        exit 1
-      fi
-      mv -- "$temporary_archive" "$actionlint_archive"
-    fi
-    actionlint_root="$TOOLS_DIR/actionlint-1.7.7"
-    mkdir -p "$actionlint_root"
-    tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
-    "$actionlint_root/actionlint" .github/workflows/*.yml
+    install_tool actionlint_1.7.7_linux_amd64.tar.gz \
+      https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+      023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
+      "$TOOLS_DIR/actionlint-1.7.7" actionlint
+    "$TOOLS_DIR/actionlint-1.7.7/actionlint" .github/workflows/*.yml
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
@@ -332,18 +327,11 @@ case "$lane" in
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     node scripts/clippy-feature-sets.mjs
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-    archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
-    if [[ ! -f "$archive" ]]; then
-      curl --fail --silent --show-error --location --max-time 30 \
-        https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.0/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
-        --output "$archive"
-    fi
-    echo "0e8c2aa59128612c90d9e09c02204e912f29a5b8d9a64671b94608cbe09e064f  $archive" | sha256sum --check
-    deny_root="$(mktemp -d "$SDK_TEMP_DIR/cargo-deny.XXXXXXXX")"
-    trap 'rm -rf -- "$deny_root"' EXIT
-    tar -xzf "$archive" -C "$deny_root" --strip-components=1 \
-      cargo-deny-0.19.0-x86_64-unknown-linux-musl/cargo-deny
-    "$deny_root/cargo-deny" check licenses
+    install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
+      https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.0/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
+      0e8c2aa59128612c90d9e09c02204e912f29a5b8d9a64671b94608cbe09e064f \
+      "$TOOLS_DIR/cargo-deny-0.19.0" cargo-deny-0.19.0-x86_64-unknown-linux-musl/cargo-deny 1
+    "$TOOLS_DIR/cargo-deny-0.19.0/cargo-deny" check
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
@@ -355,14 +343,10 @@ case "$lane" in
       --target wasm32-unknown-unknown --locked -- -D warnings
     if [[ "$(wasm-bindgen-test-runner --version 2>/dev/null)" != "wasm-bindgen-test-runner 0.2.117" ]]; then
       # The pinned release archive avoids compiling wasm-bindgen-cli on a cold cache.
-      archive="$TOOLS_DIR/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz"
-      if [[ ! -f "$archive" ]] ||
-        ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $archive" | sha256sum --check --status; then
-        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 30           https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.117/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz           --output "$archive"
-      fi
-      echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $archive" | sha256sum --check
-      mkdir -p "$TOOLS_DIR/cargo/bin"
-      tar --extract --gzip --file "$archive" --directory "$TOOLS_DIR/cargo/bin"         --strip-components=1 wasm-bindgen-0.2.117-x86_64-unknown-linux-musl/wasm-bindgen-test-runner
+      install_tool wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz \
+        https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.117/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz \
+        97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240 \
+        "$TOOLS_DIR/cargo/bin" wasm-bindgen-0.2.117-x86_64-unknown-linux-musl/wasm-bindgen-test-runner 1
       [[ "$(wasm-bindgen-test-runner --version)" == "wasm-bindgen-test-runner 0.2.117" ]]
     fi
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner

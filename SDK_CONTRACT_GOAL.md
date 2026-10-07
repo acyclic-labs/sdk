@@ -720,7 +720,7 @@ draining within its wire bound, preserving subsequent calls; hard wire overflow
 cancels the request. Public streamed uploads and browser runtime qualification
 still need completion beyond these buffered lifecycle checks.
 
-Commands: node scripts/build-objects-wasm.mjs; bun x tsc -b
+Commands: node scripts/build-wasm.mjs objects; bun x tsc -b
 typescript/packages/objects; node --test
 typescript/packages/objects/test/v2-conformance.mjs; bun test
 ./typescript/packages/objects/test/v2-conformance.mjs; node

@@ -3492,21 +3492,9 @@ fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BAS
 }
 
 fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, MountSourceError> {
-    const WINDOWS_EPOCH_OFFSET_SECONDS: i128 = 11_644_473_600;
-    const HUNDRED_NANOSECONDS_PER_SECOND: i128 = 10_000_000;
-    i128::from(windows_ticks)
-        .checked_sub(
-            WINDOWS_EPOCH_OFFSET_SECONDS
-                .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)
-                .ok_or_else(|| {
-                    MountSourceError::Invalid("Windows epoch conversion overflow".to_owned())
-                })?,
-        )
-        .and_then(|ticks| ticks.checked_mul(100))
-        .and_then(|nanoseconds| i64::try_from(nanoseconds).ok())
-        .ok_or_else(|| {
-            MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
-        })
+    crate::native_host::filetime_to_unix_nanoseconds(windows_ticks).ok_or_else(|| {
+        MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
+    })
 }
 
 fn symlink_extended(target: &[u8]) -> Option<(HSTRING, PRJ_EXTENDED_INFO)> {
@@ -3523,16 +3511,15 @@ fn symlink_extended(target: &[u8]) -> Option<(HSTRING, PRJ_EXTENDED_INFO)> {
     Some((target, extended))
 }
 
+/// Presented placeholder times round toward the past: a projection must not
+/// fail because its source keeps finer timestamps than Windows can name.
 fn windows_time(field: MetadataField<i64>) -> Option<i64> {
-    const WINDOWS_EPOCH_OFFSET_SECONDS: i128 = 11_644_473_600;
-    const HUNDRED_NANOSECONDS_PER_SECOND: i128 = 10_000_000;
     let MetadataField::Value(unix_nanoseconds) = field else {
         return None;
     };
-    let ticks = WINDOWS_EPOCH_OFFSET_SECONDS
-        .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)?
-        .checked_add(i128::from(unix_nanoseconds).div_euclid(100))?;
-    i64::try_from(ticks).ok()
+    Some(crate::native_host::unix_nanoseconds_to_filetime(
+        unix_nanoseconds,
+    ))
 }
 
 // Every directory beneath the root is an ordinary one, and the root holds
@@ -3808,6 +3795,8 @@ unsafe fn notification(
     ) {
         runtime.projector.retry();
     }
+    // SAFETY: `runtime` accepted `callback_data` above as the live ProjFS
+    // callback record.
     if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
         && matches!(
             notification,
@@ -3818,7 +3807,10 @@ unsafe fn notification(
         return HR_OK;
     }
     let file_id = file_id(data);
+    // SAFETY: ProjFS passes these names as null or NUL-terminated strings
+    // valid for the callback.
     let source_is_external = unsafe { empty_destination(data.FilePathName) };
+    // SAFETY: as above.
     let destination_is_external = unsafe { empty_destination(destination_filename) };
     if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
         && (source_is_external
@@ -4662,7 +4654,7 @@ mod tests {
     async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std::error::Error>>
     {
         const FILES: usize = 120;
-        const TICKS: i64 = 116_444_736_000_000_000 + 1_700_000_000 * 10_000_000;
+        const TICKS: i64 = crate::native_host::UNIX_EPOCH_FILETIME + 1_700_000_000 * 10_000_000;
         let source = windows_checkout_source().await?;
         for index in 0..FILES {
             let path = windows_path(&format!("f{index}.txt"));
@@ -5418,6 +5410,7 @@ mod tests {
         }?;
         // No Acyclic source, notification mappings, or mount setup participates.
         let callbacks = super::callbacks();
+        // SAFETY: `wide` and `callbacks` outlive the synchronous start call.
         let context = unsafe {
             PrjStartVirtualizing(
                 PCWSTR::from_raw(wide.as_ptr()),
@@ -5432,6 +5425,7 @@ mod tests {
                 unsafe { PrjStopVirtualizing(context) };
                 // A crash leaves the designation in place. The provider must
                 // be able to restart without marking or clearing that root.
+                // SAFETY: `wide` and `callbacks` outlive the synchronous start call.
                 let restarted = unsafe {
                     PrjStartVirtualizing(
                         PCWSTR::from_raw(wide.as_ptr()),
@@ -5441,8 +5435,10 @@ mod tests {
                     )
                 }?;
                 let mut instance = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
+                // SAFETY: `restarted` is live and `instance` is a writable output.
                 unsafe { PrjGetVirtualizationInstanceInfo(restarted, &raw mut instance) }?;
                 assert_eq!(instance.InstanceID, guid);
+                // SAFETY: `restarted` is the sole live context from the restart.
                 unsafe { PrjStopVirtualizing(restarted) };
             }
             Err(error) => {

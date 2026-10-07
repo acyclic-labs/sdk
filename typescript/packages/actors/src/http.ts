@@ -47,7 +47,7 @@ export class HttpActorsClient {
     if ((!localHttp && endpoint.protocol !== "https:") || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
       throw new TypeError("endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
     }
-    if (!options.token.trim()) throw new TypeError("token is required");
+    if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL");
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -84,6 +84,7 @@ export class HttpActorsClient {
   async #post(path: string, body: string): Promise<string> {
     const response = await this.#fetcher(new URL(path, `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
+      redirect: "error",
       headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
       body,
     });
@@ -125,4 +126,9 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;
+}
+
+/** Header-safe bearer token: non-blank, at most 8 KiB of UTF-8, and no CR, LF, or NUL. */
+function validBearerToken(token: string): boolean {
+  return token.trim().length > 0 && new TextEncoder().encode(token).byteLength <= 8192 && !/[\r\n\0]/.test(token);
 }

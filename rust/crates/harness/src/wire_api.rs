@@ -1,5 +1,6 @@
 //! Transport-neutral server port implemented identically by every wire adapter.
 
+use crate::contract::capability;
 pub use crate::wire_validation::{
     current_protocol, negotiate, validate_admission, validate_cancel_response,
     validate_operation_status,
@@ -59,12 +60,16 @@ pub trait HarnessWireApi: Send + Sync + 'static {
 
 /// Requires every stateless command to carry the exact negotiated wire identity.
 pub fn validate_command_protocol(command: &wire::CommandEnvelope) -> Result<()> {
-    validate_protocol(command.protocol.as_ref())
+    validate_request_protocol(command.protocol.as_ref())
 }
 
 /// Requires every replay request to carry the exact negotiated wire identity.
 pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
-    validate_protocol(request.protocol.as_ref())
+    validate_request_protocol(request.protocol.as_ref())
+}
+
+fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
+    validate_protocol(protocol, &current_protocol(), Error::Invalid)
 }
 
 /// Decoded operation-control request shared by all server adapters.
@@ -87,37 +92,46 @@ impl OperationControlRequest {
 
 /// Validates and decodes an observe request without authenticating its proof.
 pub fn validate_observe_request(request: &wire::ObserveRequest) -> Result<OperationControlRequest> {
-    validate_protocol(request.protocol.as_ref())?;
+    validate_request_protocol(request.protocol.as_ref())?;
     decode_control(
         request.owner.clone(),
         &request.operation_id,
         request.scope.clone(),
-        "operation:observe",
+        capability::OPERATION_OBSERVE,
     )
 }
 
+/// Decoded cancellation request shared by all server adapters.
+pub struct CancelControlRequest {
+    /// Operation-control identity to authenticate before cancelling.
+    pub control: OperationControlRequest,
+    /// Caller-owned retry identity of this cancellation.
+    pub idempotency_key: IdempotencyKey,
+    /// Whether same-owner descendants are cancelled too.
+    pub recursive: bool,
+}
+
 /// Validates and decodes a cancellation request without authenticating its proof.
-pub fn validate_cancel_request(
-    request: &wire::CancelRequest,
-) -> Result<(OperationControlRequest, IdempotencyKey, bool)> {
-    validate_protocol(request.protocol.as_ref())?;
-    let key = IdempotencyKey::new(request.idempotency_key.clone())?;
+pub fn validate_cancel_request(request: &wire::CancelRequest) -> Result<CancelControlRequest> {
+    validate_request_protocol(request.protocol.as_ref())?;
+    let idempotency_key = IdempotencyKey::new(request.idempotency_key.clone())?;
     let control = decode_control(
         request.owner.clone(),
         &request.operation_id,
         request.scope.clone(),
-        "operation:cancel",
+        capability::OPERATION_CANCEL,
     )?;
-    Ok((control, key, request.recursive))
+    Ok(CancelControlRequest {
+        control,
+        idempotency_key,
+        recursive: request.recursive,
+    })
 }
 
 /// Converts the authoritative scheduler projection to its canonical wire status.
 #[must_use]
 pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
-    let owner = match &state.spec.owner {
-        crate::scheduler::DurableOwner::Attached { authority }
-        | crate::scheduler::DurableOwner::Detached { authority } => authority,
-    };
+    let owner = state.spec.owner.authority();
     let (completion, error) = match state.outcome.as_ref() {
         Some(Outcome::Succeeded(_)) => (wire::CompletionState::Succeeded, None),
         Some(Outcome::Failed { message }) => (
@@ -167,9 +181,10 @@ fn decode_control(
     scope: Option<wire::Scope>,
     capability: &str,
 ) -> Result<OperationControlRequest> {
-    let owner =
-        decode_authority(owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?)
-            .map_err(as_invalid_control_input)?;
+    let owner = decode_authority(
+        owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?,
+        Error::Invalid,
+    )?;
     owner.stream_path()?;
     let operation_id = OperationId::parse(operation_id)?;
     let scope = decode_scope(
@@ -185,13 +200,6 @@ fn decode_control(
         operation_id,
         scope,
     })
-}
-
-fn as_invalid_control_input(error: Error) -> Error {
-    match error {
-        Error::Storage(message) => Error::Invalid(message),
-        other => other,
-    }
 }
 
 #[cfg(test)]
@@ -230,6 +238,34 @@ mod tests {
         let mut resume = wire::ResumeRequest::default();
         assert!(validate_command_protocol(&command).is_err());
         assert!(validate_resume_protocol(&resume).is_err());
+        // A malformed request is the caller's fault, never a retryable storage failure.
+        assert!(matches!(
+            validate_command_protocol(&command),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            validate_observe_request(&wire::ObserveRequest::default()),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            validate_cancel_request(&wire::CancelRequest::default()),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            validate_observe_request(&wire::ObserveRequest {
+                protocol: Some(current_protocol()),
+                owner: Some(wire::Authority::default()),
+                ..wire::ObserveRequest::default()
+            }),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            validate_resume_protocol(&wire::ResumeRequest {
+                protocol: Some(wire::ProtocolIdentity::default()),
+                ..wire::ResumeRequest::default()
+            }),
+            Err(Error::Unsupported(_))
+        ));
         command.protocol = Some(current_protocol());
         resume.protocol = Some(current_protocol());
         assert!(validate_command_protocol(&command).is_ok());

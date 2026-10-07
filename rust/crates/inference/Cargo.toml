@@ -19,7 +19,6 @@ host = ["dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroiz
 http-codec = ["dep:prost-reflect", "dep:serde_json"]
 
 [dependencies]
-acyclic-inference-contract = { version = "=0.2.0", path = "../inference-contract" }
 prost.workspace = true
 sha2.workspace = true
 prost-reflect = { workspace = true, features = ["serde"], optional = true }
@@ -32,6 +31,7 @@ zeroize = { workspace = true, optional = true }
 
 [build-dependencies]
 prost.workspace = true
+prost-build.workspace = true
 prost-types.workspace = true
 tonic-prost-build.workspace = true
 

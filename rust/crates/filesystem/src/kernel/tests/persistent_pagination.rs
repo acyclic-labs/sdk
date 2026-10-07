@@ -147,15 +147,21 @@ fn cursor_search_and_page_bounds_cover_every_edge() -> Result<(), Box<dyn std::e
         upper_bound_values::<AttributeFormat>(&values, &name(9)?).0,
         3
     );
-    assert!(validate_values::<AttributeFormat>(&values, None, None).is_ok());
-    assert!(validate_values::<AttributeFormat>(&values, Some(&name(2)?), Some(&name(7)?)).is_ok());
-    assert!(matches!(
-        validate_values::<AttributeFormat>(&values, Some(&name(3)?), None),
-        Err(Error::ChildBoundsMismatch)
+    assert!(leaf_within::<AttributeFormat>(&values, None, None));
+    assert!(leaf_within::<AttributeFormat>(
+        &values,
+        Some(&name(2)?),
+        Some(&name(7)?)
     ));
-    assert!(matches!(
-        validate_values::<AttributeFormat>(&values, None, Some(&name(6)?)),
-        Err(Error::ChildBoundsMismatch)
+    assert!(!leaf_within::<AttributeFormat>(
+        &values,
+        Some(&name(3)?),
+        None
+    ));
+    assert!(!leaf_within::<AttributeFormat>(
+        &values,
+        None,
+        Some(&name(6)?)
     ));
 
     let children = [child(2)?, child(4)?, child(6)?];
@@ -163,18 +169,10 @@ fn cursor_search_and_page_bounds_cover_every_edge() -> Result<(), Box<dyn std::e
     assert_eq!(upper_bound_children(&children, &name(2)?).0, 0);
     assert_eq!(upper_bound_children(&children, &name(5)?).0, 1);
     assert_eq!(upper_bound_children(&children, &name(9)?).0, 2);
-    assert!(validate_children::<AttributeFormat>(&children, None, None).is_ok());
-    assert!(
-        validate_children::<AttributeFormat>(&children, Some(&name(2)?), Some(&name(7)?)).is_ok()
-    );
-    assert!(matches!(
-        validate_children::<AttributeFormat>(&children, Some(&name(3)?), None),
-        Err(Error::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_children::<AttributeFormat>(&children, None, Some(&name(6)?)),
-        Err(Error::ChildBoundsMismatch)
-    ));
+    assert!(children_within(&children, None, None));
+    assert!(children_within(&children, Some(&name(2)?), Some(&name(7)?)));
+    assert!(!children_within(&children, Some(&name(3)?), None));
+    assert!(!children_within(&children, None, Some(&name(6)?)));
     Ok(())
 }
 
@@ -283,6 +281,9 @@ fn item_charging_and_lower_layer_error_translation_are_total()
         rejected.error,
         Error::Work(WorkError::BudgetExceeded { .. })
     ));
+    // A rejected charge spends nothing, like every other item charge.
+    assert_eq!(*rejected.work, exact_budget);
+    assert_eq!(work, exact_budget);
 
     for allocation in [
         AllocationError::Overflow,

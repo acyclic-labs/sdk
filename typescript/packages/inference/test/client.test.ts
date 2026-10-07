@@ -42,7 +42,7 @@ import {
   WatchRunRequestSchema,
   type InferenceTransport,
 } from "../src/index.js";
-import { runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
+import { retryableOnce, runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
 import { INFERENCE_FIXED_WIDTHS, validateInferenceFixedWidthMetadata } from "../src/widths.js";
 import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
@@ -86,6 +86,18 @@ test("Rust reflection supplies every nonzero terminal and validates request shap
   ]);
   expect(metadata.filter(item => item.partial).map(item => item.kind)).toEqual(["cancelled", "failed", "indeterminate"]);
   await expect(validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'))).rejects.toThrow("invalid protobuf type");
+});
+
+test("shared WASM loads are reused but a rejected load is retried", async () => {
+  let attempts = 0;
+  const load = retryableOnce(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("transient load failure");
+    return attempts;
+  });
+  await expect(load()).rejects.toThrow("transient load failure");
+  const [first, second] = await Promise.all([load(), load()]);
+  expect([first, second, await load(), attempts]).toEqual([2, 2, 2, 2]);
 });
 
 test("terminal metadata validation rejects Rust/protobuf drift", () => {
@@ -404,6 +416,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
   }));
   const fetcher: typeof fetch = async (input, init) => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test");
+    expect(init?.redirect).toBe("error");
     const url = String(input);
     if (url.endsWith("/models/list")) {
       return new Response(toJsonString(ListModelsResponseSchema, create(ListModelsResponseSchema)));
@@ -449,6 +462,8 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+  const oversized = new HttpInferenceTransport("https://example.test", () => ({ authorization: `Bearer ${"x".repeat(8192)}` }), fetcher);
+  await expect(oversized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
 });
 
 test("HTTP transport applies one byte ceiling per message without conflating network chunks", async () => {

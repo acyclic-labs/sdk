@@ -1,17 +1,9 @@
 {
+  "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
     "lib": ["ES2022", "DOM", "ESNext.Disposable"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "declaration": true,
     "outDir": "dist",
     "rootDir": "src",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "composite": true,
-    "skipLibCheck": true,
     "types": ["node"]
   },
   "include": ["src/**/*.ts"]

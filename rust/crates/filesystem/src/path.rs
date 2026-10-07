@@ -121,6 +121,21 @@ impl fmt::Display for PortablePath {
     }
 }
 
+/// Whether `path` is a canonical relative path: `/`-separated components
+/// that [`PortablePath::parse`] would admit below the root, and no `\`, so
+/// the spelling is unambiguous on Windows hosts too. Length bounds are left
+/// to the volume that later resolves the path.
+pub(crate) fn is_canonical_relative(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && path.split('/').all(|component| {
+            !component.is_empty()
+                && component != "."
+                && component != ".."
+                && !component.contains('\0')
+        })
+}
+
 /// Portable path admission failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum PathError {

@@ -158,5 +158,5 @@ export function projectPiEvent(event: unknown): ModelEvent {
 }
 
 export class PiProviderError extends Error {
-  constructor(readonly cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); }
+  constructor(override readonly cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); }
 }

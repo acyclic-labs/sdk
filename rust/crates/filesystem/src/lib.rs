@@ -82,6 +82,7 @@ pub use logical_objects::LogicalObjectStore;
 #[cfg(feature = "distributed")]
 mod distributed_fs;
 pub mod facade;
+#[macro_use]
 pub mod foundation;
 #[cfg(all(feature = "native-watch", target_os = "macos"))]
 mod fsevents;
@@ -120,6 +121,7 @@ pub mod operation_window;
 pub mod path;
 mod path_index;
 pub mod performance;
+mod record_store;
 pub mod s3;
 #[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
 pub mod s3_http;

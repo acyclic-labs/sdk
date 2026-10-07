@@ -6,11 +6,26 @@ use bytes::Bytes;
 use prost::Message;
 use wasm_bindgen::prelude::*;
 
+/// Throws an `Error` named `ObjectsV2Error` carrying the numeric wire `code`.
 fn error(value: Error) -> JsValue {
-    let result = js_sys::Object::new();
+    let result = js_sys::Error::new(&value.to_string());
+    result.set_name("ObjectsV2Error");
+    // Defining a data property on a fresh, unfrozen `Error` cannot fail.
     let _ = js_sys::Reflect::set(&result, &"code".into(), &JsValue::from(value.code as i32));
-    let _ = js_sys::Reflect::set(&result, &"message".into(), &value.to_string().into());
     result.into()
+}
+/// Accepts a JavaScript byte limit as a number: wasm-bindgen would silently
+/// wrap a `usize` argument above 2^32, so reject non-integers and saturate.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is a non-negative integer and `as` saturates at usize::MAX"
+)]
+fn byte_limit(value: f64) -> Result<usize, JsValue> {
+    if value.is_nan() || value < 0.0 || value.fract() != 0.0 {
+        return Err(error(wire::ErrorCode::InvalidArgument.into()));
+    }
+    Ok(value as usize)
 }
 fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, JsValue> {
     T::decode(bytes).map_err(|_| error(wire::ErrorCode::InvalidArgument.into()))
@@ -30,20 +45,12 @@ pub fn validate_objects_v2_request(
     request::validate_binary(route, bytes, body_length).map_err(error)
 }
 #[wasm_bindgen]
-pub fn encode_objects_v2_json(
-    name: &str,
-    bytes: &[u8],
-    maximum: usize,
-) -> Result<Vec<u8>, JsValue> {
-    json::encode_binary(name, bytes, maximum).map_err(error)
+pub fn encode_objects_v2_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
+    json::encode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
 }
 #[wasm_bindgen]
-pub fn decode_objects_v2_json(
-    name: &str,
-    bytes: &[u8],
-    maximum: usize,
-) -> Result<Vec<u8>, JsValue> {
-    json::decode_binary(name, bytes, maximum).map_err(error)
+pub fn decode_objects_v2_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
+    json::decode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
 }
 #[wasm_bindgen]
 pub fn objects_v2_http_type(route: &str, output: bool) -> Result<String, JsValue> {

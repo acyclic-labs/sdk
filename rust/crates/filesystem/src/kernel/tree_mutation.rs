@@ -9,7 +9,7 @@ use super::tree::{
 use super::{
     CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry, TreePage, decode_tree_page,
 };
-use crate::foundation::FileId;
+use crate::foundation::{FileId, usize_to_u64};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use thiserror::Error;
@@ -111,7 +111,7 @@ impl Format for TreeFormat {
     }
 
     fn key_nested_bytes(key: &Self::Key) -> u64 {
-        u64::try_from(key.as_bytes().len()).unwrap_or(u64::MAX)
+        usize_to_u64(key.as_bytes().len())
     }
 
     fn value_nested_bytes(value: &Self::Value) -> u64 {

@@ -2,16 +2,20 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bun_platform="$(bun -e 'process.stdout.write(process.platform)' 2>/dev/null || true)"
-if [[ "$bun_platform" != "linux" && "$bun_platform" != "darwin" && "$bun_platform" != "win32" ]]; then
-  echo "unsupported Bun platform: ${bun_platform:-unknown}" >&2
+if ! command -v bun >/dev/null 2>&1; then
+  echo "bun is required for the inference package check" >&2
   exit 1
 fi
-bun_is_windows=false
-if [[ "$bun_platform" == "win32" ]]; then
-  bun_is_windows=true
-fi
-if [[ "$bun_is_windows" == true ]] && command -v wslpath >/dev/null 2>&1; then
+bun_platform="$(bun -e 'process.stdout.write(process.platform)' 2>/dev/null)"
+case "$bun_platform" in
+  win32) windows_bun=true ;;
+  linux|darwin) windows_bun=false ;;
+  *)
+    echo "unsupported Bun platform: $bun_platform" >&2
+    exit 1
+    ;;
+esac
+if [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
   work="$(mktemp -d "$(wslpath -u "$windows_temp")/sdk-inference-package.XXXXXXXX")"
 else
@@ -42,16 +46,16 @@ fi
 typescript_archive="$work/acyclic-inference.tgz"
 bun_archive="$typescript_archive"
 bun_archive_url="$typescript_archive"
-if [[ "$bun_is_windows" == true ]] && command -v cygpath >/dev/null 2>&1; then
+if [[ "$windows_bun" == true ]] && command -v cygpath >/dev/null 2>&1; then
   bun_archive="$(cygpath -w "$typescript_archive")"
   bun_archive_url="$(cygpath -m "$typescript_archive")"
-elif [[ "$bun_is_windows" == true ]] && command -v wslpath >/dev/null 2>&1; then
+elif [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1; then
   bun_archive="$(wslpath -w "$typescript_archive")"
   bun_archive_url="$(wslpath -m "$typescript_archive")"
 fi
 
 cd "$root"
-bun scripts/build-inference-wasm.mjs
+bun scripts/build-wasm.mjs inference
 bun x tsc -b typescript/packages/inference/tsconfig.json
 bun test typescript/packages/inference/test
 npm_stage="$work/npm-package"
@@ -103,36 +107,27 @@ cargo_bin="cargo"
 source_manifest="$root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
-contract_source="$root/rust/crates/inference-contract"
-if [[ "$bun_is_windows" == true ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+if [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
   source_manifest="$(wslpath -w "$source_manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
-  contract_source="$(wslpath -w "$contract_source")"
 fi
 version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-inference").version))')"
-"$cargo_bin" package --locked --no-verify -p acyclic-inference-contract --manifest-path "$source_manifest" --target-dir "$package_target_argument"
-"$cargo_bin" package --locked --no-verify -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument" \
-  --config "patch.crates-io.acyclic-inference-contract.path=\"$contract_source\""
+"$cargo_bin" package --locked --no-verify -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-inference-${version}.crate"
-contract_crate="$package_target/package/acyclic-inference-contract-${version}.crate"
 
 tar -xf "$crate" -C "$test_root"
-tar -xf "$contract_crate" -C "$test_root"
 test_manifest="$test_root/acyclic-inference-${version}/Cargo.toml"
-contract_path="$test_root/acyclic-inference-contract-${version}"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   test_manifest="$(wslpath -w "$test_manifest")"
-  contract_path="$(wslpath -w "$contract_path")"
 fi
-"$cargo_bin" test --manifest-path "$test_manifest" \
-  --config "patch.crates-io.acyclic-inference-contract.path=\"$contract_path\""
+"$cargo_bin" test --manifest-path "$test_manifest"
 
 if [[ "$#" -eq 1 ]]; then
   output="$1"
   mkdir -p "$output"
-  install -m 0644 "$crate" "$contract_crate" "$typescript_archive" "$output/"
-  (cd "$output" && sha256sum "$(basename "$crate")" "$(basename "$contract_crate")" acyclic-inference.tgz > SHA256SUMS)
+  install -m 0644 "$crate" "$typescript_archive" "$output/"
+  (cd "$output" && sha256sum "$(basename "$crate")" acyclic-inference.tgz > SHA256SUMS)
   printf '%s\n' "$source_sha" >"$output/SOURCE_COMMIT"
 elif [[ "$#" -ne 0 ]]; then
   echo "usage: check-inference-package.sh [OUTPUT]" >&2

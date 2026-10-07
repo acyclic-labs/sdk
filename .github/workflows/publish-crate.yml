@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: git bundle create "$RUNNER_TEMP/cargo-publication.bundle" "$GITHUB_REF"
       - name: Retain exact publication input
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: cargo-publication-${{ steps.release.outputs.source_sha }}
           path: ${{ runner.temp }}/cargo-publication.bundle

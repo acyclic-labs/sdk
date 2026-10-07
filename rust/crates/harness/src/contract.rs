@@ -12,6 +12,54 @@ pub const COMPONENT_LABEL_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
 /// Separators rejected by every component registry.
 pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 
+/// Capability names the substrate checks; scopes grant them as plain strings.
+pub(crate) mod capability {
+    use std::fmt::Display;
+
+    pub(crate) const LIFECYCLE_MANAGE: &str = "lifecycle:manage";
+    pub(crate) const EVENT_APPEND: &str = "event:append";
+    pub(crate) const EXTENSION_MIGRATE: &str = "extension:migrate";
+    pub(crate) const EXTENSION_ACTIVATE: &str = "extension:activate";
+    pub(crate) const EXTENSION_CONFIGURE: &str = "extension:configure";
+    pub(crate) const EFFECT_RUN: &str = "effect:run";
+    pub(crate) const EFFECT_PLAN: &str = "effect:plan";
+    pub(crate) const FORK_PUBLISH: &str = "fork:publish";
+    pub(crate) const PROJECT_MERGE: &str = "project:merge";
+    pub(crate) const CONVERSATION_BIND: &str = "conversation:bind";
+    pub(crate) const CONVERSATION_APPEND: &str = "conversation:append";
+    pub(crate) const CONVERSATION_SELECT_CONTEXT: &str = "conversation:select_context";
+    pub(crate) const INTERACTION_OPEN: &str = "interaction:open";
+    pub(crate) const INTERACTION_RESOLVE: &str = "interaction:resolve";
+    pub(crate) const INTERACTION_ROUTE: &str = "interaction:route";
+    pub(crate) const OPERATION_OBSERVE: &str = "operation:observe";
+    pub(crate) const OPERATION_CANCEL: &str = "operation:cancel";
+    pub(crate) const OPERATION_DECLARE: &str = "operation:declare";
+    pub(crate) const MAIL_SEND: &str = "mail:send";
+    pub(crate) const MAIL_READ: &str = "mail:read";
+    pub(crate) const TIMER_WAIT: &str = "timer:wait";
+    pub(crate) const MODEL_GENERATE: &str = "model:generate";
+    pub(crate) const CONTEXT_BUILD: &str = "context:build";
+
+    pub(crate) fn effect_provider(provider: impl Display) -> String {
+        format!("effect:provider:{provider}")
+    }
+
+    pub(crate) fn tool_call(tool: impl Display) -> String {
+        format!("tool:call:{tool}")
+    }
+
+    pub(crate) fn interaction_respond(id: impl Display) -> String {
+        format!("interaction:respond:{id}")
+    }
+}
+
+/// Successor of a durable revision or sequence, failing instead of wrapping.
+pub(crate) fn next_revision(revision: u64) -> Result<u64> {
+    revision
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("revision exhausted".into()))
+}
+
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// Conversion through Value preserves full-width serde integer values while
 /// avoiding struct declaration order as an accidental wire contract.
@@ -34,10 +82,18 @@ pub(crate) fn validate_json_schema_value(
     value: &serde_json::Value,
     label: &str,
 ) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?
+    compile_json_schema(schema, label)?
         .validate(value)
         .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")))
+}
+
+/// Compiles one JSON Schema; `label` names it in the error.
+pub(crate) fn compile_json_schema(
+    schema: &serde_json::Value,
+    label: &str,
+) -> Result<jsonschema::Validator> {
+    jsonschema::validator_for(schema)
+        .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))
 }
 
 fn write_canonical_json(
@@ -415,6 +471,33 @@ pub enum Error {
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
+}
+
+impl Error {
+    /// Stable wire classification from which every adapter derives its status.
+    #[must_use]
+    pub fn code(&self) -> crate::wire::ErrorCode {
+        use crate::wire::ErrorCode;
+        match self {
+            Self::NotFound(_) => ErrorCode::NotFound,
+            Self::Conflict(_) => ErrorCode::Conflict,
+            Self::Unsupported(_) => ErrorCode::Unsupported,
+            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::InteractionRejected(InteractionRejection::Declined) => {
+                ErrorCode::InteractionDeclined
+            }
+            Self::InteractionRejected(InteractionRejection::Cancelled) => {
+                ErrorCode::InteractionCancelled
+            }
+            Self::InteractionRejected(InteractionRejection::Expired) => {
+                ErrorCode::InteractionExpired
+            }
+            Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
+            Self::Storage(_) => ErrorCode::Storage,
+            Self::Indeterminate(_) => ErrorCode::Indeterminate,
+        }
+    }
 }
 
 /// A Stream failure below the harness is a durable-storage failure.

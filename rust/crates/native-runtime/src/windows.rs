@@ -314,6 +314,7 @@ pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
     // SAFETY: FILE_ID_INFO is an initialized POD output buffer and the file
     // handle remains live for the synchronous metadata query.
     let mut info: FILE_ID_INFO = unsafe { zeroed() };
+    // SAFETY: `info` is a writable buffer of the size passed and the handle is live.
     if unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle() as HANDLE,

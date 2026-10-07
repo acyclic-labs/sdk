@@ -37,8 +37,7 @@ impl ToolDefinition {
             ));
         }
         for schema in [&self.input_schema, &self.output_schema] {
-            jsonschema::validator_for(schema)
-                .map_err(|error| Error::Invalid(format!("invalid tool schema: {error}")))?;
+            crate::contract::compile_json_schema(schema, "tool")?;
         }
         Ok(())
     }
@@ -104,7 +103,7 @@ impl ToolInvocation {
     pub fn validate_identity(call_id: &str, name: &str) -> Result<()> {
         validate_tool_name(name)?;
         if call_id.is_empty()
-            || call_id.len() > 255
+            || call_id.len() > crate::COMPONENT_LABEL_MAX_BYTES
             || call_id.chars().any(char::is_control)
             || call_id.contains('/')
             || call_id.contains('\\')

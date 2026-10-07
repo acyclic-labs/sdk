@@ -423,6 +423,47 @@ pub struct ObjectId {
     pub digest: Digest,
 }
 
+impl ObjectId {
+    /// Length of the canonical `kind tag || digest` byte encoding.
+    pub const ENCODED_LEN: usize = 33;
+
+    /// Returns the canonical `kind tag || digest` byte encoding.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::ENCODED_LEN] {
+        let mut bytes = [0; Self::ENCODED_LEN];
+        bytes[0] = self.kind.canonical_tag();
+        bytes[1..].copy_from_slice(self.digest.as_bytes());
+        bytes
+    }
+}
+
+impl TryFrom<&[u8]> for ObjectId {
+    type Error = ObjectIdError;
+
+    /// Parses the canonical `kind tag || digest` byte encoding.
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let Some((&tag, digest)) = bytes.split_first() else {
+            return Err(ObjectIdError::Length);
+        };
+        let digest = <[u8; 32]>::try_from(digest).map_err(|_| ObjectIdError::Length)?;
+        Ok(Self {
+            kind: ObjectKind::from_canonical_tag(tag)?,
+            digest: Digest::from_bytes(digest),
+        })
+    }
+}
+
+/// Canonical object-identity byte parsing failures.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum ObjectIdError {
+    /// The encoding is not exactly one tag byte and one 32-byte digest.
+    #[error("object identity must be exactly 33 bytes")]
+    Length,
+    /// The tag byte names no known object class.
+    #[error(transparent)]
+    Kind(#[from] ObjectKindError),
+}
+
 /// Computes the canonical digest for one typed immutable object.
 #[must_use]
 pub fn object_digest(kind: ObjectKind, bytes: &[u8]) -> Digest {
@@ -694,3 +735,34 @@ pub enum ObjectStoreError {
 #[cfg(test)]
 #[path = "tests/storage.rs"]
 mod tests;
+
+#[cfg(test)]
+mod object_id_codec_tests {
+    use super::*;
+
+    #[test]
+    fn object_id_bytes_round_trip_and_reject_malformed_input() {
+        let id = ObjectId {
+            kind: ObjectKind::TreePage,
+            digest: Digest::from_bytes([7; 32]),
+        };
+        let bytes = id.to_bytes();
+        assert_eq!(bytes[0], 3);
+        assert_eq!(&bytes[1..], &[7; 32]);
+        assert_eq!(ObjectId::try_from(&bytes[..]), Ok(id));
+        for length in [0, 1, 32, 34] {
+            assert_eq!(
+                ObjectId::try_from(&vec![1; length][..]),
+                Err(ObjectIdError::Length)
+            );
+        }
+        let mut unknown = bytes;
+        unknown[0] = 0;
+        let error = ObjectId::try_from(&unknown[..]);
+        assert_eq!(error, Err(ObjectIdError::Kind(ObjectKindError::Unknown(0))));
+        assert_eq!(
+            ObjectIdError::Length.to_string(),
+            "object identity must be exactly 33 bytes"
+        );
+    }
+}

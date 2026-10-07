@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
-    "build:wasm": "bun scripts/build-wasm.mjs",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs stream",
     "test": "bun run build && bun test test",
     "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
   },
