@@ -19,7 +19,9 @@ use tonic::{
     metadata::{Ascii, MetadataValue},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
+use tracing::field::Empty;
 
+use crate::obs;
 use crate::wire_codec::{
     append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
     commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
@@ -360,6 +362,17 @@ impl Client {
         .await
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.call",
+        skip_all,
+        fields(
+            rpc = std::any::type_name::<T>().rsplit("::").next(),
+            attempts = Empty,
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty,
+        )
+    )]
     async fn unary_on<T, U, F>(
         &self,
         channels: &[Channel],
@@ -377,12 +390,14 @@ impl Client {
     {
         let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
         let mut last = None;
-        loop {
+        let mut attempt = 0_u64;
+        let result = 'retry: loop {
             let start = preferred.load(Ordering::Relaxed) % channels.len();
             for offset in 0..channels.len() {
                 let index = (start + offset) % channels.len();
                 let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
-                match tokio::time::timeout_at(
+                attempt += 1;
+                let error = match tokio::time::timeout_at(
                     attempt_deadline,
                     call(Self::service(channels, index), self.request(body.clone())),
                 )
@@ -390,19 +405,31 @@ impl Client {
                 {
                     Ok(Ok(response)) => {
                         preferred.store(index, Ordering::Relaxed);
-                        return Ok((response.into_inner(), index));
+                        obs::record("rpc.code", Code::Ok as u64);
+                        break 'retry Ok((response.into_inner(), index));
                     }
-                    Ok(Err(error)) if retryable(&error) => last = Some(error),
-                    Ok(Err(error)) => return Err(status(&error)),
-                    Err(_) => last = Some(Status::deadline_exceeded("endpoint attempt expired")),
-                }
+                    Ok(Err(error)) if retryable(&error) => error,
+                    Ok(Err(error)) => break 'retry Err(error),
+                    Err(_) => Status::deadline_exceeded("endpoint attempt expired"),
+                };
+                tracing::warn!(
+                    attempt,
+                    rpc.code = error.code() as u64,
+                    "stream rpc retried"
+                );
+                last = Some(error);
             }
             tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
                 .await;
             if tokio::time::Instant::now() >= deadline {
-                return Err(last.as_ref().map_or(StreamError::Unavailable, status));
+                break Err(last.unwrap_or_else(|| Status::unavailable("no endpoint attempted")));
             }
-        }
+        };
+        obs::record("attempts", attempt);
+        obs::finish(result.map_err(|error| {
+            obs::record("rpc.code", error.code() as u64);
+            status(&error)
+        }))
     }
 
     async fn records(
@@ -815,6 +842,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     type ChildrenStream =
         futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>;
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.inspect_idempotency",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn inspect_idempotency(
         &self,
         request: Request<wire::InspectIdempotencyRequest>,
@@ -828,11 +860,16 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .await
             .map_err(|error| error_status(&error))?
             .map(observation_wire);
-        Ok(Response::new(wire::InspectIdempotencyResponse {
+        served(Response::new(wire::InspectIdempotencyResponse {
             observation,
         }))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.append",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn append(
         &self,
         request: Request<wire::AppendRequest>,
@@ -850,9 +887,14 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(append_outcome_wire(outcome)))
+        served(Response::new(append_outcome_wire(outcome)))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.tail",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn tail(
         &self,
         request: Request<wire::TailRequest>,
@@ -864,9 +906,14 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .bounds(path)
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(wire::TailResponse { tail: bounds.tail }))
+        served(Response::new(wire::TailResponse { tail: bounds.tail }))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.fork",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn fork(
         &self,
         request: Request<wire::ForkRequest>,
@@ -884,9 +931,14 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(fork_receipt_wire(&receipt)))
+        served(Response::new(fork_receipt_wire(&receipt)))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.read",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn read(
         &self,
         request: Request<wire::ReadRequest>,
@@ -902,7 +954,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(
+        served(Response::new(
             records
                 .map(|record| {
                     record
@@ -916,6 +968,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         ))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.follow",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn follow(
         &self,
         request: Request<wire::FollowRequest>,
@@ -930,7 +987,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             )
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(
+        served(Response::new(
             records
                 .map(|record| {
                     record
@@ -944,6 +1001,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         ))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.children",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn children(
         &self,
         request: Request<wire::ChildrenRequest>,
@@ -962,7 +1024,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(
+        served(Response::new(
             children
                 .map(|child| {
                     child
@@ -977,6 +1039,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         ))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.children_page",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn children_page(
         &self,
         request: Request<wire::ChildrenPageRequest>,
@@ -1005,7 +1072,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(wire::ChildrenPageResponse {
+        served(Response::new(wire::ChildrenPageResponse {
             hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
             children: page
                 .children
@@ -1018,6 +1085,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         }))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.commit",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn commit(
         &self,
         request: Request<wire::CommitRequest>,
@@ -1047,9 +1119,14 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             self.provider.commit(request).await
         }
         .map_err(|error| error_status(&error))?;
-        Ok(Response::new(commit_outcome_wire(outcome)))
+        served(Response::new(commit_outcome_wire(outcome)))
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.grpc.serve.read_commit",
+        skip_all,
+        fields(rpc.code = Empty, outcome = Empty, error.kind = Empty)
+    )]
     async fn read_commit(
         &self,
         request: Request<wire::ReadCommitRequest>,
@@ -1062,7 +1139,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .read_commit(commit_id)
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(envelope_wire(envelope)))
+        served(Response::new(envelope_wire(envelope)))
     }
 }
 
@@ -1080,8 +1157,21 @@ fn bind_observation(
     Ok(observation)
 }
 
+/// Records a served RPC's success on its span.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "every handler returns its response through this"
+)]
+fn served<T>(response: Response<T>) -> Result<Response<T>, Status> {
+    obs::record("outcome", "ok");
+    obs::record("rpc.code", Code::Ok as u64);
+    Ok(response)
+}
+
+/// Maps a provider failure to its status, recording it on a served RPC's span.
 fn error_status(error: &StreamError) -> Status {
-    match error {
+    obs::failed(error.code());
+    let status = match error {
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
         StreamError::InvalidArgument => Status::invalid_argument("invalid_argument"),
         StreamError::LimitExceeded => Status::invalid_argument("limit_exceeded"),
@@ -1096,7 +1186,9 @@ fn error_status(error: &StreamError) -> Status {
         StreamError::Unavailable => Status::unavailable(error.to_string()),
         StreamError::DeadlineElapsed => Status::failed_precondition("deadline_elapsed"),
         StreamError::Unsupported => Status::unimplemented("unsupported_capability"),
-    }
+    };
+    obs::record("rpc.code", status.code() as u64);
+    status
 }
 
 fn status(error: &tonic::Status) -> StreamError {

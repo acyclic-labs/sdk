@@ -50,6 +50,7 @@ pub mod merge;
 pub mod model;
 #[cfg(feature = "objects")]
 pub mod objects;
+mod obs;
 pub mod projection;
 pub mod registry;
 pub mod resources;

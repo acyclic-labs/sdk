@@ -19,6 +19,8 @@ const tree = [
   blob("rust/crates/stream/README.md"),
   blob("typescript/packages/stream/src/index.ts"),
   blob("typescript/packages/filesystem/package.json"),
+  blob("rust/crates/harness-codex/src/lib.rs"),
+  blob("rust/crates/harness/tests/effects.rs"),
   blob("README.md"),
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
@@ -27,6 +29,8 @@ const changed = (path, object = "b".repeat(40)) =>
   tree.map(entry => (entry.endsWith(`\t${path}`) ? blob(path, object) : entry));
 const differing = (before, after) =>
   Object.keys(before).filter(lane => before[lane] !== after[lane]).sort();
+const named = lanes => lanes.map(lane => lane.lane).sort();
+const fullLanes = lanes.filter(lane => lane.scope !== "core");
 
 test("every lane names a known input set and a Blacksmith runner", () => {
   for (const lane of lanes) {
@@ -54,7 +58,17 @@ test("crate documentation reaches rustdoc and every lane", () => {
 test("TypeScript sources execute only TypeScript-observing lanes", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("typescript/packages/stream/src/index.ts"));
-  assert.deepEqual(differing(before, after), ["linux", "policy", "windows"]);
+  assert.deepEqual(differing(before, after), ["linux", "policy", "typescript", "windows"]);
+});
+
+test("Rust that no package compiles skips the TypeScript lane", () => {
+  const before = laneKeys(lanes, tree);
+  for (const path of ["rust/crates/harness-codex/src/lib.rs", "rust/crates/harness/tests/effects.rs"]) {
+    const after = differing(before, laneKeys(lanes, changed(path)));
+    assert.ok(after.includes("gate") && !after.includes("typescript"), path);
+  }
+  const wasm = differing(before, laneKeys(lanes, changed("rust/crates/stream/src/lib.rs")));
+  assert.ok(wasm.includes("typescript"));
 });
 
 test("the filesystem package manifest reaches native binding lanes", () => {
@@ -119,15 +133,15 @@ test("ordinary main pushes keep downstream qualification off the routine path", 
     force: false, mainPush: true, marker: () => null, retained: retainedAll,
     coreOnly: true,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
+  assert.deepEqual(named(matrix), ["gate", "policy", "typescript"]);
   assert.deepEqual(reused, {});
 });
 
-test("forced runs execute every lane", () => {
+test("forced runs execute every full lane", () => {
   const { matrix, reused } = chooseLanes(lanes, {
     force: true, mainPush: false, marker: everywhere, retained: retainedAll,
   });
-  assert.equal(matrix.length, lanes.length);
+  assert.deepEqual(named(matrix), named(fullLanes));
   assert.deepEqual(reused, {});
 });
 
@@ -148,11 +162,11 @@ test("forced reusable release calls keep the full lane scope", () => {
     marker: everywhere,
     retained: retainedAll,
   });
-  assert.equal(matrix.length, lanes.length);
+  assert.deepEqual(named(matrix), named(fullLanes));
   assert.deepEqual(reused, {});
 });
 
-test("routine pull requests qualify only the core gate and policy lanes", () => {
+test("routine pull requests qualify only the core lanes", () => {
   const { matrix } = chooseLanes(lanes, {
     force: false,
     mainPush: false,
@@ -162,7 +176,7 @@ test("routine pull requests qualify only the core gate and policy lanes", () => 
     marker: () => null,
     retained: () => "",
   });
-  assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
+  assert.deepEqual(named(matrix), ["gate", "policy", "typescript"]);
 });
 
 test("release, manual, and scheduled events are full qualification events", () => {
@@ -185,11 +199,18 @@ test("the workflow keeps full qualification off routine pull requests", () => {
   assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(workflow, /default: false/);
   assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
+  for (const { lane } of lanes) {
+    assert.match(workflow, new RegExp(`- name: Find ${lane} marker\\n`), lane);
+    assert.match(workflow, new RegExp(`- name: Record ${lane}\\n`), lane);
+  }
 });
 
-test("the fast gate covers the Rust workspace and standalone docs crate", () => {
+test("the core lanes cover the Rust workspace, docs crate, and TypeScript workspace", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8");
-  assert.match(script, /^ +nextest --workspace --locked --lib$/m);
+  assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
-  assert.match(script, /cargo clippy --workspace --lib --locked -- -D warnings/);
+  const policy = script.slice(script.indexOf("\n  policy)"));
+  assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
+  const typescript = script.slice(script.indexOf("\n  typescript)"));
+  assert.match(typescript, /bun run test\n(?: .*\n)+? +bun run check:generated\n/);
 });

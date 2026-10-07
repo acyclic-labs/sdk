@@ -541,6 +541,91 @@ async fn listing_is_live_query_bound_and_counts_common_prefixes() -> Result<(), 
     Ok(())
 }
 
+/// Pages a listing to exhaustion as `(name, is_common_prefix)` in name order.
+async fn paged_listing(
+    keys: &[String],
+    prefix: &str,
+    delimiter: &str,
+    page_size: u32,
+) -> Result<Vec<(String, bool)>, Error> {
+    let provider = provider(MemoryOptions::default()).await?;
+    for key in keys {
+        provider.put(put(key), Bytes::new()).await?;
+    }
+    let mut query = wire::ListObjectsRequest {
+        bucket: bucket(),
+        prefix: prefix.into(),
+        delimiter: delimiter.into(),
+        page_size,
+        ..Default::default()
+    };
+    let mut listed = Vec::new();
+    loop {
+        let page = provider.list(query.clone()).await?;
+        let mut entries: Vec<_> = page
+            .entries
+            .into_iter()
+            .map(|entry| (entry.object_key, false))
+            .chain(
+                page.common_prefixes
+                    .into_iter()
+                    .map(|prefix| (prefix, true)),
+            )
+            .collect();
+        entries.sort();
+        assert!(entries.len() <= page_size as usize);
+        assert!(!page.is_truncated || entries.len() == page_size as usize);
+        listed.extend(entries);
+        assert!(listed.len() <= keys.len(), "pagination repeated an entry");
+        if !page.is_truncated {
+            return Ok(listed);
+        }
+        query.continuation_token = page.continuation_token;
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: proptest::test_runner::RngSeed::Fixed(7),
+        failure_persistence: None,
+        ..proptest::prelude::ProptestConfig::with_cases(64)
+    })]
+
+    /// Cursor-seeking pagination yields exactly the full prefix/delimiter
+    /// listing, including multi-byte and `char::MAX` key boundaries.
+    #[test]
+    fn paginated_listing_matches_full_listing(
+        keys in proptest::collection::vec(listing_name(1..6), 0..24),
+        prefix in listing_name(0..3),
+        delimiter in proptest::sample::select(vec!["", "/", "b", "ab", "\u{10FFFF}"]),
+        page_size in 1..5_u32,
+    ) {
+        let mut expected = std::collections::BTreeSet::new();
+        for key in keys.iter().filter_map(|key| key.strip_prefix(&prefix)) {
+            expected.insert(match key.split_once(delimiter).filter(|_| !delimiter.is_empty()) {
+                Some((head, _)) => (format!("{prefix}{head}{delimiter}"), true),
+                None => (format!("{prefix}{key}"), false),
+            });
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let listed = runtime
+            .block_on(paged_listing(&keys, &prefix, delimiter, page_size))
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(format!("{error:?}")))?;
+        proptest::prop_assert_eq!(listed, expected.into_iter().collect::<Vec<_>>());
+    }
+}
+
+fn listing_name(
+    length: std::ops::Range<usize>,
+) -> impl proptest::strategy::Strategy<Value = String> {
+    use proptest::strategy::Strategy;
+    proptest::collection::vec(
+        proptest::sample::select(vec!['a', 'b', '/', 'é', char::MAX]),
+        length,
+    )
+    .prop_map(String::from_iter)
+}
+
 #[tokio::test]
 async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable() -> Result<(), Error>
 {
