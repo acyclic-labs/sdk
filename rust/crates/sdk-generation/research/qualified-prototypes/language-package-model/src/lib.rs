@@ -484,6 +484,13 @@ fn validate_receipt(
         });
     }
     if status == QualificationStatus::Passed {
+        // This receipt schema binds the UniFFI producer. Other producers need
+        // their own typed toolchain evidence before they can claim a pass.
+        if generator.family != "uniffi" {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        }
         let document: ReceiptDocument =
             serde_json::from_slice(&bytes).map_err(|_| Error::ReceiptMalformed {
                 path: receipt.to_owned(),
@@ -894,6 +901,21 @@ mod tests {
         let artifact = root.join("artifact.whl");
         fs::write(&artifact, b"qualified artifact\n").unwrap();
         let receipt = typed_receipt(&root, &artifact, "python", "0.31.0");
+
+        let mut unsupported_generator = generator();
+        unsupported_generator.family = "unrecognized".into();
+        let result = build_record_from_source(
+            &root,
+            &root.join("Cargo.toml"),
+            "acyclic-actors-uniffi",
+            Language::Python,
+            unsupported_generator,
+            &artifact,
+            &receipt,
+            "PASS",
+            qualification(&receipt),
+        );
+        assert!(matches!(result, Err(Error::ReceiptBindingMismatch { .. })));
 
         let changed_generator = build_record_from_source(
             &root,
