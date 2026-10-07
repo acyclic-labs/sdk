@@ -253,6 +253,7 @@ async function build(options) {
       jsBinding: "binding.cjs",
       dts: "binding.d.ts",
       release: true,
+      cargoOptions: ["--locked"],
     });
     await buildResult.task;
   } finally {
