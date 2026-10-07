@@ -15,6 +15,9 @@ describe("shared workspace operations", () => {
       await expect(workspace.liveRebase({
         maximumGenerations: 0, maximumChanges: 1, maximumConflicts: 1,
       }, new Uint8Array(16))).rejects.toThrow("workspace join exceeds its configured bound");
+      await expect(workspace.liveRebase({
+        maximumGenerations: 1.5, maximumChanges: 1, maximumConflicts: 1,
+      }, new Uint8Array(16))).rejects.toThrow();
     } finally {
       await engine.close();
     }

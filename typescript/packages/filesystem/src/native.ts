@@ -87,8 +87,12 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
 
-import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
-  validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
+import {
+  decodeMergeConflict as decodeSharedMergeConflict,
+  parseJoinResult as parseSharedJoinResult,
+  parseMergePreparation,
+  parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
+} from "./workspace-results.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
@@ -185,13 +189,10 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
   if (options.root.length === 0) {
     throw new RangeError("native filesystem root must be non-empty");
   }
-  requirePositiveInteger(options.objectCache.maximumEntries, "maximum cache entries");
-  requirePositiveInteger(options.objectCache.maximumBytes, "maximum cache bytes");
-  requirePositiveInteger(options.objectCache.maximumInFlight, "maximum cache in-flight reads");
-  requirePositiveInteger(
-    options.objectCache.maximumWaitersPerObject,
-    "maximum cache waiters per object",
-  );
+  // The generated N-API binding admits the u32 cache limits through Rust's
+  // exact numeric converter. `maximumBytes` is the one public number that this
+  // adapter converts to bigint, so retain its lossless conversion guard here.
+  requirePositiveSafeInteger(options.objectCache.maximumBytes, "maximum cache bytes");
   const binding = await bindings();
   return adaptFs(
     await binding.NativeFs.open(options.root, {
@@ -357,7 +358,6 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
     },
     async ancestors(workspaceId, maximum) {
       requireIdentity(workspaceId, "workspace identity");
-      requirePositiveInteger(maximum, "maximum ancestors");
       return (await raw.ancestors(workspaceId, maximum)).map(copyWorkspaceLineageRecord);
     },
   };
@@ -391,7 +391,6 @@ function adaptOperationWindowCoordinator(
       return parseOperationWindowPhase(await raw.inspect(workspaceId));
     },
     async finishWorkspace(workspace, lease, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
       const result = await raw.finishWorkspace(
         rawWorkspace(workspace, scope),
         nativeOperationWindowLease(lease),
@@ -408,7 +407,6 @@ function adaptOperationWindowCoordinator(
       throw new TypeError("native operation window returned a malformed workspace close result");
     },
     async recoverWorkspace(workspace, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
       const result = await raw.recoverWorkspace(rawWorkspace(workspace, scope), nowMillis, options);
       return result == null ? undefined : parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result));
     },
@@ -603,9 +601,6 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       options: import("./contracts.js").NativeSourceOptions,
     ): Promise<NativeFsWorkspace> {
       if (path.length === 0) throw new RangeError("source path must be non-empty");
-      requirePositiveInteger(options.maximumPaths, "maximum source paths");
-      requirePositiveInteger(options.maximumExtentSpans, "maximum source extent spans");
-      requirePositiveInteger(options.maximumQueuedChanges, "maximum queued source changes");
       return adaptWorkspace(await raw.attachDirectory(name, path, options), scope);
     },
     get cancelled(): boolean {
@@ -964,7 +959,6 @@ function adaptWorkspace(
       );
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-      requirePositiveInteger(maximumChanges, "maximum changes");
       return scope.adaptChangeSet(
         nativeBoundary<Parameters<typeof scope.adaptChangeSet>[0]>(
           await raw.diff(
@@ -976,7 +970,6 @@ function adaptWorkspace(
       );
     },
     async joinInto(target, options): Promise<ResolvableFsJoinPlan> {
-      validateJoinOptions(options);
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target, scope), options));
     },
     async mount(destination, options): Promise<NativeWorkspaceMount> {
@@ -1103,7 +1096,7 @@ function requireGenerationIdentity(value: Uint8Array, label: string): void {
   }
 }
 
-function requirePositiveInteger(value: number, label: string): void {
+function requirePositiveSafeInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError(`${label} must be a positive safe integer`);
   }

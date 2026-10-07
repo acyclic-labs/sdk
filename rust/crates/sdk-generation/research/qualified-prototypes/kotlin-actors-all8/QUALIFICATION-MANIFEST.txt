@@ -1,0 +1,49 @@
+Actors UniFFI 0.31.0 Kotlin immutable-record qualification
+Date: 2026-10-07
+
+Source:
+- Rust domain SHA-256: 79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2
+- crate config: C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\actors-uniffi\uniffi.toml
+- config SHA-256: 950AB29CBC05E20643831B08A16FA5CABB99258FB4E0EACEA1FC78D54718B599
+- config: [bindings.kotlin] generate_immutable_records = true
+
+Frozen native/generator:
+- DLL: Q:\sdk\work\actors-uniffi-all8-check\debug\acyclic_actors_uniffi.dll
+- DLL SHA-256: 6E091783C87C4343AC154EE499D4BF5516158686045F16AA00ED642B36573E25
+- bindgen: Q:\sdk\work\actors-uniffi-all8-check\debug\deps\actors_uniffi_bindgen.exe
+- bindgen SHA-256: 66EEB0A2A5DA7156C69147E84763832CF8CB349331304C8EB57D9464F619FCCE
+- bindgen version: uniffi-bindgen 0.31.0
+
+Generated Kotlin:
+- file: Q:\sdk\work\actors-uniffi-all8-kotlin-immutable-20261007\uniffi\acyclic_actors_uniffi\acyclic_actors_uniffi.kt
+- SHA-256: 6E73BC8CA0D0C47DA51C362E98D06AFBC2B29E6F0A7F12385401B59521623A3B
+- record properties: mutable=1 (runtime internals only), immutable=30; exported records use val
+- generator warning: ktlint unavailable; generation succeeded
+
+Installed consumer:
+- project: Q:\sdk\work\actors-uniffi-all8-kotlin-immutable-20261007\consumer
+- Kotlin/JVM: 1.9.21, JDK target 17
+- kotlinx-coroutines-core-jvm: 1.8.0
+- JNA: 5.15.0
+- JAR SHA-256: 534CA5863D5C8B76C3A859375E27163D8DD9B3EBAFDA98FDB3EE7C77B9F648A3
+- Maven offline package: PASS
+
+Consumer observations before transport:
+- all8_request_constructors=8: PASS
+- task_cancellation_forwarded=true: PASS using prototype-only wrapper
+- pre-cancelled connect_with_ca: PASS (BindingException.Cancelled)
+- live connect/inspect: BLOCKED by shared fixture endpoint https://localhost:50627 not listening; observed BindingException.Transport detailMessage=transport error
+
+No generated source was hand-patched.
+Live shared fixture retry (current frozen DLL):
+- fixture endpoint: https://localhost:58229 (PID 77676), CA: Q:\sdk\work\go-remote-primitive-current\fixture-ca.pem
+- runtime exit: 0
+- output: all8_request_constructors=8; task_cancellation_forwarded=true; connect_with_ca cancelled; inspect_actor=actor-a,state=ACTIVE,epoch=9; inspect_actor cancelled; KOTLIN_ALL8_IMMUTABLE_PROBE_PASS
+
+Live all-eight operation receipt (foreground fixture):
+- fixture endpoint: https://localhost:55755, CA: Q:\sdk\work\go-remote-primitive-current\fixture-ca.pem
+- runtime exit: 0
+- operations: inspect, create, update, add, remove, resume, checkpoint all returned ACTIVE epoch=9; invoke returned status=201 and one location header
+- structured service error: wrong token produced BindingException.Service grpcCode=16, serviceCode=null, detailMessage=service rejected operation
+- cancellation: pre-cancelled connect and inspect produced BindingException.Cancelled; task wrapper forwarded coroutine cancellation to Rust handle
+- terminal marker: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS

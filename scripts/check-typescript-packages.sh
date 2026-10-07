@@ -27,6 +27,12 @@ fi
 git ls-files -v >"$work/git-index"
 ! grep -Eq '^[a-zS] ' "$work/git-index" || { echo 'package checkout contains concealed index changes' >&2; exit 1; }
 
+# Stream's native artifact is a release input. Verify its Rust target metadata,
+# complete source closure, generation manifest, and staged bundle before any
+# TypeScript archive is assembled. This is a cheap attestation check; native
+# compilation happens in the target-specific release/manual build job.
+node scripts/build-stream-native.mjs check
+
 verify_staged_input() {
   local archive=$1 directory observed filename
   directory=$(dirname "$archive")

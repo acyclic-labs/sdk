@@ -27,6 +27,10 @@
     "./grpc": {
       "default": "./dist/grpc.js",
       "types": "./dist/grpc.d.ts"
+    },
+    "./native": {
+      "default": "./dist/native.js",
+      "types": "./dist/native.d.ts"
     }
   },
   "types": "./dist/index.d.ts",
@@ -39,8 +43,15 @@
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
     "build:wasm": "bun scripts/build-wasm.mjs",
+    "build:native": "node ../../../scripts/build-stream-native.mjs build",
+    "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
+    "check:native": "node ../../../scripts/build-stream-native.mjs check",
     "test": "bun run build && bun test test",
     "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
+  },
+  "napi": {
+    "binaryName": "index",
+    "packageName": "@acyclic-labs/stream"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",

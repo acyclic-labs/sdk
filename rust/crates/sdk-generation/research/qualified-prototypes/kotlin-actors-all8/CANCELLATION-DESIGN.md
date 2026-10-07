@@ -1,0 +1,7 @@
+# Kotlin task-cancellation adapter design
+
+The Rust facade exposes an optional `CancellationHandle` on every asynchronous ActorsClient method. UniFFI 0.31.0's generated Kotlin `suspendCancellableCoroutine` does not register `invokeOnCancellation`, so generated code cannot automatically signal Rust cancellation.
+
+A package-level adapter can be generated mechanically from Rust-owned binding metadata: for each async method with an optional `CancellationHandle`, allocate one handle, register `Job.invokeOnCompletion`, call `handle.cancel()` only when the completion cause is `CancellationException`, invoke the generated method with that handle, and dispose the registration after normal return or non-cancellation failure. The adapter contains no transport, retries, request construction, or response mapping.
+
+The probe in `consumer/src/main/kotlin/probe/ActorsAll8Probe.kt` implements this forwarding shape only as qualification evidence. It proves coroutine task cancellation reaches the Rust-owned handle (`task_cancellation_forwarded=true`). It does not claim generated UniFFI automatic cancellation. Production wrapper generation should consume the same Rust-owned method metadata and preserve each generated method's exact signature.

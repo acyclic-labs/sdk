@@ -9,6 +9,11 @@ description = "N-API native remote Stream transport over the canonical Rust clie
 publish = false
 build = "build.rs"
 
+[package.metadata.napi]
+targets = [
+    "x86_64-pc-windows-msvc",
+]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
