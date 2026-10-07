@@ -8096,16 +8096,16 @@ mod tests {
         );
         assert!(object.values().all(serde_json::Value::is_string));
         assert_eq!(
-            value["authorityRecordsRead"],
-            serde_json::Value::String("9007199254740993".to_owned())
+            value.get("authorityRecordsRead"),
+            Some(&serde_json::Value::String("9007199254740993".to_owned()))
         );
         assert_eq!(
-            value["bytesCopied"],
-            serde_json::Value::String(u64::MAX.to_string())
+            value.get("bytesCopied"),
+            Some(&serde_json::Value::String(u64::MAX.to_string()))
         );
         assert_eq!(
-            value["materializations"],
-            serde_json::Value::String(u64::MAX.to_string())
+            value.get("materializations"),
+            Some(&serde_json::Value::String(u64::MAX.to_string()))
         );
     }
 
