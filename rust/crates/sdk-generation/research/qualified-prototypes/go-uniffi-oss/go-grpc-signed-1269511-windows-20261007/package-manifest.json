@@ -1,0 +1,40 @@
+{
+  "schema": "acyclic.sdk.go.package-manifest.v1",
+  "package_name": "github.com/acyclic-labs/sdk/go",
+  "package_version": "0.2.0-rust.1269511",
+  "rust_authority": {
+    "crate": "acyclic-actors-uniffi",
+    "version": "0.2.0",
+    "source_revision": "1269511d636b8ceeea1604a23919a9c1448241fa",
+    "cargo_manifest_sha256": "03f3a7b92277a06fb9c544b711571840dbd6625f55d2d457cf1b3129586c5ebd",
+    "cargo_lock_sha256": "7c8703075b8c8db0f6298cdf876e6741c7d285b3a6e71c879a4b65eccfb02206"
+  },
+  "generator": "generator-provenance.json",
+  "pre_generation_hashes": {
+    "actors/v1/actors.proto": "06ceab3f17010830f61a8c0ed1d52d2b2ef7e7fa261807cf407e6615f7b17064",
+    "actors/v1/actors.fds.bin": "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c",
+    "validation/v1/options.proto": "3bc88dd7527243ae1bf8f1ce052f4191b67b0f73f94ce6f82ce275571a2d1f9a"
+  },
+  "post_generation_hashes": {
+    "gen/actors/v1/actors.pb.go": "009181ad24a95c5e655f8a4fba36a1d072859c14b4fd4a736c02776b164bddd9",
+    "gen/actors/v1/actors_grpc.pb.go": "79bc43b23e53438e60fe8f0d171bf8663c5802441c74c770f12ea7a18888c42a",
+    "gen/validation/v1/options.pb.go": "0e31dcf23ea5cc8d2bd13479f28ae43448b023db18e166c6a889f3ac4d84c4e0",
+    "go.mod": "8bfbc454fd9120df962ff95650c2f377567aadadb254740fb3685ff706c3e923",
+    "go.sum": "e34b4ddb3ea9d54efdaea326b5837f32b8e60f72b1dac34a9df14a8115cd4e12",
+    "README.md": "f51eeea7266b543f90af0520490ef41b5019d620507e39fe011d7f44cc7231e4"
+  },
+  "native_artifact": {
+    "path": "native/acyclic_actors_uniffi.dll",
+    "sha256": "4299a090f6e9dc89fad2f973648fbf3add356e16f23c0c68a216df8f20ac23cd"
+  },
+  "install": {
+    "module_root": "package",
+    "command": "go test -mod=readonly ./...",
+    "consumer_import": "github.com/acyclic-labs/sdk/go/gen/actors/v1"
+  },
+  "generated_at_utc": "2026-10-07T18:38:59.005841+00:00",
+  "archive": {
+    "path": "go-grpc-signed-1269511-windows-20261007.zip",
+    "sha256": "b37277fda8ef625b97dab69d113fec82545962d7b3465dc63005ead80f63892d"
+  }
+}

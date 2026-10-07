@@ -1,0 +1,19 @@
+COMBINED_PACKAGE_LAYOUT_PASS
+package=C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\out-combined\Actors.Stream.0.1.0-c3d82376-combined.nupkg
+sha256=73E9C9B9319378E9299C0D14707CE466F8664E6C8127C16F6DCA3E15DADC700C
+size=5339565
+version=0.1.0-c3d82376-combined
+default_rid_assets=win-x64,linux-x64,osx-arm64
+managed=lib/net8.0/Actors.Stream.dll
+native=
+_rels/.rels	507
+Actors.Stream.nuspec	737
+lib/net8.0/Actors.Stream.dll	91136
+README.md	564
+runtimes/win-x64/native/actors_stream_uniffi_kotlin_prototype.dll	3915264
+runtimes/linux-x64/native/libactors_stream_uniffi_kotlin_prototype.so	5610192
+runtimes/osx-arm64/native/libactors_stream_uniffi_kotlin_prototype.dylib	4521088
+[Content_Types].xml	654
+package/services/metadata/core-properties/8c407536b87c4383b9fc47a5f9d67aed.psmdcp	699
+nuspec_version=0.1.0-c3d82376-combined
+producer=c3d82376d5b5e32a7886a4af7f8a65de8fe60795

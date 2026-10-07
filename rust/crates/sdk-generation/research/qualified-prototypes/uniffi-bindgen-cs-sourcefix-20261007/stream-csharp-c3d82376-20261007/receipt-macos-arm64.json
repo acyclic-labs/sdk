@@ -193,7 +193,7 @@
       "markers": "follow-open,follow-closed,child-open,child-closed",
       "passes": "local and remote TLS ordered typed u64; cancellation close recovery; server cleanup",
       "raw_evidence_path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\qualification-macos-arm64.raw.txt",
-      "raw_evidence_sha256": "DAE977EF68481956A803E365A0D630DB6ABD8A4CA7C6528BB727887E1F972281"
+      "raw_evidence_sha256": "90BA0B4FCB47EAA1E51FDE01CD7094249B3D7DF30E1540C3EBC2A7A247AE823D"
     }
   },
   "history": {

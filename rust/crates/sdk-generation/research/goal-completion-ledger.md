@@ -431,3 +431,11 @@ Docs CLI5activeintegrationtests nowPASS stalerustdoc,sourceState,pluginclosure,r
 - Final source-specific clean installed release artifacts and validation are assigned to fs_attestation. Separate signed validator tool commit4633ad6178e9ae296da1f8969f9edb476bad9340 must be pushed and recorded independently of SDK source; research runner stays outside product PR.
 - Actors readonly exported type and constructor matrix now passes at d69057b2b248fcf930aaf962bbaadd0d52297731, with Node20 native and realHTTP1 gRPC-web all-eight/cancellation behavior; old919 native/WASM provenance is still insufficient until new source-bound rebuild.
 - No new merge to main performed. Goal remains active; all16 useful subagent slots remain assigned.
+### 2026-10-07 exact Filesystem package remote preservation
+
+- Source: c2e2d8ef80ab88a989c1f5955e6f35881f0274cd, PR267 remains open/draft pending final native release qualification.
+- Maintained Bun package archive: Q:/sdk/work/fs-package-c2e2d8ef80-20261007/acyclic-labs-fs-0.2.0.tgz; SHA256 5a539bdf2ce8db210dacbbafb5f8666395aba9dc3e31b0b01de061a285a70d43.
+- Installed externally in Q:/sdk/work/fs-installed-c2e2d8ef80-root-20261007: public memory consumer and workspace composition completed exit 0.
+- Uploaded to existing unpublished recovery draft404134409, asset619534879. GitHub API state uploaded, size2046477, digest sha256:5a539bdf2ce8db210dacbbafb5f8666395aba9dc3e31b0b01de061a285a70d43. This is preservation, not a registry or public release.
+- Fresh exact-head CI37667870393 completed success. Earlier same-head obsolete-base event37666962372 remains failed in the PR rollup; do not claim all rollup checks green.
+- Actors signed af8c7845d639ea2eaa2787c7b29d7d8b4c70789a now delegates native companion metadata/artifacts to maintained NAPI-RS3.10.5, deleting34 custom lines. Final platform qualification and post-Filesystem-main integration remain outstanding.

@@ -1,0 +1,163 @@
+{
+  "schema": "research-csharp-stream-qualification/v1",
+  "date": "2026-10-07",
+  "status": "QUALIFIED_CSHARP_STREAM_WINDOWS_LINUX_MACOS_COMBINED_NUGET_CURRENT_PRODUCER",
+  "scope": "single combined parent package; fresh external restore/build/runtime qualification on Windows, WSL Linux, and macOS; no publish, merge, registry, or deployment",
+  "producer": {
+    "path": "Q:/sdk/work/actors-stream-uniffi-kotlin-prototype-20261007",
+    "git_revision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "source": {
+      "lib_sha256": "407A338212CF2B208D99280B0804C3F83FB4AE01315519CB671C3167B12F58D9",
+      "cargo_toml_sha256": "2C186AAE94FCFF2D99774EF453507CE0DD861C314C939828E2AB9A014720B9BD",
+      "cargo_lock_sha256": "7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB",
+      "uniffi_toml_sha256": "ADAB4F663D8E89E40167715922CBA7EAD525F9E110C9C55C7960E7C69A8CE824"
+    },
+    "dependency": {
+      "path": "Q:/sdk/work/sdkgen-actors-c8-minimal/rust/crates/stream",
+      "lib_sha256": "36FB4673272FF6DAFE77DDDCCE616A22CB0DF751FCA7257E9E918E47DC8DAC12",
+      "cargo_toml_sha256": "72E0B44159FF74E8418B6F9882FC8E0309BB91830A7A197043467B723274B358"
+    }
+  },
+  "generator": {
+    "path": "Q:/sdk/work/uniffi-bindgen-cs-sourcefix-20261007",
+    "git_revision": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "binary_sha256": "86AA185FFAE9507372DBD914459D7355183493456DD55EC651C6B398E3D8AC26",
+    "generated_source_sha256": "934F4618FC3BF0A70FA1C1A115AF450BA43AA3C9B35A0A42192BC847BCF60D67"
+  },
+  "adapter": {
+    "path": "src/StreamAsyncEnumerable.cs",
+    "sha256": "DC9BFB6EE5B6B42AAC9FB01318629119F6E6B4A1CB85D4DFB775407B6B5A6D83",
+    "contract": "IAsyncEnumerable over generated RecordCursor/ChildCursor; Next receives caller CancellationToken; finally calls generated CloseCursor(CancellationToken.None)",
+    "semantics": "thin adapter only; no ordering, recovery, transport, buffering, or validation logic"
+  },
+  "native": {
+    "toolchain": "rust 1.98.1",
+    "win_x64_sha256": "AD102FB905B9996480BCA69F66248B042C8112FDEAB520155573FBC740AB49A5",
+    "linux_x64_sha256": "66E29E4EAED05CC838BCCC82E13E128C10A4CC30DAF0F400958C346976A966F2",
+    "osx_arm64_sha256": "EF2E516A0630004DFB5C4470D96631035891E601BDB0B9C0EAB99FC8837485F6"
+  },
+  "package": {
+    "id": "Actors.Stream",
+    "version": "0.1.0-c3d82376-combined",
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\out-combined\\Actors.Stream.0.1.0-c3d82376-combined.nupkg",
+    "sha256": "73E9C9B9319378E9299C0D14707CE466F8664E6C8127C16F6DCA3E15DADC700C",
+    "size_bytes": 5339565,
+    "layout_raw_evidence": "evidence/combined-package-layout.raw.txt",
+    "layout_raw_sha256": "4B7B624A02FCE19947AA5801CDDFFF6CE7A99A2E88F90B54189E38864F712314",
+    "default_rid_assets": [
+      "win-x64",
+      "linux-x64",
+      "osx-arm64"
+    ],
+    "managed_assembly_sha256": "419C6D1850DD9B30B75A01E1763BCCB5195D8C9D34C424B8151057F7776DF670"
+  },
+  "fresh_macos_consumer": {
+    "host": "ivar",
+    "platform": "macOS 15.6 arm64",
+    "dotnet": "8.0.425",
+    "package_cache": "ivar:/tmp/nuget-csharp-stream-mac-combined",
+    "restore_log": "evidence/combined-macos/consumer-restore.log",
+    "restore_log_sha256": "8C720D6F811C3C3BD4DADF5795B8EFFA0238349ED2534F3BE7FE819C24F4479B",
+    "build_log": "evidence/combined-macos/consumer-build.log",
+    "build_log_sha256": "C07010A41BE68D9858B606C6BC038031050135C3D35D3FCCD76D11FCCED177CB",
+    "local_run_log": "evidence/combined-macos/consumer-local-run.log",
+    "local_run_log_sha256": "70AB938B582B4010E06377031D239A35FF87EAD670ECB930E9B6290018C63E04",
+    "remote_run_log": "evidence/combined-macos/consumer-remote-run.log",
+    "remote_run_log_sha256": "6FBDF9E5E8E4F6A02D559DD068865A76DC4E14AE2CB30BCE3908C5B360BE8A84",
+    "installed_native_hashes": {
+      "win-x64": "AD102FB905B9996480BCA69F66248B042C8112FDEAB520155573FBC740AB49A5",
+      "linux-x64": "66E29E4EAED05CC838BCCC82E13E128C10A4CC30DAF0F400958C346976A966F2",
+      "osx-arm64": "EF2E516A0630004DFB5C4470D96631035891E601BDB0B9C0EAB99FC8837485F6"
+    },
+    "passes": [
+      "CSHARP_STREAM_LOCAL_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_LOCAL_CANCELLATION_CLOSE_RECOVERY_PASS",
+      "CSHARP_STREAM_REMOTE_TLS_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_REMOTE_CANCELLATION_SERVER_CLOSE_RECOVERY_PASS"
+    ],
+    "server_markers": [
+      "follow-open",
+      "follow-closed",
+      "child-open",
+      "child-closed"
+    ],
+    "full_width": "ulong.MaxValue and 0x8000000000000000UL reached Rust provider; expected out_of_range boundary accepted"
+  },
+  "cross_platform_boundary": {
+    "windows": "fresh combined package restore/build/local+TLS remote/negative above",
+    "linux": "fresh combined package restore/build/local+TLS remote/negative above",
+    "macos": "fresh combined package restore/build/local+TLS remote above",
+    "asset_identity": "all three consumers restored version 0.1.0-c3d82376-combined; installed native hashes match package and exact c3d82376 producer",
+    "all_operations": "all eight local/remote unary/stream roots exercised; full-width ulong boundaries and cancellation recovery passed"
+  },
+  "a370_artifact_size": {
+    "commit": "a37048fb1443a4674735f529b9359d68c62f1ddd",
+    "tracked_tree_bytes": 23218653,
+    "method": "git ls-tree -r --long sum for stream-csharp-c3d82376-20261007"
+  },
+  "history": {
+    "previous_packages": "out/ and out-macos-arm64 preserved",
+    "previous_receipts": "receipt.json and receipt-macos-arm64.json preserved and not relabeled",
+    "remote_source_history": "not rewritten"
+  },
+  "fresh_windows_consumer": {
+    "host": "Windows",
+    "platform": "Windows x64",
+    "dotnet": "8.0.425 task-local",
+    "package_cache": "C:/Users/varun/.codex/tmp-csharp-stream-packages-combined-win",
+    "restore_log": "evidence/combined-windows/consumer-restore.log",
+    "restore_log_sha256": "D36B3D321B3CA2D4CC5B0F6D004C3C30D62B2F3A3053A959825DB3F74DE68F84",
+    "build_log": "evidence/combined-windows/consumer-build.log",
+    "build_log_sha256": "FD0E46D55D04FBC3FB2465204AFE17CE8EBFEBDF99D1C7BAB4ACFCF30155AEC0",
+    "local_run_log": "evidence/combined-windows/consumer-local-run.log",
+    "local_run_log_sha256": "53DBE0BBE7C1E276A80EE6250A2C7DB123D4C96CE3D125D9DC36BBA8383CF560",
+    "remote_run_log": "evidence/combined-windows/consumer-remote-run.log",
+    "remote_run_log_sha256": "5E5A7CB1097905F23E360CCEE22BB89D20002F8DD902EE524869B8ACFB7803EB",
+    "negative_build_log": "evidence/combined-windows/negative-build.log",
+    "negative_build_log_sha256": "E5145D4A3B54B51102B6EE15FAD2C827A5B5ECE0A7E337DDB1FE65675DE526C0",
+    "fixture_exe_sha256": "7835D929ACD9C2A975330C53250CFAF7F27D610E623A3E64B180B100DE1A455D",
+    "fixture_endpoint": "https://localhost:55003",
+    "fixture_ca_sha256": "AE27CD0D766FA2D7E0DC02B6599ACFCE58EBE1390FC0E1511217EE1A9E6CB5E3",
+    "passes": [
+      "CSHARP_STREAM_LOCAL_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_LOCAL_CANCELLATION_CLOSE_RECOVERY_PASS",
+      "CSHARP_STREAM_REMOTE_TLS_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_REMOTE_CANCELLATION_SERVER_CLOSE_RECOVERY_PASS",
+      "negative compile CS1729 RecordCursor does not contain a constructor that takes 2 arguments"
+    ],
+    "server_markers": [
+      "follow-open",
+      "follow-closed"
+    ]
+  },
+  "fresh_linux_consumer": {
+    "host": "WSL2",
+    "platform": "Linux x86_64",
+    "dotnet": "8.0.425 task-local",
+    "package_cache": "/tmp/nuget-csharp-stream-combined-linux",
+    "restore_log": "evidence/combined-linux/consumer-restore.log",
+    "restore_log_sha256": "533184408CBFAB36425226795E2133B980B67F3F099F0379AEA64BB307EDC5E3",
+    "build_log": "evidence/combined-linux/consumer-build.log",
+    "build_log_sha256": "308BC54E4A9739D716FF98106760BD7AA7244203B21B6CB07324E3826DD61CC7",
+    "local_run_log": "evidence/combined-linux/consumer-local-run.log",
+    "local_run_log_sha256": "70AB938B582B4010E06377031D239A35FF87EAD670ECB930E9B6290018C63E04",
+    "remote_run_log": "evidence/combined-linux/consumer-remote-run.log",
+    "remote_run_log_sha256": "6FBDF9E5E8E4F6A02D559DD068865A76DC4E14AE2CB30BCE3908C5B360BE8A84",
+    "negative_build_log": "evidence/combined-linux/negative-build.log",
+    "negative_build_log_sha256": "D58748A57DD6BFFEE02F60796180C8AF76E958AD1283021DC8831B908D109F8B",
+    "fixture_exe_sha256": "677B0E48EB037BC825D61E497EBCA0C323FAE350FE2A5CEA8C64C88A5FF41C94",
+    "fixture_endpoint": "https://localhost:38203",
+    "fixture_ca_sha256": "438ABFDAC3CBDE2956A852982D115E4B941860BA2A066F2D613E5A6C5159EDFB",
+    "passes": [
+      "CSHARP_STREAM_LOCAL_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_LOCAL_CANCELLATION_CLOSE_RECOVERY_PASS",
+      "CSHARP_STREAM_REMOTE_TLS_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_REMOTE_CANCELLATION_SERVER_CLOSE_RECOVERY_PASS",
+      "negative compile CS1729 RecordCursor does not contain a constructor that takes 2 arguments"
+    ],
+    "server_markers": [
+      "follow-open",
+      "follow-closed"
+    ]
+  }
+}

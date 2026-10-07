@@ -153,7 +153,7 @@
     "raw_evidence": {
       "role": "consolidated terminal qualification evidence",
       "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\qualification.raw.txt",
-      "sha256": "E5DFDB1B514F8D1CEC495672AF1555E7CBFE51E85044226848F2680DCC480B6C"
+      "sha256": "85373C59C6D756A48D1CDF82E724C27B4D1EC759A326110403FFC6EE6EDD4925"
     },
     "operations": [
       "local StreamClientBridge.Append",
