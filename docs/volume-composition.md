@@ -6,6 +6,10 @@ filtered fork retains the real source generation as its direct parent. Its
 initial root carries the filtered-fork feature bit, and later generations clear
 that bit. Merge and rebase use the selected initial tree as the effective delta
 baseline, so excluded source paths are not interpreted as authored deletions.
+Inherited bytes are the baseline even when the source already contains edits
+from earlier forks. Integrating that selected child publishes its subsequent
+edits; it does not implicitly import earlier source edits. A destination that
+differs from the selected baseline still participates in conflict detection.
 Hardlink counts are rebuilt for the retained aliases. Selection traversal obeys
 the existing mutation and work budgets and never reads file bodies.
 

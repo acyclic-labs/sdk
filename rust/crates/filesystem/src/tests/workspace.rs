@@ -311,6 +311,60 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     Ok(())
 }
 
+#[tokio::test]
+async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let root = fs.create_workspace("nested-root").await?;
+    root.write_text("/keep", "root").await?;
+    root.write_text("/omit", "root").await?;
+    let parent = root
+        .fork(
+            "nested-parent",
+            ForkOptions::from_generation(root.head().await?, IdempotencyKey::new()),
+        )
+        .await?;
+    parent.write_text("/keep", "inherited").await?;
+    let child = parent
+        .fork(
+            "nested-child",
+            ForkOptions::from_generation(parent.head().await?, IdempotencyKey::new())
+                .inherit_paths(vec!["/keep".into()]),
+        )
+        .await?;
+    // Inherited content is the child baseline; only authored child changes
+    // enter a destination. An unchanged selected file is not a child edit.
+    child.write_text("/new", "child").await?;
+    let plan = child.join_into(&root).plan().await?;
+    plan.apply(ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    })
+    .await?;
+    assert_eq!(root.read("/keep", 32).await?.as_ref(), b"root");
+    assert_eq!(root.read("/omit", 32).await?.as_ref(), b"root");
+    assert_eq!(root.read("/new", 32).await?.as_ref(), b"child");
+    child.write_text("/keep", "edited").await?;
+    let plan = child.join_into(&root).plan().await?;
+    assert!(matches!(
+        plan.apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        }).await?,
+        JoinOutcome::Conflicted { .. }
+    ));
+    root.write_text("/keep", "inherited").await?;
+    let plan = child.join_into(&root).plan().await?;
+    plan.apply(ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    })
+    .await?;
+    assert_eq!(root.read("/keep", 32).await?.as_ref(), b"edited");
+    assert_eq!(parent.read("/keep", 32).await?.as_ref(), b"inherited");
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(48))]
     #[test]

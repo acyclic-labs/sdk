@@ -10,6 +10,69 @@ use acyclic_harness::{
     resources::ProviderRef,
 };
 
+#[test]
+fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
+    let owner = AgentId::from_bytes([3; 16]);
+    let reader = AgentId::from_bytes([4; 16]);
+    let issuer = AuthorityIssuer::new(
+        "delegation",
+        [9; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "delegation".into(),
+        },
+    );
+    for role in [
+        VolumeClass::AgentPrivate,
+        VolumeClass::SessionShared,
+        VolumeClass::Project,
+    ] {
+        let volume = VolumeRef::new(
+            ProviderRef::new("delegation", "filesystem", "2")?,
+            "owned",
+            role,
+            VolumeOwner::Agent(owner),
+        )?;
+        let capability = volume.capability(VolumeOperation::Read)?;
+        let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([capability.clone()]));
+        let delegated = issuer
+            .delegate_private_directory_read(&scope, reader, "reader", &volume, "selected")?;
+        assert!(
+            ContentGrant::verify_directory_read(
+                &issuer.verifier(),
+                &delegated,
+                &volume,
+                "selected",
+            )
+            .is_ok()
+        );
+        assert!(ContentGrant::verify_directory_read(
+            &issuer.verifier(), &delegated, &volume, "outside",
+        ).is_err());
+        for unauthorized in [
+            issuer.root_for_agent(reader, "foreign", Capabilities::new([capability])),
+            issuer.root_for_agent(
+                owner,
+                "no-read",
+                Capabilities::new(std::iter::empty::<String>()),
+            ),
+        ] {
+            assert!(
+                issuer
+                    .delegate_private_directory_read(
+                        &unauthorized,
+                        reader,
+                        "reader",
+                        &volume,
+                        "selected",
+                    )
+                    .is_err()
+            );
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,

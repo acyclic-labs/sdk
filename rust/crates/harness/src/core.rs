@@ -7,7 +7,7 @@ use crate::{
     PolicyLayer, Result,
     conversation::{
         ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
-        ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        ModelContextSelection, VolumeOperation, VolumeOwner, VolumeRef,
         is_internal_path,
     },
     fork::{ForkSeed, InheritedConversationPrefix},
@@ -278,8 +278,7 @@ impl AuthorityIssuer {
     ) -> Result<()> {
         self.verifier().verify(owner_scope)?;
         volume.validate()?;
-        if volume.class() != VolumeClass::AgentPrivate
-            || !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
+        if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
                 .capabilities
                 .contains(&volume.capability(VolumeOperation::Read)?)
@@ -2048,9 +2047,7 @@ impl Reducer {
         for reader in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied())
         {
             for (capability, file) in &published_refs {
-                if file.volume().class() == crate::conversation::VolumeClass::AgentPrivate
-                    && file.volume().owner() == &crate::conversation::VolumeOwner::Agent(reader)
-                {
+                if file.volume().owner() == &crate::conversation::VolumeOwner::Agent(reader) {
                     continue;
                 }
                 if !granted.contains(&(capability.clone(), reader)) {
