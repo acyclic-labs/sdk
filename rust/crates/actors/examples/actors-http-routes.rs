@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(&public_semantic)?;
             std::fs::write(
                 public_semantic.join("readonly.ts"),
-                render_readonly_semantic(),
+                render_readonly_semantic(&ts_rs::Config::from_env()),
             )?;
         }
         std::fs::write(output, source)?;
@@ -212,8 +212,8 @@ export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker>
     .to_owned()
 }
 
-fn render_readonly_semantic() -> String {
-    let aliases = acyclic_actors::domain::typescript_export_names()
+fn render_readonly_semantic(config: &ts_rs::Config) -> String {
+    let aliases = acyclic_actors::domain::typescript_export_names(config)
         .iter()
         .map(|name| format!("export type {name} = ReadonlySemantic<Semantic.{name}>;"))
         .collect::<Vec<_>>()
