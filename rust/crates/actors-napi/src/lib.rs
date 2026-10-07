@@ -378,6 +378,7 @@ impl NativeActorsClient {
         PACKAGE_VERSION.to_owned()
     }
     /// Selected transport.
+    #[napi(getter, js_name = "transport")]
     pub fn transport(&self) -> String {
         self.inner.transport().to_owned()
     }
