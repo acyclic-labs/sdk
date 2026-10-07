@@ -2236,6 +2236,20 @@ pub(crate) fn tool_approval_request(
     invocation: &ToolInvocation,
     prompt: String,
 ) -> Result<(OperationId, Interaction)> {
+    let (operation, digest) = tool_approval_binding(task, policy, definition, invocation)?;
+    Ok((
+        operation,
+        Interaction::approval(prompt, invocation.operation_id, digest)?,
+    ))
+}
+
+/// Derives retained approval authority without evaluating or dispatching a policy.
+pub(crate) fn tool_approval_binding(
+    task: TaskId,
+    policy: &ComponentIdentity,
+    definition: &ToolDefinition,
+    invocation: &ToolInvocation,
+) -> Result<(OperationId, [u8; 32])> {
     validate_policy_identity(policy)?;
     invocation.validate()?;
     let digest = crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?;
@@ -2244,10 +2258,7 @@ pub(crate) fn tool_approval_request(
         &blake3::hash(&[b"harness:tool-approval:v2".as_slice(), digest.as_slice()].concat())
             .as_bytes()[..16],
     );
-    Ok((
-        OperationId::from_bytes(id_bytes),
-        Interaction::approval(prompt, invocation.operation_id, digest)?,
-    ))
+    Ok((OperationId::from_bytes(id_bytes), digest))
 }
 
 /// Provider-owned, scope-bound file handles. The reader verifies every exact

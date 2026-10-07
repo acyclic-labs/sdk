@@ -1104,9 +1104,11 @@ async fn worker_restart_with_options(
                     .is_err()
             );
             if with_timer || with_mail_receive || with_child || with_approval_wait {
+                let evaluations = policy.evaluated.load(Ordering::SeqCst);
                 assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert!(!runtime.poll_task_wake(task).await?);
+                assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
                 if with_two_waits {
                     let first_wake = coordinator
                         .pull(&worker)
@@ -1640,6 +1642,7 @@ async fn worker_restart_with_options(
             old_lease = Some(lease.clone());
         }
         if !reopened && (with_timer || with_mail_receive || with_child || with_approval_wait) {
+            let evaluations = policy.evaluated.load(Ordering::SeqCst);
             let first = runtime.poll_task_wake_page(None, 1).await?;
             assert_eq!(first.events_read, 1);
             assert!(first.woken.is_empty());
@@ -1649,6 +1652,7 @@ async fn worker_restart_with_options(
             discovery_cursor = Some(
                 serde_json::to_vec(&cursor).map_err(|error| Error::Invalid(error.to_string()))?,
             );
+            assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
         }
         if with_timer {
             let timers = stream.stream(format!("harness/v2/timers/{task}"))?;

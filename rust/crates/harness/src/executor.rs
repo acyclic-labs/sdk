@@ -366,6 +366,18 @@ pub struct TurnOutput {
     pub steps: u32,
 }
 
+pub(crate) enum StockTurnProgress {
+    Ready(TurnOutput),
+    Pending(OperationId),
+    Rejected(crate::InteractionRejection),
+}
+
+enum ToolCallProgress {
+    Settled,
+    Pending(OperationId),
+    Rejected(crate::InteractionRejection),
+}
+
 /// Complete replaceable turn loop. Implementations may own every policy decision.
 pub trait Executor: Send + Sync {
     /// Executes or resumes one turn using only explicit durable host services.
@@ -997,7 +1009,7 @@ impl StockExecutor {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<()> {
+    ) -> Result<ToolCallProgress> {
         let (_, records) =
             Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
         invocation.validate()?;
@@ -1107,13 +1119,22 @@ impl StockExecutor {
                             let approval =
                                 crate::durable_host::task_interaction_id(task, approval_operation);
                             journal.open_interaction(approval, request).await?;
-                            check_tool_approval(
-                                journal.interaction_outcome(approval).await?.unwrap_or(
-                                    InteractionOutcome::Indeterminate {
-                                        operation_id: invocation.operation_id,
-                                    },
-                                ),
-                            )?;
+                            let Some(outcome) = journal.interaction_outcome(approval).await? else {
+                                if started.is_some() {
+                                    return Err(Error::Indeterminate(invocation.operation_id));
+                                }
+                                return Ok(ToolCallProgress::Pending(invocation.operation_id));
+                            };
+                            match check_tool_approval(outcome) {
+                                Ok(()) => {}
+                                Err(Error::InteractionRejected(reason)) if started.is_none() => {
+                                    return Ok(ToolCallProgress::Rejected(reason));
+                                }
+                                Err(Error::InteractionRejected(_)) => {
+                                    return Err(Error::Indeterminate(invocation.operation_id));
+                                }
+                                Err(error) => return Err(error),
+                            }
                         }
                     }
                 }
@@ -1347,7 +1368,7 @@ impl StockExecutor {
         };
         message.content.validate_limits(self.limits)?;
         prior_messages.push(message);
-        Ok(())
+        Ok(ToolCallProgress::Settled)
     }
 
     async fn validate_turn_input(
@@ -1387,12 +1408,12 @@ impl StockExecutor {
     }
 }
 
-impl Executor for StockExecutor {
-    fn execute<'a>(
+impl StockExecutor {
+    pub(crate) fn execute_progress<'a>(
         &'a self,
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
-    ) -> BoxFuture<'a, Result<TurnOutput>> {
+    ) -> BoxFuture<'a, Result<StockTurnProgress>> {
         Box::pin(async move {
             if let Some((host, task_id, fence)) = &self.task {
                 host.verify_execution_owner(*task_id, fence.clone()).await?;
@@ -1442,12 +1463,12 @@ impl Executor for StockExecutor {
                     return Err(Error::Indeterminate(input.operation_id));
                 };
                 if calls.is_empty() {
-                    return Ok(TurnOutput {
+                    return Ok(StockTurnProgress::Ready(TurnOutput {
                         text,
                         attachments: Vec::new(),
                         metadata,
                         steps: step + 1,
-                    });
+                    }));
                 }
                 for invocation in calls {
                     let message = ModelMessage {
@@ -1460,17 +1481,43 @@ impl Executor for StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    self.resolve_tool_call(
-                        journal,
-                        input.operation_id,
-                        step,
-                        invocation,
-                        &mut prior_messages,
-                    )
-                    .await?;
+                    match self
+                        .resolve_tool_call(
+                            journal,
+                            input.operation_id,
+                            step,
+                            invocation,
+                            &mut prior_messages,
+                        )
+                        .await?
+                    {
+                        ToolCallProgress::Settled => {}
+                        ToolCallProgress::Pending(wait) => {
+                            return Ok(StockTurnProgress::Pending(wait));
+                        }
+                        ToolCallProgress::Rejected(reason) => {
+                            return Ok(StockTurnProgress::Rejected(reason));
+                        }
+                    }
                 }
             }
             Err(Error::Conflict("executor step limit reached".into()))
+        })
+    }
+}
+
+impl Executor for StockExecutor {
+    fn execute<'a>(
+        &'a self,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        Box::pin(async move {
+            match self.execute_progress(input, journal).await? {
+                StockTurnProgress::Ready(output) => Ok(output),
+                StockTurnProgress::Pending(operation) => Err(Error::Indeterminate(operation)),
+                StockTurnProgress::Rejected(reason) => Err(Error::InteractionRejected(reason)),
+            }
         })
     }
 }
@@ -1921,6 +1968,7 @@ mod tests {
     struct Journal(
         Mutex<Vec<ExecutionRecord>>,
         Mutex<HashMap<String, (FileRef, Vec<u8>)>>,
+        Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
     );
 
     #[tokio::test]
@@ -2086,17 +2134,40 @@ mod tests {
 
         fn open_interaction<'a>(
             &'a self,
-            _: InteractionId,
-            _: Interaction,
+            id: InteractionId,
+            request: Interaction,
         ) -> BoxFuture<'a, Result<()>> {
-            async { Err(Error::Unsupported("interactions".into())) }.boxed()
+            async move {
+                request.validate()?;
+                let mut interactions = self
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                if let Some((original, _)) = interactions.get(&id) {
+                    if original != &request {
+                        return Err(Error::Conflict("approval request changed".into()));
+                    }
+                } else {
+                    interactions.insert(id, (request, None));
+                }
+                Ok(())
+            }
+            .boxed()
         }
 
         fn interaction_outcome<'a>(
             &'a self,
-            _: InteractionId,
+            id: InteractionId,
         ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
-            async { Ok(None) }.boxed()
+            async move {
+                Ok(self
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .get(&id)
+                    .and_then(|(_, outcome)| outcome.clone()))
+            }
+            .boxed()
         }
     }
 
@@ -2359,6 +2430,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Result<()> {
+        struct ApprovalPolicy;
+        impl ToolPolicy for ApprovalPolicy {
+            fn identity(&self) -> ComponentIdentity {
+                ComponentIdentity {
+                    name: "test.approval".into(),
+                    version: "1".into(),
+                    digest: [7; 32],
+                }
+            }
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a ToolInvocation,
+                _: &'a RuntimeScope,
+            ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
+                Box::pin(async {
+                    Ok(ToolPolicyDecision::RequireApproval {
+                        prompt: "Approve echo".into(),
+                    })
+                })
+            }
+        }
+        for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
+            let model = Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            });
+            let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+            let mut tools = ToolRegistry::new();
+            tools.register(crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema: json!({"type": "object"}),
+                    output_schema: json!({"type": "object"}),
+                },
+                executor: tool_executor.clone(),
+                projection: Arc::new(Projection),
+            })?;
+            let executor = StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo", capability::INTERACTION_ROUTE]),
+                    Limits::default(),
+                )?,
+                Some(Arc::new(ApprovalPolicy)),
+            )?;
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: OperationId::from_bytes([28; 16]),
+                input: ModelContent::Text("hello".into()),
+                selected_context: None,
+                max_steps: 4,
+            };
+            let invocation = ToolInvocation::for_model_call(
+                input.operation_id,
+                0,
+                "call-1".into(),
+                "example.echo".into(),
+                json!({"value":"hello"}),
+            );
+            for _ in 0..2 {
+                assert!(
+                    matches!(executor.execute_progress(input.clone(), &journal).await?, StockTurnProgress::Pending(operation) if operation == invocation.operation_id)
+                );
+            }
+            assert!(
+                matches!(executor.execute(input.clone(), &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
+            );
+            assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+            let (id, request) = {
+                let interactions = journal
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                assert_eq!(interactions.len(), 1);
+                interactions
+                    .iter()
+                    .next()
+                    .map(|(id, (request, _))| (*id, request.clone()))
+                    .ok_or_else(|| Error::NotFound("approval".into()))?
+            };
+            assert!(
+                matches!(request, Interaction::Approval { operation_id, .. } if operation_id == invocation.operation_id)
+            );
+            journal
+                .2
+                .lock()
+                .map_err(|_| Error::Storage("interaction lock".into()))?
+                .get_mut(&id)
+                .ok_or_else(|| Error::NotFound("approval".into()))?
+                .1 = Some(outcome.clone());
+            if outcome == InteractionOutcome::Approved {
+                assert!(matches!(
+                    executor.execute_progress(input.clone(), &journal).await?,
+                    StockTurnProgress::Ready(TurnOutput { steps: 2, .. })
+                ));
+                assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+                executor.execute(input, &journal).await?;
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(matches!(
+                    executor.execute_progress(input.clone(), &journal).await?,
+                    StockTurnProgress::Rejected(crate::InteractionRejection::Denied)
+                ));
+                assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+                // A retained in-flight tool is uncertainty, even if approval is
+                // subsequently rejected. It cannot become a passive wait or a
+                // terminal result without provider settlement.
+                let reference =
+                    stage_json(&journal, input.operation_id, "tool-start", &invocation).await?;
+                journal
+                    .append(
+                        input.operation_id,
+                        "tool:0:call-1:started".into(),
+                        ExecutionEvent::ToolStarted {
+                            step: 0,
+                            call_id: invocation.call_id.clone(),
+                            invocation: reference,
+                        },
+                    )
+                    .await?;
+                assert!(
+                    matches!(executor.execute_progress(input, &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
+                );
+                assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         let model = Arc::new(FakeModel {
             calls: AtomicUsize::new(0),
@@ -2466,6 +2678,13 @@ mod tests {
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
                     .clone(),
             ),
+            Mutex::new(
+                journal
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .clone(),
+            ),
         );
         assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
         let incomplete = Journal(
@@ -2486,6 +2705,13 @@ mod tests {
                     .1
                     .lock()
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+            Mutex::new(
+                reopened
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
         );
@@ -2511,6 +2737,13 @@ mod tests {
                     .1
                     .lock()
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+            Mutex::new(
+                incomplete
+                    .2
+                    .lock()
+                    .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
         );

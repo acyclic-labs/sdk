@@ -416,23 +416,30 @@ where
         let Some(policy) = &self.policy else {
             return Ok(false);
         };
-        let Some((operation, request)) = context
-            .policy_approval(policy.as_ref(), definition, invocation)
-            .await?
-        else {
-            return Ok(false);
-        };
         let task = context
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("approval has no task".into()))?;
+        let admission = self.host.observe_admission(task).await?;
+        let identity = policy.identity();
+        if admission.policy.as_ref() != Some(&identity) {
+            return Err(Error::Conflict(
+                "approval policy differs from admission".into(),
+            ));
+        }
+        let (operation, digest) =
+            crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?;
         let id = crate::durable_host::task_interaction_id(task, operation);
         let host = self.interaction_host()?;
         match host.read_request(id).await? {
             None => return Ok(false),
-            Some(original) if original != request => {
+            Some(Interaction::Approval {
+                operation_id,
+                action_digest,
+                ..
+            }) if operation_id == invocation.operation_id && action_digest == digest => {}
+            Some(_) => {
                 return Err(Error::Conflict("approval request changed".into()));
             }
-            Some(_) => {}
         }
         Ok(host
             .read(id)
