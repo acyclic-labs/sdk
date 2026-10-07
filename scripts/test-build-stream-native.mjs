@@ -88,7 +88,7 @@ function validBuildInputs() {
     profile: {
       name: "release",
       cargo_incremental: "0",
-      release_incremental: "0",
+      release_incremental: "false",
       manifest_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       config_sha256: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     },
@@ -271,7 +271,7 @@ test("native qualification restores Rustflags when setup fails", async () => {
       assert.equal(process.env.RUSTFLAGS, undefined);
       assert.match(process.env.CARGO_ENCODED_RUSTFLAGS, /__acyclic_stream_source/u);
       assert.equal(process.env.CARGO_INCREMENTAL, "0");
-      assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "0");
+      assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "false");
       throw new Error("capture setup failed");
     }),
     /capture setup failed/,

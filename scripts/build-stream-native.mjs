@@ -235,7 +235,7 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
   const priorReleaseIncremental = envValue("CARGO_PROFILE_RELEASE_INCREMENTAL");
   try {
     process.env.CARGO_INCREMENTAL = "0";
-    process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "0";
+    process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "false";
     process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
     delete process.env.RUSTFLAGS;
     return await operation();
@@ -637,7 +637,7 @@ export function assertBuildInputs(value) {
   if (value.profile.name !== "release") throw new Error("native build profile is not release");
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
   assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
-  if (profile.cargo_incremental !== "0" || profile.release_incremental !== "0") throw new Error("native build incremental policy is not pinned to zero");
+  if (profile.cargo_incremental !== "0" || profile.release_incremental !== "false") throw new Error("native build incremental policy is not pinned to zero");
   assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
   const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
