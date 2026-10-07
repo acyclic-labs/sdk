@@ -26,6 +26,13 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 /// A public JavaScript number accepted only when it is an exact safe integer.
+pub(crate) fn is_safe_integer(value: f64) -> bool {
+    value.is_finite()
+        && value >= 0.0
+        && value.fract() == 0.0
+        && value <= crate::MAX_SAFE_INTEGER as f64
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct SafeInput(u64);
 impl<'de> Deserialize<'de> for SafeInput {
@@ -61,11 +68,7 @@ impl<'de> Deserialize<'de> for SafeInput {
                 reason = "finite integral values bounded by crate::MAX_SAFE_INTEGER convert exactly"
             )]
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
-                if value.is_finite()
-                    && value >= 0.0
-                    && value.fract() == 0.0
-                    && value <= crate::MAX_SAFE_INTEGER as f64
-                {
+                if is_safe_integer(value) {
                     Ok(SafeInput(value as u64))
                 } else {
                     Err(E::custom("number must be an exact JavaScript safe integer"))
