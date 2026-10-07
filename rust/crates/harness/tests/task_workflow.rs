@@ -1880,7 +1880,7 @@ use fault_stream::{ExecutionFaultMode, LostSessionAck};
 
 #[tokio::test]
 async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<()> {
-    stock_restart_with_publication_fault(None).await
+    stock_restart_with_publication_fault(None, false).await
 }
 
 #[tokio::test]
@@ -1890,16 +1890,32 @@ async fn stock_model_publication_faults_reconcile_after_provider_reopen() -> Res
         ExecutionFaultMode::AfterVisible,
         ExecutionFaultMode::AfterHidden,
     ] {
-        stock_restart_with_publication_fault(Some(mode)).await?;
+        stock_restart_with_publication_fault(Some(mode), false).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_reopen()
+-> Result<()> {
+    for mode in [
+        ExecutionFaultMode::Before,
+        ExecutionFaultMode::AfterVisible,
+        ExecutionFaultMode::AfterHidden,
+    ] {
+        stock_restart_with_publication_fault(Some(mode), true).await?;
     }
     Ok(())
 }
 
 #[allow(
     clippy::cognitive_complexity,
-    reason = "one restart ownership scenario shared by normal and publication-fault cases"
+    reason = "one restart ownership scenario shared by normal, publication-fault and cancellation cases"
 )]
-async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>) -> Result<()> {
+async fn stock_restart_with_publication_fault(
+    fault: Option<ExecutionFaultMode>,
+    cancel_after_failure: bool,
+) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
@@ -1960,7 +1976,7 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
         available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
     };
-    let mut previous_lease = None;
+    let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let model = Arc::new(InterruptedModel {
         approval_tool: false,
         observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
@@ -1972,7 +1988,7 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
         active_tasks: 1,
         total_tasks: 2,
         depth: 1,
-        model_steps: 1,
+        model_steps: if cancel_after_failure { 2 } else { 1 },
     };
     // Each iteration drops all provider, coordinator, harness, and workflow handles.
     for reopened in [false, true] {
@@ -2021,7 +2037,7 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
         )?
         .with_session_limits(if reopened {
             SessionLimits {
-                model_steps: 2,
+                model_steps: session_limits.model_steps + 1,
                 ..session_limits
             }
         } else {
@@ -2081,30 +2097,52 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
             coordinator.scheduler().session_limits(operation)?,
             session_limits
         );
-        if let Some(old) = &previous_lease {
-            // This fixture's finite in-process model stream is quiescent after
-            // dropping it. Replacement is explicit, never inferred from a
-            // failed publication or an unknown external provider state.
+        let lease = if reopened && cancel_after_failure {
+            let old = previous_lease
+                .as_ref()
+                .ok_or_else(|| Error::NotFound("cancelled task lease".into()))?;
+            let retained = coordinator
+                .scheduler()
+                .operation(operation)
+                .ok_or_else(|| Error::NotFound("cancelled task ownership".into()))?;
+            assert!(retained.cancellation_requested);
+            assert_eq!(retained.reservation.as_ref(), Some(&old.reservation));
+            assert_eq!(
+                retained.phase,
+                acyclic_harness::scheduler::OperationPhase::Running
+            );
+            assert!(coordinator.pull(&worker).await?.is_none());
+            old.clone()
+        } else {
+            if let Some(old) = &previous_lease {
+                // This fixture's finite in-process model stream is quiescent after
+                // dropping it. Replacement is explicit, never inferred from a
+                // failed publication or an unknown external provider state.
+                coordinator
+                    .release_lease(old, IdempotencyKey::new("release-crashed")?)
+                    .await?;
+            }
             coordinator
-                .release_lease(old, IdempotencyKey::new("release-crashed")?)
+                .pull(&worker)
+                .await?
+                .ok_or_else(|| Error::NotFound("task lease".into()))?
+        };
+        let fence = LeaseFence::from(&lease.reservation);
+        if !reopened || !cancel_after_failure {
+            coordinator
+                .apply(
+                    operation,
+                    IdempotencyKey::new(if reopened { "restart" } else { "start" })?,
+                    SchedulerEvent::Started {
+                        operation_id: operation,
+                        fence: fence.clone(),
+                    },
+                )
                 .await?;
         }
-        let lease = coordinator
-            .pull(&worker)
-            .await?
-            .ok_or_else(|| Error::NotFound("task lease".into()))?;
-        let fence = LeaseFence::from(&lease.reservation);
-        coordinator
-            .apply(
-                operation,
-                IdempotencyKey::new(if reopened { "restart" } else { "start" })?,
-                SchedulerEvent::Started {
-                    operation_id: operation,
-                    fence: fence.clone(),
-                },
-            )
-            .await?;
-        if let Some(old) = &previous_lease {
+        if let Some(old) = &previous_lease
+            && !cancel_after_failure
+        {
             assert!(
                 host.journal_owner(task, LeaseFence::from(&old.reservation))
                     .await
@@ -2184,17 +2222,25 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
                 )
                 .await?;
             assert_ne!(another.operation_id(), execution.operation_id());
-            assert!(
-                another
-                    .execute(TurnInput {
-                        operation_id: another.operation_id(),
-                        input: ModelContent::Text("another".into()),
-                        selected_context: None,
-                        max_steps: 1,
-                    })
-                    .await
-                    .is_err()
-            );
+            let before_fresh_attempt = coordinator.scheduler().clone();
+            let rejected = another
+                .execute(TurnInput {
+                    operation_id: another.operation_id(),
+                    input: ModelContent::Text("another".into()),
+                    selected_context: None,
+                    max_steps: 1,
+                })
+                .await;
+            if cancel_after_failure {
+                // This session still has a model step available: cancellation,
+                // rather than an exhausted caller budget, rejects fresh work.
+                assert!(matches!(rejected, Err(Error::Conflict(message))
+                    if message == "cancelled task cannot publish new execution work"));
+                coordinator.refresh().await?;
+                assert_eq!(coordinator.scheduler(), &before_fresh_attempt);
+            } else {
+                assert!(rejected.is_err());
+            }
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
         } else {
@@ -2228,6 +2274,60 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
             );
         }
         drop(execution);
+        if cancel_after_failure {
+            if reopened {
+                let old = previous_lease
+                    .as_ref()
+                    .ok_or_else(|| Error::NotFound("cancelled task lease".into()))?;
+                coordinator.refresh().await?;
+                assert_eq!(
+                    coordinator
+                        .scheduler()
+                        .operation(operation)
+                        .and_then(|state| state.reservation.as_ref()),
+                    Some(&old.reservation)
+                );
+                // Reconciliation observed the finite provider's completion. Only
+                // this explicit fenced acknowledgement may now release ownership.
+                let mut stale = old.clone();
+                stale.reservation.id = "stale".into();
+                assert!(
+                    coordinator
+                        .release_lease(&stale, IdempotencyKey::new("stale-cancelled-release")?)
+                        .await
+                        .is_err()
+                );
+                coordinator
+                    .release_lease(old, IdempotencyKey::new("cancelled-reconciled-release")?)
+                    .await?;
+                let terminal = coordinator
+                    .scheduler()
+                    .operation(operation)
+                    .ok_or_else(|| Error::NotFound("cancelled terminal task".into()))?;
+                assert_eq!(terminal.outcome, Some(Outcome::Cancelled));
+                assert!(terminal.reservation.is_none());
+                assert!(coordinator.pull(&worker).await?.is_none());
+                assert!(
+                    host.journal_owner(task, LeaseFence::from(&old.reservation))
+                        .await
+                        .is_err()
+                );
+                return Ok(());
+            }
+            coordinator
+                .cancel_operation(
+                    &authority,
+                    &signed,
+                    &issuer.verifier(),
+                    operation,
+                    IdempotencyKey::new("cancel-uncertain-model")?,
+                    false,
+                )
+                .await?;
+            assert!(coordinator.pull(&worker).await?.is_none());
+            previous_lease = Some(lease);
+            continue;
+        }
         let journal = runtime.workflow_journal(task, fence.clone()).await?;
         let mut session = harness
             .open_registered_task(task, fence.clone(), journal.clone())
