@@ -544,7 +544,7 @@ export declare class NativeCheckout {
    * Returns a JavaScript error for malformed operation identity, clean or
    * read-only checkouts, closure/authentication failure, cancellation, or work bounds.
    */
-  commit(operationId: Buffer): Promise<NativeCommitResult>
+  commit(operationId: Buffer, lease?: NativeOperationWindowLease | undefined | null): Promise<NativeCommitResult>
   /**
    * Applies and publishes one direct-live transaction with bounded safe retries.
    *
@@ -848,7 +848,9 @@ export declare class NativeMount {
  */
 export declare class NativeOperationWindowCoordinator {
   /** Opens one overlapping tool lease, pinning the first observed parent. */
-  begin(workspaceId: Buffer, parent: Buffer, owner: string, nowMillis: bigint, expiresAtMillis: bigint): Promise<NativeOperationWindowLease>
+  begin(workspaceId: Buffer, parent: Buffer, owner: string, nowMillis: bigint, expiresAtMillis: bigint, leaseId?: Buffer | undefined | null): Promise<NativeOperationWindowLease>
+  /** Extends the exact live lease; its previous publication permit is fenced. */
+  renew(lease: NativeOperationWindowLease, nowMillis: bigint, expiresAtMillis: bigint): Promise<NativeOperationWindowLease>
   /** Coalesces a newer parent generation without changing an active mount. */
   observeParent(workspaceId: Buffer, parent: Buffer): Promise<boolean>
   /** Closes one lease and returns reconciliation ownership to the last closer. */
@@ -1347,7 +1349,7 @@ export declare class NativeWorkspaceTransaction {
    *
    * Returns closure, authentication, authority, or storage failures.
    */
-  commit(): Promise<NativeWorkspaceCommit>
+  commit(lease?: NativeOperationWindowLease | undefined | null): Promise<NativeWorkspaceCommit>
   /**
    * Safely advances this retained candidate and sparsely replays its work.
    *

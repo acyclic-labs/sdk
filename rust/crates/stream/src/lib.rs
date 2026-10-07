@@ -4,7 +4,6 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream::BoxStream;
 use thiserror::Error;
 
 pub mod conformance;
@@ -19,15 +18,21 @@ pub mod request;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+mod browser;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod http_codec;
 mod http_validation;
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
+mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
@@ -526,13 +531,49 @@ pub struct IdempotencyObservation {
 }
 
 /// Backpressured finite read or long-lived follow.
-pub type RecordStream = BoxStream<'static, Result<Record, StreamError>>;
+pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
-pub type ChildStream = BoxStream<'static, Result<Child, StreamError>>;
+pub type ChildStream = futures::stream::BoxStream<'static, Result<Child, StreamError>>;
 
+/// Heap-allocated provider future with the platform's executor bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxProviderFuture<'a, T> = futures::future::BoxFuture<'a, T>;
+/// Heap-allocated provider future retaining browser event-loop ownership.
+#[cfg(target_arch = "wasm32")]
+pub type BoxProviderFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
+
+/// Bound for provider futures submitted to the platform executor.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait ProviderTask: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> ProviderTask for T {}
+/// Browser executor futures retain event-loop ownership.
+#[cfg(target_arch = "wasm32")]
+pub trait ProviderTask {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> ProviderTask for T {}
+/// Heap-allocated provider cursor with the platform's executor bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxProviderStream<'a, T> = futures::stream::BoxStream<'a, T>;
+/// Heap-allocated provider cursor retaining browser event-loop ownership.
+#[cfg(target_arch = "wasm32")]
+pub type BoxProviderStream<'a, T> = futures::stream::LocalBoxStream<'a, T>;
+
+/// Platform ownership boundary for native threads or browser event loops.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait ProviderPlatform: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync + ?Sized> ProviderPlatform for T {}
+/// Browser providers may own thread-affine platform handles.
+#[cfg(target_arch = "wasm32")]
+pub trait ProviderPlatform {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> ProviderPlatform for T {}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 /// Canonical provider contract. Placement and transport remain invisible.
-#[async_trait]
-pub trait StreamProvider: Send + Sync + 'static {
+pub trait StreamProvider: ProviderPlatform + 'static {
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
@@ -1041,7 +1082,8 @@ mod replay_tests {
         missing: u64,
     }
 
-    #[async_trait]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     impl StreamProvider for Gapped {
         async fn inspect_idempotency(
             &self,

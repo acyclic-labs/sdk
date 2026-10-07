@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8">
+  <title>Browser publication fencing qualification</title>
+  <pre id="result">running</pre>
+  <script type="module">
+    import("./browser-publication.mjs").catch(error => {
+      const result = document.querySelector("#result");
+      result.dataset.status = "failed";
+      result.textContent = String(error.stack ?? error);
+      const query = new URL(location.href).searchParams;
+      if (query.has("actor")) {
+        const channel = new BroadcastChannel(query.get("database"));
+        channel.postMessage({ startupError: query.get("actor"), error: result.textContent });
+        channel.close();
+      }
+    });
+  </script>
+</html>

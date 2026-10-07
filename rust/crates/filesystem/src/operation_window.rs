@@ -77,6 +77,15 @@ pub struct OperationWindowSnapshot {
 }
 
 impl OperationWindowSnapshot {
+    /// Validates persisted identity, version, revision and phase shape.
+    #[must_use]
+    pub fn is_valid_for(&self, workspace_id: WorkspaceId) -> bool {
+        self.version == STATE_VERSION
+            && self.workspace_id == workspace_id
+            && self.revision > 0
+            && snapshot_shape_is_valid(self)
+    }
+
     fn idle(workspace_id: WorkspaceId) -> Self {
         Self {
             version: STATE_VERSION,
@@ -201,7 +210,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
-pub trait OperationWindowStore: Send + Sync {
+pub trait OperationWindowStore: crate::async_storage::StorageProvider {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -209,7 +218,8 @@ pub trait OperationWindowStore: Send + Sync {
     fn load(
         &self,
         workspace_id: WorkspaceId,
-    ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>
+    + crate::async_storage::StorageFuture;
 
     /// Replaces `expected_revision` atomically. Revision zero creates state.
     fn compare_and_swap(
@@ -217,7 +227,7 @@ pub trait OperationWindowStore: Send + Sync {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + crate::async_storage::StorageFuture;
 }
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -285,14 +295,9 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
         })?;
         let snapshot: OperationWindowSnapshot = serde_json::from_slice(&record.value)
             .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
-        if snapshot.revision != tail {
+        if snapshot.revision != tail || !snapshot.is_valid_for(workspace_id) {
             return Err(StreamOperationWindowStoreError::Corrupt(
                 "window revision does not match its stream tail".to_owned(),
-            ));
-        }
-        if !snapshot_shape_is_valid(&snapshot) {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "window phase shape is invalid".to_owned(),
             ));
         }
         Ok(Some(snapshot))
@@ -304,9 +309,8 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, Self::Error> {
-        if replacement.workspace_id != workspace_id
+        if !replacement.is_valid_for(workspace_id)
             || replacement.revision != expected_revision.saturating_add(1)
-            || !snapshot_shape_is_valid(&replacement)
         {
             return Err(StreamOperationWindowStoreError::Corrupt(
                 "replacement identity or revision is invalid".to_owned(),
@@ -1024,17 +1028,11 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             .load(workspace_id)
             .await
             .map_err(OperationWindowError::Store)?;
-        let state = stored
-            .clone()
-            .unwrap_or_else(|| OperationWindowSnapshot::idle(workspace_id));
-        if state.version != STATE_VERSION
-            || state.workspace_id != workspace_id
-            || stored.is_some() && state.revision == 0
-            || !snapshot_shape_is_valid(&state)
-        {
-            return Err(OperationWindowError::IncompatibleState);
+        match stored {
+            Some(state) if state.is_valid_for(workspace_id) => Ok(state),
+            Some(_) => Err(OperationWindowError::IncompatibleState),
+            None => Ok(OperationWindowSnapshot::idle(workspace_id)),
         }
-        Ok(state)
     }
 
     async fn cas(
@@ -1043,10 +1041,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, OperationWindowError<S::Error>> {
-        if replacement.version != STATE_VERSION
-            || replacement.workspace_id != workspace_id
+        if !replacement.is_valid_for(workspace_id)
             || replacement.revision != expected_revision.saturating_add(1)
-            || !snapshot_shape_is_valid(&replacement)
         {
             return Err(OperationWindowError::IncompatibleState);
         }
@@ -1883,5 +1879,133 @@ mod tests {
             .value,
             head
         );
+    }
+
+    #[tokio::test]
+    async fn bounded_publication_close_expiry_interleavings_preserve_peer_authority() {
+        // Exhaustive serial linearizations of three events, two leases, one
+        // publication and two clock samples. This is a finite invariant check,
+        // assuming atomic provider transactions and a trusted monotonic clock;
+        // it makes no unbounded liveness or browser scheduling claim.
+        for events in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let clock = Arc::new(TestClock::default());
+            clock.0.store(10, Ordering::SeqCst);
+            let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+                acyclic_stream::MemoryLimits::default(),
+                clock.clone(),
+            ));
+            let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+            let windows = OperationWindowCoordinator::new(StreamOperationWindowStore::new(stream));
+            let workspace = WorkspaceId::from_bytes([91; 16]);
+            let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
+            let cancellation = CancellationToken::new();
+            AsyncAuthorityStore::create_authority(
+                &authority,
+                authority_id,
+                Epoch::GENESIS,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("create");
+            let first = windows
+                .begin(workspace, generation(1), "first", 10, 20)
+                .await
+                .expect("first");
+            let peer = windows
+                .begin(workspace, generation(1), "peer", 10, 30)
+                .await
+                .expect("peer");
+            let mut closed = false;
+            for event in events {
+                match event {
+                    0 => {
+                        let head = AsyncAuthorityStore::head(
+                            &authority,
+                            authority_id,
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await
+                        .expect("head")
+                        .value;
+                        let allowed = !closed && clock.0.load(Ordering::SeqCst) < 20;
+                        let outcome = AsyncAuthorityStore::compare_and_append_guarded(
+                            &authority,
+                            crate::GuardedAppend {
+                                authority_id,
+                                epoch: head.epoch,
+                                expected: head,
+                                commit: ProposedCommit {
+                                    operation_id: OperationId::from_bytes([92; 16]),
+                                    fingerprint: Digest::from_bytes([93; 32]),
+                                    payload: Bytes::from_static(b"first"),
+                                },
+                                permit: first.publication_permit(),
+                            },
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await
+                        .expect("publish")
+                        .value;
+                        assert_eq!(
+                            matches!(outcome, crate::AppendOutcome::Committed(_)),
+                            allowed,
+                            "trace {events:?}"
+                        );
+                    }
+                    1 => {
+                        windows
+                            .finish(&first, clock.0.load(Ordering::SeqCst))
+                            .await
+                            .expect("close");
+                        closed = true;
+                    }
+                    _ => {
+                        clock.0.store(20, Ordering::SeqCst);
+                    }
+                }
+            }
+            let head = AsyncAuthorityStore::head(
+                &authority,
+                authority_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("peer head")
+            .value;
+            let outcome = AsyncAuthorityStore::compare_and_append_guarded(
+                &authority,
+                crate::GuardedAppend {
+                    authority_id,
+                    epoch: head.epoch,
+                    expected: head,
+                    commit: ProposedCommit {
+                        operation_id: OperationId::from_bytes([94; 16]),
+                        fingerprint: Digest::from_bytes([95; 32]),
+                        payload: Bytes::from_static(b"peer"),
+                    },
+                    permit: peer.publication_permit(),
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("peer publish")
+            .value;
+            assert!(
+                matches!(outcome, crate::AppendOutcome::Committed(_)),
+                "trace {events:?}"
+            );
+        }
     }
 }

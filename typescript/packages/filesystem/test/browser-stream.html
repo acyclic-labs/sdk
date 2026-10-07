@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8">
+  <title>Durable Rust Stream browser qualification</title>
+  <script type="importmap">
+    {"imports":{
+      "@bufbuild/protobuf":"/node_modules/@bufbuild/protobuf/dist/esm/index.js",
+      "@bufbuild/protobuf/codegenv2":"/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+      "@bufbuild/protobuf/wkt":"/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+    }}
+  </script>
+  <pre id="result">running</pre>
+  <script type="module">
+    import("./browser-stream.mjs").catch(error => {
+      const result = document.querySelector("#result");
+      result.dataset.status = "failed";
+      result.textContent = String(error.stack ?? error);
+      const query = new URL(location.href).searchParams;
+      if (query.has("actor")) {
+        const channel = new BroadcastChannel(query.get("database"));
+        channel.postMessage({ startupError: result.textContent });
+        channel.close();
+      }
+    });
+  </script>
+</html>

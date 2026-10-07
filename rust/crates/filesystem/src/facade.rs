@@ -616,6 +616,16 @@ impl<A, O> Fs<A, O> {
         &self.inner.authority
     }
 
+    /// Coordinates leases on an authority backend that stores windows atomically
+    /// with generation publication. Cloning the backend grants no lease.
+    #[must_use]
+    pub fn operation_windows(&self) -> crate::OperationWindowCoordinator<A>
+    where
+        A: crate::OperationWindowStore + Clone,
+    {
+        crate::OperationWindowCoordinator::new(self.inner.authority.clone())
+    }
+
     #[cfg(all(test, feature = "s3-http"))]
     pub(crate) fn objects(&self) -> &O {
         &self.inner.objects

@@ -28,8 +28,9 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
     workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
 };
-use futures::future::BoxFuture;
-use futures::{StreamExt as _, stream, stream::BoxStream};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
+use acyclic_stream::BoxProviderStream as BoxStream;
+use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -54,7 +55,14 @@ pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
 pub const MAX_BATCH_INPUTS: usize = 65_536;
 
+#[cfg(not(target_arch = "wasm32"))]
 type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>>;
+#[cfg(not(target_arch = "wasm32"))]
+type StoredDefinition = dyn Any + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type StoredDefinition = dyn Any;
 
 enum TaskImplementation<I, O> {
     Live(Arc<LiveHandler<I, O>>),
@@ -80,8 +88,8 @@ impl<I, O> TaskDefinition<I, O> {
         handler: F,
     ) -> Result<Self>
     where
-        F: Fn(TaskContext, I) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<O>> + Send + 'static,
+        F: Fn(TaskContext, I) -> Fut + acyclic_stream::ProviderPlatform + 'static,
+        Fut: Future<Output = Result<O>> + acyclic_stream::ProviderTask + 'static,
     {
         let name = name.into();
         let version = version.into();
@@ -291,7 +299,7 @@ struct TaskEntry {
     input_schema: Value,
     output_schema: Value,
     requirements: BTreeSet<String>,
-    definition: Arc<dyn Any + Send + Sync>,
+    definition: Arc<StoredDefinition>,
 }
 
 /// Immutable typed definitions indexed by their exact name and version.
@@ -305,7 +313,7 @@ impl TaskRegistry {
         definition: TaskDefinition<I, O>,
     ) -> Result<()>
     where
-        TaskDefinition<I, O>: Send + Sync,
+        TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
     {
         let name = definition.identity.name.clone();
         let version = definition.identity.version.clone();
@@ -326,7 +334,8 @@ impl TaskRegistry {
                 input_schema: definition.input_schema.clone(),
                 output_schema: definition.output_schema.clone(),
                 requirements: definition.requirements.clone(),
-                definition: Arc::new(definition),
+                // Erase the shared handle, preserving its exact registered pointer.
+                definition: Arc::new(Arc::new(definition)),
             },
         );
         Ok(())
@@ -351,9 +360,11 @@ impl TaskRegistry {
             }
             first.1
         };
-        Arc::clone(&stored.definition)
-            .downcast::<TaskDefinition<I, O>>()
-            .map_err(|_| Error::Conflict(format!("task {name} has different input/output types")))
+        stored
+            .definition
+            .downcast_ref::<Arc<TaskDefinition<I, O>>>()
+            .cloned()
+            .ok_or_else(|| Error::Conflict(format!("task {name} has different input/output types")))
     }
 
     /// Resolves an exact pinned version without relying on name parsing.
@@ -366,9 +377,11 @@ impl TaskRegistry {
             .0
             .get(&(name.to_owned(), version.to_owned()))
             .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?;
-        Arc::clone(&stored.definition)
-            .downcast::<TaskDefinition<I, O>>()
-            .map_err(|_| {
+        stored
+            .definition
+            .downcast_ref::<Arc<TaskDefinition<I, O>>>()
+            .cloned()
+            .ok_or_else(|| {
                 Error::Conflict(format!(
                     "task {name}@{version} has different input/output types"
                 ))
@@ -621,7 +634,7 @@ impl TaskAdmissionRecord {
 /// Provider boundary for stable durable admission and outcome observation.
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
-pub trait DurableTaskHost: Send + Sync {
+pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -848,7 +861,7 @@ pub trait DurableTaskHost: Send + Sync {
 
 /// Owner-bound durable task state, independently replaceable from admission
 /// and execution. Returned observations are authoritative for typed handles.
-pub trait TaskStateProvider: Send + Sync {
+pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route retained and observable by this state owner.
@@ -1067,7 +1080,7 @@ impl TaskStateProvider for HostTaskState {
 /// Independently replaceable durable admission boundary. A spawner commits
 /// identities and requests; the bound state host remains the authority for
 /// typed observation, resumed scope, and cancellation.
-pub trait TaskSpawner: Send + Sync {
+pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route this spawner can actually dispatch to.
@@ -1195,7 +1208,7 @@ impl TaskSpawner for HostTaskSpawner {
 /// One replaceable execution route. It packages a qualified placement with
 /// the exact admission and observation authorities that can run it; selecting
 /// it never falls back to a process-local task or another host.
-pub trait ExecutionProvider: Send + Sync {
+pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
     /// Durable spawner for this provider's task build and environment.
@@ -1225,7 +1238,7 @@ pub trait ExecutionProvider: Send + Sync {
 
 /// Replaceable owner-bound observer for an already planned provider effect.
 /// Reconciliation never creates a new dispatch attempt.
-pub trait DurableEffectObserver: Send + Sync {
+pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
     /// Returns the latest attested status after querying the pinned attempt.
     fn reconcile<'a>(
         &'a self,
@@ -1235,7 +1248,7 @@ pub trait DurableEffectObserver: Send + Sync {
 
 /// Replaceable local interaction router. Durable interactions instead use the
 /// host's recorded request/answer boundary.
-pub trait InteractionRouter: Send + Sync {
+pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
     /// Returns a typed outcome while retaining request and answer bytes in its
     /// own provider; callers must not journal either body.
     fn route<'a>(
@@ -1251,7 +1264,7 @@ pub trait InteractionRouter: Send + Sync {
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
-pub trait InteractionResolver: Send + Sync {
+pub trait InteractionResolver: acyclic_stream::ProviderPlatform {
     /// Reads the admitted request and current decision before a CAS reply.
     fn inspect<'a>(
         &'a self,
@@ -1545,13 +1558,14 @@ pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
     let concurrency = tasks.len().clamp(1, 64);
-    stream::iter(tasks)
-        .map(|task| async move {
-            let id = task.identity();
-            (id, task.result().await)
-        })
-        .buffer_unordered(concurrency)
-        .boxed()
+    Box::pin(
+        stream::iter(tasks)
+            .map(|task| async move {
+                let id = task.identity();
+                (id, task.result().await)
+            })
+            .buffer_unordered(concurrency),
+    )
 }
 
 /// Folds observed outcomes in admission order, regardless of completion order.
@@ -1733,7 +1747,7 @@ pub enum ToolPolicyDecision {
 }
 
 /// Replaceable policy evaluated after schema and scope validation, before dispatch.
-pub trait ToolPolicy: Send + Sync {
+pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     /// Immutable implementation identity pinned across admission and replay.
     fn identity(&self) -> ComponentIdentity;
     /// Policy implementations must be deterministic for an admitted revision.
@@ -6160,7 +6174,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
-        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             let request = request.request().clone();
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(

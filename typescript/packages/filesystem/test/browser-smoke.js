@@ -3,6 +3,7 @@ import {
   DEFAULT_OBJECT_CACHE_OPTIONS,
   MountedView,
   openBrowserFs,
+  openBrowserOperationWindowCoordinator,
   portableVolumeOptions,
 } from "../dist/browser.js";
 import { openMemoryFs } from "../dist/memory.js";
@@ -33,6 +34,16 @@ async function run() {
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   });
   const volume = await source.createVolume(portableVolumeOptions("durable"));
+  const leasedWorkspace = await source.createWorkspace("leased");
+  const windows = await openBrowserOperationWindowCoordinator(source);
+  const now = BigInt(Date.now());
+  const lease = await windows.begin(leasedWorkspace.id, await leasedWorkspace.head(), "smoke", now, now + 60_000n);
+  const leasedTransaction = await leasedWorkspace.beginTransaction(new Uint8Array(16).fill(91));
+  await leasedTransaction.write("/leased", Uint8Array.of(7));
+  assert((await leasedTransaction.commit(lease)).status === "committed", "public browser adapter dropped lease publication");
+  assert((await windows.finishWorkspace(leasedWorkspace, lease, BigInt(Date.now()), {
+    maximumGenerations: 16, maximumChanges: 16, maximumConflicts: 16,
+  })).kind === "reconciled", "public browser adapter did not complete reconciliation");
   const populatedCache = source.objectCacheStats();
   assert(populatedCache.residentEntries > 0n, "browser object cache did not retain authenticated objects");
   source.clearObjectCache();

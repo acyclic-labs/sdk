@@ -40,6 +40,7 @@ use crate::{
     tool::{ToolDefinition, validate_value},
     turn::prepare_turn,
 };
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -737,19 +738,13 @@ struct WasmPrefixReader {
 }
 
 impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
-    fn verify<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> futures::future::BoxFuture<'a, crate::Result<()>> {
+    fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
         Box::pin(async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
             file.descriptor().verify(&self.files.bytes(file)?)
         })
     }
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<Vec<u8>>> {
         Box::pin(async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
             self.files.bytes(file)
@@ -806,17 +801,14 @@ impl AttachmentListResolver for WasmProjectionResolver {
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
+    ) -> BoxFuture<'a, crate::Result<Vec<Attachment>>> {
         Box::pin(async move {
             let bytes = self.bytes(manifest)?;
             decode_attachment_manifest(manifest, &bytes, item_count)
         })
     }
 
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<Vec<u8>>> {
         Box::pin(async move { self.bytes(file) })
     }
 }

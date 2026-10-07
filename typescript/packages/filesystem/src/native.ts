@@ -1,3 +1,5 @@
+import { copyBytes, copyOptionalBytes, requireIdentity } from "./binding-values.js";
+import { adaptOperationWindowCoordinator } from "./operation-windows.js";
 import { arch, platform } from "node:process";
 import type {
   EngineCapabilities,
@@ -44,10 +46,6 @@ import type {
   ResolvableFsJoinPlan,
   ResolvedFile,
   NativeRawGitCompatRepository,
-  NativeRawOperationWindowClose,
-  NativeRawOperationWindowCoordinator,
-  NativeRawOperationWindowLease,
-  NativeRawOperationWindowPhase,
   NativeRawWorkspaceGraph,
   NativeRawWorkspaceLineageRecord,
   WasmRawJoinResult,
@@ -59,10 +57,7 @@ import type {
   GitCompatRepository,
   CompatibilityWire,
   OperationIdentity,
-  OperationWindowClose,
   OperationWindowCoordinator,
-  OperationWindowLease,
-  OperationWindowPhase,
   WorkspaceGraph,
   WorkspaceContextRegistry,
   WorkspaceIdentity,
@@ -89,7 +84,7 @@ import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorksp
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
-  validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
+  validateJoinOptions } from "./workspace-results.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
@@ -254,73 +249,6 @@ function copyWorkspaceLineageRecord(
   };
 }
 
-function copyOperationWindowLease(
-  lease: NativeRawOperationWindowLease,
-): OperationWindowLease {
-  return {
-    workspaceId: copyBytes(lease.workspaceId),
-    leaseId: copyBytes(lease.leaseId),
-    pinnedParent: copyBytes(lease.pinnedParent),
-    expiresAtMillis: lease.expiresAtMillis,
-  };
-}
-
-function nativeOperationWindowLease(
-  lease: OperationWindowLease,
-): NativeRawOperationWindowLease {
-  requireIdentity(lease.workspaceId, "workspace identity");
-  requireIdentity(lease.leaseId, "lease identity");
-  requireGenerationIdentity(lease.pinnedParent, "pinned parent");
-  return lease;
-}
-
-function parseOperationWindowPhase(
-  phase: NativeRawOperationWindowPhase,
-): OperationWindowPhase {
-  if (phase.kind === "idle") return { kind: "idle" };
-  if (phase.kind === "active" && phase.pinnedParent !== undefined) {
-    return {
-      kind: "active",
-      pinnedParent: copyBytes(phase.pinnedParent),
-      pendingParent: copyOptionalBytes(phase.pendingParent),
-      activeLeaseCount: phase.activeLeaseCount ?? 0,
-    };
-  }
-  if (
-    phase.kind === "reconciling" && phase.ticket !== undefined &&
-    phase.pinnedParent !== undefined
-  ) {
-    return {
-      kind: "reconciling",
-      ticket: copyBytes(phase.ticket),
-      pinnedParent: copyBytes(phase.pinnedParent),
-      pendingParent: copyOptionalBytes(phase.pendingParent),
-    };
-  }
-  throw new TypeError("native operation window returned a malformed phase");
-}
-
-function parseOperationWindowClose(
-  close: NativeRawOperationWindowClose,
-): OperationWindowClose {
-  if (close.kind === "still-active" && close.remaining !== undefined) {
-    return { kind: "still-active", remaining: close.remaining };
-  }
-  if (close.kind === "already-closed") return { kind: "already-closed" };
-  if (
-    close.kind === "reconcile" && close.ticket !== undefined &&
-    close.pinnedParent !== undefined
-  ) {
-    return {
-      kind: "reconcile",
-      ticket: copyBytes(close.ticket),
-      pinnedParent: copyBytes(close.pinnedParent),
-      pendingParent: copyOptionalBytes(close.pendingParent),
-    };
-  }
-  throw new TypeError("native operation window returned a malformed close result");
-}
-
 /** Opens durable recursive-workspace lineage over live native workspace handles. */
 export async function openNativeWorkspaceGraph(stateRoot: string): Promise<WorkspaceGraph> {
   requireStateRoot(stateRoot, "workspace graph");
@@ -336,7 +264,7 @@ export async function openNativeOperationWindowCoordinator(
   if (handle === undefined) {
     throw new TypeError("operation windows require a native filesystem opened by this module");
   }
-  return adaptOperationWindowCoordinator(handle.raw.operationWindows(), handle.scope);
+  return adaptOperationWindowCoordinator(handle.raw.operationWindows(), workspace => rawWorkspace(workspace, handle.scope), result => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result)));
 }
 
 function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
@@ -364,58 +292,6 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
       requireIdentity(workspaceId, "workspace identity");
       requirePositiveInteger(maximum, "maximum ancestors");
       return (await raw.ancestors(workspaceId, maximum)).map(copyWorkspaceLineageRecord);
-    },
-  };
-}
-
-function adaptOperationWindowCoordinator(
-  raw: NativeRawOperationWindowCoordinator,
-  scope: NativeAdapterScope = nativeScope,
-): OperationWindowCoordinator {
-  return {
-    async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis) {
-      requireIdentity(workspaceId, "workspace identity");
-      requireGenerationIdentity(parent, "parent");
-      if (owner.length === 0) throw new RangeError("operation owner must be non-empty");
-      return copyOperationWindowLease(
-        await raw.begin(workspaceId, parent, owner, nowMillis, expiresAtMillis),
-      );
-    },
-    async observeParent(workspaceId, parent) {
-      requireIdentity(workspaceId, "workspace identity");
-      requireGenerationIdentity(parent, "parent");
-      return raw.observeParent(workspaceId, parent);
-    },
-    async finish(lease, nowMillis) {
-      return parseOperationWindowClose(
-        await raw.finish(nativeOperationWindowLease(lease), nowMillis),
-      );
-    },
-    async inspect(workspaceId) {
-      requireIdentity(workspaceId, "workspace identity");
-      return parseOperationWindowPhase(await raw.inspect(workspaceId));
-    },
-    async finishWorkspace(workspace, lease, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
-      const result = await raw.finishWorkspace(
-        rawWorkspace(workspace, scope),
-        nativeOperationWindowLease(lease),
-        nowMillis,
-        options,
-      );
-      if (result.kind === "still-active" && result.remaining !== undefined) {
-        return { kind: "still-active", remaining: result.remaining };
-      }
-      if (result.kind === "already-closed") return { kind: "already-closed" };
-      if (result.kind === "reconciled" && result.rebase !== undefined) {
-        return { kind: "reconciled", rebase: parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result.rebase)) };
-      }
-      throw new TypeError("native operation window returned a malformed workspace close result");
-    },
-    async recoverWorkspace(workspace, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
-      const result = await raw.recoverWorkspace(rawWorkspace(workspace, scope), nowMillis, options);
-      return result == null ? undefined : parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result));
     },
   };
 }
@@ -754,7 +630,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async preallocateFileById(fileId, offset, length, keepSize) { return mutationResult(await raw.preallocateFileById(fileId, offset, length, keepSize)); },
     async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return mutationResult(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
     async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return mutationResult(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
-    async commit(operationId) { return commitResult(await raw.commit(operationId)); },
+    async commit(operationId, lease) { return commitResult(await raw.commit(operationId, lease)); },
     async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(operations.map(nativeTransactionOperation), operationId, maximumAttempts, maximumConflicts)); },
     async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
     async rebaseHead(maximumConflicts) {
@@ -850,13 +726,7 @@ function nativeManifest(value: GenerationExportManifest) {
   return { manifestBytes: value.manifestBytes, objects: value.objects, workJson: JSON.stringify(value.work) };
 }
 
-function copyBytes(value: Uint8Array): Uint8Array {
-  return Uint8Array.from(value);
-}
 
-function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | undefined {
-  return value === undefined ? undefined : copyBytes(value);
-}
 
 function copyObjectCacheStats(value: ObjectCacheStats): ObjectCacheStats {
   return { ...value };
@@ -1116,17 +986,7 @@ function parseWork(value: string): WorkCounters {
   return parsed as WorkCounters;
 }
 
-function requireIdentity(value: Uint8Array, label: string): void {
-  if (value.byteLength !== 16) {
-    throw new RangeError(`${label} must be exactly 16 bytes`);
-  }
-}
 
-function requireGenerationIdentity(value: Uint8Array, label: string): void {
-  if (value.byteLength !== 32) {
-    throw new RangeError(`${label} generation identity must be exactly 32 bytes`);
-  }
-}
 
 function requirePositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {

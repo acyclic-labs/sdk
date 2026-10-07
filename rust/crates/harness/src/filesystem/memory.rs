@@ -27,8 +27,8 @@ use acyclic_fs::{
     Fs, MemoryAuthorityBackend, MemoryObjectBackend, WorkspaceDirectoryPage,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{MemoryStream, StreamClient};
-use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{

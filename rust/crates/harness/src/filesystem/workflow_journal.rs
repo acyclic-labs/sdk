@@ -12,11 +12,12 @@ use crate::{
     },
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::{TryStreamExt as _, future::BoxFuture};
+use futures::TryStreamExt as _;
 use std::{
     collections::{BTreeSet, HashSet},
     sync::{Arc, Mutex},

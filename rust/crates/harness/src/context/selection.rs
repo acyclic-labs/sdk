@@ -6,7 +6,7 @@ use crate::{
     conversation::{ContentResidencyVerifier, FileRef, Limits},
     model::ModelMessage,
 };
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -168,7 +168,7 @@ pub enum ContextRenderMode {
 }
 
 /// Replaceable typed renderer; transformations compose as ordinary later stages.
-pub trait ContextRenderer: Send + Sync {
+pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
     /// Immutable implementation identity included in execution admission.
     fn contract(&self) -> Value;
     /// Renders a host-approved selection; must honor supplied finite limits.

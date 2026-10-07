@@ -407,6 +407,11 @@ case "$lane" in
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     bun run --filter '@acyclic-labs/fs' build
+    # The combined browser pages consume the public Stream and Harness builds;
+    # Harness also needs its Objects package declaration dependency.
+    bun run --filter '@acyclic-labs/objects' build
+    bun run --filter '@acyclic-labs/stream' build
+    bun run --filter '@acyclic-labs/harness' build
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/fs' test:browser
     ;;

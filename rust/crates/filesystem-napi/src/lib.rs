@@ -2948,11 +2948,15 @@ impl NativeWorkspaceTransaction {
     ///
     /// Returns closure, authentication, authority, or storage failures.
     #[napi]
-    pub async fn commit(&self) -> Result<NativeWorkspaceCommit> {
+    pub async fn commit(
+        &self,
+        lease: Option<NativeOperationWindowLease>,
+    ) -> Result<NativeWorkspaceCommit> {
+        let permit = publication_permit(lease.as_ref())?;
         self.inner
             .lock()
             .await
-            .commit()
+            .commit_with_permit(permit)
             .await
             .map(workspace_commit)
             .map_err(napi_error)
@@ -3573,12 +3577,36 @@ impl NativeOperationWindowCoordinator {
         owner: String,
         now_millis: BigInt,
         expires_at_millis: BigInt,
+        lease_id: Option<Buffer>,
     ) -> Result<NativeOperationWindowLease> {
         self.inner
-            .begin(
+            .begin_with_lease_id(
                 WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
                 generation_id(&parent)?,
                 owner,
+                bigint_u64(&now_millis, "nowMillis")?,
+                bigint_u64(&expires_at_millis, "expiresAtMillis")?,
+                match lease_id {
+                    Some(value) => OperationLeaseId::from_bytes(fixed_16(&value)?),
+                    None => OperationLeaseId::new(),
+                },
+            )
+            .await
+            .map(|lease| native_operation_window_lease(&lease))
+            .map_err(napi_error)
+    }
+
+    /// Extends the exact live lease; its previous publication permit is fenced.
+    #[napi]
+    pub async fn renew(
+        &self,
+        lease: NativeOperationWindowLease,
+        now_millis: BigInt,
+        expires_at_millis: BigInt,
+    ) -> Result<NativeOperationWindowLease> {
+        self.inner
+            .renew(
+                &operation_window_lease(&lease)?,
                 bigint_u64(&now_millis, "nowMillis")?,
                 bigint_u64(&expires_at_millis, "expiresAtMillis")?,
             )
@@ -5940,14 +5968,19 @@ impl NativeCheckout {
     /// Returns a JavaScript error for malformed operation identity, clean or
     /// read-only checkouts, closure/authentication failure, cancellation, or work bounds.
     #[napi]
-    pub async fn commit(&self, operation_id: Buffer) -> Result<NativeCommitResult> {
+    pub async fn commit(
+        &self,
+        operation_id: Buffer,
+        lease: Option<NativeOperationWindowLease>,
+    ) -> Result<NativeCommitResult> {
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
+        let permit = publication_permit(lease.as_ref())?;
         let mut checkout = self.inner.lock().await;
         checkout
             .retain_operation_id(operation_id)
             .map_err(napi_error)?;
         let receipt = checkout
-            .commit(operation_id, boundary_budget(), &self.cancellation)
+            .commit_with_permit(operation_id, permit, boundary_budget(), &self.cancellation)
             .await;
         let receipt = match receipt {
             Ok(receipt) => {
@@ -6562,6 +6595,17 @@ fn operation_window_lease(lease: &NativeOperationWindowLease) -> Result<Operatio
         pinned_parent: generation_id(&lease.pinned_parent)?,
         expires_at_millis: bigint_u64(&lease.expires_at_millis, "expiresAtMillis")?,
     })
+}
+
+fn publication_permit(
+    lease: Option<&NativeOperationWindowLease>,
+) -> Result<acyclic_fs::PublicationPermit> {
+    Ok(lease
+        .map(operation_window_lease)
+        .transpose()?
+        .map_or(acyclic_fs::PublicationPermit::Unrestricted, |lease| {
+            lease.publication_permit()
+        }))
 }
 
 fn native_generation_buffer(generation: GenerationId) -> Buffer {
@@ -8111,12 +8155,12 @@ mod tests {
         disjoint
             .write("/native-race-b".to_owned(), Buffer::from(vec![2]))
             .await?;
-        assert_eq!(first.commit().await?.status, "committed");
-        assert_eq!(disjoint.commit().await?.status, "conflict");
+        assert_eq!(first.commit(None).await?.status, "committed");
+        assert_eq!(disjoint.commit(None).await?.status, "conflict");
         let safe = disjoint.rebase(16).await?;
         assert_eq!(safe.status, "rebased");
         assert!(safe.conflicts.is_empty());
-        assert_eq!(disjoint.commit().await?.status, "committed");
+        assert_eq!(disjoint.commit(None).await?.status, "committed");
 
         let winner = workspace
             .begin_transaction(Some(Buffer::from(vec![33; 16])))
@@ -8130,8 +8174,8 @@ mod tests {
         loser
             .write("/native-race-a".to_owned(), Buffer::from(vec![4]))
             .await?;
-        assert_eq!(winner.commit().await?.status, "committed");
-        assert_eq!(loser.commit().await?.status, "conflict");
+        assert_eq!(winner.commit(None).await?.status, "committed");
+        assert_eq!(loser.commit(None).await?.status, "conflict");
         let conflict = loser.rebase(16).await?;
         assert_eq!(conflict.status, "conflicted");
         assert!(!conflict.conflicts.is_empty());
@@ -8188,7 +8232,7 @@ mod tests {
             .write("/output/status".to_owned(), Buffer::from(b"ready".to_vec()))
             .await?;
         exercise_native_arbitrary_shape_transaction(&transaction).await?;
-        assert_eq!(transaction.commit().await?.status, "committed");
+        assert_eq!(transaction.commit(None).await?.status, "committed");
         assert_eq!(
             workspace
                 .read("/output/status".to_owned(), bigint(5))

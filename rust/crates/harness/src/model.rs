@@ -1,7 +1,8 @@
 //! Provider-neutral immutable model values and streaming host contract.
 
 use crate::{Error, OperationId, Result, conversation::FileRef};
-use futures::{future::BoxFuture, stream::BoxStream};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
+use acyclic_stream::BoxProviderStream as BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -691,7 +692,7 @@ pub struct ModelAttempt {
 }
 
 /// Replaceable streaming model provider.
-pub trait ModelProvider: Send + Sync {
+pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Starts one request and yields ordered model events.
     fn generate<'a>(&'a self, request: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
 

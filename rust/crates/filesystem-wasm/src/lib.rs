@@ -17,6 +17,7 @@ pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 
 #[cfg(target_arch = "wasm32")]
 mod bindings {
+    mod operation_windows;
     use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
     use acyclic_fs::compat_wire;
     use acyclic_fs::kernel::{
@@ -50,6 +51,8 @@ mod bindings {
         canonicalize_git_pending_transition_json, decode_generation_export_manifest,
         encode_generation_export_manifest, parse_git_public_command,
     };
+    pub use operation_windows::BrowserOperationWindowCoordinator;
+    use operation_windows::browser_publication_permit;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tsify::{Ts, Tsify};
@@ -1869,16 +1872,28 @@ mod bindings {
 
         /// Publishes the complete candidate through one idempotent head CAS.
         #[wasm_bindgen]
-        pub async fn commit(&mut self) -> Result<JsValue, JsValue> {
+        pub async fn commit(
+            &mut self,
+            #[wasm_bindgen(unchecked_param_type = "BrowserOperationWindowLease | undefined")] lease: Option<
+                JsValue,
+            >,
+        ) -> Result<JsValue, JsValue> {
+            let permit = browser_publication_permit(lease)?;
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.commit()).await.map(browser_workspace_commit)
+                    Box::pin(value.commit_with_permit(permit))
+                        .await
+                        .map(browser_workspace_commit)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.commit()).await.map(browser_workspace_commit)
+                    Box::pin(value.commit_with_permit(permit))
+                        .await
+                        .map(browser_workspace_commit)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.commit()).await.map(browser_workspace_commit)
+                    Box::pin(value.commit_with_permit(permit))
+                        .await
+                        .map(browser_workspace_commit)
                 }
             }
             .map_err(js_error)?;
@@ -6212,20 +6227,24 @@ mod bindings {
         pub async fn commit(
             &mut self,
             operation_id: Vec<u8>,
+            #[wasm_bindgen(unchecked_param_type = "BrowserOperationWindowLease | undefined")] lease: Option<
+                JsValue,
+            >,
         ) -> Result<Ts<BrowserCommitResult>, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
+            let permit = browser_publication_permit(lease)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -7818,7 +7837,7 @@ mod bindings {
             transaction
                 .write("/output/status".to_owned(), b"ready".to_vec())
                 .await?;
-            transaction.commit().await?;
+            transaction.commit(None).await?;
             assert_eq!(
                 workspace.read("/output/status".to_owned(), 5).await?,
                 b"ready"
@@ -7851,7 +7870,7 @@ mod bindings {
             ))
             .await?;
             Box::pin(transaction.write("/output/status".to_owned(), b"ready".to_vec())).await?;
-            Box::pin(transaction.commit()).await.map(|_| ())
+            Box::pin(transaction.commit(None)).await.map(|_| ())
         }
 
         async fn verify_transaction_tree_fork(
@@ -7906,11 +7925,12 @@ mod bindings {
 
 #[cfg(target_arch = "wasm32")]
 pub use bindings::{
-    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserVolume,
-    BrowserWorkspaceContextRegistry, decode_merge_candidate_json, decode_merge_plan_json,
-    decode_multi_root_candidate_json, decode_multi_root_plan_json, decode_publication_json,
-    encode_merge_candidate_json, encode_merge_plan_json, encode_multi_root_candidate_json,
-    encode_multi_root_plan_json, encode_publication_json, open_browser_fs, open_memory_fs,
+    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserOperationWindowCoordinator,
+    BrowserVolume, BrowserWorkspaceContextRegistry, decode_merge_candidate_json,
+    decode_merge_plan_json, decode_multi_root_candidate_json, decode_multi_root_plan_json,
+    decode_publication_json, encode_merge_candidate_json, encode_merge_plan_json,
+    encode_multi_root_candidate_json, encode_multi_root_plan_json, encode_publication_json,
+    open_browser_fs, open_memory_fs,
 };
 
 #[cfg(all(test, target_arch = "wasm32"))]

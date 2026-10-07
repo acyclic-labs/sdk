@@ -191,9 +191,9 @@ describe("WASM adapter canonical boundaries", () => {
     expect(again.parentContextId?.[0]).toBe(2);
   });
 
-  test("rejects unsupported browser operation windows explicitly", async () => {
-    await expect(openBrowserOperationWindowCoordinator()).rejects.toThrow(
-      "browser operation windows are unsupported by the persistent authority",
+  test("rejects operation windows on an unbound filesystem", async () => {
+    await expect(openBrowserOperationWindowCoordinator({} as Parameters<typeof openBrowserOperationWindowCoordinator>[0])).rejects.toThrow(
+      "operation windows require a browser filesystem opened by this module",
     );
   });
 
