@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
+use strum::EnumDiscriminants;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
@@ -2895,6 +2896,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 }
 
 /// Terminal result of one atomic workspace transaction publication.
+#[derive(EnumDiscriminants)]
+#[strum_discriminants(
+    name(TransactionCommitStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum TransactionCommit<A, O> {
     /// This call published the generation.
     Committed(Generation<A, O>),
@@ -2912,6 +2925,18 @@ pub enum TransactionCommit<A, O> {
 }
 
 /// Observation-safe advancement of one retained transaction candidate.
+#[derive(EnumDiscriminants)]
+#[strum_discriminants(
+    name(TransactionRebaseStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum TransactionRebase<A, O> {
     /// The current head is now the candidate's immutable base and its sparse
     /// local mutations were replayed without crossing a dependency.
@@ -2926,6 +2951,18 @@ pub enum TransactionRebase<A, O> {
 }
 
 /// Terminal outcome of advancing one fork onto its source workspace.
+#[derive(EnumDiscriminants)]
+#[strum_discriminants(
+    name(WorkspaceRebaseStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum WorkspaceRebase<A, O> {
     /// A new rebased generation became durable.
     Rebased(Generation<A, O>),
@@ -3123,7 +3160,18 @@ pub struct GenerationPin<A, O> {
 }
 
 /// Terminal result of deleting one named workspace head.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(WorkspaceDeleteStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum WorkspaceDelete {
     /// The terminal deletion fact became durable.
     Deleted,
@@ -3782,6 +3830,18 @@ pub struct ApplyOptions {
 }
 
 /// Terminal semantic join outcome.
+#[derive(EnumDiscriminants)]
+#[strum_discriminants(
+    name(JoinOutcomeStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum JoinOutcome<A, O> {
     /// A new target generation became durable.
     Applied(JoinApplication<A, O>),

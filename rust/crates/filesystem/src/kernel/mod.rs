@@ -129,8 +129,8 @@ pub use list::{
     list_tree_entries_async,
 };
 pub use live::{
-    LiveMutationOutcome, LivePublicationObservation, LiveRetryAction, LiveRetryError,
-    LiveRetryState,
+    LiveMutationOutcome, LiveMutationStatus, LivePublicationObservation, LiveRetryAction,
+    LiveRetryError, LiveRetryState,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use mark::MarkError;
@@ -184,8 +184,9 @@ pub use read::{
 };
 pub use rebase::{
     AsyncRebaseProbe, CheckoutDependencies, Dependency, DependencyError, DependencyRegion,
-    DependencyState, DependencyUse, ProbeReceipt, RebaseConflict, RebaseDecision, RebaseError,
-    RebaseProbe, RebaseReceipt, classify_rebase, classify_rebase_async,
+    DependencyState, DependencyUse, ProbeReceipt, RebaseConflict, RebaseDecision,
+    RebaseDecisionStatus, RebaseError, RebaseProbe, RebaseReceipt, classify_rebase,
+    classify_rebase_async,
 };
 pub use regular_mutation::RegularMutationError;
 pub(crate) use regular_mutation::{RegularMutation, apply_regular_mutation_async};

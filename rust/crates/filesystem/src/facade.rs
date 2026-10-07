@@ -86,6 +86,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
+use strum::EnumDiscriminants;
 use thiserror::Error;
 
 const MAXIMUM_VOLUME_EVENT_BYTES: u64 = 4 * 1024;
@@ -1696,7 +1697,18 @@ pub enum NamedAttributeWriteMode {
 }
 
 /// Semantic result of publishing one private checkout overlay.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(CheckoutCommitStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum CheckoutCommitOutcome {
     /// This call durably published the candidate generation.
     Committed {

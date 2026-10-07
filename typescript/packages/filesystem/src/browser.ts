@@ -10,6 +10,7 @@ import {
   adaptWasmWorkspaceContextRegistry,
   adaptWasmOperationWindows,
 } from "./wasm-adapter.js";
+import { installStatusMetadata } from "./workspace-results.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
@@ -24,6 +25,7 @@ async function bindings(): Promise<WasmBindings> {
   bindingsPromise ??= import(generatedModule).then(async (module): Promise<WasmBindings> => {
     const typed = module as WasmBindings;
     await typed.default();
+    installStatusMetadata(typed.statusMetadata());
     return typed;
   }).catch((error: unknown) => {
     bindingsPromise = undefined;
