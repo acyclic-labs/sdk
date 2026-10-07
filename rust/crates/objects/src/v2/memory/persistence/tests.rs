@@ -523,6 +523,16 @@ type View = (
 );
 
 fn view(state: &State) -> Result<View, Error> {
+    // The incrementally maintained byte total must equal a full recount.
+    let bytes = state
+        .buckets
+        .values()
+        .flat_map(|bucket| bucket.objects.values())
+        .map(|object| object.body.len())
+        .sum::<usize>();
+    if bytes != state.object_bytes {
+        return Err(Unavailable.into());
+    }
     let mut buckets = Vec::new();
     for (name, bucket) in &state.buckets {
         let mut objects = Vec::new();

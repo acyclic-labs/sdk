@@ -920,7 +920,7 @@ fn apply(
     apply_uploads(&mut next, delta.uploads)?;
     apply_parts(&mut next, delta.parts, root, limits)?;
     apply_receipts(&mut next, delta.receipts)?;
-    validate_state(&next, options)?;
+    validate_state(state, &mut next, options)?;
     *state = next;
     Ok(())
 }
@@ -1020,20 +1020,12 @@ fn apply_receipts(next: &mut State, changes: Vec<ReceiptChange>) -> Result<(), L
     Ok(())
 }
 
-fn validate_state(next: &State, options: MemoryOptions) -> Result<(), LocalOpenError> {
-    let size = next
-        .buckets
-        .values()
-        .flat_map(|bucket| bucket.objects.values())
-        .map(|object| object.body.len())
-        .chain(
-            next.uploads
-                .values()
-                .flat_map(|upload| upload.parts.values())
-                .map(|(_, body)| body.len()),
-        )
-        .try_fold(0usize, usize::checked_add)
-        .ok_or(LocalOpenError::Corrupt)?;
+fn validate_state(
+    before: &State,
+    next: &mut State,
+    options: MemoryOptions,
+) -> Result<(), LocalOpenError> {
+    let size = super::stored_bytes(before, next).ok_or(LocalOpenError::Corrupt)?;
     if size > options.maximum_bytes
         || next
             .uploads
