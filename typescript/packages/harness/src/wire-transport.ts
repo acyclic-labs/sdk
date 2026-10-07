@@ -764,6 +764,11 @@ async function boundedText(response: Response, maximum: number): Promise<string>
 async function* sseData(stream: ReadableStream<Uint8Array>, maximum: number): AsyncIterable<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  // A UTF-16 unit encodes to one to three UTF-8 bytes, so only re-encode text
+  // whose length alone cannot decide the bound.
+  const exceeds = (text: string) => text.length > maximum ||
+    (text.length * 3 > maximum && encoder.encode(text).byteLength > maximum);
   let buffered = "";
   let completed = false;
   try {
@@ -773,13 +778,13 @@ async function* sseData(stream: ReadableStream<Uint8Array>, maximum: number): As
       let boundary: number;
       while ((boundary = buffered.indexOf("\n\n")) >= 0) {
         const event = buffered.slice(0, boundary);
+        if (exceeds(event)) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
         buffered = buffered.slice(boundary + 2);
         const data = event.split("\n").filter(line => line.startsWith("data:"))
           .map(line => line.slice(5).trimStart()).join("\n");
         if (data !== "") yield data;
       }
-      // A UTF-16 length never exceeds the UTF-8 byte length that produced it.
-      if (buffered.length > maximum) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
+      if (exceeds(buffered)) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
       if (done) break;
     }
     completed = true;

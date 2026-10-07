@@ -514,6 +514,15 @@ test("HTTP SSE validates its endpoint, refuses redirects, and bounds bodies and 
   const flood = await new HttpSseWireTransport("https://example.test", negotiation,
     serve(() => new Response(`data: ${"x".repeat(maximum)}`)), maximum).connect(resume);
   await expect((async () => { for await (const _ of flood) { /* drain */ } })()).rejects.toThrow("exceeds configured bound");
+  for (const body of [`data: ${"x".repeat(maximum)}
+
+`, `data: ${"é".repeat(maximum - 6)}
+
+`]) {
+    const complete = await new HttpSseWireTransport("https://example.test", negotiation,
+      serve(() => new Response(body)), maximum).connect(resume);
+    await expect((async () => { for await (const _ of complete) { /* drain */ } })()).rejects.toThrow("server event exceeds configured bound");
+  }
   await expect(new HttpSseWireTransport("https://example.test", negotiation, serve(() => new Response("")), maximum - 1).connect(resume))
     .rejects.toThrow("exceeds configured bound");
 });
