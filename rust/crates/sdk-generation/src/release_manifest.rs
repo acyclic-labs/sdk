@@ -126,11 +126,20 @@ pub fn build(
     }
     records.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let mut paths = BTreeSet::from(["sdk-docs-scenarios.v1.json".to_owned()]);
-    if scenarios.is_some() {
-        paths.insert("sdk-docs-scenario-executions.v1.json".to_owned());
-        paths.insert("sdk-docs-scenario-projections.v1.json".to_owned());
-    }
+    let release_digest_name = Path::new(FILE_NAME)
+        .with_extension("sha256")
+        .to_string_lossy()
+        .into_owned();
+    let mut paths = artifact_hashes
+        .keys()
+        .filter(|path| {
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_none_or(|name| name != FILE_NAME && name != release_digest_name)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
     for path in scenario_artifacts {
         let relative = path.strip_prefix(output).map_err(|_| {
             format!(
@@ -152,8 +161,10 @@ pub fn build(
                 "scenario-executions"
             } else if path == "sdk-docs-scenario-projections.v1.json" {
                 "scenario-projections"
-            } else {
+            } else if path.starts_with("sdk-docs-scenario-") || path.starts_with("snippets/") {
                 "typescript-snippet"
+            } else {
+                "docs-data"
             };
             Ok(Artifact {
                 kind: kind.to_owned(),
@@ -179,7 +190,8 @@ pub fn build(
 }
 
 pub fn validate(
-    root: &Path,
+    source_root: &Path,
+    output: &Path,
     path: &Path,
     expected_version: &str,
     expected_channel: &Channel,
@@ -220,9 +232,33 @@ pub fn validate(
             ));
         }
     }
+    let manifest_paths = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.path.as_str())
+        .collect::<BTreeSet<_>>();
+    if manifest_paths.len() != manifest.artifacts.len() {
+        return Err("release manifest contains duplicate artifact paths".into());
+    }
+    let release_relative = path
+        .strip_prefix(output)
+        .map(path_string)
+        .map_err(|_| "release manifest escapes output root".to_owned())?;
+    let release_digest = path_string(&Path::new(&release_relative).with_extension("sha256"));
+    let actual_paths = expected_artifacts
+        .keys()
+        .filter(|path| path.as_str() != release_relative && path.as_str() != release_digest)
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if manifest_paths != actual_paths {
+        return Err(format!(
+            "release manifest artifact set differs from generated output (manifest {:?}, output {:?})",
+            manifest_paths, actual_paths
+        ));
+    }
     for scenario in &manifest.scenarios {
         for (relative, expected) in &scenario.source_files {
-            let actual = super::sha256_file(&root.join(relative))
+            let actual = super::sha256_file(&source_root.join(relative))
                 .map_err(|error| format!("scenario source file {relative}: {error}"))?;
             if &actual != expected {
                 return Err(format!(
@@ -244,5 +280,75 @@ fn mode_name(mode: ScenarioMode) -> &'static str {
         ScenarioMode::Compile => "compile",
         ScenarioMode::ExecuteLocal => "executeLocal",
         ScenarioMode::ExecuteWithEndpoint => "executeWithEndpoint",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn validate_rejects_generated_artifacts_missing_from_release_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be available")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sdk-generation-release-manifest-{nonce}-{}",
+            std::process::id()
+        ));
+        let output = root.join("output");
+        let release = output.join("preview/v1/sdk-generation-release-manifest.v1.json");
+        fs::create_dir_all(release.parent().expect("release path has a parent"))
+            .expect("release directory should be creatable");
+        fs::write(output.join("docs.json"), b"docs").expect("docs artifact should be writable");
+        fs::write(output.join("extra.json"), b"extra").expect("extra artifact should be writable");
+        let manifest = Manifest {
+            schema: SCHEMA.into(),
+            version: "v1".into(),
+            channel: Channel::Preview,
+            revision: "a".repeat(40),
+            source_state: "working-tree".into(),
+            source_sha256: "sha256:source".into(),
+            source_files: BTreeMap::new(),
+            scenarios: Vec::new(),
+            artifacts: vec![Artifact {
+                kind: "docs-data".into(),
+                path: "docs.json".into(),
+                sha256: super::super::sha256_bytes(b"docs"),
+            }],
+        };
+        fs::write(
+            &release,
+            serde_json::to_vec(&manifest).expect("manifest should serialize"),
+        )
+        .expect("release manifest should be writable");
+        let release_relative = path_string(release.strip_prefix(&output).unwrap());
+        let release_digest = path_string(&Path::new(&release_relative).with_extension("sha256"));
+        let mut expected = BTreeMap::from([
+            ("docs.json".into(), super::super::sha256_bytes(b"docs")),
+            ("extra.json".into(), super::super::sha256_bytes(b"extra")),
+        ]);
+        expected.insert(
+            release_relative,
+            super::super::sha256_file(&release).unwrap(),
+        );
+        expected.insert(release_digest, "sha256:sidecar".into());
+        let error = validate(
+            &root,
+            &output,
+            &release,
+            "v1",
+            &Channel::Preview,
+            &"a".repeat(40),
+            "working-tree",
+            "sha256:source",
+            &BTreeMap::new(),
+            &expected,
+        )
+        .expect_err("an unlisted generated artifact must fail closed");
+        assert!(error.contains("artifact set differs"), "{error}");
+        let _ = fs::remove_dir_all(root);
     }
 }

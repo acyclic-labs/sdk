@@ -152,6 +152,11 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
             "--rustdoc-dir and --execute-profiles are mutually exclusive".into(),
         ));
     }
+    if channel == Channel::Release && !execute_profiles {
+        return Err(CliError(
+            "release generation requires --execute-profiles; hand-supplied Rustdoc receipts are preview-only".into(),
+        ));
+    }
     Ok(GenerateArgs {
         root: required("root")?.into(),
         output: required("output")?.into(),
@@ -368,8 +373,8 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         .iter()
         .map(|metadata| metadata.package_name.clone())
         .collect::<BTreeSet<_>>();
-    for owner in published {
-        if !found.contains(&owner) {
+    for owner in &published {
+        if !found.contains(owner.as_str()) {
             return Err(CliError(format!(
                 "published owner `{owner}` has no Rustdoc receipt"
             )));
@@ -391,6 +396,9 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         mark_latest: args.channel == Channel::Release,
     };
     let mut data = build_data(&input).map_err(docs_error)?;
+    if args.channel == Channel::Release {
+        validate_published_coverage(&published, &data)?;
+    }
     // Feature and target receipts are additional views of the same crate
     // family. Build each through the maintained sdk-docs projection and union
     // its public items before availability is attached, so binding-only and
@@ -634,6 +642,7 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
     if !manifest.release_manifest.is_empty() {
         release_manifest::validate(
             &root,
+            &output,
             &output.join(&manifest.release_manifest),
             &manifest.version,
             &manifest.channel,
@@ -909,6 +918,39 @@ fn published_packages(root: &Path) -> Result<Vec<String>, CliError> {
         .collect()
 }
 
+fn validate_published_coverage(
+    published: &[String],
+    data: &sdk_docs::DocsData,
+) -> Result<(), CliError> {
+    for package in published {
+        let Some(entry) = data
+            .packages
+            .entries
+            .iter()
+            .find(|entry| entry.package_name == *package)
+        else {
+            return Err(CliError(format!(
+                "published owner `{package}` has no generated docs family"
+            )));
+        };
+        let family = data
+            .families
+            .iter()
+            .find(|family| family.slug == entry.family_slug)
+            .ok_or_else(|| {
+                CliError(format!(
+                    "published owner `{package}` has no bound generated family"
+                ))
+            })?;
+        if family.items.is_empty() && family.guides.is_empty() {
+            return Err(CliError(format!(
+                "published owner `{package}` has empty public docs coverage"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn canonical(path: &Path) -> Result<PathBuf, CliError> {
     path.canonicalize().map_err(io_error)
 }
@@ -984,6 +1026,10 @@ fn materialize_generated_sources(
     let mut candidates = BTreeMap::<String, Vec<PathBuf>>::new();
     collect_named_files(&root.join("target"), &mut candidates)?;
     collect_named_files(&root.join("rust"), &mut candidates)?;
+    let staging_root = root.join("target/sdk-generation-generated-sources");
+    for matches in candidates.values_mut() {
+        matches.retain(|candidate| !candidate.starts_with(&staging_root));
+    }
     let mut result = Vec::new();
     for filename in filenames {
         let physical = PathBuf::from(&filename);
@@ -991,24 +1037,31 @@ fn materialize_generated_sources(
             continue;
         }
         let physical = if physical.is_file() {
-            physical
+            let inside_root = physical.canonicalize().map_err(io_error)?.starts_with(root);
+            if inside_root {
+                physical
+            } else {
+                stage_generated_source(root, &physical, &filename)?
+            }
         } else {
             let basename = physical
                 .file_name()
                 .and_then(OsStr::to_str)
                 .ok_or_else(|| CliError(format!("Rustdoc span has invalid filename {filename}")))?;
             let matches = candidates.get(basename).cloned().unwrap_or_default();
-            let Some(candidate) = matches.into_iter().next() else {
+            let [candidate] = matches.as_slice() else {
+                if matches.is_empty() {
+                    return Err(CliError(format!(
+                        "Rustdoc generated source is unavailable: {filename}"
+                    )));
+                }
                 return Err(CliError(format!(
-                    "Rustdoc generated source is unavailable: {filename}"
+                    "Rustdoc generated source basename is ambiguous: {filename}"
                 )));
             };
-            if let Some(parent) = physical.parent() {
-                fs::create_dir_all(parent).map_err(io_error)?;
-            }
-            fs::copy(&candidate, &physical).map_err(io_error)?;
-            physical
+            stage_generated_source(root, candidate, &filename)?
         };
+        let physical = physical.canonicalize().map_err(io_error)?;
         let is_generated = !physical.starts_with(root)
             || physical
                 .strip_prefix(root)
@@ -1036,6 +1089,24 @@ fn materialize_generated_sources(
         });
     }
     Ok(result)
+}
+
+fn stage_generated_source(root: &Path, source: &Path, identity: &str) -> Result<PathBuf, CliError> {
+    let stage_root = root.join("target/sdk-generation-generated-sources");
+    let basename = source.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+        CliError(format!(
+            "Rustdoc generated source has invalid filename {identity}"
+        ))
+    })?;
+    let key = sha256_bytes(identity.as_bytes())
+        .trim_start_matches("sha256:")
+        .to_owned();
+    let staged = stage_root.join(key).join(basename);
+    if let Some(parent) = staged.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    fs::copy(source, &staged).map_err(io_error)?;
+    Ok(staged)
 }
 
 fn collect_span_filenames(value: &serde_json::Value, output: &mut BTreeSet<String>) {
@@ -1469,5 +1540,86 @@ mod tests {
             fs::write(root.join(relative), original).expect("source fixture should restore");
         }
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn release_generation_requires_executed_profiles() {
+        let error = parse_generate(vec![
+            "--root".into(),
+            "root".into(),
+            "--output".into(),
+            "output".into(),
+            "--rustdoc-dir".into(),
+            "rustdoc".into(),
+            "--version".into(),
+            "1.0.0".into(),
+            "--channel".into(),
+            "release".into(),
+        ])
+        .expect_err("release hand-supplied receipts must be rejected");
+        assert!(error.to_string().contains("requires --execute-profiles"));
+    }
+
+    #[test]
+    fn missing_external_rustdoc_span_is_staged_inside_target() {
+        let root = test_root("generated-span-staging")
+            .canonicalize()
+            .expect("test root should canonicalize");
+        let candidate = root.join("target/candidate/wire.rs");
+        write(&root, "target/candidate/wire.rs", b"pub struct Wire;\n");
+        let foreign = std::env::temp_dir()
+            .join(format!(
+                "sdk-generation-foreign-span-{}",
+                std::process::id()
+            ))
+            .join("wire.rs");
+        let receipt = root.join("receipt.json");
+        fs::write(
+            &receipt,
+            serde_json::to_vec(&serde_json::json!({
+                "span": { "filename": foreign.to_string_lossy() }
+            }))
+            .expect("span fixture should serialize"),
+        )
+        .expect("receipt should be writable");
+        let sources = materialize_generated_sources(&root, std::slice::from_ref(&receipt))
+            .expect("matching generated source should be staged");
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].physical_path.starts_with(root.join("target")));
+        assert!(
+            !foreign.exists(),
+            "generator must never write to the foreign span"
+        );
+        assert!(candidate.exists());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(foreign.parent().unwrap());
+    }
+
+    #[test]
+    fn ambiguous_external_rustdoc_span_is_rejected() {
+        let root = test_root("ambiguous-generated-span");
+        write(&root, "target/one/wire.rs", b"pub struct One;\n");
+        write(&root, "rust/two/wire.rs", b"pub struct Two;\n");
+        let foreign = std::env::temp_dir()
+            .join(format!(
+                "sdk-generation-ambiguous-span-{}",
+                std::process::id()
+            ))
+            .join("wire.rs");
+        let receipt = root.join("receipt.json");
+        fs::write(
+            &receipt,
+            serde_json::to_vec(&serde_json::json!({
+                "span": { "filename": foreign.to_string_lossy() }
+            }))
+            .expect("span fixture should serialize"),
+        )
+        .expect("receipt should be writable");
+        let error = materialize_generated_sources(&root, std::slice::from_ref(&receipt))
+            .expect_err("ambiguous generated source must fail closed");
+        assert!(error.to_string().contains("basename is ambiguous"));
+        assert!(!foreign.exists());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(foreign.parent().unwrap());
     }
 }

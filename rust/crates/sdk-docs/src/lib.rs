@@ -1628,12 +1628,45 @@ fn source_span_at_root(
         repository_root.join(&span.filename)
     };
     reject_reparse_ancestors(&source_path)?;
-    let source_path = source_path.canonicalize().map_err(|error| {
-        Error::Invalid(format!(
-            "cannot resolve rustdoc source span {}: {error}",
-            span.filename.display()
-        ))
-    })?;
+    let source_path = match source_path.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let basename = span.filename.file_name().ok_or_else(|| {
+                Error::Invalid(format!(
+                    "rustdoc source span has no filename: {}",
+                    span.filename.display()
+                ))
+            })?;
+            let matches = generated_sources
+                .values()
+                .filter(|generated| generated.physical_path.file_name() == Some(basename))
+                .collect::<Vec<_>>();
+            let [generated] = matches.as_slice() else {
+                let reason = if matches.is_empty() {
+                    "no attested generated source matches"
+                } else {
+                    "attested generated source basename is ambiguous"
+                };
+                return Err(Error::Invalid(format!(
+                    "cannot resolve rustdoc source span {}: {reason}",
+                    span.filename.display()
+                )));
+            };
+            return Ok(SourceSpan {
+                path: normalize_path(&generated.logical_path),
+                begin_line: span.begin.0,
+                begin_column: span.begin.1,
+                end_line: span.end.0,
+                end_column: span.end.1,
+            });
+        }
+        Err(error) => {
+            return Err(Error::Invalid(format!(
+                "cannot resolve rustdoc source span {}: {error}",
+                span.filename.display()
+            )))
+        }
+    };
     let path = if let Some(generated) = generated_sources.get(&source_path) {
         normalize_path(&generated.logical_path)
     } else if let Ok(relative) = source_path.strip_prefix(&repository_root) {
@@ -2255,6 +2288,29 @@ mod tests {
         assert_eq!(projected.begin_column, 3);
         assert_eq!(projected.end_line, 8);
         assert_eq!(projected.end_column, 9);
+
+        let staged = repository_root.join("target/out/staged/wire.rs");
+        fs::create_dir_all(staged.parent().expect("staged source has a parent"))
+            .expect("staged source directory should be writable");
+        fs::write(&staged, bytes).expect("staged source should be writable");
+        let staged_attested = attest_generated_sources(
+            &repository_root,
+            &[GeneratedSource {
+                physical_path: staged,
+                logical_path: PathBuf::from("generated/actors/staged-wire.rs"),
+                sha256: digest,
+            }],
+        )
+        .expect("staged generated source should be attested");
+        let missing_span = rustdoc_types::Span {
+            filename: external_root.join("missing/wire.rs"),
+            begin: (2, 1),
+            end: (3, 5),
+        };
+        let staged_projection =
+            source_span_at_root(&repository_root, &staged_attested, &missing_span)
+                .expect("missing external span should resolve to its attested staged basename");
+        assert_eq!(staged_projection.path, "generated/actors/staged-wire.rs");
 
         let in_tree_span = rustdoc_types::Span {
             filename: in_tree.clone(),

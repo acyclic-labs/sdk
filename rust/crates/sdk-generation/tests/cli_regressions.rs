@@ -444,7 +444,8 @@ fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_
 
     fs::write(&source, &original).unwrap();
     assert_eq!(hash_file(&source), original_hash);
-    assert!(run_drift(&fixture).status.success());
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
 
     let refreshed_output = fixture.root.join("refreshed-after-source-restore");
     let refreshed = run_generate(
@@ -602,7 +603,8 @@ fn plugin_source_is_part_of_manifest_closure() {
         .get("plugin/src/main.rs")
         .and_then(Value::as_str)
         .is_some());
-    assert!(run_drift(&fixture).status.success());
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
 }
 
 #[test]
@@ -718,7 +720,7 @@ fn stale_source_attestation_is_rejected_before_generate() {
 }
 
 #[test]
-fn release_generation_rejects_scenario_bypass() {
+fn release_generation_requires_executed_profiles() {
     let fixture = fixture(false);
     git(&fixture.root, &["add", "rustdoc"]);
     git(
@@ -740,7 +742,7 @@ fn release_generation_rejects_scenario_bypass() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(
-        message.contains("cannot skip the registered scenario source closure"),
+        message.contains("release generation requires --execute-profiles"),
         "{message}"
     );
     assert!(!fixture.output.join("generation-manifest.v1.json").exists());
@@ -778,7 +780,8 @@ fn concurrent_preview_publications_are_idempotent() {
     let first = first.join().unwrap();
     let second = second.join().unwrap();
     assert!(first.status.success() || second.status.success());
-    assert!(run_drift(&fixture).status.success());
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
 }
 
 #[test]
