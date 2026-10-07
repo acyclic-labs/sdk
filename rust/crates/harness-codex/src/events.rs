@@ -216,22 +216,19 @@ pub fn parse_line(line: &str) -> Result<CodexEvent, ParseError> {
         .and_then(Value::as_str)
         .ok_or_else(|| ParseError("missing string `type`".into()))?;
     Ok(match kind {
-        "thread.started" => str_field(&value, "thread_id").map_or_else(
+        "thread.started" => field(&value, "thread_id").map_or_else(
             || CodexEvent::Other(value.clone()),
             |thread_id| CodexEvent::ThreadStarted { thread_id },
         ),
         "turn.started" => CodexEvent::TurnStarted,
-        "turn.completed" => value
-            .get("usage")
-            .and_then(|usage| serde_json::from_value(usage.clone()).ok())
-            .map_or_else(
-                || CodexEvent::Other(value.clone()),
-                |usage| CodexEvent::TurnCompleted { usage },
-            ),
+        "turn.completed" => field(&value, "usage").map_or_else(
+            || CodexEvent::Other(value.clone()),
+            |usage| CodexEvent::TurnCompleted { usage },
+        ),
         "turn.failed" => CodexEvent::TurnFailed {
             message: value
                 .get("error")
-                .and_then(|error| str_field(error, "message"))
+                .and_then(|error| field(error, "message"))
                 .unwrap_or_default(),
         },
         "item.started" | "item.updated" | "item.completed" => match value.get("item").map(item) {
@@ -241,70 +238,60 @@ pub fn parse_line(line: &str) -> Result<CodexEvent, ParseError> {
             _ => CodexEvent::Other(value),
         },
         "error" => CodexEvent::Error {
-            message: str_field(&value, "message").unwrap_or_default(),
+            message: field(&value, "message").unwrap_or_default(),
         },
         _ => CodexEvent::Other(value),
     })
 }
 
-fn str_field(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_owned)
+/// Reads `key` as `T`, treating an absent or differently shaped field as absent.
+fn field<T: serde::de::DeserializeOwned>(value: &Value, key: &str) -> Option<T> {
+    value.get(key).and_then(|field| T::deserialize(field).ok())
 }
 
 fn status(value: &Value) -> ItemStatus {
-    value
-        .get("status")
-        .and_then(|status| serde_json::from_value(status.clone()).ok())
-        .unwrap_or(ItemStatus::Unknown)
+    field(value, "status").unwrap_or(ItemStatus::Unknown)
 }
 
 fn item(value: &Value) -> Option<CodexItem> {
-    let id = str_field(value, "id")?;
-    let text = || str_field(value, "text").unwrap_or_default();
+    let id = field(value, "id")?;
+    let text = || field(value, "text").unwrap_or_default();
     let kind = match value.get("type").and_then(Value::as_str)? {
         "agent_message" => ItemKind::AgentMessage { text: text() },
         "reasoning" => ItemKind::Reasoning { text: text() },
         "command_execution" => ItemKind::CommandExecution {
-            command: str_field(value, "command").unwrap_or_default(),
-            aggregated_output: str_field(value, "aggregated_output").unwrap_or_default(),
+            command: field(value, "command").unwrap_or_default(),
+            aggregated_output: field(value, "aggregated_output").unwrap_or_default(),
             exit_code: value.get("exit_code").and_then(Value::as_i64),
             status: status(value),
         },
         "file_change" => ItemKind::FileChange {
-            changes: value
-                .get("changes")
-                .and_then(|changes| serde_json::from_value(changes.clone()).ok())
-                .unwrap_or_default(),
+            changes: field(value, "changes").unwrap_or_default(),
             status: status(value),
         },
         "mcp_tool_call" => ItemKind::McpToolCall {
-            server: str_field(value, "server").unwrap_or_default(),
-            tool: str_field(value, "tool").unwrap_or_default(),
+            server: field(value, "server").unwrap_or_default(),
+            tool: field(value, "tool").unwrap_or_default(),
             arguments: value.get("arguments").cloned().unwrap_or(Value::Null),
             result: value
                 .get("result")
                 .filter(|result| !result.is_null())
                 .cloned(),
-            error: value
-                .get("error")
-                .and_then(|error| str_field(error, "message")),
+            error: value.get("error").and_then(|error| field(error, "message")),
             status: status(value),
         },
         "collab_tool_call" => ItemKind::CollabToolCall {
-            tool: str_field(value, "tool").unwrap_or_default(),
+            tool: field(value, "tool").unwrap_or_default(),
             raw: value.clone(),
         },
         "web_search" => ItemKind::WebSearch {
-            query: str_field(value, "query").unwrap_or_default(),
+            query: field(value, "query").unwrap_or_default(),
         },
         "todo_list" => ItemKind::TodoList {
-            items: value
-                .get("items")
-                .and_then(|items| serde_json::from_value(items.clone()).ok())
-                .unwrap_or_default(),
+            items: field(value, "items").unwrap_or_default(),
         },
         "error" => ItemKind::Error {
-            message: str_field(value, "message").unwrap_or_default(),
+            message: field(value, "message").unwrap_or_default(),
         },
         _ => ItemKind::Other(value.clone()),
     };
