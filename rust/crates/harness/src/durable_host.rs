@@ -26,8 +26,8 @@ use crate::{
     workflow::MachineRegistry,
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, IdempotencyOutcome, StreamClient, StreamError,
-    StreamProvider, UnixMillisClock,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    UnixMillisClock,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -478,29 +478,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         bytes: &[u8],
     ) -> Result<()> {
         let key = Self::event_key(kind, task_id, operation_id)?;
-        let outcome = match stream
-            .append_batch(vec![Bytes::copy_from_slice(bytes)], None, Some(key.clone()))
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => match self.stream.inspect_idempotency(key).await {
-                Ok(Some(observation)) => match observation.outcome {
-                    IdempotencyOutcome::Append(outcome) => outcome,
-                    _ => {
-                        return Err(Error::Conflict(
-                            "control identity has another operation kind".into(),
-                        ));
-                    }
-                },
-                Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
-            },
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict(
-                    "control identity reused with different content".into(),
-                ));
-            }
-            Err(error) => return Err(Error::Storage(error.to_string())),
-        };
+        let outcome = crate::distributed::append_keyed(
+            (stream, &self.stream),
+            Bytes::copy_from_slice(bytes),
+            None,
+            key,
+            operation_id,
+            "control identity",
+        )
+        .await?;
         match outcome {
             AppendOutcome::Committed(receipt) if receipt.end == receipt.start + 1 => {
                 let records = stream

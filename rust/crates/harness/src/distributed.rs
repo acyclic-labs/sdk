@@ -617,34 +617,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             committed_at_ms,
         );
         let stream_key = stream_key(key)?;
-        let outcome = match self
-            .stream
-            .append_batch(
-                vec![Bytes::copy_from_slice(&bytes)],
-                Some(self.revision),
-                Some(stream_key.clone()),
-            )
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
-                match self.client.inspect_idempotency(stream_key).await {
-                    Ok(Some(observation)) => match observation.outcome {
-                        IdempotencyOutcome::Append(outcome) => outcome,
-                        _ => {
-                            return Err(Error::Conflict(
-                                "coordinator retry identity has another operation kind".into(),
-                            ));
-                        }
-                    },
-                    Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
-                }
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict("coordinator retry identity reused".into()));
-            }
-            Err(error) => return Err(Error::Storage(error.to_string())),
-        };
+        let outcome = append_keyed(
+            (&self.stream, &self.client),
+            Bytes::copy_from_slice(&bytes),
+            Some(self.revision),
+            stream_key,
+            operation_id,
+            "coordinator retry identity",
+        )
+        .await?;
         match outcome {
             AppendOutcome::Committed(receipt) => {
                 if receipt.end.checked_sub(receipt.start) != Some(1) || receipt.tail < receipt.end {
@@ -1048,6 +1029,37 @@ fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
     wire::ProtocolIdentity {
         version: COORDINATOR_WIRE_VERSION.into(),
         descriptor_digest: blake3::hash(COORDINATOR_WIRE_CONTRACT).to_hex().to_string(),
+    }
+}
+
+/// Appends one keyed record. An unavailable reply is resolved from the
+/// Stream's retained idempotency outcome, or reported as indeterminate.
+pub(crate) async fn append_keyed<P: StreamProvider>(
+    (stream, client): (&Stream<P>, &StreamClient<P>),
+    record: Bytes,
+    if_tail: Option<u64>,
+    key: StreamIdempotencyKey,
+    operation_id: OperationId,
+    identity: &str,
+) -> Result<AppendOutcome> {
+    match stream
+        .append_batch(vec![record], if_tail, Some(key.clone()))
+        .await
+    {
+        Ok(outcome) => Ok(outcome),
+        Err(StreamError::Unavailable) => match client.inspect_idempotency(key).await {
+            Ok(Some(observation)) => match observation.outcome {
+                IdempotencyOutcome::Append(outcome) => Ok(outcome),
+                _ => Err(Error::Conflict(format!(
+                    "{identity} has another operation kind"
+                ))),
+            },
+            Ok(None) | Err(_) => Err(Error::Indeterminate(operation_id)),
+        },
+        Err(StreamError::IdempotencyMismatch) => {
+            Err(Error::Conflict(format!("{identity} was reused")))
+        }
+        Err(error) => Err(Error::Storage(error.to_string())),
     }
 }
 
