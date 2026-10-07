@@ -21,6 +21,7 @@ const sourceRoots = [
   "rust/crates/native-runtime",
   "rust/crates/actors",
   "rust/crates/actors-napi",
+  "rust/vendor/protify-proc-macro-0.1.4",
   "package.json",
   "bun.lock",
   "typescript/packages/actors/package.json",
