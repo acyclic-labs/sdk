@@ -1,6 +1,11 @@
 //! Production-boundary qualification for the packaged Acyclic plugin.
 
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "integration-test helpers outside #[test] functions also unwrap fixtures"
+)]
 
 mod support;
 

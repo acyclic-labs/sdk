@@ -9,9 +9,17 @@
 //! --test-threads=1 --skip support::` (the shared support module carries
 //! ignored tests of its own).
 
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "integration-test helpers outside #[test] functions also unwrap fixtures"
+)]
 
-#[allow(dead_code, unused_imports)]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "each integration test uses a different subset of the shared support module"
+)]
 mod support;
 
 use serde_json::{Value, json};
