@@ -42,6 +42,63 @@ pub enum Error {
     Cancelled,
 }
 
+impl Error {
+    /// Returns the stable cross-platform error code exposed by SDK bridges.
+    #[must_use]
+    pub const fn code_name(&self) -> &'static str {
+        match self {
+            Self::Configuration(_) => "invalid_argument",
+            Self::Transport(_) => "unavailable",
+            Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
+            Self::Contract(error) => match error {
+                crate::ContractError::InvalidArgument => "invalid_argument",
+                crate::ContractError::LimitExceeded => "limit_exceeded",
+                crate::ContractError::DuplicateName => "duplicate_name",
+            },
+            Self::Semantic(error) => match error {
+                domain::DomainError::EmptyActorId => "empty_actor_id",
+                domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
+                domain::DomainError::Contract(error) => match error {
+                    crate::ContractError::InvalidArgument => "invalid_argument",
+                    crate::ContractError::LimitExceeded => "limit_exceeded",
+                    crate::ContractError::DuplicateName => "duplicate_name",
+                },
+                domain::DomainError::UnknownActorState(_) => "unknown_actor_state",
+                domain::DomainError::UnknownSubscriptionState(_) => "unknown_subscription_state",
+                domain::DomainError::UnknownErrorCode(_) => "unknown_error_code",
+                domain::DomainError::MissingMessage => "missing_message",
+                domain::DomainError::InvalidSubscription => "invalid_subscription",
+                domain::DomainError::InvalidBinding => "invalid_binding",
+            },
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Maps a gRPC status number to the canonical SDK error code.
+    #[must_use]
+    pub const fn grpc_code_name(code: i32) -> &'static str {
+        match code {
+            0 => "ok",
+            1 => "cancelled",
+            3 => "invalid_argument",
+            4 => "deadline_exceeded",
+            5 => "not_found",
+            6 => "already_exists",
+            7 => "permission_denied",
+            8 => "resource_exhausted",
+            9 => "failed_precondition",
+            10 => "aborted",
+            11 => "out_of_range",
+            12 => "unimplemented",
+            13 => "internal",
+            14 => "unavailable",
+            15 => "data_loss",
+            16 => "unauthenticated",
+            _ => "unknown",
+        }
+    }
+}
+
 impl From<std::convert::Infallible> for Error {
     fn from(value: std::convert::Infallible) -> Self {
         match value {}
@@ -501,5 +558,48 @@ mod tests {
                 other => panic!("expected service error, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn error_code_names_are_shared_by_native_and_browser_bridges() {
+        for (code, name) in [
+            (0, "ok"),
+            (1, "cancelled"),
+            (3, "invalid_argument"),
+            (4, "deadline_exceeded"),
+            (5, "not_found"),
+            (6, "already_exists"),
+            (7, "permission_denied"),
+            (8, "resource_exhausted"),
+            (9, "failed_precondition"),
+            (10, "aborted"),
+            (11, "out_of_range"),
+            (12, "unimplemented"),
+            (13, "internal"),
+            (14, "unavailable"),
+            (15, "data_loss"),
+            (16, "unauthenticated"),
+            (17, "unknown"),
+        ] {
+            let error = Error::Service {
+                grpc_code: code,
+                detail: None,
+            };
+            assert_eq!(error.code_name(), name);
+        }
+        assert_eq!(
+            Error::Configuration(String::new()).code_name(),
+            "invalid_argument"
+        );
+        assert_eq!(Error::Transport(String::new()).code_name(), "unavailable");
+        assert_eq!(
+            Error::Contract(crate::ContractError::LimitExceeded).code_name(),
+            "limit_exceeded"
+        );
+        assert_eq!(
+            Error::Semantic(domain::DomainError::InvalidBinding).code_name(),
+            "invalid_binding"
+        );
+        assert_eq!(Error::Cancelled.code_name(), "cancelled");
     }
 }

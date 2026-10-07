@@ -147,7 +147,7 @@ if (process.argv.includes("--client")) {
     token: "wrong",
     caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
   });
-  await assert.rejects(denied.inspectActor({ actorId: "a" }), error => error?.code === "service" || error?.code === "unauthenticated");
+  await assert.rejects(denied.inspectActor({ actorId: "a" }), error => error?.code === "unauthenticated");
   assert.equal(count, expected);
   console.log(`${process.versions.bun ? "Bun" : "Node"}: ${count} authenticated gRPC methods, streaming and denied authentication passed`);
   process.exit(0);

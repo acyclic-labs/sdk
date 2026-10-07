@@ -21,14 +21,7 @@ fn js_error(code: &str, message: impl std::fmt::Display) -> JsValue {
 }
 
 fn map_error(error: client::Error) -> JsValue {
-    let code = match error {
-        client::Error::Configuration(_) => "configuration",
-        client::Error::Transport(_) => "transport",
-        client::Error::Service { .. } => "service",
-        client::Error::Contract(_) => "contract",
-        client::Error::Semantic(_) => "semantic",
-        client::Error::Cancelled => "cancelled",
-    };
+    let code = error.code_name();
     js_error(code, error)
 }
 
