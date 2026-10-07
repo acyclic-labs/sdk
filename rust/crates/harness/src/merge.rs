@@ -28,7 +28,7 @@ impl ProjectConflict {
     /// Rejects empty or unbounded provider conflict identities.
     pub fn validate(&self) -> Result<()> {
         self.provider.validate()?;
-        if self.key.is_empty() || self.key.len() > 4_096 {
+        if self.key.is_empty() {
             return Err(Error::Invalid("project conflict key is invalid".into()));
         }
         Ok(())
@@ -142,14 +142,10 @@ impl ProviderJoinProof {
     pub fn validate(&self) -> Result<()> {
         self.provider.validate()?;
         if self.format.is_empty()
-            || self.format.len() > 128
             || self.statement.is_null()
             || !proof_numbers_are_js_safe(&self.statement)
-            || crate::contract::canonical_json_bytes(&self.statement)?.len() > 4_096
         {
-            return Err(Error::Invalid(
-                "provider merge proof is invalid or oversized".into(),
-            ));
+            return Err(Error::Invalid("provider merge proof is invalid".into()));
         }
         Ok(())
     }
@@ -216,7 +212,6 @@ impl ProjectMergeReceipt {
             || self.result_generation.as_resource().provider() != self.target_project.provider()
             || self.provider_proof.provider != *self.target_project.provider()
             || self.provider_operation_id.is_empty()
-            || self.provider_operation_id.len() > 64
             || self.provider_operation_id.iter().all(|byte| *byte == 0)
         {
             return Err(Error::Invalid(

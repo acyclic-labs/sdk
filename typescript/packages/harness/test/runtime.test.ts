@@ -43,7 +43,7 @@ import {
   type VolumeRef,
   type ConversationMessageId,
 } from "../src/index.js";
-import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "../src/child-page-contract.js";
+import { HARNESS_CHILD_PAGE_DEFAULT } from "../src/child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
@@ -52,7 +52,7 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
   const parent = "12345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
   const child = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
   const page = { revision: 7n, entries: [{ slot: "a", taskId: child }], nextAfter: null } as const;
-  expect(contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM, page)).toEqual(page);
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_024, page)).toEqual(page);
   let revisionReads = 0;
   const changingRevisionPage = {
     get revision() {
@@ -66,7 +66,7 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
   expect(revisionReads).toBe(1);
   expect(() => contracts.validateTaskChildrenPage(parent, 6n, null, 1, page)).toThrow();
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, "a", 1, page)).toThrow();
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM + 1, page)).toThrow();
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_000_001, page)).toEqual(page);
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 0, page)).toThrow();
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
     ...page, entries: [{ slot: "a", taskId: child }, { slot: "b", taskId: child }],
@@ -75,7 +75,7 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
     ...page, nextAfter: "b",
   })).toThrow();
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
-    ...page, entries: [{ slot: "x".repeat(HARNESS_CHILD_SLOT_MAX_BYTES + 1), taskId: child }],
+    ...page, entries: [{ slot: "\u007f", taskId: child }],
   })).toThrow();
 
   let observedMaximum = 0;
@@ -105,9 +105,8 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
 
 test("private-directory pages keep their Rust-owned bounds distinct from child pages", () => {
   expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBe(256);
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(4096);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(0xffff_ffff);
   expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBeLessThanOrEqual(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM);
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).not.toBe(HARNESS_CHILD_PAGE_MAXIMUM);
 });
 
 test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {
@@ -194,6 +193,10 @@ test("Rust owns durable task and batch projection identities", () => {
   expect(projected.canonical).toEqual(batch);
   expect(projected.policy).toEqual({ kind: "collect-all" });
   expect(projected.members).toHaveLength(2);
+  expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 65_536))
+    .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0));
+  expect(() => contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0x1_0000_0000))
+    .toThrow("batch index is out of range");
   expect(projected.members.map(member => member.operation_id)).toEqual([
     contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0),
     contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1),

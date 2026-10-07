@@ -12,7 +12,7 @@ const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
 const fixtureId = (value: string): ConversationMessageId => value as ConversationMessageId;
 
 test("Rust-owned limits contract preserves defaults, ceilings, and number semantics", () => {
-  expect(DEFAULT_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
+  expect(DEFAULT_LIMITS.path_bytes).toBe(4096);
   expect(MAX_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
   expect(MAX_EXACT_JS_INTEGER).toBe(MAX_LIMITS.file_bytes);
   expect(MAX_LABEL_BYTES).toBeGreaterThan(0);
@@ -24,7 +24,7 @@ test("Rust-owned limits contract preserves defaults, ceilings, and number semant
   })).toThrow("unsafe JavaScript Number");
   expect(() => contracts.validate("limits", {
     ...MAX_LIMITS, path_bytes: MAX_PATH_BYTES + 1,
-  })).toThrow("harness limits are invalid");
+  })).toThrow();
 });
 
 function fixtureMessage(value: unknown): ConversationMessage {
@@ -132,7 +132,7 @@ test("configured limits reject oversized references before admission", async () 
   };
   const limits = contracts.validate("limits", { ...DEFAULT_LIMITS, file_bytes: 6, render_bytes: 6 });
   expect(() => contracts.validate("conversation_message", message, limits)).toThrow();
-  expect(() => contracts.validate("limits", { ...limits, attachments: 0 })).toThrow("harness limits are invalid");
+  expect(() => contracts.validate("limits", { ...limits, attachments: 0 })).toThrow();
 });
 
 test("Rust WASM preserves conversation positions beyond JavaScript's exact-number range", async () => {

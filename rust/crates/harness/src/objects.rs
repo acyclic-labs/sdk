@@ -54,7 +54,6 @@ impl ObjectContentStore {
         verifier.verify(&scope)?;
         ContentGrant::verify(&verifier, &owner_scope, &volume, VolumeOperation::Write)?;
         if maximum_bytes == 0
-            || maximum_bytes > 5 * 1024 * 1024 * 1024
             || expected_provider.family() != "objects"
             || volume.provider() != &expected_provider
             || volume.id() != bucket.name
@@ -122,7 +121,7 @@ impl ObjectContentStore {
             path,
             content
         );
-        if key.len() > 1024 {
+        if key.len() > acyclic_objects::wire::ObjectsLimit::MaxKeyBytes as usize {
             return Err(Error::Invalid(
                 "Objects content key exceeds provider limit".into(),
             ));

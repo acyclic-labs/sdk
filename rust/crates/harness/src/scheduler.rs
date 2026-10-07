@@ -449,18 +449,14 @@ impl Scheduler {
             ));
         }
         spec.state.validate()?;
-        if spec.placement.len() > 32
-            || spec.placement.iter().any(|(key, value)| {
-                key.is_empty()
-                    || key.len() > COMPONENT_LABEL_MAX_BYTES
-                    || value.len() > COMPONENT_LABEL_MAX_BYTES
-                    || key.chars().any(char::is_control)
-                    || value.chars().any(char::is_control)
-            })
-        {
-            return Err(Error::Invalid(
-                "placement labels exceed scheduler limits".into(),
-            ));
+        if spec.placement.iter().any(|(key, value)| {
+            key.is_empty()
+                || key.len() > COMPONENT_LABEL_MAX_BYTES
+                || value.len() > COMPONENT_LABEL_MAX_BYTES
+                || key.chars().any(char::is_control)
+                || value.chars().any(char::is_control)
+        }) {
+            return Err(Error::Invalid("placement labels are invalid".into()));
         }
         crate::contract::compile_json_schema(&spec.entrypoint.result_schema, "entrypoint result")?;
         if self.operations.contains_key(&spec.operation_id) {
@@ -935,7 +931,6 @@ impl Scheduler {
                 let operation = self.mutable(operation_id)?;
                 require_execution_owner(operation, &fence, false)?;
                 if workflow_revision == 0
-                    || workflow_revision > crate::workflow::MAX_WORKFLOW_RECORDS
                     || operation.workflow.as_ref().is_some_and(|previous| {
                         workflow_revision < previous.revision
                             || (workflow_revision == previous.revision && previous.input.is_none())
@@ -2209,7 +2204,7 @@ mod tests {
     }
 
     #[test]
-    fn declarations_store_state_references_and_bound_placement_metadata() -> Result<()> {
+    fn declarations_store_state_references_and_accept_long_placement_metadata() -> Result<()> {
         let scheduler = Scheduler::new();
         let event = scheduler.declare(spec(id(1), Orchestration::Leaf)?)?;
         let encoded =
@@ -2218,10 +2213,7 @@ mod tests {
         assert_eq!(encoded["spec"]["state"]["descriptor"]["byte_length"], 4);
         let mut oversized = spec(id(2), Orchestration::Leaf)?;
         oversized.placement.insert("region".into(), "x".repeat(256));
-        assert!(matches!(
-            scheduler.declare(oversized),
-            Err(Error::Invalid(_))
-        ));
+        assert!(scheduler.declare(oversized).is_ok());
         Ok(())
     }
 

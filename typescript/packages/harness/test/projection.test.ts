@@ -3,7 +3,6 @@ import { composeContentBindings, DEFAULT_LIMITS,
   descriptorFor, NativeContracts, projectModelFile, verifiedContentResolver, selectModelContext,
   type AgentId, type Attachment, type ConversationMessage, type ConversationMessageId, type FileRef, type ProjectableConversation } from "../src/index.js";
 import {
-  HARNESS_PROJECTION_MAX_JSON_BYTES,
   HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS,
 } from "../src/limits-contract.js";
 
@@ -211,7 +210,7 @@ test("tool linkage and exact JSON numbers fail before owner reads", async () => 
   })).rejects.toThrow("inexact");
 });
 
-test("tool JSON artifacts retain the 16 MiB parser ceiling", async () => {
+test("tool JSON artifacts follow the selected rendering budget", async () => {
   const oversizedBytes = new TextEncoder().encode(
     `{"call_id":"reused","name":"tool","arguments":{"padding":"${"x".repeat(16 * 1024 * 1024)}"}}`,
   );
@@ -222,14 +221,14 @@ test("tool JSON artifacts retain the 16 MiB parser ceiling", async () => {
   await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [callId] }, {
     maxRenderBytes: 32 * 1024 * 1024,
     resolveFile: async () => oversizedBytes,
-  })).rejects.toThrow("JSON byte limit");
+  })).resolves.toBeDefined();
 
   const declaredSmall = await reference("tool/forged-size.json", new TextEncoder().encode("{}"), "application/json");
   const forgedSizeState = conversationState({ ...state.messages[0]!, content: declaredSmall });
   await expect(selectModelContext(forgedSizeState, { conversationRevision: 1n, messageIds: [callId] }, {
-    maxRenderBytes: 32 * 1024 * 1024,
-    resolveFile: async () => new Uint8Array(HARNESS_PROJECTION_MAX_JSON_BYTES + 1),
-  })).rejects.toThrow("JSON byte limit");
+    maxRenderBytes: 1024,
+    resolveFile: async () => new Uint8Array(1025),
+  })).rejects.toThrow("rendering limit");
 });
 
 test("large primary text stays a reference while a primary image stays native", async () => {

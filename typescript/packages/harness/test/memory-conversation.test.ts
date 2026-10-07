@@ -333,8 +333,8 @@ test("large canonical attachment lists produce a bounded model request", async (
   const attachment = await host.stage("files/one.txt", new TextEncoder().encode("file"), "text/plain", "one.txt");
   await host.runConversation(runtime, operation, content,
     Array.from({ length: 1_030 }, () => ({ file: attachment, label: null })));
-  expect(projectedParts).toBe(1_024);
-  expect(omission).toContain("8 additional attachments omitted");
+  expect(projectedParts).toBe(1_031);
+  expect(omission).toBe("");
   expect(host.conversation().messages[0]!.attachments.kind).toBe("manifest");
   host.free();
 });

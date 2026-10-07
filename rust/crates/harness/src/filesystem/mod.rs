@@ -616,8 +616,8 @@ where
                         .host
                         .read_pinned(file, self.maximum_inherited_bytes)
                         .await?;
-                    let inherited: InheritedConversationPrefix = serde_json::from_slice(&bytes)
-                        .map_err(|_| {
+                    let inherited: InheritedConversationPrefix =
+                        crate::contract::json_from_slice(&bytes).map_err(|_| {
                             Error::Invalid("inherited conversation is malformed".into())
                         })?;
                     if inherited.canonical_bytes()?.as_slice() != bytes.as_ref()
@@ -687,14 +687,7 @@ where
                 }
                 let mut observed = BTreeSet::new();
                 let mut pending = vec![String::from("/")];
-                let mut visited = 0_usize;
                 while let Some(directory) = pending.pop() {
-                    visited += 1;
-                    if visited > 65_536 {
-                        return Err(Error::Invalid(
-                            "private volume directory limit exceeded".into(),
-                        ));
-                    }
                     let mut cursor = None;
                     loop {
                         let page = self
@@ -2002,7 +1995,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await;
         let (descriptor, display_name) = match metadata {
             Ok(metadata) => {
-                let staged: FileRef = serde_json::from_slice(&metadata)
+                let staged: FileRef = crate::contract::json_from_slice(&metadata)
                     .map_err(|_| Error::Storage("private file metadata is corrupt".into()))?;
                 if staged.volume() != volume
                     || staged.path() != path

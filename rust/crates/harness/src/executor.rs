@@ -23,13 +23,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
-/// Maximum execution observations returned by one replay page.
-pub const MAX_EXECUTION_PAGE_RECORDS: u32 = 64;
-/// Maximum retained observations in one execution journal.
-pub const MAX_EXECUTION_RECORDS: u64 = 1_000_000;
+/// Internal replay batch size; callers may request any positive page allowance.
+pub(crate) const EXECUTION_REPLAY_PAGE_RECORDS: u32 = 64;
 
-pub(crate) fn validate_execution_page(after: u64, maximum: u32) -> Result<()> {
-    if maximum == 0 || maximum > MAX_EXECUTION_PAGE_RECORDS || after > MAX_EXECUTION_RECORDS {
+pub(crate) fn validate_execution_page(_after: u64, maximum: u32) -> Result<()> {
+    if maximum == 0 {
         return Err(Error::Invalid(
             "execution replay page bound is invalid".into(),
         ));
@@ -185,8 +183,8 @@ impl ToolFailureKind {
 pub trait ExecutionJournal: Send + Sync {
     /// Implementations must scope sequences and retry keys by `operation_id`.
     /// Reads at most `maximum` records after the exclusive one-based sequence
-    /// `after`. Zero starts at the first record. Pages are bounded by
-    /// `MAX_EXECUTION_PAGE_RECORDS`; no complete-history fallback is provided.
+    /// `after`. Zero starts at the first record. A provider may return a shorter
+    /// internal batch than requested; no complete-history fallback is provided.
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
@@ -301,11 +299,11 @@ impl ExecutionReplay {
         &mut self,
         journal: &dyn ExecutionJournal,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
-        validate_execution_page(self.after, MAX_EXECUTION_PAGE_RECORDS)?;
+        validate_execution_page(self.after, EXECUTION_REPLAY_PAGE_RECORDS)?;
         let page = journal
-            .replay(self.operation_id, self.after, MAX_EXECUTION_PAGE_RECORDS)
+            .replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS)
             .await?;
-        if page.len() > MAX_EXECUTION_PAGE_RECORDS as usize {
+        if page.len() > EXECUTION_REPLAY_PAGE_RECORDS as usize {
             return Err(Error::Storage("execution replay page exceeds bound".into()));
         }
         if page.is_empty() {
@@ -316,9 +314,7 @@ impl ExecutionReplay {
             let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
             if record.operation_id != self.operation_id
                 || record.sequence != self.after + index as u64 + 1
-                || record.sequence > MAX_EXECUTION_RECORDS
                 || record.idempotency_key.is_empty()
-                || record.idempotency_key.len() > 256
                 || self.keys.contains(&key)
                 || !keys.insert(key)
             {
@@ -1569,14 +1565,14 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     }
     let bytes = journal.load(reference).await?;
     reference.descriptor().verify(&bytes)?;
-    let parsed: Value = serde_json::from_slice(&bytes)
+    let parsed: Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
         return Err(Error::Storage(
             "execution journal JSON is not canonical".into(),
         ));
     }
-    serde_json::from_slice(&bytes)
+    crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
 }
 
@@ -2834,7 +2830,7 @@ mod tests {
         assert_eq!(selected[0].sequence, 70);
         assert_eq!(journal.replay(operation, 0, 64).await?.len(), 64);
         assert_eq!(journal.replay(operation, 64, 64).await?.len(), 6);
-        assert!(journal.replay(operation, 0, 65).await.is_err());
+        assert_eq!(journal.replay(operation, 0, 65).await?.len(), 65);
         assert!(journal.replay(operation, 0, 0).await.is_err());
         assert!(
             replay_execution(&journal, operation, 1, |_| true)
@@ -2901,13 +2897,15 @@ mod tests {
                 )
                 .await?;
         }
-        let replayed_first = journal.replay(first, 0, MAX_EXECUTION_PAGE_RECORDS).await?;
+        let replayed_first = journal
+            .replay(first, 0, EXECUTION_REPLAY_PAGE_RECORDS)
+            .await?;
         let [first_entry] = replayed_first.as_slice() else {
             unreachable!("expected exactly one replayed event for the first operation");
         };
         assert_eq!(first_entry.sequence, 1);
         let replayed_second = journal
-            .replay(second, 0, MAX_EXECUTION_PAGE_RECORDS)
+            .replay(second, 0, EXECUTION_REPLAY_PAGE_RECORDS)
             .await?;
         let [second_entry] = replayed_second.as_slice() else {
             unreachable!("expected exactly one replayed event for the second operation");

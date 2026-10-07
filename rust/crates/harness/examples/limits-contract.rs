@@ -15,7 +15,6 @@ use acyclic_harness::projection::{
     DEFAULT_PROJECTION_MAX_RESOLVED_BYTES, MAX_PROJECTION_JSON_BYTES,
     MAX_PROJECTION_PROJECTED_ATTACHMENTS,
 };
-use acyclic_harness::runtime::MAX_BATCH_INPUTS;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,25 +48,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "max_path_bytes": MAX_PATH_BYTES,
                 "max_label_bytes": MAX_LABEL_BYTES,
             },
-            "batch_inputs": MAX_BATCH_INPUTS,
             "session": session,
-            "execution": {
-                "page_records": acyclic_harness::executor::MAX_EXECUTION_PAGE_RECORDS,
-                "records": acyclic_harness::executor::MAX_EXECUTION_RECORDS,
-            },
-            "workflow": {
-                "page_records": acyclic_harness::workflow::MAX_WORKFLOW_PAGE_RECORDS,
-                "records": acyclic_harness::workflow::MAX_WORKFLOW_RECORDS,
-                "identities": acyclic_harness::workflow::MAX_WORKFLOW_IDENTITIES,
-            },
             "fork": {
                 "agents": MAX_FORK_AGENTS,
                 "resources": MAX_FORK_RESOURCES,
                 "references": MAX_FORK_REFERENCES,
-                "attachment_manifest_bytes": MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
-                "inherited_bytes": MAX_FORK_INHERITED_BYTES,
-                "reference_bytes": MAX_FORK_REFERENCE_BYTES,
-                "inherited_messages": MAX_FORK_INHERITED_MESSAGES,
+                "attachment_manifest_bytes": MAX_FORK_ATTACHMENT_MANIFEST_BYTES.to_string(),
+                "inherited_bytes": MAX_FORK_INHERITED_BYTES.to_string(),
+                "reference_bytes": MAX_FORK_REFERENCE_BYTES.to_string(),
+                "inherited_messages": MAX_FORK_INHERITED_MESSAGES.to_string(),
             },
             "projection": {
                 "default_max_resolved_bytes": DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,

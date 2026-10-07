@@ -584,10 +584,7 @@ where
         maximum_events: u32,
         maximum_transitions: u32,
     ) -> Result<TaskWorkerTick> {
-        if worker.id.trim().is_empty()
-            || maximum_transitions == 0
-            || u64::from(maximum_transitions) > crate::workflow::MAX_WORKFLOW_RECORDS
-        {
+        if worker.id.trim().is_empty() || maximum_transitions == 0 {
             return Err(Error::Invalid(
                 "invalid worker tick allowance or identity".into(),
             ));
@@ -623,7 +620,7 @@ where
     }
 
     /// Inspects one page of a finite coordinator snapshot and polls its owned
-    /// passive waits. The allowance must be 1..=64. A cursor is only a resume
+    /// passive waits. The caller selects a positive allowance. A cursor is only a resume
     /// hint: each candidate's current owner, wait and command are rechecked.
     ///
     /// Pass None to begin a sweep; persist/reuse the returned cursor until None
@@ -717,7 +714,7 @@ where
             .harness
             .durable_context(task, admission.operation_id)
             .await?;
-        let payload = serde_json::from_slice(&context.read_file(&command.payload).await?)
+        let payload = crate::contract::json_from_slice(&context.read_file(&command.payload).await?)
             .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
         if !self
             .commands()
@@ -767,9 +764,7 @@ where
         commands: &dyn TaskCommandHost,
         maximum_transitions: u32,
     ) -> Result<TaskWorkerOutcome> {
-        if maximum_transitions == 0
-            || u64::from(maximum_transitions) > crate::workflow::MAX_WORKFLOW_RECORDS
-        {
+        if maximum_transitions == 0 {
             return Err(Error::Invalid("invalid worker transition allowance".into()));
         }
         let operation_id = lease.operation.operation_id;
@@ -895,8 +890,9 @@ where
                     "task cannot read command payload".into(),
                 ));
             }
-            let payload = serde_json::from_slice(&reader.read(&command.payload).await?)
-                .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
+            let payload =
+                crate::contract::json_from_slice(&reader.read(&command.payload).await?)
+                    .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
             let progress = commands
                 .execute(context.clone(), fence.clone(), command.clone(), payload)
                 .await;

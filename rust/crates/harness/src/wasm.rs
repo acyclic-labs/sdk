@@ -1117,11 +1117,8 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 }
 
 fn parse_json_bytes(bytes: &[u8]) -> Result<serde_json::Value, JsValue> {
-    if bytes.len() > 16 * 1024 * 1024 {
-        return Err(JsValue::from_str("JSON exceeds the Harness byte limit"));
-    }
     reject_out_of_range_integer_tokens(bytes)?;
-    serde_json::from_slice(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
+    crate::contract::json_from_slice(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 // serde_json without arbitrary_precision promotes an integer literal outside
@@ -1182,18 +1179,12 @@ fn reject_out_of_range_integer_tokens(bytes: &[u8]) -> Result<(), JsValue> {
 pub fn encode_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
     let value = js_json_value(&value)?;
     let bytes = crate::contract::canonical_json_bytes(&value).map_err(js_error)?;
-    if bytes.len() > 16 * 1024 * 1024 {
-        return Err(JsValue::from_str(
-            "canonical JSON exceeds the Harness byte limit",
-        ));
-    }
     Ok(bytes)
 }
 
 fn js_json_value(value: &JsValue) -> Result<serde_json::Value, JsValue> {
     let mut ancestors = Vec::new();
-    let mut nodes = 0;
-    snapshot_js_json(value, 0, &mut ancestors, &mut nodes)
+    snapshot_js_json(value, &mut ancestors)
 }
 
 /// Hashes the same bounded canonical JSON bytes used by native admissions.
@@ -1249,14 +1240,8 @@ pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
 )]
 fn snapshot_js_json(
     value: &JsValue,
-    depth: usize,
     ancestors: &mut Vec<JsValue>,
-    nodes: &mut usize,
 ) -> Result<serde_json::Value, JsValue> {
-    *nodes += 1;
-    if depth > 128 || *nodes > 1_000_000 {
-        return Err(JsValue::from_str("JSON nesting exceeds the Harness limit"));
-    }
     if value.is_undefined() {
         return Err(JsValue::from_str("undefined is not canonical JSON"));
     }
@@ -1338,7 +1323,7 @@ fn snapshot_js_json(
         let items = js_sys::Array::from(value);
         let mut snapshot = Vec::with_capacity(items.length() as usize);
         for item in items.iter() {
-            snapshot.push(snapshot_js_json(&item, depth + 1, ancestors, nodes)?);
+            snapshot.push(snapshot_js_json(&item, ancestors)?);
         }
         serde_json::Value::Array(snapshot)
     } else if is_map {
@@ -1354,7 +1339,7 @@ fn snapshot_js_json(
                     failure = Some(JsValue::from_str("JSON object keys must be strings"));
                     return;
                 };
-                match snapshot_js_json(&child, depth + 1, ancestors, nodes) {
+                match snapshot_js_json(&child, ancestors) {
                     Ok(admitted) => {
                         snapshot.insert(key, admitted);
                     }
@@ -1373,7 +1358,7 @@ fn snapshot_js_json(
                 .as_string()
                 .ok_or_else(|| JsValue::from_str("JSON object key is invalid"))?;
             let child = js_sys::Reflect::get(value, &key)?;
-            let admitted = snapshot_js_json(&child, depth + 1, ancestors, nodes)?;
+            let admitted = snapshot_js_json(&child, ancestors)?;
             if snapshot.insert(key_text, admitted).is_some() {
                 return Err(JsValue::from_str("duplicate JSON object key"));
             }
@@ -1417,27 +1402,9 @@ fn conversation_page_data(
     }
     let start = usize::try_from(after_sequence)
         .map_err(|_| JsValue::from_str("conversation cursor exceeds the platform limit"))?;
-    let mut end = start;
-    let mut bytes_used = 0_usize;
-    while end < conversation.messages.len() && end - start < limit as usize {
-        let message = conversation
-            .messages
-            .get(end)
-            .ok_or_else(|| JsValue::from_str("conversation page cursor is invalid"))?;
-        let size = crate::contract::canonical_json_bytes(message)
-            .map_err(js_error)?
-            .len();
-        if bytes_used.saturating_add(size) > 8 * 1024 * 1024 - 1_024 {
-            if end == start {
-                return Err(JsValue::from_str(
-                    "conversation message exceeds the page byte limit",
-                ));
-            }
-            break;
-        }
-        bytes_used += size;
-        end += 1;
-    }
+    let end = start
+        .saturating_add(limit as usize)
+        .min(conversation.messages.len());
     Ok(ConversationPage {
         agent: conversation.agent,
         event_revision: reducer.revision(),
@@ -2012,11 +1979,11 @@ impl WasmReducer {
             .files
             .values()
             .try_fold(0_u64, |sum, bytes| sum.checked_add(bytes.len() as u64));
-        if total.is_none_or(|bytes| bytes > crate::model::MAX_MODEL_REQUEST_BYTES)
+        if total.is_none()
             || files.files.len()
                 > limits
                     .context_messages
-                    .saturating_mul(limits.attachments + 2)
+                    .saturating_mul(limits.attachments.saturating_add(2))
         {
             return Err(JsValue::from_str("captured prefix files exceed limits"));
         }
@@ -2156,11 +2123,6 @@ impl WasmReducer {
             .conversation()
             .ok_or_else(|| JsValue::from_str("aggregate is not a conversation"))?;
         let bytes = crate::contract::canonical_json_bytes(conversation).map_err(js_error)?;
-        if bytes.len() > 16 * 1024 * 1024 {
-            return Err(JsValue::from_str(
-                "conversation snapshot exceeds the byte limit; use pages",
-            ));
-        }
         String::from_utf8(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
@@ -2175,11 +2137,6 @@ impl WasmReducer {
     ) -> Result<String, JsValue> {
         let page = conversation_page_data(&self.reducer, after_sequence, limit)?;
         let bytes = crate::contract::canonical_json_bytes(&page).map_err(js_error)?;
-        if bytes.len() > 8 * 1024 * 1024 {
-            return Err(JsValue::from_str(
-                "conversation page exceeds the byte limit",
-            ));
-        }
         String::from_utf8(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
@@ -2188,12 +2145,6 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = conversationPage)]
     pub fn conversation_page(&self, after_sequence: u64, limit: u32) -> Result<JsValue, JsValue> {
         let page = conversation_page_data(&self.reducer, after_sequence, limit)?;
-        let bytes = crate::contract::canonical_json_bytes(&page).map_err(js_error)?;
-        if bytes.len() > 8 * 1024 * 1024 {
-            return Err(JsValue::from_str(
-                "conversation page exceeds the byte limit",
-            ));
-        }
         to_js_admitted(&page)
     }
 
@@ -2530,7 +2481,7 @@ pub fn encode_model_prefix(
 ) -> Result<Vec<u8>, JsValue> {
     let limits: Limits = from_js(limits)?;
     let prepare = |bytes: &[u8]| -> crate::Result<crate::model::PreparedModelRequest> {
-        let request = serde_json::from_slice(bytes)
+        let request = crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let prepared = crate::model::PreparedModelRequest::prepare(request, limits)?;
         if prepared.bytes() != bytes {

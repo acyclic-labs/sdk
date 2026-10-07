@@ -7,9 +7,9 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     durable_host::TaskJournalOwner,
     workflow::{
-        MAX_WORKFLOW_PAGE_RECORDS, MAX_WORKFLOW_RECORDS, MachineCheckpoint, MachineStatus,
-        WorkflowAdmission, WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord,
-        validate_workflow_commit, validate_workflow_next, validate_workflow_page,
+        MachineCheckpoint, MachineStatus, WORKFLOW_REPLAY_PAGE_RECORDS, WorkflowAdmission,
+        WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord, validate_workflow_commit,
+        validate_workflow_next, validate_workflow_page,
     },
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -109,7 +109,6 @@ where
         maximum_payload_bytes: u64,
     ) -> Result<Self> {
         if workflow_id.is_empty()
-            || workflow_id.len() > 128
             || workflow_id == "."
             || workflow_id == ".."
             || workflow_id.contains('/')
@@ -166,7 +165,7 @@ where
             .host
             .read_content(reference, &grant, self.maximum_payload_bytes)
             .await?;
-        let record: WorkflowRecord = serde_json::from_slice(&bytes)
+        let record: WorkflowRecord = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?;
         record.validate()?;
         if let Some(owner) = &self.owner {
@@ -186,7 +185,10 @@ where
     ) -> Result<Vec<WorkflowRecord>> {
         validate_workflow_page(after, maximum)?;
         let stream = self.stream.stream(&self.path)?;
-        let entries = match stream.read(after, maximum).await {
+        let entries = match stream
+            .read(after, maximum.min(WORKFLOW_REPLAY_PAGE_RECORDS))
+            .await
+        {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => return Ok(Vec::new()),
             Err(error) => return Err(Error::Storage(error.to_string())),
@@ -195,17 +197,15 @@ where
         let mut records = Vec::new();
         while let Some(entry) = entries.try_next().await? {
             let sequence = after + records.len() as u64;
-            if records.len() >= maximum as usize
-                || entry.sequence != sequence
-                || sequence >= MAX_WORKFLOW_RECORDS
-            {
+            if records.len() >= maximum as usize || entry.sequence != sequence {
                 return Err(Error::Storage(
                     "workflow sequence or page bound is invalid".into(),
                 ));
             }
-            let reference: FileRef = serde_json::from_slice(&entry.value).map_err(|error| {
-                Error::Storage(format!("workflow reference is invalid: {error}"))
-            })?;
+            let reference: FileRef =
+                crate::contract::json_from_slice(&entry.value).map_err(|error| {
+                    Error::Storage(format!("workflow reference is invalid: {error}"))
+                })?;
             let record = self.read_record(&reference, verify_payloads).await?;
             if record.prior.revision != sequence || record.next.revision != sequence + 1 {
                 return Err(Error::Storage(
@@ -247,7 +247,7 @@ where
         let mut matched = None;
         loop {
             let page = self
-                .replay_records(summary.revision, MAX_WORKFLOW_PAGE_RECORDS, false)
+                .replay_records(summary.revision, WORKFLOW_REPLAY_PAGE_RECORDS, false)
                 .await?;
             if page.is_empty() {
                 break;
@@ -342,9 +342,10 @@ where
                 "workflow admission sequence is invalid".into(),
             ));
         }
-        let reference: FileRef = serde_json::from_slice(&entry.value).map_err(|error| {
-            Error::Storage(format!("workflow admission reference is invalid: {error}"))
-        })?;
+        let reference: FileRef =
+            crate::contract::json_from_slice(&entry.value).map_err(|error| {
+                Error::Storage(format!("workflow admission reference is invalid: {error}"))
+            })?;
         if reference.volume() != &self.volume
             || reference.path() != format!(".system/workflows/{}/admission.json", self.workflow_id)
             || reference.descriptor().media_type() != "application/json"
@@ -363,7 +364,7 @@ where
             .host
             .read_content(&reference, &read, self.maximum_payload_bytes)
             .await?;
-        let admission: WorkflowAdmission = serde_json::from_slice(&bytes)
+        let admission: WorkflowAdmission = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?;
         admission.validate()?;
         if self

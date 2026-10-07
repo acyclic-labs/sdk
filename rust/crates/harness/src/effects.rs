@@ -108,7 +108,7 @@ pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u
         return Err(Error::Invalid("effect result must be JSON content".into()));
     }
     result.descriptor().verify(bytes)?;
-    let value: Value = serde_json::from_slice(bytes)
+    let value: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
     crate::contract::validate_json_schema_value(schema, &value, "effect result")?;
     Ok(())
@@ -123,7 +123,7 @@ pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result
         ));
     }
     reference.descriptor().verify(bytes)?;
-    let schema: Value = serde_json::from_slice(bytes)
+    let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
     crate::contract::compile_json_schema(&schema, "effect result")?;
     Ok(schema)

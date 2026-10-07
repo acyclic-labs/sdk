@@ -21,9 +21,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
 
-const MAX_REQUEST_BYTES: u64 = 64 * 1_024 * 1_024;
-const MAX_REPORT_BYTES: u64 = 128 * 1_024 * 1_024;
-const MAX_CAPTURE_BYTES: u64 = 1_024 * 1_024;
+const MAX_REQUEST_BYTES: u64 = u64::MAX;
+const MAX_REPORT_BYTES: u64 = u64::MAX;
+const MAX_CAPTURE_BYTES: u64 = u64::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -701,7 +701,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| Error::Invalid("fork parent has no conversation state".into()))?;
         if let Some(file) = seed.inherited_context.first() {
             let bytes = self.read_pinned(file, 64 * 1_024 * 1_024).await?;
-            let actual: InheritedConversationPrefix = serde_json::from_slice(&bytes)
+            let actual: InheritedConversationPrefix = crate::contract::json_from_slice(&bytes)
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;
             let expected = InheritedConversationPrefix::select(
                 seed.parent.clone(),
@@ -910,7 +910,7 @@ fn validate_capture(selection: &ForkSelection, capture: &Capture) -> Result<()> 
         Capture::Captured(_) => Err(Error::Invalid(
             "capture provider substituted another source revision".into(),
         )),
-        Capture::Unsupported(reason) if !reason.is_empty() && reason.len() <= 4_096 => Ok(()),
+        Capture::Unsupported(reason) if !reason.is_empty() => Ok(()),
         Capture::Unsupported(_) => Err(Error::Invalid("fork capture reason is invalid".into())),
         Capture::InFlight(operation) | Capture::Indeterminate(operation) => {
             Err(Error::Indeterminate(*operation))
@@ -965,7 +965,7 @@ async fn read_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Deserialize
     maximum_bytes: u64,
 ) -> Result<Option<T>> {
     match host.read(journal, None, path, maximum_bytes).await {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+        Ok(bytes) => crate::contract::json_from_slice(&bytes)
             .map(Some)
             .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}"))),
         Err(Error::NotFound(_)) => Ok(None),

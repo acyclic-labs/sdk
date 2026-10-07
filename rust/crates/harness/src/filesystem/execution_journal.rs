@@ -11,8 +11,8 @@ use crate::{
     core::{AuthorityVerifier, SchemaRegistry, Scope},
     durable_host::TaskJournalOwner,
     executor::{
-        ExecutionEvent, ExecutionJournal, ExecutionRecord, MAX_EXECUTION_PAGE_RECORDS,
-        MAX_EXECUTION_RECORDS, validate_execution_page,
+        EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
+        validate_execution_page,
     },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
     projection::{SelectedModelContext, select_model_context},
@@ -42,11 +42,6 @@ struct ExecutionSummary {
 
 impl ExecutionSummary {
     fn require_next(&self, event: &ExecutionEvent) -> Result<()> {
-        if self.tail >= MAX_EXECUTION_RECORDS {
-            return Err(Error::Invalid(
-                "execution journal retention bound exhausted".into(),
-            ));
-        }
         let valid = match event {
             ExecutionEvent::Started { request_digest } => {
                 self.tail == 0 && *request_digest != [0; 32]
@@ -84,7 +79,6 @@ impl ExecutionSummary {
         let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
         if record.sequence != self.tail + 1
             || record.idempotency_key.is_empty()
-            || record.idempotency_key.len() > 256
             || self.retries.contains_key(&key)
         {
             return Err(Error::Conflict(
@@ -220,10 +214,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         self.require_operation(operation_id)?;
-        if claim_id.is_empty()
-            || claim_id.len() > 256
-            || expected_tail.is_some_and(|tail| tail >= MAX_EXECUTION_RECORDS)
-        {
+        if claim_id.is_empty() {
             return Err(Error::Invalid(
                 "execution journal compare-and-append is invalid".into(),
             ));
@@ -239,10 +230,10 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut summary = self.verified.lock().await;
         // Rebuild once on cold open, then read only the newly committed suffix.
         // No payload bodies are retained in this rebuildable index.
-        for _ in 0..8 {
+        loop {
             loop {
                 let page = self
-                    .replay(operation_id, summary.tail, MAX_EXECUTION_PAGE_RECORDS)
+                    .replay(operation_id, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS)
                     .await?;
                 if page.is_empty() {
                     break;
@@ -278,9 +269,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(true);
             }
         }
-        Err(Error::Conflict(
-            "execution publication remained contended".into(),
-        ))
     }
 
     /// Binds an exact private volume and authenticated read/write grant.
@@ -482,7 +470,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                         .ok_or_else(|| {
                             Error::Storage("admitted approval detail is missing".into())
                         })?;
-                    let original: InteractionResponse = serde_json::from_slice(&bytes)
+                    let original: InteractionResponse = crate::contract::json_from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     original == response
                 }
@@ -492,7 +480,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                         .read_answer(id)
                         .await?
                         .ok_or_else(|| Error::Storage("admitted answer is missing".into()))?;
-                    let original: InteractionResponse = serde_json::from_slice(&bytes)
+                    let original: InteractionResponse = crate::contract::json_from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     original == response
                 }
@@ -647,7 +635,11 @@ where
             validate_execution_page(after, maximum)?;
             let mut result = Vec::new();
             let mut keys = HashSet::new();
-            let mut entries = match self.path(operation_id)?.read(after, maximum).await {
+            let mut entries = match self
+                .path(operation_id)?
+                .read(after, maximum.min(EXECUTION_REPLAY_PAGE_RECORDS))
+                .await
+            {
                 Ok(entries) => entries,
                 Err(StreamError::NotFound) => return Ok(result),
                 Err(error) => return Err(Error::Storage(error.to_string())),
@@ -655,14 +647,13 @@ where
             while let Some(record) = entries.try_next().await? {
                 if result.len() >= maximum as usize
                     || record.sequence != after + result.len() as u64
-                    || record.sequence >= MAX_EXECUTION_RECORDS
                 {
                     return Err(Error::Storage(
                         "execution journal sequence or bound is invalid".into(),
                     ));
                 }
-                let observation: Observation =
-                    serde_json::from_slice(&record.value).map_err(|error| {
+                let observation: Observation = crate::contract::json_from_slice(&record.value)
+                    .map_err(|error| {
                         Error::Storage(format!("execution journal record is invalid: {error}"))
                     })?;
                 if observation.operation_id != operation_id
@@ -700,7 +691,7 @@ where
                     .await
                     .map(|_| ());
             }
-            if idempotency_key.is_empty() || idempotency_key.len() > 256 {
+            if idempotency_key.is_empty() {
                 return Err(Error::Invalid(
                     "execution journal idempotency key is invalid".into(),
                 ));
@@ -737,8 +728,7 @@ where
                     .append_owned(operation_id, Some(expected_tail), &claim_id, event)
                     .await;
             }
-            if claim_id.is_empty() || claim_id.len() > 256 || expected_tail >= MAX_EXECUTION_RECORDS
-            {
+            if claim_id.is_empty() {
                 return Err(Error::Invalid(
                     "execution journal compare-and-append is invalid".into(),
                 ));

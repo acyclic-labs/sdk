@@ -253,7 +253,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
     after_revision: u64,
     limit: u32,
 ) -> Result<Vec<CommittedSchedulerEvent>> {
-    if limit == 0 || limit > READ_PAGE_SIZE {
+    if limit == 0 {
         return Err(Error::Invalid(
             "coordinator page limit is out of bounds".into(),
         ));
@@ -261,7 +261,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
     let stream = client
         .stream(COORDINATOR_PATH)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let records = match stream.read(after_revision, limit).await {
+    let records = match stream.read(after_revision, limit.min(READ_PAGE_SIZE)).await {
         Ok(records) => records,
         Err(StreamError::NotFound) if after_revision == 0 => return Ok(Vec::new()),
         Err(error) => return Err(Error::Storage(error.to_string())),
@@ -359,8 +359,8 @@ async fn read_intent_location<P: StreamProvider>(
             "intent location must contain one immutable record".into(),
         ));
     };
-    let location: IntentLocation =
-        serde_json::from_slice(&record.value).map_err(|error| Error::Storage(error.to_string()))?;
+    let location: IntentLocation = crate::contract::json_from_slice(&record.value)
+        .map_err(|error| Error::Storage(error.to_string()))?;
     if record.sequence != 0
         || location.key != key
         || location.revision == 0
@@ -1735,9 +1735,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let bytes = self.content_verifier.read(reference).await?;
         reference.descriptor().verify(&bytes)?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
-            Error::Invalid(format!("scheduler result is invalid JSON: {error}"))
-        })?;
+        let value: serde_json::Value =
+            crate::contract::json_from_slice(&bytes).map_err(|error| {
+                Error::Invalid(format!("scheduler result is invalid JSON: {error}"))
+            })?;
         if crate::contract::canonical_json_bytes(&value)? != bytes {
             return Err(Error::Invalid(
                 "scheduler result is not canonical JSON".into(),
@@ -1875,7 +1876,7 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
     if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
         return Err(Error::Storage("scheduler event digest mismatch".into()));
     }
-    let event = serde_json::from_slice(&envelope.canonical_event_json)
+    let event = crate::contract::json_from_slice(&envelope.canonical_event_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
     let committed_at_ms = envelope
         .committed_at_ms
@@ -3076,16 +3077,9 @@ mod tests {
         let parent = OperationId::from_bytes([1; 16]);
         assert!(validate_child_page_request(OperationId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_child_page_request(parent, None, 0).is_err());
-        assert!(validate_child_page_request(parent, None, runtime::MAX_CHILD_PAGE + 1).is_err());
+        validate_child_page_request(parent, None, usize::MAX)?;
         assert!(validate_child_page_request(parent, Some("\u{7f}"), 1).is_err());
-        assert!(
-            validate_child_page_request(
-                parent,
-                Some(&"x".repeat(runtime::MAX_CHILD_SLOT_BYTES + 1)),
-                1
-            )
-            .is_err()
-        );
+        validate_child_page_request(parent, Some(&"x".repeat(1_024)), 1)?;
         validate_child_page_request(parent, Some("résumé"), 1)?;
 
         let page = ChildOperationPage {

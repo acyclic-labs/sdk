@@ -275,7 +275,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     }
     assert_eq!(paged.replay(0, 64).await?.len(), 64);
     assert_eq!(paged.replay(64, 64).await?.len(), 1);
-    assert!(paged.replay(0, 65).await.is_err());
+    assert_eq!(paged.replay(0, 65).await?.len(), 64);
     let fresh_paged = Arc::new(FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),

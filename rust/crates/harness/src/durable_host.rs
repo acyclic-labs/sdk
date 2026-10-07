@@ -13,10 +13,9 @@ use crate::{
     registry::ComponentIdentity,
     runtime::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
-        DurableEffectObserver, DurableTaskHost, InputKey, MAX_BATCH_INPUTS, RuntimeScope,
-        TaskAdmissionRecord, TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy,
-        check_tool_approval, read_granted, require_descendant_grant, validate_policy_identity,
-        validate_task_schemas,
+        DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord,
+        TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy, check_tool_approval, read_granted,
+        require_descendant_grant, validate_policy_identity, validate_task_schemas,
     },
     scheduler::{
         DurableOwner, EntrypointRef, InboxItem, OperationSpec, Orchestration, ParentLink,
@@ -496,18 +495,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             deadline_unix_ms,
         })?);
         // Only the selected timer is retained. Paging bounds resident records;
-        // the workflow identity ceiling bounds total scan work and history.
-        for _ in 0..64 {
+        // no session-wide history ceiling is imposed.
+        loop {
             self.verify_owner(task, &fence, false).await?;
             let (tail, found) = self.timer_state(task, operation, deadline_unix_ms).await?;
             if found {
                 self.verify_owner(task, &fence, false).await?;
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
-            }
-            if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
-                return Err(Error::Invalid(
-                    "task timer history exceeds identity limit".into(),
-                ));
             }
             if owner
                 .append(
@@ -523,9 +517,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
         }
-        Err(Error::Conflict(
-            "timer publication retry limit reached".into(),
-        ))
     }
 
     /// Publishes ref-only mail under the sender's exact uncancelled lease.
@@ -545,17 +536,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         );
         let path = acyclic_stream::StreamPath::new(format!("harness/v2/mail/{recipient}"))?;
         let key = Self::event_key("mail", recipient, message_id)?;
-        for _ in 0..64 {
+        loop {
             self.verify_owner(sender, &fence, false).await?;
             let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
             if found {
                 self.verify_owner(sender, &fence, false).await?;
                 return Ok(());
-            }
-            if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
-                return Err(Error::Invalid(
-                    "task mail history exceeds identity limit".into(),
-                ));
             }
             if owner
                 .append(
@@ -571,9 +557,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 return Ok(());
             }
         }
-        Err(Error::Conflict(
-            "mail publication retry limit reached".into(),
-        ))
     }
 
     /// Starts or reattaches the exact already-admitted lease. This does not
@@ -717,7 +700,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         through_revision: Option<u64>,
         limit: u32,
     ) -> Result<WorkflowWaitPage> {
-        if limit == 0 || limit > 64 {
+        if limit == 0 {
             return Err(Error::Invalid("wake page limit is out of bounds".into()));
         }
         let mut coordinator = self.coordinator.lock().await;
@@ -739,7 +722,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "wake cursor exceeds its coordinator snapshot".into(),
             ));
         }
-        let count = u32::try_from(u64::from(limit).min(through_revision - after_revision))
+        let count = u32::try_from(u64::from(limit.min(64)).min(through_revision - after_revision))
             .map_err(|_| Error::Storage("wake page count exceeds its allowance".into()))?;
         let events = if count == 0 {
             Vec::new()
@@ -1296,8 +1279,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let bytes = self.reader.read(reference).await?;
         reference.descriptor().verify(&bytes)?;
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        let value: Value = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&value)? != bytes {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),
@@ -1471,7 +1454,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "batch cancellation record is missing".into(),
             ));
         };
-        let declaration: BatchCancellation = serde_json::from_slice(&record.value)
+        let declaration: BatchCancellation = crate::contract::json_from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if declaration.batch_id != batch_id
             || crate::contract::canonical_json_bytes(&declaration)? != record.value.as_ref()
@@ -1522,7 +1505,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let [record] = records.as_slice() else {
             return Err(Error::Storage("batch manifest record is missing".into()));
         };
-        let reference: FileRef = serde_json::from_slice(&record.value)
+        let reference: FileRef = crate::contract::json_from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&reference)? != record.value.as_ref() {
             return Err(Error::Storage("batch manifest ref is not canonical".into()));
@@ -1570,8 +1553,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
         request.validate()?;
-        if request.inputs.len() > MAX_BATCH_INPUTS
-            || request.execution.is_some()
+        if request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
             || request.machine.name != request.task.name
             || request.machine.version != request.task.version
@@ -1668,11 +1650,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Err(StreamError::NotFound) => 0,
             Err(error) => return Err(error.into()),
         };
-        if tail > crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
-            return Err(Error::Invalid(
-                "task mail history exceeds identity limit".into(),
-            ));
-        }
         let mut after = 0;
         let mut found = false;
         while after < tail {
@@ -1688,7 +1665,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if record.sequence != after || after >= tail {
                     return Err(Error::Storage("mail replay sequence differs".into()));
                 }
-                let event: MailEvent = serde_json::from_slice(&record.value)
+                let event: MailEvent = crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 event.payload.validate()?;
                 if crate::contract::canonical_json_bytes(&event)? != record.value.as_ref() {
@@ -1718,11 +1695,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Err(StreamError::NotFound) => 0,
             Err(error) => return Err(error.into()),
         };
-        if tail > crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
-            return Err(Error::Invalid(
-                "task timer history exceeds identity limit".into(),
-            ));
-        }
         let mut after = 0;
         let mut found = false;
         while after < tail {
@@ -1738,7 +1710,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if record.sequence != after || after >= tail {
                     return Err(Error::Storage("timer replay sequence differs".into()));
                 }
-                let event: TimerEvent = serde_json::from_slice(&record.value)
+                let event: TimerEvent = crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 if event.task_id != task || event.deadline_unix_ms == 0 {
                     return Err(Error::Conflict(
@@ -2266,15 +2238,10 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 .mail_bytes(sender, recipient, message_id, payload)
                 .await?;
             let mailbox = self.mailbox(recipient)?;
-            for _ in 0..64 {
+            loop {
                 let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
                 if found {
                     return Ok(());
-                }
-                if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
-                    return Err(Error::Invalid(
-                        "task mail history exceeds identity limit".into(),
-                    ));
                 }
                 if self
                     .publish_control_at(&mailbox, "mail", recipient, message_id, &bytes, Some(tail))
@@ -2283,9 +2250,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     return Ok(());
                 }
             }
-            Err(Error::Conflict(
-                "mail publication retry limit reached".into(),
-            ))
         })
     }
 
@@ -2296,7 +2260,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
         Box::pin(async move {
-            if limit == 0 || limit > 1_024 {
+            if limit == 0 {
                 return Err(Error::Invalid("inbox page bound is invalid".into()));
             }
             let recipient_admission = self
@@ -2316,7 +2280,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             if after > bounds.tail {
                 return Err(Error::Invalid("inbox cursor is beyond the tail".into()));
             }
-            let page_limit = u32::try_from(limit)
+            let page_limit = u32::try_from(limit.min(acyclic_stream::MAX_ITEMS))
                 .map_err(|_| Error::Invalid("inbox page bound is invalid".into()))?;
             let page = match mailbox.read(after, page_limit).await {
                 Ok(records) => records.try_collect::<Vec<_>>().await?,
@@ -2336,7 +2300,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?;
 
-                let value: Value = serde_json::from_slice(&record.value)
+                let value: Value = crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 if crate::contract::canonical_json_bytes(&value)? != record.value.as_ref() {
                     return Err(Error::Storage("mail event is not canonical JSON".into()));
@@ -2389,19 +2353,12 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             };
             let bytes = crate::contract::canonical_json_bytes(&event)?;
             let stream = self.timer_stream(task_id)?;
-            let mut retained = false;
-            for _ in 0..64 {
+            loop {
                 let (tail, found) = self
                     .timer_state(task_id, operation_id, deadline_unix_ms)
                     .await?;
                 if found {
-                    retained = true;
                     break;
-                }
-                if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
-                    return Err(Error::Invalid(
-                        "task timer history exceeds identity limit".into(),
-                    ));
                 }
                 if self
                     .publish_control_at(
@@ -2414,14 +2371,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     )
                     .await?
                 {
-                    retained = true;
                     break;
                 }
-            }
-            if !retained {
-                return Err(Error::Conflict(
-                    "timer publication retry limit reached".into(),
-                ));
             }
             loop {
                 let now = self.clock.now_unix_millis();

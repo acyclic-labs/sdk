@@ -239,11 +239,6 @@ impl WorkflowRecord {
 }
 
 fn validate_commands(commands: &[WorkflowCommand]) -> Result<()> {
-    if commands.len() > 1_024 {
-        return Err(Error::Invalid(
-            "workflow command count exceeds its bound".into(),
-        ));
-    }
     let mut identities = BTreeSet::new();
     for command in commands {
         command.validate()?;
@@ -291,15 +286,11 @@ impl WorkflowAdmission {
     }
 }
 
-/// Maximum workflow records returned by one owner-journal read.
-pub const MAX_WORKFLOW_PAGE_RECORDS: u32 = 64;
-/// Maximum retained transitions in one workflow.
-pub const MAX_WORKFLOW_RECORDS: u64 = 4_096;
-/// Maximum transition and command identities retained by one workflow.
-pub const MAX_WORKFLOW_IDENTITIES: usize = 65_536;
+/// Internal replay batch size; callers may request any positive page allowance.
+pub(crate) const WORKFLOW_REPLAY_PAGE_RECORDS: u32 = 64;
 
-pub(crate) fn validate_workflow_page(after: u64, maximum: u32) -> Result<()> {
-    if after > MAX_WORKFLOW_RECORDS || maximum == 0 || maximum > MAX_WORKFLOW_PAGE_RECORDS {
+pub(crate) fn validate_workflow_page(_after: u64, maximum: u32) -> Result<()> {
+    if maximum == 0 {
         return Err(Error::Invalid("workflow page bounds are invalid".into()));
     }
     Ok(())
@@ -312,10 +303,7 @@ pub(crate) fn validate_workflow_commit(
 ) -> Result<()> {
     IdempotencyKey::new(key.0.clone())?;
     record.validate()?;
-    if record.idempotency_key != *key
-        || record.prior.revision != expected_revision
-        || expected_revision >= MAX_WORKFLOW_RECORDS
-    {
+    if record.idempotency_key != *key || record.prior.revision != expected_revision {
         return Err(Error::Invalid(
             "workflow commit identity or revision is invalid".into(),
         ));
@@ -334,16 +322,6 @@ pub(crate) fn validate_workflow_next(
     if record.prior != *checkpoint || terminal {
         return Err(Error::Conflict(
             "workflow transition differs from its current checkpoint".into(),
-        ));
-    }
-    if checkpoint.revision >= MAX_WORKFLOW_RECORDS
-        || reserved
-            .len()
-            .saturating_add(record.transition.commands.len() + 1)
-            > MAX_WORKFLOW_IDENTITIES
-    {
-        return Err(Error::Invalid(
-            "workflow retention bound is exhausted".into(),
         ));
     }
     if keys.contains(&record.idempotency_key)
@@ -512,19 +490,6 @@ impl WorkflowJournal for MemoryWorkflowJournal {
             if state.records.len() as u64 != expected_revision {
                 return Err(Error::Conflict("stale workflow revision".into()));
             }
-            if expected_revision >= MAX_WORKFLOW_RECORDS
-                || state
-                    .records
-                    .iter()
-                    .map(|(_, record)| record.transition.commands.len() + 1)
-                    .sum::<usize>()
-                    .saturating_add(record.transition.commands.len() + 1)
-                    > MAX_WORKFLOW_IDENTITIES
-            {
-                return Err(Error::Invalid(
-                    "workflow retention bound is exhausted".into(),
-                ));
-            }
             let requested: BTreeSet<_> = record.operation_ids().collect();
             if state.records.iter().any(|(_, existing)| {
                 existing
@@ -576,9 +541,9 @@ impl DurableWorkflowHost {
         let mut keys = BTreeSet::new();
         loop {
             let page = journal
-                .replay(checkpoint.revision, MAX_WORKFLOW_PAGE_RECORDS)
+                .replay(checkpoint.revision, WORKFLOW_REPLAY_PAGE_RECORDS)
                 .await?;
-            if page.len() > MAX_WORKFLOW_PAGE_RECORDS as usize {
+            if page.len() > WORKFLOW_REPLAY_PAGE_RECORDS as usize {
                 return Err(Error::Storage(
                     "workflow provider exceeded page bound".into(),
                 ));
@@ -706,22 +671,7 @@ impl DurableWorkflowHost {
                 "workflow step reuses a command identity".into(),
             ));
         }
-        if self.checkpoint.revision >= MAX_WORKFLOW_RECORDS {
-            return Err(Error::Invalid(
-                "workflow retention bound is exhausted".into(),
-            ));
-        }
         let (next, transition) = self.registry.step(&self.checkpoint, &input)?;
-        if self
-            .reserved_operations
-            .len()
-            .saturating_add(transition.commands.len() + 1)
-            > MAX_WORKFLOW_IDENTITIES
-        {
-            return Err(Error::Invalid(
-                "workflow identity bound is exhausted".into(),
-            ));
-        }
         check(&transition)?;
         let record = WorkflowRecord {
             operation_id,
@@ -939,6 +889,72 @@ mod tests {
         schema: Value,
     }
 
+    #[test]
+    fn workflow_history_and_command_counts_have_no_fixed_ceiling() -> Result<()> {
+        use crate::{
+            AgentId,
+            conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+            resources::ProviderRef,
+        };
+        let payload = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("workflow-test", "filesystem", "2")?,
+                "private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+            )?,
+            "commands/first.json",
+            "immutable-version",
+            FileDescriptor::from_bytes(b"{}", "application/json")?,
+            "first.json",
+        )?;
+        let prior = MachineCheckpoint {
+            machine: MachineIdentity {
+                name: "test.large".into(),
+                version: "1".into(),
+                digest: [1; 32],
+            },
+            revision: 1_000_001,
+            state: json!(0),
+        };
+        let mut record = WorkflowRecord {
+            operation_id: OperationId::from_bytes(1_000_000_u128.to_be_bytes()),
+            idempotency_key: IdempotencyKey::new("large-history")?,
+            input_digest: input_digest(&Value::Null)?,
+            prior: prior.clone(),
+            input: Value::Null,
+            transition: MachineTransition {
+                state: json!(1),
+                commands: (100_000_u128..101_025)
+                    .map(|id| WorkflowCommand {
+                        operation_id: OperationId::from_bytes(id.to_be_bytes()),
+                        kind: "test.publish".into(),
+                        payload: payload.clone(),
+                    })
+                    .collect(),
+                status: MachineStatus::Suspended,
+            },
+            next: MachineCheckpoint {
+                revision: prior.revision + 1,
+                state: json!(1),
+                ..prior.clone()
+            },
+        };
+        let reserved = (1_u128..=65_536)
+            .map(|id| OperationId::from_bytes(id.to_be_bytes()))
+            .collect();
+        validate_workflow_commit(prior.revision, &record.idempotency_key, &record)?;
+        validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record)?;
+        validate_workflow_page(prior.revision, u32::MAX)?;
+        crate::executor::validate_execution_page(prior.revision, u32::MAX)?;
+        record.transition.commands[0].operation_id = OperationId::from_bytes(1_u128.to_be_bytes());
+        assert!(matches!(
+            validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
     impl ResumableMachine for PagingCounter {
         fn identity(&self) -> &MachineIdentity {
             &self.identity
@@ -988,7 +1004,7 @@ mod tests {
         let first = OperationId::new();
         let first_key = IdempotencyKey::new("paged-first")?;
         let transition = host.step(first, first_key.clone(), json!(1)).await?;
-        for index in 1..=MAX_WORKFLOW_PAGE_RECORDS {
+        for index in 1..=WORKFLOW_REPLAY_PAGE_RECORDS {
             host.step(
                 OperationId::new(),
                 IdempotencyKey::new(format!("paged-{index}"))?,
@@ -997,31 +1013,32 @@ mod tests {
             .await?;
         }
         assert_eq!(
-            journal.replay(0, MAX_WORKFLOW_PAGE_RECORDS).await?.len(),
-            MAX_WORKFLOW_PAGE_RECORDS as usize
+            journal.replay(0, WORKFLOW_REPLAY_PAGE_RECORDS).await?.len(),
+            WORKFLOW_REPLAY_PAGE_RECORDS as usize
         );
         assert_eq!(
             journal
                 .replay(
-                    u64::from(MAX_WORKFLOW_PAGE_RECORDS),
-                    MAX_WORKFLOW_PAGE_RECORDS
+                    u64::from(WORKFLOW_REPLAY_PAGE_RECORDS),
+                    WORKFLOW_REPLAY_PAGE_RECORDS
                 )
                 .await?
                 .len(),
             1
         );
-        assert!(
+        assert_eq!(
             journal
-                .replay(0, MAX_WORKFLOW_PAGE_RECORDS + 1)
-                .await
-                .is_err()
+                .replay(0, WORKFLOW_REPLAY_PAGE_RECORDS + 1)
+                .await?
+                .len(),
+            (WORKFLOW_REPLAY_PAGE_RECORDS + 1) as usize
         );
         assert!(journal.replay(0, 0).await.is_err());
         let mut reopened =
             DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
         assert_eq!(
             reopened.checkpoint().revision,
-            u64::from(MAX_WORKFLOW_PAGE_RECORDS) + 1
+            u64::from(WORKFLOW_REPLAY_PAGE_RECORDS) + 1
         );
         assert_eq!(
             reopened.step(first, first_key.clone(), json!(1)).await?,
@@ -1188,7 +1205,7 @@ mod tests {
         assert_eq!(host.checkpoint().revision, 0);
         assert!(
             journal
-                .replay(0, MAX_WORKFLOW_PAGE_RECORDS)
+                .replay(0, WORKFLOW_REPLAY_PAGE_RECORDS)
                 .await?
                 .is_empty()
         );

@@ -21,7 +21,7 @@ pub type ContentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 
 /// Maximum normalized UTF-8 path length admitted by the Harness protocol.
-pub const MAX_PATH_BYTES: usize = 4_096;
+pub const MAX_PATH_BYTES: usize = MAX_PORTABLE_COUNT;
 /// Maximum UTF-8 bytes in a protocol label or display name.
 pub const MAX_LABEL_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Largest integer that can be represented exactly by a JavaScript number.
@@ -52,18 +52,23 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
 pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Maximum rendered byte length implied by the file byte ceiling.
 pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
-/// Maximum number of attachments in one message.
-pub const MAX_LIMIT_ATTACHMENTS: usize = 65_536;
-/// Maximum model steps, events, and context messages under the wire contract.
-pub const MAX_LIMIT_MODEL_STEPS: usize = 1_000_000;
-/// Maximum streamed model events per step.
-pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = 1_000_000;
-/// Maximum tool calls per step before the event bound is applied.
-pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = 1_000_000;
-/// Maximum canonical messages selected into one model request.
-pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = 1_000_000;
-/// Maximum number of messages returned by one reducer conversation page.
-pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = 1_024;
+/// Largest count representable by both this platform and the numeric wire format.
+pub const MAX_PORTABLE_COUNT: usize =
+    usize::MAX >> usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);
+/// Representable attachment count; admission selects the actual budget.
+pub const MAX_LIMIT_ATTACHMENTS: usize = MAX_PORTABLE_COUNT;
+/// Representable model step count; admission selects the actual budget.
+pub const MAX_LIMIT_MODEL_STEPS: usize = MAX_PORTABLE_COUNT;
+/// Representable event count; admission selects the actual budget.
+pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = MAX_PORTABLE_COUNT;
+/// Representable tool call count; admission selects the actual budget.
+pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = MAX_PORTABLE_COUNT;
+/// Representable message count; admission selects the actual budget.
+pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = MAX_PORTABLE_COUNT;
+/// Representable conversation page allowance; the caller chooses its budget.
+pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
+/// Default conversation read batch, replaceable by the caller.
+pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 
 /// Admission and rendering bounds. Each value may narrow the protocol ceiling;
 /// provider adapters may impose a still lower physical limit.
@@ -92,8 +97,8 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             file_bytes: 64 * 1024 * 1024,
-            path_bytes: MAX_PATH_BYTES,
-            attachments: MAX_LIMIT_ATTACHMENTS,
+            path_bytes: 4_096,
+            attachments: 65_536,
             render_bytes: 128 * 1024,
             model_steps: 64,
             model_events_per_step: 4_096,
@@ -632,8 +637,7 @@ impl FileDescriptor {
         let Some((kind, subtype)) = self.media_type.split_once('/') else {
             return Err(Error::Invalid("media type is invalid".into()));
         };
-        if self.media_type.len() > 127
-            || kind.is_empty()
+        if kind.is_empty()
             || subtype.is_empty()
             || self.media_type.chars().any(|character| {
                 !character.is_ascii_alphanumeric()
@@ -803,7 +807,7 @@ impl TaskOutcomeRecord {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Succeeded { result } => result.validate(),
-            Self::Failed { message } if message.is_empty() || message.len() > 4_096 => {
+            Self::Failed { message } if message.is_empty() => {
                 Err(Error::Invalid("task failure description is invalid".into()))
             }
             _ => Ok(()),
@@ -847,7 +851,7 @@ pub struct PrivateDirectoryPage {
 }
 
 /// Maximum number of entries admitted in one private-directory page.
-pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = 4_096;
+pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of
@@ -1212,7 +1216,7 @@ pub fn decode_complete_attachment_manifest(
         ));
     }
     reference.descriptor().verify(bytes)?;
-    let items: Vec<Attachment> = serde_json::from_slice(bytes)
+    let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
     if encode_attachment_manifest(&items)? != bytes {
         return Err(Error::Invalid(
@@ -1308,27 +1312,18 @@ impl<'de> Deserialize<'de> for ReferencedAttachments {
 }
 
 impl ReferencedAttachments {
-    /// Rejects unbounded inline records and malformed manifest metadata.
+    /// Rejects malformed attachment records and manifest metadata.
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Inline { items } => {
-                if items.len() > 128 {
-                    return Err(Error::Invalid(
-                        "inline attachment count exceeds limit".into(),
-                    ));
-                }
                 for item in items {
                     item.validate()?;
                 }
             }
-            Self::Manifest {
-                manifest,
-                item_count,
-            } => {
+            Self::Manifest { manifest, .. } => {
                 manifest.validate()?;
-                if *item_count as usize > MAX_LIMIT_ATTACHMENTS
-                    || manifest.descriptor().media_type()
-                        != "application/vnd.acyclic.harness.attachments+json"
+                if manifest.descriptor().media_type()
+                    != "application/vnd.acyclic.harness.attachments+json"
                 {
                     return Err(Error::Invalid(
                         "attachment manifest metadata is invalid".into(),
@@ -1730,6 +1725,15 @@ mod tests {
         limits.validate_file(&file)?;
         limits.attachments = 0;
         assert!(limits.validate().is_err());
+        Limits {
+            attachments: 65_537,
+            model_steps: 1_000_001,
+            model_events_per_step: 1_000_001,
+            tool_calls_per_step: 1_000_001,
+            context_messages: 1_000_001,
+            ..Limits::default()
+        }
+        .validate()?;
         Ok(())
     }
 

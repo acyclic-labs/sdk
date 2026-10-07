@@ -199,16 +199,16 @@ test("parent-controlled fork seed pins exact history and isolates project/privat
   } })).rejects.toThrow();
 });
 
-test("fork reports and seeds reject inherited prefixes above the protocol hard cap", async () => {
+test("fork reports and seeds reject inherited prefixes outside the wire integer range", async () => {
   await expect(validateForkReport(report())).resolves.toBeUndefined();
   const oversized = MAX_FORK_INHERITED_MESSAGES + 1n;
   await expect(validateForkReport({ ...report(), inherited_through_sequence: oversized }))
-    .rejects.toThrow("inherited message limit");
+    .rejects.toThrow();
   await expect(forkSeed({ ...report(), inherited_through_sequence: oversized }))
-    .rejects.toThrow("inherited message limit");
+    .rejects.toThrow();
   const seed = await forkSeed(report());
   await expect(validateForkSeed({ ...seed, inherited_through_sequence: oversized }))
-    .rejects.toThrow("protocol limits");
+    .rejects.toThrow();
 });
 
 test("fork preparation pins child allocation and bounded context before capture", async () => {

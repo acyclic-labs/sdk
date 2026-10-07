@@ -343,7 +343,8 @@ export class NativeContracts {
   }
 
   batchMemberOperationId(group: string, batch: string, index: number): OperationId {
-    if (!Number.isSafeInteger(index) || index < 0 || index > 65_535) throw new RangeError("batch index is out of range");
+    // The native WASM entry point accepts u32; reject values it would truncate.
+    if (!Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) throw new RangeError("batch index is out of range");
     return this.native.batchMemberOperationId(group, batch, index) as OperationId;
   }
 

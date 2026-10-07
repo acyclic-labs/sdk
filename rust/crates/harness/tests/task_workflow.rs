@@ -961,12 +961,17 @@ async fn worker_restart_with_options(
                     .transpose()
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 assert!(discover_wakes(&runtime, cursor).await?.is_empty());
-                for maximum in [0, 65] {
-                    assert!(matches!(
-                        runtime.poll_task_wake_page(None, maximum).await,
-                        Err(Error::Invalid(_))
-                    ));
-                }
+                assert!(matches!(
+                    runtime.poll_task_wake_page(None, 0).await,
+                    Err(Error::Invalid(_))
+                ));
+                assert!(
+                    runtime
+                        .poll_task_wake_page(None, u32::MAX)
+                        .await?
+                        .events_read
+                        <= 64
+                );
                 assert!(matches!(
                     runtime
                         .poll_task_wake_page(

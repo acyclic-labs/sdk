@@ -28,9 +28,9 @@ pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = 256;
 /// Default maximum bytes rendered into one provider request.
 pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = 128 * 1_024;
 /// Protocol ceiling for attachments materialized into one model projection.
-pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = 1_022;
-/// Maximum JSON artifact bytes accepted by the projection parser.
-pub const MAX_PROJECTION_JSON_BYTES: u64 = 16 * 1_024 * 1_024;
+pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
+/// Largest JSON byte allowance representable by the JavaScript contract.
+pub const MAX_PROJECTION_JSON_BYTES: u64 = crate::conversation::MAX_EXACT_JS_INTEGER;
 
 #[derive(Debug, Deserialize)]
 struct ProjectedToolInvocation {
@@ -212,7 +212,7 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
         maximum_messages,
         maximum_attachments,
         maximum_render_bytes,
-        MAX_PROJECTION_PROJECTED_ATTACHMENTS,
+        maximum_attachments,
     )
     .await
 }
@@ -505,11 +505,6 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
     file: &FileRef,
     maximum_bytes: u64,
 ) -> Result<T> {
-    if file.descriptor().byte_length() > MAX_PROJECTION_JSON_BYTES {
-        return Err(Error::Invalid(
-            "tool artifact exceeds JSON byte limit".into(),
-        ));
-    }
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
     {
@@ -518,18 +513,13 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
         ));
     }
     let bytes = resolver.read(file).await?;
-    if bytes.len() as u64 > MAX_PROJECTION_JSON_BYTES {
-        return Err(Error::Invalid(
-            "resolved tool artifact exceeds JSON byte limit".into(),
-        ));
-    }
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
         ));
     }
     file.descriptor().verify(&bytes)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+    let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
     validate_model_json_numbers(&value)?;
     serde_json::from_value(value)
@@ -773,23 +763,17 @@ mod tests {
             FileDescriptor::from_bytes(b"{}", "application/json")?,
             "tool.json",
         )?;
-        let oversized_len = usize::try_from(MAX_PROJECTION_JSON_BYTES + 1)
-            .map_err(|_| Error::Invalid("test artifact size exceeds platform capacity".into()))?;
+        let oversized_len = 1_025;
         let resolver = ArtifactResolver {
             bytes: vec![0; oversized_len],
         };
-        let result = read_json_artifact::<serde_json::Value, _>(
-            &resolver,
-            &reference,
-            MAX_PROJECTION_JSON_BYTES,
-        )
-        .await;
+        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await;
         let Err(error) = result else {
             return Err(Error::Invalid(
                 "oversized resolved bytes were accepted".into(),
             ));
         };
-        assert!(error.to_string().contains("JSON byte limit"));
+        assert!(error.to_string().contains("rendering limit"));
         Ok(())
     }
 }

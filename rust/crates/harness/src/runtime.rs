@@ -46,16 +46,10 @@ use std::{
     },
 };
 
-/// Maximum number of direct owner-retained children returned by one page.
-pub const MAX_CHILD_PAGE: usize = 1_024;
 /// Default number of direct children requested by the SDK facade.
 pub const DEFAULT_CHILD_PAGE: usize = 256;
-/// Maximum UTF-8 byte length of a parent-local child slot.
-pub const MAX_CHILD_SLOT_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Default number of entries requested by the private-directory SDK facade.
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
-/// Maximum number of inputs admitted by one durable batch.
-pub const MAX_BATCH_INPUTS: usize = 65_536;
 
 type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
 
@@ -2424,10 +2418,7 @@ pub(crate) fn validate_child_page_request(
 ) -> Result<()> {
     if parent == [0; 16]
         || maximum == 0
-        || maximum > MAX_CHILD_PAGE
-        || after_slot.is_some_and(|slot| {
-            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
-        })
+        || after_slot.is_some_and(|slot| slot.chars().any(char::is_control))
     {
         return Err(Error::Invalid(format!("{label} page request is invalid")));
     }
@@ -2450,7 +2441,6 @@ pub(crate) fn validate_child_page<'a>(
     for (slot, id) in entries {
         if id == [0; 16]
             || slot.trim().is_empty()
-            || slot.len() > MAX_CHILD_SLOT_BYTES
             || slot.chars().any(char::is_control)
             || previous.is_some_and(|previous| slot <= previous)
             || !ids.insert(id)
@@ -4680,7 +4670,7 @@ impl TaskContext {
 
     /// Reads a bounded durable inbox page after the last observed sequence.
     pub async fn inbox(&self, after: u64, limit: usize) -> Result<Vec<InboxItem>> {
-        if limit == 0 || limit > 1_024 {
+        if limit == 0 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
         }
         if !self.scope.grants.contains(capability::MAIL_READ) {
@@ -4990,9 +4980,6 @@ impl DurableBatchRequest {
     /// Validates the complete retained manifest before any child is observed
     /// or admitted. A syntactically valid JSON envelope is not sufficient.
     pub fn validate(&self) -> Result<()> {
-        if self.inputs.len() > MAX_BATCH_INPUTS {
-            return Err(Error::Invalid("batch has too many inputs".into()));
-        }
         validate_identity(&self.task.name, &self.task.version)?;
         validate_component_label(&self.machine.name, "machine name")?;
         validate_component_label(&self.machine.version, "machine version")?;
@@ -5418,9 +5405,6 @@ impl RuntimeGroup {
             return Err(Error::Unsupported(
                 "durable batch policy overrides require a pinned host policy".into(),
             ));
-        }
-        if batch.inputs.len() > MAX_BATCH_INPUTS {
-            return Err(Error::Invalid("batch has too many inputs".into()));
         }
         let registered = self
             .harness
@@ -7034,12 +7018,9 @@ mod tests {
         let parent = TaskId::from_bytes([1; 16]);
         assert!(validate_children_request(TaskId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_children_request(parent, None, 0).is_err());
-        assert!(validate_children_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
+        validate_children_request(parent, None, usize::MAX)?;
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
-        assert!(
-            validate_children_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
-                .is_err()
-        );
+        validate_children_request(parent, Some(&"x".repeat(1_024)), 1)?;
         validate_children_request(parent, Some("résumé"), 1)?;
 
         let child = TaskChild {

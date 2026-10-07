@@ -307,7 +307,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let bytes = verified_content_bytes(verifier.as_ref(), &prior.content).await?;
         self.reducer
             .validate_custom_bytes(&request.name, prior.version, &prior.content, &bytes)?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        let value: Value = crate::contract::json_from_slice(&bytes).map_err(|error| {
             Error::Invalid(format!("previous extension state is invalid: {error}"))
         })?;
         let target_digest = self
@@ -965,9 +965,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let old_bytes = verified_content_bytes(verifier.as_ref(), &prior.content).await?;
             self.reducer
                 .validate_custom_bytes(name, prior.version, &prior.content, &old_bytes)?;
-            let previous_value: Value = serde_json::from_slice(&old_bytes).map_err(|error| {
-                Error::Invalid(format!("previous extension state is invalid: {error}"))
-            })?;
+            let previous_value: Value =
+                crate::contract::json_from_slice(&old_bytes).map_err(|error| {
+                    Error::Invalid(format!("previous extension state is invalid: {error}"))
+                })?;
             let target_digest = self
                 .reducer
                 .extension_implementation_digest(name, *to_version)?;

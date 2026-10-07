@@ -373,7 +373,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert_eq!(second_page.len(), 6);
     assert_eq!(first_page[63].sequence, 64);
     assert_eq!(second_page[0].sequence, 65);
-    assert!(journal_b.replay(paged, 0, 65).await.is_err());
+    assert_eq!(journal_b.replay(paged, 0, 65).await?.len(), 64);
     assert!(journal_b.replay(paged, 0, 0).await.is_err());
     journal_b
         .append(

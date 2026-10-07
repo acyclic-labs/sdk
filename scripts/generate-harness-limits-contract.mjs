@@ -36,18 +36,9 @@ export const rust = [["acyclic-harness", "example", "limits-contract"]];
 
 function readRustContract(stdout) {
   const contract = JSON.parse(stdout);
-  assertExactKeys(contract, ["limits", "batch_inputs", "fork", "projection", "session", "workflow", "execution"], "contract");
+  assertExactKeys(contract, ["limits", "fork", "projection", "session"], "contract");
   if (!contract.session || Object.values(contract.session).some(value => !Number.isSafeInteger(value) || value < 0)) {
     throw new Error("Harness session fields are not portable numeric limits");
-  }
-  if (!Number.isSafeInteger(contract.batch_inputs) || contract.batch_inputs <= 0) {
-    throw new Error("Harness batch contract has invalid maximum input count");
-  }
-  for (const [name, fields] of [["workflow", ["page_records", "records", "identities"]], ["execution", ["page_records", "records"]]]) {
-    assertExactKeys(contract[name], fields, name);
-    if (Object.values(contract[name]).some(value => !Number.isSafeInteger(value) || value <= 0)) {
-      throw new Error(`Harness ${name} fields are not portable numeric limits`);
-    }
   }
   const limits = contract.limits;
   if (!limits || typeof limits !== "object") throw new Error("Harness limits contract is missing limits");
@@ -71,7 +62,7 @@ function readRustContract(stdout) {
   ]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Harness limits contract has invalid ${name}`);
   }
-  if (limits.default.path_bytes !== limits.max_path_bytes ||
+  if (limits.default.path_bytes > limits.max_path_bytes ||
       limits.maximum.path_bytes !== limits.max_path_bytes) {
     throw new Error("Harness path limit is not bound to MAX_PATH_BYTES");
   }
@@ -80,7 +71,7 @@ function readRustContract(stdout) {
   assertExactKeys(fork, forkFieldNames, "fork");
   if (!fork || forkFields.some(([field, kind]) => {
     const value = fork[field];
-    return kind === "bigint" ? !Number.isSafeInteger(value) || value <= 0 :
+    return kind === "bigint" ? typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || BigInt(value) > (1n << 64n) - 1n :
       !Number.isSafeInteger(value) || value <= 0;
   })) throw new Error("Harness fork contract has invalid ceilings");
   const projection = contract.projection;
@@ -129,14 +120,8 @@ export function render([stdout]) {
     `export const HARNESS_MAX_EXACT_JS_INTEGER = ${renderValue(limits.exact_js_integer)};`,
     `export const HARNESS_MAX_PATH_BYTES = ${renderValue(limits.max_path_bytes)};`,
     `export const HARNESS_MAX_LABEL_BYTES = ${renderValue(limits.max_label_bytes)};`,
-    `export const HARNESS_MAX_BATCH_INPUTS = ${renderValue(contract.batch_inputs)};`,
     `export const HARNESS_MAX_ATTACHMENT_COUNT = ${renderValue(limits.maximum.attachments)};`,
   ];
-  for (const name of ["workflow", "execution"]) {
-    for (const [field, value] of Object.entries(contract[name])) {
-      lines.push(`export const HARNESS_${name.toUpperCase()}_MAX_${field.toUpperCase()} = ${renderValue(value)};`);
-    }
-  }
   for (const [field, kind] of forkFields) {
     lines.push(`export const MAX_FORK_${field.toUpperCase()} = ${renderValue(fork[field], kind)};`);
   }

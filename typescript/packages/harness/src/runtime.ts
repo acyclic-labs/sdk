@@ -2,9 +2,8 @@ import { validateComponentLabel, validateToolName, type AgentInput, type AgentLo
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
-import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
+import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
-import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
 import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { WasmModelContent, WasmModelContentPart, WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
@@ -879,7 +878,6 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     admittedInputs?: readonly Input[]): Promise<BatchAdmissionRequest> {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
-    if (batch.inputs.length > HARNESS_MAX_BATCH_INPUTS) throw new BatchInputError("batch has too many inputs");
     let request: BatchAdmissionRequest;
     try {
       const contracts = this.#harness.contracts;
@@ -934,7 +932,6 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   #validateBatchInputs<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>): readonly Input[] {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
-    if (batch.inputs.length > HARNESS_MAX_BATCH_INPUTS) throw new BatchInputError("batch has too many inputs");
     try {
       const contracts = this.#harness.contracts;
       const admittedInputs: Input[] = [];
@@ -2436,9 +2433,8 @@ export class AgentHarness {
   async children(parent: RuntimeTaskId, expectedRevision: bigint | null = null,
     afterSlot: string | null = null, maximum = HARNESS_CHILD_PAGE_DEFAULT): Promise<TaskChildrenPage> {
     this.contracts.validateIdentity("task", parent);
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > HARNESS_CHILD_PAGE_MAXIMUM
-      || afterSlot !== null && (new TextEncoder().encode(afterSlot).byteLength > HARNESS_CHILD_SLOT_MAX_BYTES
-        || [...afterSlot].some(character => /[\x00-\x1f\x7f]/u.test(character)))) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1
+      || afterSlot !== null && ([...afterSlot].some(character => /[\x00-\x1f\x7f]/u.test(character)))) {
       throw new RangeError("task child page request is invalid");
     }
     if (expectedRevision !== null && (typeof expectedRevision !== "bigint" || expectedRevision < 0n)) {
