@@ -202,19 +202,23 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 .iter()
                 .find_map(|condition| match condition {
                     acyclic_stream::CommitCondition::Absent { path }
-                    | acyclic_stream::CommitCondition::Tail { path, .. }
                         if path.as_str().starts_with("harness/v2/execution/") =>
                     {
-                        Some(path.clone())
+                        Some((path.clone(), 0))
+                    }
+                    acyclic_stream::CommitCondition::Tail { path, expected }
+                        if path.as_str().starts_with("harness/v2/execution/") =>
+                    {
+                        Some((path.clone(), *expected))
                     }
                     _ => None,
                 })
                 .ok_or(StreamError::Unavailable)?;
             self.inner
                 .append(acyclic_stream::AppendRequest {
-                    path,
+                    path: path.0,
                     records: vec![Bytes::from_static(b"dispatch won")],
-                    if_tail: Some(0),
+                    if_tail: Some(path.1),
                     idempotency_key: None,
                 })
                 .await?;

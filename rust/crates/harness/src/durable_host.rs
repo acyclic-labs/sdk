@@ -160,6 +160,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         (self.task_id, self.fence.clone())
     }
 
+    pub(crate) async fn suspend_quiescent_execution(
+        &self,
+        execution: OperationId,
+        tail: u64,
+        revision: u64,
+        command: OperationId,
+    ) -> Result<()> {
+        self.host
+            .suspend_workflow_command_guarded(
+                self.task_id,
+                self.fence.clone(),
+                revision,
+                Some(command),
+                Some((execution, tail)),
+            )
+            .await
+    }
+
     pub(crate) fn validate_storage(
         &self,
         verifier: &AuthorityVerifier,
@@ -643,8 +661,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         command: OperationId,
         execution: OperationId,
     ) -> Result<()> {
-        self.suspend_workflow_command_guarded(task, fence, revision, Some(command), Some(execution))
-            .await
+        self.suspend_workflow_command_guarded(
+            task,
+            fence,
+            revision,
+            Some(command),
+            Some((execution, 0)),
+        )
+        .await
     }
 
     async fn suspend_workflow_command_guarded(
@@ -653,7 +677,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: crate::scheduler::LeaseFence,
         revision: u64,
         waiting_command: Option<OperationId>,
-        idle_execution: Option<OperationId>,
+        idle_execution: Option<(OperationId, u64)>,
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
@@ -671,9 +695,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             workflow_revision: revision,
             waiting_command,
         };
-        if let Some(execution) = idle_execution {
+        if let Some((execution, tail)) = idle_execution {
             coordinator
-                .suspend_if_execution_idle(key, event, execution)
+                .suspend_if_execution_idle(key, event, execution, tail)
                 .await?;
         } else {
             coordinator.apply(operation_id, key, event).await?;
@@ -2792,7 +2816,7 @@ mod tests {
                 ))?
                 .tail()
                 .await?,
-            74
+            75
         );
         // The coordinator journal is durable independently of the in-memory
         // Filesystem payloads used by this focused guard qualification.
@@ -3128,6 +3152,10 @@ mod tests {
                     .await?
             );
             assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
+            assert!(matches!(
+                journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+                Err(Error::Indeterminate(id)) if id == attempt
+            ));
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 attempt,
                 0,
@@ -3149,6 +3177,10 @@ mod tests {
                     },
                 )
                 .await?;
+            assert!(matches!(
+                journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+                Err(Error::Indeterminate(id)) if id == attempt
+            ));
             assert!(journal.replay(operation_id, 0, 1).await.is_err());
             assert!(matches!(
                 journal
@@ -3629,10 +3661,12 @@ mod tests {
                     .is_err(),
                 "cancellation forbids new or retried starts"
             );
-            let bytes = serde_json::to_vec(&crate::model::ModelEvent::Content {
-                delta: "settled".into(),
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+            let bytes = crate::contract::canonical_json_bytes(
+                &serde_json::to_value(crate::model::ModelEvent::Content {
+                    delta: "settled".into(),
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            )?;
             let reference = journal
                 .stage(
                     attempt,
@@ -3712,6 +3746,49 @@ mod tests {
                     .is_err()
             );
             assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 10);
+            // Tool settlement and model content alone cannot prove quiescence,
+            // including after rebuilding the projection across replay pages.
+            assert!(matches!(
+                reopened.suspend_workflow_command_if_quiescent(1, attempt).await,
+                Err(Error::Indeterminate(id)) if id == attempt
+            ));
+            let completed = crate::executor::stage_json(
+                &reopened,
+                attempt,
+                "model-completed",
+                &crate::model::ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            )
+            .await?;
+            reopened
+                .append(
+                    attempt,
+                    "model-completed".into(),
+                    ExecutionEvent::Model {
+                        step: 0,
+                        event: completed,
+                    },
+                )
+                .await?;
+            assert!(
+                reopened
+                    .append(attempt, "after-completed".into(), observation.clone(),)
+                    .await
+                    .is_err()
+            );
+            // A settled journal still cannot release a cancelled task's owner.
+            assert!(
+                reopened
+                    .suspend_workflow_command_if_quiescent(1, attempt)
+                    .await
+                    .is_err()
+            );
+            // Exact old observations remain replayable after dispatch settlement.
+            reopened
+                .append(attempt, "settlement-69".into(), observation)
+                .await?;
+            assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 11);
         }
         #[cfg(feature = "filesystem")]
         {

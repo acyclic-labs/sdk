@@ -738,14 +738,9 @@ where
         guard_execution: bool,
     ) -> Result<()> {
         if guard_execution {
-            self.host
-                .suspend_workflow_command_if_execution_idle(
-                    task,
-                    fence,
-                    revision,
-                    command,
-                    execution_operation(task, command),
-                )
+            self.execution_journal(task, fence, command)
+                .await?
+                .suspend_workflow_command_if_quiescent(revision, command)
                 .await
         } else {
             self.host

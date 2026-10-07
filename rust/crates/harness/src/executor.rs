@@ -1606,14 +1606,18 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     reference: &FileRef,
 ) -> Result<T> {
     let bytes = load_json_bytes(journal, reference).await?;
-    let parsed: Value = crate::contract::json_from_slice(&bytes)
+    decode_json(&bytes)
+}
+
+pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let parsed: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
         return Err(Error::Storage(
             "execution journal JSON is not canonical".into(),
         ));
     }
-    crate::contract::json_from_slice(&bytes)
+    crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
 }
 
@@ -1678,7 +1682,7 @@ impl ModelEventAdmission {
         }
     }
 
-    pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+    pub(crate) fn validate_next(&self, event: &ModelEvent, limits: Limits) -> Result<()> {
         if self.count >= limits.model_events_per_step {
             return Err(Error::Invalid("model event limit exceeded".into()));
         }
@@ -1690,13 +1694,24 @@ impl ModelEventAdmission {
         match event {
             ModelEvent::ToolCall { call_id, name, .. } => {
                 ToolInvocation::validate_identity(call_id, name)?;
-                if self.calls.len() >= limits.tool_calls_per_step
-                    || !self.calls.insert(call_id.clone())
-                {
+                if self.calls.len() >= limits.tool_calls_per_step || self.calls.contains(call_id) {
                     return Err(Error::Invalid(
                         "model tool call limit exceeded or identity repeated".into(),
                     ));
                 }
+            }
+            ModelEvent::Completed { .. }
+            | ModelEvent::Content { .. }
+            | ModelEvent::Reasoning { .. } => {}
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+        self.validate_next(event, limits)?;
+        match event {
+            ModelEvent::ToolCall { call_id, .. } => {
+                self.calls.insert(call_id.clone());
             }
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}

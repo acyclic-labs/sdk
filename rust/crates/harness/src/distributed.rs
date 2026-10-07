@@ -876,6 +876,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         key: IdempotencyKey,
         event: SchedulerEvent,
         execution: OperationId,
+        expected_tail: u64,
     ) -> Result<CoordinatorApply> {
         if !matches!(event, SchedulerEvent::WorkflowSuspended { .. }) {
             return Err(Error::Invalid(
@@ -888,7 +889,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             event,
             None,
             None,
-            Some(execution),
+            Some((execution, expected_tail)),
         )
         .await
     }
@@ -1298,7 +1299,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         event: SchedulerEvent,
         parent_fence: Option<LeaseFence>,
         waiting_command: Option<OperationId>,
-        idle_execution: Option<OperationId>,
+        idle_execution: Option<(OperationId, u64)>,
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.require_parent_owner(&event, parent_fence.as_ref())?;
@@ -1345,15 +1346,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             stream_key(&format!("{key}:owned-parent:{}", self.revision))?
         } else if waiting_command.is_some() {
             stream_key(&format!("{key}:owned-wait:{}", self.revision))?
-        } else if let Some(execution) = idle_execution {
+        } else if let Some((execution, expected_tail)) = idle_execution {
             stream_key(&format!(
-                "{key}:idle-execution:{execution}:{}",
+                "{key}:idle-execution:{execution}:{expected_tail}:{}",
                 self.revision
             ))?
         } else {
             stream_key(key)?
         };
-        let outcome = if let Some(execution) = idle_execution {
+        let outcome = if let Some((execution, expected_tail)) = idle_execution {
             Box::pin(append_if_execution_idle(
                 &self.client,
                 &self.stream,
@@ -1362,6 +1363,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 stream_key,
                 operation_id,
                 execution,
+                expected_tail,
             ))
             .await?
         } else {
@@ -1982,13 +1984,21 @@ async fn append_if_execution_idle<P: StreamProvider>(
     key: StreamIdempotencyKey,
     operation: OperationId,
     execution: OperationId,
+    expected_tail: u64,
 ) -> Result<AppendOutcome> {
     use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommittedMutation};
     let path = execution_path(execution)?;
     let guard = match client.bounds(path.as_str()).await {
-        Ok(bounds) if bounds.tail == 0 => CommitCondition::Tail { path, expected: 0 },
-        Ok(_) => return Err(Error::Conflict("execution has already started".into())),
-        Err(StreamError::NotFound) => CommitCondition::Absent { path },
+        Ok(bounds) if bounds.tail == expected_tail => CommitCondition::Tail {
+            path,
+            expected: expected_tail,
+        },
+        Ok(_) => {
+            return Err(Error::Conflict(
+                "execution changed before suspension".into(),
+            ));
+        }
+        Err(StreamError::NotFound) if expected_tail == 0 => CommitCondition::Absent { path },
         Err(error) => return Err(error.into()),
     };
     let mut digest = blake3::Hasher::new();
@@ -3844,7 +3854,8 @@ mod tests {
     #[tokio::test]
     async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack() -> Result<()>
     {
-        for existing_empty in [false, true] {
+        for existing_tail in [None, Some(0), Some(70)] {
+            let expected_tail = existing_tail.unwrap_or(0);
             for mode in 0..4 {
                 let provider = Arc::new(LostSessionAck::default());
                 let client = StreamClient::new(provider.clone());
@@ -3872,11 +3883,26 @@ mod tests {
                         },
                     )
                     .await?;
-                if existing_empty {
+                if let Some(tail) = existing_tail {
                     client
                         .stream(COORDINATOR_PATH)?
                         .fork(execution_path(execution)?.as_str(), Some(0), None)
                         .await?;
+                    if tail != 0 {
+                        client
+                            .stream(execution_path(execution)?.as_str())?
+                            .append_batch(
+                                vec![
+                                    Bytes::from_static(b"settled observation");
+                                    usize::try_from(tail).map_err(|_| Error::Invalid(
+                                        "fixture tail is not representable".into()
+                                    ))?
+                                ],
+                                Some(0),
+                                None,
+                            )
+                            .await?;
+                    }
                 }
                 provider
                     .commit_lose_ack
@@ -3898,6 +3924,7 @@ mod tests {
                         IdempotencyKey::new("idle-suspend")?,
                         event.clone(),
                         execution,
+                        expected_tail,
                     )
                     .await;
                 if mode == 3 {
@@ -3921,7 +3948,7 @@ mod tests {
                             .stream(execution_path(execution)?.as_str())?
                             .tail()
                             .await?,
-                        1
+                        expected_tail + 1
                     );
                     // Retrying the failed condition cannot turn dispatch into a passive wait.
                     assert!(
@@ -3929,7 +3956,8 @@ mod tests {
                             .suspend_if_execution_idle(
                                 IdempotencyKey::new("idle-suspend")?,
                                 event,
-                                execution
+                                execution,
+                                expected_tail
                             )
                             .await
                             .is_err()
@@ -3952,10 +3980,10 @@ mod tests {
                                     path: acyclic_stream::StreamPath::new(COORDINATOR_PATH)?,
                                     expected: reopened.revision() - 1,
                                 },
-                                if existing_empty {
+                                if existing_tail.is_some() {
                                     acyclic_stream::CommitCondition::Tail {
                                         path: execution_path(execution)?,
-                                        expected: 0,
+                                        expected: expected_tail,
                                     }
                                 } else {
                                     acyclic_stream::CommitCondition::Absent {

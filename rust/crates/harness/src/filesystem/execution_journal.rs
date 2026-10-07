@@ -6,15 +6,17 @@ use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
-        ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeRef,
+        ContentGrant, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
+        VolumeRef,
     },
     core::{AuthorityVerifier, SchemaRegistry, Scope},
     durable_host::TaskJournalOwner,
     executor::{
         EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
-        validate_execution_page,
+        ModelEventAdmission, decode_json, validate_execution_page,
     },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
+    model::ModelEvent,
     projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
     tool::ToolApprovalVerifier,
@@ -28,7 +30,7 @@ use futures::TryStreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     sync::Arc,
 };
 
@@ -36,7 +38,8 @@ use std::{
 struct ExecutionSummary {
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
-    models: BTreeSet<u32>,
+    // None is a completed dispatch. Its event/call bodies are no longer needed.
+    models: BTreeMap<u32, Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
 }
 
@@ -50,8 +53,10 @@ impl ExecutionSummary {
                 step,
                 request_digest,
                 ..
-            } => self.tail > 0 && *request_digest != [0; 32] && !self.models.contains(step),
-            ExecutionEvent::Model { step, .. } => self.models.contains(step),
+            } => self.tail > 0 && *request_digest != [0; 32] && !self.models.contains_key(step),
+            ExecutionEvent::Model { step, .. } => {
+                self.models.get(step).is_some_and(Option::is_some)
+            }
             ExecutionEvent::ToolStarted { step, call_id, .. } => {
                 self.tail > 0
                     && !call_id.is_empty()
@@ -75,7 +80,32 @@ impl ExecutionSummary {
         }
     }
 
-    fn accept(&mut self, record: &ExecutionRecord) -> Result<()> {
+    fn validate_next(
+        &self,
+        event: &ExecutionEvent,
+        model: Option<&ModelEvent>,
+        limits: Limits,
+    ) -> Result<()> {
+        self.require_next(event)?;
+        if let ExecutionEvent::Model { step, .. } = event {
+            self.models
+                .get(step)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?
+                .validate_next(
+                    model.ok_or_else(|| Error::Storage("model observation is missing".into()))?,
+                    limits,
+                )?;
+        }
+        Ok(())
+    }
+
+    fn accept(
+        &mut self,
+        record: &ExecutionRecord,
+        model: Option<&ModelEvent>,
+        limits: Limits,
+    ) -> Result<()> {
         let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
         if record.sequence != self.tail + 1
             || record.idempotency_key.is_empty()
@@ -85,11 +115,28 @@ impl ExecutionSummary {
                 "execution journal sequence or retry identity is invalid".into(),
             ));
         }
-        self.require_next(&record.event)?;
+        self.validate_next(&record.event, model, limits)?;
         let digest = crate::contract::canonical_json_digest(&record.event)?;
         match &record.event {
             ExecutionEvent::ModelStarted { step, .. } => {
-                self.models.insert(*step);
+                self.models
+                    .insert(*step, Some(ModelEventAdmission::default()));
+            }
+            ExecutionEvent::Model { step, .. } => {
+                let state = self
+                    .models
+                    .get_mut(step)
+                    .ok_or_else(|| Error::Storage("model dispatch is missing".into()))?;
+                let admission = state
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?;
+                admission.observe(
+                    model.ok_or_else(|| Error::Storage("model observation is missing".into()))?,
+                    limits,
+                )?;
+                if admission.completed() {
+                    *state = None;
+                }
             }
             ExecutionEvent::ToolStarted { step, call_id, .. } => {
                 self.tools
@@ -100,11 +147,15 @@ impl ExecutionSummary {
                 self.tools
                     .insert((*step, *blake3::hash(call_id.as_bytes()).as_bytes()), true);
             }
-            ExecutionEvent::Started { .. } | ExecutionEvent::Model { .. } => {}
+            ExecutionEvent::Started { .. } => {}
         }
         self.retries.insert(key, (record.sequence, digest));
         self.tail = record.sequence;
         Ok(())
+    }
+
+    fn quiescent(&self) -> bool {
+        self.models.values().all(Option::is_none) && self.tools.values().all(|settled| *settled)
     }
 }
 
@@ -201,6 +252,61 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(())
     }
 
+    async fn refresh_summary(
+        &self,
+        operation: OperationId,
+        summary: &mut ExecutionSummary,
+    ) -> Result<()>
+    where
+        P: StreamProvider + Send + Sync,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+            Error::Unsupported("quiescence requires a task-owned execution journal".into())
+        })?;
+        loop {
+            let page = Box::pin(self.replay_verified(
+                operation,
+                summary.tail,
+                EXECUTION_REPLAY_PAGE_RECORDS,
+            ))
+            .await?;
+            if page.is_empty() {
+                return Ok(());
+            }
+            for (record, model) in page {
+                summary.accept(&record, model.as_ref(), owner.input_limits())?;
+            }
+        }
+    }
+
+    /// Releases a passive workflow command only after this task-bound journal
+    /// proves every started model and tool dispatch settled. Publication compares
+    /// the same journal tail and current task lease atomically.
+    pub async fn suspend_workflow_command_if_quiescent(
+        &self,
+        revision: u64,
+        command: OperationId,
+    ) -> Result<()>
+    where
+        P: StreamProvider + Send + Sync,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+            Error::Unsupported("quiescence requires a task-owned execution journal".into())
+        })?;
+        let mut summary = self.verified.lock().await;
+        Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
+        if !summary.quiescent() {
+            return Err(Error::Indeterminate(*operation));
+        }
+        owner
+            .suspend_quiescent_execution(*operation, summary.tail, revision, command)
+            .await
+    }
+
     async fn append_owned(
         &self,
         operation_id: OperationId,
@@ -223,7 +329,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .owner
             .as_ref()
             .ok_or_else(|| Error::Invalid("task journal owner required".into()))?;
-        self.verify_event_refs(&event).await?;
+        let model = self.verify_event_refs(&event).await?;
+        let limits = owner.input_limits();
         let (key, retry_digest, bytes) = Observation::encode(operation_id, claim_id, &event)?;
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::contract::canonical_json_digest(&event)?;
@@ -231,17 +338,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         // Rebuild once on cold open, then read only the newly committed suffix.
         // No payload bodies are retained in this rebuildable index.
         loop {
-            loop {
-                let page = self
-                    .replay(operation_id, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS)
-                    .await?;
-                if page.is_empty() {
-                    break;
-                }
-                for record in page {
-                    summary.accept(&record)?;
-                }
-            }
+            Box::pin(self.refresh_summary(operation_id, &mut summary)).await?;
             owner.verify_execution(operation_id, &event).await?;
             if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
                 if *previous != event_digest {
@@ -254,18 +351,22 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             if expected_tail.is_some_and(|tail| tail != summary.tail) {
                 return Ok(false);
             }
-            summary.require_next(&event)?;
+            summary.validate_next(&event, model.as_ref(), limits)?;
             if owner
                 .append_execution(operation_id, summary.tail, &key, bytes.clone(), &event)
                 .await?
             {
                 let sequence = summary.tail + 1;
-                summary.accept(&ExecutionRecord {
-                    operation_id,
-                    sequence,
-                    idempotency_key: retry_digest,
-                    event,
-                })?;
+                summary.accept(
+                    &ExecutionRecord {
+                        operation_id,
+                        sequence,
+                        idempotency_key: retry_digest,
+                        event,
+                    },
+                    model.as_ref(),
+                    limits,
+                )?;
                 return Ok(true);
             }
         }
@@ -537,7 +638,69 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .map(|_| ())
     }
 
-    async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<()>
+    async fn replay_verified(
+        &self,
+        operation_id: OperationId,
+        after: u64,
+        maximum: u32,
+    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
+    where
+        P: StreamProvider + Send + Sync,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        self.require_operation(operation_id)?;
+        validate_execution_page(after, maximum)?;
+        let mut result = Vec::new();
+        let mut keys = HashSet::new();
+        let mut entries = match self
+            .path(operation_id)?
+            .read(after, maximum.min(EXECUTION_REPLAY_PAGE_RECORDS))
+            .await
+        {
+            Ok(entries) => entries,
+            Err(StreamError::NotFound) => return Ok(result),
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        while let Some(record) = entries.try_next().await? {
+            if result.len() >= maximum as usize || record.sequence != after + result.len() as u64 {
+                return Err(Error::Storage(
+                    "execution journal sequence or bound is invalid".into(),
+                ));
+            }
+            let observation: Observation = crate::contract::json_from_slice(&record.value)
+                .map_err(|error| {
+                    Error::Storage(format!("execution journal record is invalid: {error}"))
+                })?;
+            if observation.operation_id != operation_id
+                || !keys.insert(observation.retry_digest.clone())
+            {
+                return Err(Error::Storage(
+                    "execution journal identity is invalid".into(),
+                ));
+            }
+            let model = self.verify_event_refs(&observation.event).await?;
+            result.push((
+                ExecutionRecord {
+                    operation_id,
+                    sequence: next_revision(record.sequence)?,
+                    idempotency_key: observation.retry_digest,
+                    event: observation.event,
+                },
+                model,
+            ));
+        }
+        if let Some((owner, _)) = &self.owner {
+            let records = result
+                .iter()
+                .map(|(record, _)| record.clone())
+                .collect::<Vec<_>>();
+            owner.verify_model_history(operation_id, &records).await?;
+        }
+        Ok(result)
+    }
+
+    async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
@@ -551,6 +714,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             } => vec![result, projection],
             ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => Vec::new(),
         };
+        let mut model = None;
         for reference in refs {
             if reference.volume() != &self.volume {
                 return Err(Error::Unauthorized(
@@ -563,11 +727,18 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 &self.volume,
                 VolumeOperation::Read,
             )?;
-            self.host
+            let bytes = self
+                .host
                 .read_content(reference, &grant, self.maximum_payload_bytes)
                 .await?;
+            if matches!(event, ExecutionEvent::Model { .. }) {
+                if reference.descriptor().media_type() != "application/json" {
+                    return Err(Error::Storage("model observation is not JSON".into()));
+                }
+                model = Some(decode_json(&bytes)?);
+            }
         }
-        Ok(())
+        Ok(model)
     }
 }
 
@@ -631,50 +802,12 @@ where
         maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
         Box::pin(async move {
-            self.require_operation(operation_id)?;
-            validate_execution_page(after, maximum)?;
-            let mut result = Vec::new();
-            let mut keys = HashSet::new();
-            let mut entries = match self
-                .path(operation_id)?
-                .read(after, maximum.min(EXECUTION_REPLAY_PAGE_RECORDS))
-                .await
-            {
-                Ok(entries) => entries,
-                Err(StreamError::NotFound) => return Ok(result),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            while let Some(record) = entries.try_next().await? {
-                if result.len() >= maximum as usize
-                    || record.sequence != after + result.len() as u64
-                {
-                    return Err(Error::Storage(
-                        "execution journal sequence or bound is invalid".into(),
-                    ));
-                }
-                let observation: Observation = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| {
-                        Error::Storage(format!("execution journal record is invalid: {error}"))
-                    })?;
-                if observation.operation_id != operation_id
-                    || !keys.insert(observation.retry_digest.clone())
-                {
-                    return Err(Error::Storage(
-                        "execution journal identity is invalid".into(),
-                    ));
-                }
-                self.verify_event_refs(&observation.event).await?;
-                result.push(ExecutionRecord {
-                    operation_id,
-                    sequence: next_revision(record.sequence)?,
-                    idempotency_key: observation.retry_digest,
-                    event: observation.event,
-                });
-            }
-            if let Some((owner, _)) = &self.owner {
-                owner.verify_model_history(operation_id, &result).await?;
-            }
-            Ok(result)
+            Ok(self
+                .replay_verified(operation_id, after, maximum)
+                .await?
+                .into_iter()
+                .map(|(record, _)| record)
+                .collect())
         })
     }
 
