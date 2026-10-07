@@ -64,7 +64,7 @@ export function inspectActorRequest(method, request) {
  * The returned options object is safe to pass to Rust, Node, Bun, Python, or
  * JVM consumers; close() owns both listeners and is idempotent.
  */
-export async function startConformanceFixture() {
+export async function startConformanceFixture({ onUnaryRequest } = {}) {
   const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
   assert.equal(generated.status, 0, generated.stderr);
   const identity = JSON.parse(generated.stdout);
@@ -126,7 +126,10 @@ export async function startConformanceFixture() {
                 let frames = 0;
                 for await (const frame of request) { if (frames === 0) inspect(frame, context); frames++; }
                 assert.equal(frames, 2, `${method.name} request stream`);
-              } else inspect(request, context);
+              } else {
+                inspect(request, context);
+                await onUnaryRequest?.(method, request, context);
+              }
               return create(method.output, responseInitializer(method));
             };
           }
