@@ -160,12 +160,18 @@ fn poison_file_health(file: &Arc<File>, uncertain: &Arc<AtomicBool>) {
     }
     health.poison_anchor.get_or_insert_with(|| Arc::clone(file));
     uncertain.store(true, Ordering::Release);
+    tracing::debug!(name: "acyclic.runtime.file_uncertain", "file health poisoned");
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 fn poison_borrowed_file_health(file: &File, uncertain: &Arc<AtomicBool>) {
     let anchor = Arc::new(file.try_clone().unwrap_or_else(|_| std::process::abort()));
     poison_file_health(&anchor, uncertain);
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+fn with_file_admission<T>(_: &File, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    operation()
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -342,6 +348,7 @@ impl NativeFile {
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
+mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
@@ -466,11 +473,16 @@ pub enum Durability {
 }
 
 /// Flushes file contents and metadata according to `durability`.
+#[tracing::instrument(
+    name = "acyclic.runtime.sync_file",
+    level = "debug",
+    skip_all,
+    fields(outcome = obs::Empty, error.kind = obs::Empty)
+)]
 pub fn sync_file(file: &File, durability: Durability) -> io::Result<()> {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    return with_file_admission(file, || sync_file_unsequenced(file, durability));
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    sync_file_unsequenced(file, durability)
+    obs::finish(with_file_admission(file, || {
+        sync_file_unsequenced(file, durability)
+    }))
 }
 
 fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -481,11 +493,16 @@ fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> 
 }
 
 /// Flushes file data according to `durability`.
+#[tracing::instrument(
+    name = "acyclic.runtime.sync_data",
+    level = "debug",
+    skip_all,
+    fields(outcome = obs::Empty, error.kind = obs::Empty)
+)]
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    return with_file_admission(file, || sync_data_unsequenced(file, durability));
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    sync_data_unsequenced(file, durability)
+    obs::finish(with_file_admission(file, || {
+        sync_data_unsequenced(file, durability)
+    }))
 }
 
 fn sync_data_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -496,8 +513,14 @@ fn sync_data_unsequenced(file: &File, durability: Durability) -> io::Result<()> 
 }
 
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
+#[tracing::instrument(
+    name = "acyclic.runtime.sync_parent",
+    level = "debug",
+    skip_all,
+    fields(outcome = obs::Empty, error.kind = obs::Empty)
+)]
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
-    sync_parent_impl(path, durability)
+    obs::finish(sync_parent_impl(path, durability))
 }
 
 /// What recovery found after the last valid frame of an append-only log.
@@ -509,6 +532,15 @@ pub enum LogTail {
     /// A valid frame follows the invalid one, so a committed frame was damaged. The log is
     /// left untouched.
     Corrupt,
+}
+
+impl LogTail {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Torn => "torn",
+            Self::Corrupt => "corrupt",
+        }
+    }
 }
 
 /// Recovers an append-only log whose frame at `invalid_start` is invalid.
@@ -526,6 +558,12 @@ pub enum LogTail {
 /// # Errors
 ///
 /// Returns an I/O error when the log cannot be read, truncated, or synchronized.
+#[tracing::instrument(
+    name = "acyclic.runtime.recover_log_tail",
+    level = "debug",
+    skip_all,
+    fields(bytes = obs::Empty, tail = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
+)]
 pub fn recover_log_tail(
     file: &mut File,
     invalid_start: u64,
@@ -535,42 +573,49 @@ pub fn recover_log_tail(
 ) -> io::Result<LogTail> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
-    let end = file.metadata()?.len();
-    let frame_bytes = maximum_frame_bytes.max(1);
-    // Candidates are scanned through a window holding up to two frames' bytes, refilled
-    // once fewer than a whole frame remain ahead of the candidate, so each byte is read
-    // once.
-    let first = invalid_start.saturating_add(1);
-    let mut window = Vec::new();
-    let mut window_start = first;
-    let mut read_to = first;
-    file.seek(SeekFrom::Start(first))?;
-    for offset in first..end {
-        let ahead = usize::try_from(read_to - offset).unwrap_or(usize::MAX);
-        if ahead < frame_bytes && read_to < end {
-            window.drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
-            window_start = offset;
-            let wanted = u64::try_from(frame_bytes.saturating_mul(2)).unwrap_or(u64::MAX);
-            let fill_end = end.min(offset.saturating_add(wanted));
-            let mut buffer =
-                vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
-            file.read_exact(&mut buffer)?;
-            window.extend_from_slice(&buffer);
-            read_to = fill_end;
+    let tail = (|| {
+        let end = file.metadata()?.len();
+        tracing::Span::current().record("bytes", end.saturating_sub(invalid_start));
+        let frame_bytes = maximum_frame_bytes.max(1);
+        // Candidates are scanned through a window holding up to two frames' bytes, refilled
+        // once fewer than a whole frame remain ahead of the candidate, so each byte is read
+        // once.
+        let first = invalid_start.saturating_add(1);
+        let mut window = Vec::new();
+        let mut window_start = first;
+        let mut read_to = first;
+        file.seek(SeekFrom::Start(first))?;
+        for offset in first..end {
+            let ahead = usize::try_from(read_to - offset).unwrap_or(usize::MAX);
+            if ahead < frame_bytes && read_to < end {
+                window.drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
+                window_start = offset;
+                let wanted = u64::try_from(frame_bytes.saturating_mul(2)).unwrap_or(u64::MAX);
+                let fill_end = end.min(offset.saturating_add(wanted));
+                let mut buffer =
+                    vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
+                file.read_exact(&mut buffer)?;
+                window.extend_from_slice(&buffer);
+                read_to = fill_end;
+            }
+            let skip = usize::try_from(offset - window_start).map_err(io::Error::other)?;
+            let candidate = window.get(skip..).unwrap_or_default();
+            let candidate = candidate
+                .get(..candidate.len().min(frame_bytes))
+                .unwrap_or_default();
+            if valid_frame(candidate) {
+                return Ok(LogTail::Corrupt);
+            }
         }
-        let skip = usize::try_from(offset - window_start).map_err(io::Error::other)?;
-        let candidate = window.get(skip..).unwrap_or_default();
-        let candidate = candidate
-            .get(..candidate.len().min(frame_bytes))
-            .unwrap_or_default();
-        if valid_frame(candidate) {
-            return Ok(LogTail::Corrupt);
-        }
+        file.set_len(invalid_start)?;
+        sync_file(file, durability)?;
+        file.seek(SeekFrom::Start(invalid_start))?;
+        Ok(LogTail::Torn)
+    })();
+    if let Ok(tail) = &tail {
+        tracing::Span::current().record("tail", tail.name());
     }
-    file.set_len(invalid_start)?;
-    sync_file(file, durability)?;
-    file.seek(SeekFrom::Start(invalid_start))?;
-    Ok(LogTail::Torn)
+    obs::finish(tail)
 }
 
 /// Whether an exclusive file-lock failure proves that another owner holds the lock.
@@ -590,24 +635,24 @@ pub enum RenameMode {
 }
 
 /// Renames one filesystem entry and durably publishes the affected namespace.
+#[tracing::instrument(
+    name = "acyclic.runtime.durable_rename",
+    level = "debug",
+    skip_all,
+    fields(outcome = obs::Empty, error.kind = obs::Empty)
+)]
 pub fn durable_rename(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
-    durable_rename_impl(from, to, mode)
+    obs::finish(durable_rename_impl(from, to, mode))
 }
 
 /// Reads at an absolute offset without changing the file cursor.
 pub fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    return with_file_admission(file, || read_at_impl(file, offset, destination));
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    read_at_impl(file, offset, destination)
+    with_file_admission(file, || read_at_impl(file, offset, destination))
 }
 
 /// Writes every byte at an absolute offset without changing the file cursor.
 pub fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    return with_file_admission(file, || write_all_at_impl(file, offset, bytes));
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    write_all_at_impl(file, offset, bytes)
+    with_file_admission(file, || write_all_at_impl(file, offset, bytes))
 }
 
 /// Issues one device control request on `file` and waits for it on the
@@ -716,17 +761,26 @@ impl ServiceReadiness {
     /// # Errors
     ///
     /// Returns a failure to read the channel.
+    #[tracing::instrument(
+        name = "acyclic.runtime.service_ready",
+        skip_all,
+        fields(ready = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
+    )]
     pub fn wait(mut self) -> io::Result<bool> {
         let mut signal = [0_u8; 1];
-        loop {
+        let ready = loop {
             match self.0.read(&mut signal) {
-                Ok(read) => return Ok(read != 0),
+                Ok(read) => break Ok(read != 0),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 // A closed Windows pipe reports that its writer is gone.
-                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Ok(false),
-                Err(error) => return Err(error),
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break Ok(false),
+                Err(error) => break Err(error),
             }
+        };
+        if let Ok(ready) = ready {
+            tracing::Span::current().record("ready", ready);
         }
+        obs::finish(ready)
     }
 }
 
@@ -808,7 +862,16 @@ fn take_standard_output() -> io::Result<File> {
 /// # Errors
 ///
 /// Returns a failure to create the channel or the process.
+#[tracing::instrument(
+    name = "acyclic.runtime.spawn_service",
+    skip_all,
+    fields(outcome = obs::Empty, error.kind = obs::Empty)
+)]
 pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> {
+    obs::finish(spawn_service_process_unobserved(executable))
+}
+
+fn spawn_service_process_unobserved(executable: &Path) -> io::Result<ServiceReadiness> {
     #[cfg(windows)]
     {
         windows::spawn_service_process(executable).map(ServiceReadiness)
@@ -982,6 +1045,9 @@ impl OperationFence {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.complete {
+            tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
+        }
         while !state.complete {
             state = self
                 .settled
@@ -1516,6 +1582,7 @@ impl<T> Future for NativeCompletion<T> {
         );
         if let Some(predecessor) = &this.predecessor {
             if !predecessor.ready_or_register(context.waker()) {
+                tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
                 return Poll::Pending;
             }
             this.predecessor = None;
