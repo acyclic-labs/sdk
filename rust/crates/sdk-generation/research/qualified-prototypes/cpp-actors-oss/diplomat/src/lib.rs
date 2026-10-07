@@ -7,9 +7,20 @@ use acyclic_actors::{client, domain, wire, ContractError};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
+enum AsyncResult {
+    Create(Result<domain::CreateActorResponse, client::Error>),
+    Update(Result<domain::UpdateActorResponse, client::Error>),
+    Inspect(Result<domain::InspectActorResponse, client::Error>),
+    Add(Result<domain::AddSubscriptionResponse, client::Error>),
+    Remove(Result<domain::RemoveSubscriptionResponse, client::Error>),
+    Resume(Result<domain::ResumeSubscriptionResponse, client::Error>),
+    Checkpoint(Result<domain::CheckpointActorResponse, client::Error>),
+    Invoke(Result<domain::InvokeActorResponse, client::Error>),
+}
+
 #[diplomat::bridge]
 mod ffi {
-    use super::{client, domain, wire, ContractError, Arc, Mutex, CancellationToken};
+    use super::{client, domain, wire, AsyncResult, ContractError, Arc, Mutex, CancellationToken};
     use std::future::Future;
 
     pub enum ErrorKind {
@@ -391,17 +402,6 @@ mod ffi {
         pub fn has_service_detail(&self) -> bool { self.has_service_detail }
         pub fn service_detail_code(&self) -> i32 { self.service_detail_code }
         pub fn message<'a>(&'a self) -> &'a str { &self.message }
-    }
-
-    enum AsyncResult {
-        Create(Result<domain::CreateActorResponse, client::Error>),
-        Update(Result<domain::UpdateActorResponse, client::Error>),
-        Inspect(Result<domain::InspectActorResponse, client::Error>),
-        Add(Result<domain::AddSubscriptionResponse, client::Error>),
-        Remove(Result<domain::RemoveSubscriptionResponse, client::Error>),
-        Resume(Result<domain::ResumeSubscriptionResponse, client::Error>),
-        Checkpoint(Result<domain::CheckpointActorResponse, client::Error>),
-        Invoke(Result<domain::InvokeActorResponse, client::Error>),
     }
 
     #[diplomat::opaque_mut]

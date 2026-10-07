@@ -1,0 +1,18 @@
+{
+  "archive_sha256": "a6bcfccbf0bf4d30f3561008d0e937cba8b56fae01cbd3fc121ad9edbd8567c2",
+  "merged_at": "2026-10-07T13:53:51Z",
+  "independent_installed_probe": {
+    "unhandled_rejections": 0,
+    "passed": true,
+    "stalled_tls_abort_ms": 272,
+    "uncaught_exceptions": 0,
+    "sockets_remaining": 0,
+    "invalid_bearer_rejected_before_network": true
+  },
+  "required_ci_run": "37630346267",
+  "source_revision": "486bd26ac1f9c8c9a88b13a70bdcf49d5637ecb1",
+  "pull_request": "https://github.com/acyclic-labs/sdk/pull/259",
+  "schema": "acyclic.stream.merge-admission.v1",
+  "scope": "Stream package only; other language/release fixtures are not qualification evidence",
+  "merge_revision": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964"
+}

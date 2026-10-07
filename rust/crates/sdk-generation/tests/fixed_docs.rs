@@ -133,6 +133,7 @@ fn write_fixture_private_packages(root: &Path) {
 fn write_fixture_scenario_sources(root: &Path) {
     for relative in [
         "rust/crates/actors/examples/transport-conformance.rs",
+        "rust/crates/actors/examples/actors-typescript-consumer.rs",
         "rust/crates/stream/examples/http-conformance.rs",
         "rust/crates/filesystem/examples/embedded_workspace.rs",
     ] {
@@ -158,6 +159,18 @@ fn main() {
             "],\"suspension\":{\"AfterIdle\":{\"nanos\":0,\"secs\":15}},\"budgets\":{\"spend_micros\":0,\"concurrency\":0}},\"outcome\":{\"Created\":{}},\"page\":{\"machines\":[{\"contract\":{\"suspension\":{\"AfterIdle\":{}}}}]}}",
         ]
         .concat()
+    );
+}
+"#,
+    )
+    .unwrap();
+    let path = root.join("rust/crates/actors/examples/actors-typescript-consumer.rs");
+    fs::write(
+        path,
+        r#"
+fn main() {
+    println!(
+        "{\"validated\":true,\"request\":{\"code_sha256\":[17,17,17,17],\"home_region\":\"eu\",\"bindings\":[],\"limits\":{\"handler_timeout_millis\":1000,\"memory_bytes\":1024,\"checkpoint_bytes\":1024},\"subscriptions\":[],\"idempotency_key\":\"create-typescript-consumer\"}}"
     );
 }
 "#,
@@ -825,11 +838,23 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
             .iter()
             .any(|scenario| scenario["id"] == "machines/typescript-consumer")
     );
+    assert!(
+        scenarios["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|scenario| scenario["id"] == "actors/typescript-consumer")
+    );
     let snippet = output.join("generated/scenarios/machines/typescript-consumer.ts");
     assert!(snippet.is_file());
     let snippet_source = fs::read_to_string(snippet).unwrap();
     assert!(snippet_source.contains("satisfies CreateMachine"));
     assert!(snippet_source.contains("after-idle"));
+    let actors_snippet = output.join("generated/scenarios/actors/typescript-consumer.ts");
+    assert!(actors_snippet.is_file());
+    let actors_snippet_source = fs::read_to_string(actors_snippet).unwrap();
+    assert!(actors_snippet_source.contains("CreateActorRequestSchema"));
+    assert!(actors_snippet_source.contains("homeRegion: \"eu\""));
     let projections: serde_json::Value = serde_json::from_slice(
         &fs::read(output.join("sdk-docs-scenario-projections.v1.json")).unwrap(),
     )

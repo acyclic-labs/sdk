@@ -1,0 +1,56 @@
+{
+  "schema": "php-protobuf-grpc-current-20261007",
+  "status": "PASS_GENERATED_CURRENT_ACTORS_SERVICE",
+  "historical_distinction": {
+    "archived_message_only_artifact": "../actors.proto",
+    "current_scope": "This receipt is the current Rust-owned ActorsService cohort; the parent archived proto has no service and is immutable historical evidence."
+  },
+  "producer": {
+    "checkout": "Q:\\sdk\\work\\sdkgen-main-port-current",
+    "package": "acyclic-actors",
+    "version": "0.2.0",
+    "git_commit_at_cargo_invocation": "f8bf8daf64fae0c04366fd1e5326053dde3d4e9e",
+    "branch_head_after_invocation": "81eb6ef75df47223275e02f7c2ee0091e788fed5",
+    "rust_toolchain": "1.98.1",
+    "cargo_command": "cargo check --manifest-path Q:\\sdk\\work\\sdkgen-main-port-current\\Cargo.toml -p acyclic-actors --locked",
+    "cargo_status": "PASS",
+    "out_dir": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\.tmp-current-actors-target\\debug\\build\\acyclic-actors-c7e322b1cd979429\\out",
+    "source_files_sha256": {
+      "rust/crates/actors/src/contract_definitions.rs": "8F763C6BB965BE2DF0C18DE5E041E644F542DE71D61D1A94936218EC556F8CB0",
+      "rust/crates/actors/src/contract.rs": "735E6CE63A46319700A92C08C32E0AB1FFD35CB99630369BBB05C5C6F5B79275",
+      "rust/crates/actors/src/domain.rs": "C580E4657C1A26489E46C34E87DDD380ED80D8D2F9260D5BA77702B4571CDDBA",
+      "rust/crates/actors/build.rs": "62A34C706F3E457E81F785E88EE88C4ABCEF177A2144D78CC9E293289A865E54",
+      "rust/crates/actors/src/codegen.rs": "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6"
+    },
+    "proto_sha256": "D568A12B4D07DCAFEF8502CAF61BCFA3E2BC514357D45A5291B4542E0D6B59DE",
+    "descriptor_sha256": "C565B7D1FA43B3E96FC068EC7DB687E504603A377E9E592D15033F15CD02E9E9",
+    "service": "ActorsService",
+    "rpc_count": 8,
+    "rpcs": ["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor", "InvokeActor"]
+  },
+  "generator": {
+    "protoc": "31.1",
+    "protoc_linux_sha256": "CAAF8517E57C57D34A7D6F0544172D9051ABF58556AA35C70D3FB0D824B8CFBB",
+    "protoc_windows_sha256": "128705333700EF804992656829B558E919686944D948BDEAD6CAEDF011FC238B",
+    "grpc_php_plugin_distribution": "s1lver/grpc-php-plugin-binary 1.0.0",
+    "grpc_source": "grpc/grpc v1.53.0",
+    "grpc_php_plugin_sha256": "ABE25E334173F3949693FD680695491CDA46DCCB37C1F424DCEB9666934AA3B5",
+    "command": "protoc --proto_path=<Rust OUT_DIR>/proto --php_out=<output> --grpc_out=<output> --plugin=protoc-gen-grpc=<grpc_php_plugin> <Rust OUT_DIR>/proto/actors/v1/actors.proto",
+    "generated_file_count": 29,
+    "generated_client_sha256": "5213D816DDE169783808529445BBBE70FCA4554C2900677231BC2924F04A3162"
+  },
+  "checks": {
+    "generated_client_methods": "PASS: all eight RPC caller methods present with request types",
+    "strong_u64": "PASS: generated int|string fields and accessors for Rust uint64 fields",
+    "proto3_optional": "PASS: protoc 31.1 output preserves optional uint64 presence",
+    "php_lint": "PASS: 29/29 generated PHP files under WSL PHP 8.1.2",
+    "runtime": "WSL PHP 8.1.2 with FFI enabled; google/protobuf and grpc PHP extensions were not installed, so this receipt qualifies official code generation and syntax, not a live RPC call",
+    "alef": "SOURCE_ADAPTER_GENERATED_BUT_NOT_COMPILABLE: 88 errors classified as Arc ownership/borrow shape, missing Default/Deserialize semantic support, repeated Vec PHP conversion, and metadata conversion type mismatches"
+  },
+  "durable_artifacts": {
+    "proto": "actors.proto",
+    "descriptor": "acyclic-actors-v1.bin",
+    "generated": "generated/",
+    "terminal": "terminal-current.txt"
+  }
+}

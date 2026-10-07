@@ -1,0 +1,57 @@
+{
+  "schema": "acyclic.stream.native.final-qualification.v1",
+  "status": "qualified-frozen-486",
+  "source_revision": "486bd26ac1f9c8c9a88b13a70bdcf49d5637ecb1",
+  "source_closure": "sha256:2b8aa6ad6289370480b7b8a5725f83fa7d84b761535b595af2d0c3eaeffd8312",
+  "target": "x86_64-pc-windows-msvc",
+  "native_bundle": {
+    "path": "Q:/sdk/work/stream-native-bundle-486bd26",
+    "node_bytes": 5371904,
+    "node_sha256": "de61513f38a77ca2866e241b43686970cb0ba7dfd43e4f9e00e32b142ce9fc49",
+    "check": "passed",
+    "build": "maintained cached release build at exact 486 head; compiled closure unchanged"
+  },
+  "wasm": {
+    "source": "Q:/sdk/work/stream-main-port/typescript/packages/stream/generated/wasm/acyclic_stream_wasm_bg.wasm",
+    "bytes": 802122,
+    "sha256": "8074a6cab5c2303d0a19858f00d29e7ba361d977cfecb27dabb54b2b3ac89967",
+    "comparisons": ["tracked source", "repacked archive", "fresh installed fixture"]
+  },
+  "archive": {
+    "path": "Q:/sdk/work/stream-package-486bd26-r1/acyclic-labs-stream-0.2.0.tgz",
+    "bytes": 2335949,
+    "sha256": "a6bcfccbf0bf4d30f3561008d0e937cba8b56fae01cbd3fc121ad9edbd8567c2",
+    "validation": "scripts/validate-npm-package.mjs passed",
+    "package_scope": "real Stream package only; no placeholder cohort archives"
+  },
+  "installed": {
+    "path": "Q:/sdk/work/stream-installed-486bd26-r1",
+    "native_sha256": "de61513f38a77ca2866e241b43686970cb0ba7dfd43e4f9e00e32b142ce9fc49",
+    "verification": "fresh unpacked archive plus independent Bun runtime/hashguard checks",
+    "guards": {
+      "loaded_native_matches_manifest": true,
+      "manifest_source_revision_matches": true,
+      "manifest_source_closure_matches": true,
+      "pre_network_invalid_token_rejected": true,
+      "stalled_tls_abort_settled": true,
+      "accepted_sockets_closed": true,
+      "active_socket_count": 0,
+      "unhandled_rejections": 0,
+      "default_native_selection_and_recovery": true,
+      "browser_fallback": true
+    }
+  },
+  "tests": {
+    "typescript_stream": "56 pass, 0 fail, 455 expect calls (bun test --timeout 10000)",
+    "planner": "18 pass, 0 fail, 0 skipped",
+    "native_bundle_check": "passed",
+    "archive_validator": "passed",
+    "installed_hashguard": "passed",
+    "installed_cancellation": "passed: stalled TLS abort, accepted socket count 0, invalid bearer pre-network rejection, no unhandled rejections",
+    "installed_default": "passed: native grpc selection, pending follow close, server stream drop",
+    "installed_browser_fallback": "passed: HTTP browser transport observed",
+    "cheap_ci": "37630346267 passed",
+    "source_rust": "maintained cached release build completed at exact source head; native production closure unchanged and attested by manifest"
+  },
+  "provenance": "Fresh receipt for signed 486bd26 only. The prior 448 receipt remains historical and is not retagged. This receipt does not qualify unrelated release artifacts or placeholder cohort archives."
+}

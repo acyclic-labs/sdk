@@ -1,0 +1,1 @@
+{"schema":"acyclic.stream.native.installed-default.v1","transport":"grpc","defaultEntry":"Stream.fromEnv","nativeSelected":true,"pendingFollowClosed":true,"serverStreamDropped":true,"installedPackage":"@acyclic-labs/stream"}

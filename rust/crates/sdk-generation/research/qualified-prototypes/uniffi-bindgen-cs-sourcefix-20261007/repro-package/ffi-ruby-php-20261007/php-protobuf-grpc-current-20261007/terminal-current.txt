@@ -1,0 +1,48 @@
+CURRENT ACTORS PHP PROTOBUF/gRPC TERMINAL RECEIPT 2026-10-07
+
+[producer]
+source=Q:\sdk\work\sdkgen-main-port-current
+cargo_metadata=workspace_root=Q:\sdk\work\sdkgen-main-port-current target_directory=Q:\sdk\work\sdkgen-main-port-current\target
+cargo_target_override=C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk\.tmp-current-actors-target
+cargo_package=acyclic-actors 0.2.0
+source_commit_at_build=f8bf8daf64fae0c04366fd1e5326053dde3d4e9e
+cargo_check=PASS (cargo check --manifest-path Q:\sdk\work\sdkgen-main-port-current\Cargo.toml -p acyclic-actors --locked)
+exact_out_dir=C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk\.tmp-current-actors-target\debug\build\acyclic-actors-c7e322b1cd979429\out
+proto_sha256=D568A12B4D07DCAFEF8502CAF61BCFA3E2BC514357D45A5291B4542E0D6B59DE
+descriptor_sha256=C565B7D1FA43B3E96FC068EC7DB687E504603A377E9E592D15033F15CD02E9E9
+
+[proto]
+service ActorsService
+rpc CreateActor
+rpc UpdateActor
+rpc InspectActor
+rpc AddSubscription
+rpc RemoveSubscription
+rpc ResumeSubscription
+rpc CheckpointActor
+rpc InvokeActor
+uint64_fields=handler_timeout_millis,memory_bytes,checkpoint_bytes,checkpoint_epoch,configuration_revision,delivered_cursor,completed_cursor,recoverable_cursor,cursor,expected_configuration_revision
+
+[generator]
+protoc_linux=31.1 sha256=CAAF8517E57C57D34A7D6F0544172D9051ABF58556AA35C70D3FB0D824B8CFBB
+protoc_windows=31.1 sha256=128705333700EF804992656829B558E919686944D948BDEAD6CAEDF011FC238B
+grpc_php_plugin=s1lver/grpc-php-plugin-binary 1.0.0; source grpc/grpc v1.53.0; sha256=ABE25E334173F3949693FD680695491CDA46DCCB37C1F424DCEB9666934AA3B5
+command=/tmp/protoc311/bin/protoc --proto_path=<OUT_DIR>/proto --php_out=<output> --grpc_out=<output> --plugin=protoc-gen-grpc=<grpc_php_plugin> <OUT_DIR>/proto/actors/v1/actors.proto
+
+[generated]
+client=generated/Acyclic/Actors/V1/ActorsServiceClient.php
+client_sha256=5213D816DDE169783808529445BBBE70FCA4554C2900677231BC2924F04A3162
+methods=CreateActor,UpdateActor,InspectActor,AddSubscription,RemoveSubscription,ResumeSubscription,CheckpointActor,InvokeActor
+file_count=29
+php_lint=PASS (29/29 under WSL PHP 8.1.2)
+strong_u64=PASS (generated PHP docs/accessors use int|string for uint64)
+proto3_optional=PASS (protoc 31.1 preserved optional uint64 presence)
+
+[negative_scope]
+The older ../actors.proto remains immutable historical message-only evidence and is not current ActorsService evidence. No hand-authored contract or ABI mirror was used.
+
+[alef]
+status=SOURCE_ADAPTER_GENERATED_BUT_NOT_COMPILABLE
+raw_output=C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk\.tmp-alef-actors-php\cargo-check-wsl.txt
+raw_output_sha256=DC52E68...D93CCB (recorded in prior PHP research receipt)
+classification=Arc ownership/borrow shape; missing Default/Deserialize semantic support; repeated Vec PHP conversion; metadata conversion reference/type mismatches

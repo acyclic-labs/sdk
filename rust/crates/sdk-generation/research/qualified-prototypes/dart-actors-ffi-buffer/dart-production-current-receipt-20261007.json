@@ -1,0 +1,142 @@
+{
+  "status": "qualified-installed-cross-platform",
+  "date": "2026-10-07",
+  "candidate": {
+    "root": "Q:\\sdk\\work\\sdkgen-main-port-current",
+    "buildCommit": "81eb6ef75df47223275e02f7c2ee0091e788fed5",
+    "buildCommitMessage": "Qualify native Actors clippy boundary",
+    "receiptCheckoutCommit": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+    "receiptCheckoutMessage": "Qualify Actors cancellation and native fallback",
+    "gitStatus": [
+      "M rust/crates/actors-uniffi/Cargo.toml",
+      "?? research/",
+      "?? rust/crates/actors-uniffi/generator-patches/",
+      "?? rust/crates/actors-uniffi/uniffi.nominal.toml"
+    ],
+    "cargoLockSha256": "76CBBF63F05EE624982D0403AFCCD837D148ADCF0C2E22E786472324F3208B1E",
+    "actorFacadeCargoTomlSha256PreFeature": "03F3A7B92277A06FB9C544B711571840DBD6625F55D2D457CF1B3129586C5EBD",
+    "actorFacadeCargoTomlSha256PostFeature": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+    "ffiFeature": "scaffolding-ffi-buffer-fns",
+    "producer": "official crates.io uniffi 0.31.0"
+  },
+  "generator": {
+    "root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
+    "baseRevision": "c2a2ee53cc2dc1ef2d6e8e8f41168d71e3098c6f",
+    "sourcePatch": "generator-source-production-current.patch",
+    "sourcePatchSha256": "9877C9AC1D69E0E6D072861E66B6C67ACFA6F9E68E0A4927CBEDA9CBD4C2B343",
+    "binary": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source\\target-local2\\debug\\uniffi-bindgen-dart.exe",
+    "binaryBytes": 7339008,
+    "binarySha256": "EF9DC142E132213AE7DB9EABD43B268E9561A07FACF891C3D4E52F691D12760F",
+    "unitTests": {
+      "passed": 225,
+      "failed": 0
+    },
+    "goldenTests": {
+      "passed": 2,
+      "failed": 19,
+      "total": 21,
+      "reason": "expected legacy snapshot drift from maintained BigInt output"
+    },
+    "modifiedSourceSha256": {
+      "callback_rs": "7187C048787686D8FA39B796D4EC1C39091B784053E4942CDA0EC2F68D33C0ED",
+      "codec_rs": "9D1752FE53074F7E56E0F3589F91F48502899D80DA5D2EE0D123C645E1EBF039",
+      "ffi_buffer_rs": "E2AC018CF645346A198333DD2B45FD69A46F1CC66E2E312CE0DDC9379997A735",
+      "mod_rs": "47D38F201EF78689B15EF8C312A2DCB9EE9009BB3D22CC6F97135AEECC9C2834",
+      "functions_rs": "566858137E2D44F29970DB015D917B4873F60F94E2E2F85C04EF300DA1181B55",
+      "objects_rs": "94383AF80885FC20A51628D238FA2F808966D1F17146EC8B8DD9F385D54634D8",
+      "render_helpers_rs": "98192FEB8D942096C974785B20102F0D607E2ACA098837FC76A7E60C14066831",
+      "type_map_rs": "91C3F6196E91925377AA5DD1E894AF555498BE0E2C50C2ECEF2E178E5E4C1425"
+    }
+  },
+  "generated": {
+    "domainPath": "generated-production-current-20261007/acyclic_actors.dart",
+    "domainBytes": 92051,
+    "domainSha256": "56EADB2E3A983AEB4E6060C1402FF8C9FA5996D87BB155FDF7705C88EE8E7D21",
+    "facadePath": "generated-production-current-20261007/acyclic_actors_uniffi.dart",
+    "facadeBytes": 176233,
+    "facadeSha256": "AAC613A13F836C13E84C6910657E51A678FC75B2F0D7E7E32D38B9CAAEA8B3EB",
+    "pubspecSha256": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
+    "pubspecLockSha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+    "archive": "actors-uniffi-dart-production-current-20261007.zip",
+    "archiveBytes": 6221972,
+    "archiveSha256": "AABB843AC710F6FBEAE9C6F6BFC2D2F82445157B97C6A64DD08E56929444A06E",
+    "configSha256": "4CAAF6734B5FF84C9859A373D14A8D855CAADD07185F890DA4C652BA1F4E73C7"
+  },
+  "native": {
+    "windows": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\target-dart-production-current\\release\\acyclic_actors_uniffi.dll",
+      "bytes": 4579840,
+      "sha256": "95C28ED95C6DB0DBD49B9FA3555C529D0A5BF29178E67A339212D5228EB6E588"
+    },
+    "linux": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-current-20261007\\native\\linux-x64\\libacyclic_actors_uniffi.so",
+      "bytes": 6525216,
+      "sha256": "996F55BAD62C6FCD318E1BFB09290748D8942841EA37581C44C1CFF7B4B9297E"
+    },
+    "macos": {
+      "path": "/tmp/actors-uniffi-current-target-20261007/release/libacyclic_actors_uniffi.dylib",
+      "bytes": 5190704,
+      "sha256": "8E641364C3144681A5E79A659F441DC419C61DAAB440B370690BD8B93B4D722D"
+    }
+  },
+  "sdk": {
+    "windows": {
+      "version": "3.7.0-209.1.beta",
+      "source": "task-local installed SDK",
+      "note": "stable Windows archive in workspace is incomplete"
+    },
+    "wsl": {
+      "version": "3.7.0-209.1.beta",
+      "archive": "Q:\\sdk\\work\\dartsdk-linux-x64-3.7.0-209.1.beta-full.zip",
+      "archiveBytes": 213804363,
+      "archiveSha256": "3B8EEE768198B0DEC627AFBFEA7DB0C0004D2C55D1CA999C7061590EBAADE7CF"
+    },
+    "macos": {
+      "host": "ivar",
+      "version": "3.7.0 stable",
+      "remoteArchive": "/tmp/dartsdk-macos-arm64-3.7.0-stable-full.zip",
+      "archiveBytes": 214701365,
+      "archiveSha256": "9BFD7C74EBC5F30B5832DFCF4F47E5A3260F2E9B98743506C67AD02B3B6964BB"
+    }
+  },
+  "runtime": {
+    "windows": {
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "evidence": "dart-production-current-windows-all8.out; dart-production-current-windows-cancel.out"
+    },
+    "wsl": {
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "evidence": "dart-production-current-wsl-all8.out; dart-production-current-wsl-cancel.out"
+    },
+    "macosIvar": {
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "evidence": "dart-production-current-macos-all8.out; dart-production-current-macos-cancel.out"
+    }
+  },
+  "semanticRoots": {
+    "records": 24,
+    "enums": 3,
+    "oneofVariants": 2,
+    "operations": [
+      "create",
+      "update",
+      "inspect",
+      "add",
+      "remove",
+      "resume",
+      "checkpoint",
+      "invoke"
+    ],
+    "checks": [
+      "BigInt UInt64 zero, 2^63, 2^64-1",
+      "nullable checkpoint presence",
+      "SubscriptionStart oneof presence",
+      "typed errors",
+      "real in-flight cancellation/server abort active=0"
+    ]
+  },
+  "primary": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer"
+}

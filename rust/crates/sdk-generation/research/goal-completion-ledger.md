@@ -1,6 +1,6 @@
 # Rust source-of-truth goal completion ledger
 
-Snapshot: current main af6f814ccb97c3d49f93689e70b19d97d7840377 (2026-10-07).
+Snapshot: current main c8bef0be476cbfd5d4fa30d1f8d017fa5336d964 (2026-10-07).
 Review rule: evidence is labeled by its actual source. Main-tree facts,
 C-worktree research, and external qualification receipts are not interchangeable.
 
@@ -26,14 +26,24 @@ C foundation research worktree; they are not main-tree completion evidence.
 
 ## Evidence outside current main
 
-- Actors checkpoint `edcc1292ac2363d2ca62d24c7e9033279b32c087` is signed and verified remotely. Its semantic Rust domain now derives message and oneof shadows through the maintained Protify extension. Package/file/service registration contains no separately authored raw fields. The candidate still needs latest-main integration, exact installed package qualification, descriptor handshake verification, and independent review before merge.
-- Stream PR259 points to signed `92c267c08b4cd2cac7b1347b05547f3c1dab768b`, including main `af6f814ccb97c3d49f93689e70b19d97d7840377`. Invalid absence admission, Rust-owned follow recovery, and all-target native test lint fixes are included. Final exact-revision installed package qualification and required cheap CI are pending; historical packages do not qualify this source by retagging.
-- Filesystem signed candidate `f775b8465d836cf69b358f9fa9ebd8edbfa819db` is saved remotely on `codex/filesystem-rust-admission-final`. Numeric admission and finite payload types are present. Root review found a handwritten hosted payload-kind list, an unchecked generic string cast, and a possible hosted counter coverage regression. These must be resolved before admission. No final installed qualification is claimed.
-- Foundation checkpoint `66e3bba580562cbe7c2498ae7dfd374646591925` is verified remotely. Full Rustdoc owner/private binding profile execution, immutable versions, snippet execution, clean regeneration and drift remain required.
+- Actors checkpoint `edcc1292ac2363d2ca62d24c7e9033279b32c087` is signed and verified remotely. Its semantic Rust domain derives message and oneof shadows through the maintained Protify extension, without separately authored raw field registration. Current-main integration is now in `Q:/sdk/work/sdkgen-main-port-current`; candidate `f8bf8daf64fae0c04366fd1e5326053dde3d4e9e` is remotely preserved with subsequent local lint/cancellation changes. Minimal signed scope, exact installed semantic/default-transport qualification and independent review remain open. Actors descriptor consumers require identity/option/presence compatibility; Filesystem/Harness additionally have an actual descriptor handshake, which must remain compatible.
+- Stream PR259 points to signed `486bd26ac1f9c8c9a88b13a70bdcf49d5637ecb1`, including main `af6f814ccb97c3d49f93689e70b19d97d7840377`. Invalid absence admission, Rust-owned follow recovery, all-target native test lint fixes and archive-content validation are included. Required cheap CI run `37630346267` passed. Final exact-revision installed package qualification is pending; historical packages do not qualify this source by retagging.
+- Filesystem signed candidate `f775b8465d836cf69b358f9fa9ebd8edbfa819db` is saved remotely on `codex/filesystem-rust-admission-final`. Peer fixes replace hosted payload-kind/counter lists with Rust-derived metadata and remove an unchecked generic string projection. Current Rust, N-API and WASM counters were verified to have the same 24 fields. A finite WASM resolved-file getter, final signed freeze and exact installed qualification remain open.
+- Foundation checkpoint `e0f29067aad2ac955653657f92dc516907b53fc6` is verified remotely. Nine Rustdoc profiles execute successfully, but explicit coverage of all ten published owners/private binding profiles is not yet established. The Rust-owned Machines scenario now emits an actual TypeScript consumer that compiled and executed against an installed package. Full clean generation, immutable versions and all-scenario snippet coverage remain open.
 - Historical Python, JVM, Go, Swift, C#, Dart and C++ receipts demonstrate maintained generator/runtime mechanisms at their recorded source revisions. They do not qualify the new production semantic producer. C++ currently qualifies only an opaque conformance bridge; a full caller-configurable typed SDK remains open. Ruby async support and PHP metadata consumption remain proven generator gaps under investigation.
-- The source-bound Kani ingress proof remains one live process, with no overall terminal result. Existing cursor and bounded domain proofs do not prove generated SDK packages, documentation completeness, transport behavior, or all foreign-language runtimes. Exact filesystem float admission still requires its direct production proof.
-- Release assembly fixtures include placeholder archives for unrelated packages. The hash-only TypeScript archive receipt helper does not validate archive package identity. Its receipt is not whole-release runtime qualification evidence; maintained archive validation remains a concrete pipeline gap.
+- The original source-bound Actors Kani ingress proof remains one live process, with no overall terminal result. Direct production `exact_u32_from_f64` verification passes over arbitrary IEEE-754 bit patterns; its intentionally failing fractional-acceptance control also behaved as expected. The pinned source-bound manifest and raw logs record the exact numeric theorem. These results do not prove SDK packages, documentation completeness, transport behavior or foreign-language runtimes.
+- Release assembly fixtures include placeholder archives for unrelated packages and are not whole-release runtime qualification evidence. Stream's final candidate now reuses the existing archive validator before writing TypeScript qualification receipts; 26 focused archive/publication/planner tests pass. The corrected pipeline still requires merge and exact installed Stream admission.
 ## Open completion milestones
+
+Stream PR259 merged at `2026-10-07T13:53:51Z`, producing main
+`c8bef0be476cbfd5d4fa30d1f8d017fa5336d964`. Signed source `486bd26ac1`
+passed final installed default/recovery/browser-fallback/cancellation checks,
+independent review, Node-only archive tests on Windows and Linux, and required
+inexpensive CI. Final archive hash is
+`a6bcfccbf0bf4d30f3561008d0e937cba8b56fae01cbd3fc121ad9edbd8567c2`.
+The earlier candidate statuses above are historical. Native compiler/linker,
+cache and generator build-input attestation remains a follow-up; source closure
+alone does not guarantee bit-identical native binaries.
 
 ### M1: Rust-owned generation on main
 

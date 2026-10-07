@@ -30,6 +30,7 @@ pub enum ScenarioMode {
 #[serde(rename_all = "camelCase")]
 pub enum ScenarioKind {
     ActorsUnary,
+    ActorsTypescriptConsumer,
     StreamStreaming,
     FilesystemEmbedded,
     MachinesTypescriptConsumer,
@@ -49,7 +50,7 @@ pub struct Scenario {
     pub features: &'static [&'static str],
 }
 
-/// The first four source-backed scenarios. More examples require an explicit
+/// The first five source-backed scenarios. More examples require an explicit
 /// registry entry and a matching receipt; Cargo example discovery alone is
 /// deliberately insufficient for publishing user-facing snippets.
 pub const SCENARIOS: &[Scenario] = &[
@@ -62,6 +63,17 @@ pub const SCENARIOS: &[Scenario] = &[
         operation: "create_actor",
         kind: ScenarioKind::ActorsUnary,
         mode: ScenarioMode::ExecuteWithEndpoint,
+        features: &[],
+    },
+    Scenario {
+        id: "actors/typescript-consumer",
+        family: "actors",
+        package: "acyclic-actors",
+        example: "actors-typescript-consumer",
+        source_path: "rust/crates/actors/examples/actors-typescript-consumer.rs",
+        operation: "encode-create-request",
+        kind: ScenarioKind::ActorsTypescriptConsumer,
+        mode: ScenarioMode::ExecuteLocal,
         features: &[],
     },
     Scenario {
@@ -335,9 +347,69 @@ pub fn render_typescript(
 ) -> Result<Vec<TypeScriptSnippet>, Error> {
     executions
         .iter()
-        .filter(|execution| execution.scenario.kind == ScenarioKind::MachinesTypescriptConsumer)
-        .map(render_machines_typescript)
+        .filter(|execution| {
+            matches!(
+                execution.scenario.kind,
+                ScenarioKind::MachinesTypescriptConsumer | ScenarioKind::ActorsTypescriptConsumer
+            )
+        })
+        .map(|execution| match execution.scenario.kind {
+            ScenarioKind::MachinesTypescriptConsumer => render_machines_typescript(execution),
+            ScenarioKind::ActorsTypescriptConsumer => render_actors_typescript(execution),
+            _ => unreachable!("filtered scenario kind must have a TypeScript renderer"),
+        })
         .collect()
+}
+
+fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
+    let value: serde_json::Value =
+        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
+            Error::Invalid(format!(
+                "scenario {} did not emit JSON: {error}",
+                execution.scenario.id
+            ))
+        })?;
+    let request = value
+        .get("request")
+        .ok_or_else(|| Error::Invalid("Actors scenario output has no request".into()))?;
+    let code_sha256 = bytes_hex(required_field(request, "code_sha256")?)?;
+    let home_region = string_field(request, "home_region")?;
+    let idempotency_key = string_field(request, "idempotency_key")?;
+    let limits = request
+        .get("limits")
+        .ok_or_else(|| Error::Invalid("Actors request has no limits".into()))?;
+    let handler_timeout_millis = number_field(limits, "handler_timeout_millis")?;
+    let memory_bytes = number_field(limits, "memory_bytes")?;
+    let checkpoint_bytes = number_field(limits, "checkpoint_bytes")?;
+    let bindings = required_field(request, "bindings")?;
+    let subscriptions = required_field(request, "subscriptions")?;
+    if value.get("validated") != Some(&serde_json::Value::Bool(true)) {
+        return Err(Error::Invalid(
+            "Actors scenario did not report canonical validation".into(),
+        ));
+    }
+    let code_literal =
+        serde_json::to_string(&code_sha256).map_err(|error| Error::Invalid(error.to_string()))?;
+    let region_literal =
+        serde_json::to_string(&home_region).map_err(|error| Error::Invalid(error.to_string()))?;
+    let idempotency_literal = serde_json::to_string(&idempotency_key)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let bindings_literal =
+        serde_json::to_string(bindings).map_err(|error| Error::Invalid(error.to_string()))?;
+    let subscriptions_literal =
+        serde_json::to_string(subscriptions).map_err(|error| Error::Invalid(error.to_string()))?;
+    let source = format!(
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ CreateActorRequestSchema }} from \"@acyclic-labs/actors\";\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\n\nconst request = create(CreateActorRequestSchema, {{\n  codeSha256: Uint8Array.from(Buffer.from({code_literal}, \"hex\")),\n  homeRegion: {region_literal},\n  bindings: {bindings_literal},\n  limits: {{\n    handlerTimeoutMillis: BigInt(\"{handler_timeout_millis}\"),\n    memoryBytes: BigInt(\"{memory_bytes}\"),\n    checkpointBytes: BigInt(\"{checkpoint_bytes}\"),\n  }},\n  subscriptions: {subscriptions_literal},\n  idempotencyKey: {idempotency_literal},\n}});\nconst encoded = toBinary(CreateActorRequestSchema, request);\nif (encoded.length === 0) throw new Error(\"Rust Actors request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ homeRegion: request.homeRegion, encodedBytes: encoded.length }}));\n",
+        execution.scenario.id, execution.stdout_sha256,
+    );
+    Ok(TypeScriptSnippet {
+        scenario_id: execution.scenario.id,
+        package: "@acyclic-labs/actors",
+        path: "generated/scenarios/actors/typescript-consumer.ts",
+        source_sha256: execution.source_sha256.clone(),
+        rust_output_sha256: execution.stdout_sha256.clone(),
+        source,
+    })
 }
 
 fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
@@ -437,6 +509,15 @@ fn nested_policy_kind(
             "unsupported Machines policy variant; expected {rust_variant}"
         ))),
     }
+}
+
+fn required_field<'a>(
+    value: &'a serde_json::Value,
+    name: &str,
+) -> Result<&'a serde_json::Value, Error> {
+    value
+        .get(name)
+        .ok_or_else(|| Error::Invalid(format!("scenario output has no {name} field")))
 }
 
 fn policy_kind(
@@ -628,11 +709,12 @@ mod tests {
 
     #[test]
     fn registry_contains_one_bounded_scenario_per_requested_family() {
-        assert_eq!(SCENARIOS.len(), 4);
+        assert_eq!(SCENARIOS.len(), 5);
         assert_eq!(SCENARIOS[0].kind, ScenarioKind::ActorsUnary);
-        assert_eq!(SCENARIOS[1].kind, ScenarioKind::StreamStreaming);
-        assert_eq!(SCENARIOS[2].kind, ScenarioKind::FilesystemEmbedded);
-        assert_eq!(SCENARIOS[3].kind, ScenarioKind::MachinesTypescriptConsumer);
+        assert_eq!(SCENARIOS[1].kind, ScenarioKind::ActorsTypescriptConsumer);
+        assert_eq!(SCENARIOS[2].kind, ScenarioKind::StreamStreaming);
+        assert_eq!(SCENARIOS[3].kind, ScenarioKind::FilesystemEmbedded);
+        assert_eq!(SCENARIOS[4].kind, ScenarioKind::MachinesTypescriptConsumer);
         assert!(SCENARIOS.iter().all(|scenario| !scenario.id.is_empty()));
     }
 

@@ -1,0 +1,1 @@
+{"request":{"bindings":[],"code_sha256":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"home_region":"eu","idempotency_key":"create-typescript-consumer","limits":{"checkpoint_bytes":1024,"handler_timeout_millis":1000,"memory_bytes":1024},"subscriptions":[]},"validated":true}

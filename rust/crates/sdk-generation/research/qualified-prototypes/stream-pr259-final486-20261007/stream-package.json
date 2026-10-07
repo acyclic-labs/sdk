@@ -1,0 +1,65 @@
+{
+  "name": "@acyclic-labs/stream",
+  "version": "0.2.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Hierarchical append-only streams with typed clients and provider adapters",
+  "keywords": [
+    "streams",
+    "events",
+    "versioning"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/stream"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/stream/v2/stream_pb.d.ts",
+      "default": "./generated/proto/stream/v2/stream_pb.js"
+    },
+    "./grpc": {
+      "default": "./dist/grpc.js",
+      "types": "./dist/grpc.d.ts"
+    },
+    "./native": {
+      "default": "./dist/native.js",
+      "types": "./dist/native.d.ts"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "generated",
+    "examples",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "bun run build:wasm && tsc -b",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs stream",
+    "build:native": "node ../../../scripts/build-stream-native.mjs build",
+    "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
+    "check:native": "node ../../../scripts/build-stream-native.mjs check",
+    "test": "bun run build && bun test test",
+    "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
+  },
+  "napi": {
+    "binaryName": "index",
+    "packageName": "@acyclic-labs/stream"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-node": "2.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  }
+}

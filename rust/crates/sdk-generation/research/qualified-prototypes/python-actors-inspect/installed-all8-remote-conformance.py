@@ -6,8 +6,10 @@ FIXTURE = Path(os.environ.get("ACYCLIC_FIXTURE_OPTIONS", r"Q:\sdk\work\go-remote
 
 def check_actor(value, expected):
     assert value is not None
-    assert value.actor_id.value() == expected["actorId"]
-    assert bytes(value.code_sha256.value()) == bytes(expected["codeSha256"])
+    actor_id = value.actor_id.value() if callable(getattr(value.actor_id, "value", None)) else value.actor_id
+    code_sha256 = value.code_sha256.value() if callable(getattr(value.code_sha256, "value", None)) else value.code_sha256
+    assert actor_id == expected["actorId"]
+    assert bytes(code_sha256) == bytes(expected["codeSha256"])
     assert value.home_region == expected["homeRegion"]
     assert value.state.value == expected["state"]
     assert value.checkpoint_epoch == expected["checkpointEpoch"]
@@ -65,20 +67,28 @@ async def main():
     )
     actor = m.ActorId(fixture["actorId"])
     digest = m.CodeSha256(bytes(fixture["expectedObservation"]["codeSha256"]))
-    binding = m.Binding("binding-a", "capability-a", "resource-a")
-    limits = m.ActorLimits(1, 2, 3)
-    start = m.SubscriptionStart.CURSOR(9007199254740993)
-    subscription = m.SubscriptionSpec("subscription-a", "events/input", start, True)
-    create = m.CreateActorRequest(digest, "eu", [binding], limits, [subscription], "create-a")
-    update = m.UpdateActorRequest(actor, digest, [binding], limits, 0, "update-a")
-    inspect = m.InspectActorRequest(actor)
-    add = m.AddSubscriptionRequest(actor, subscription, "add-a")
-    remove = m.RemoveSubscriptionRequest(actor, "subscription-a", "remove-a")
-    resume = m.ResumeSubscriptionRequest(actor, "subscription-a", "resume-a")
-    checkpoint = m.CheckpointActorRequest(actor, "checkpoint-a")
+    binding = m.Binding(name="binding-a", capability="capability-a", resource="resource-a")
+    limits = m.ActorLimits(handler_timeout_millis=1, memory_bytes=2, checkpoint_bytes=3)
+    start = m.SubscriptionStart(start=m.Start.CURSOR(9007199254740993))
+    subscription = m.SubscriptionSpec(
+        subscription_id="subscription-a", stream_path="events/input", start=start, placement_anchor=True,
+    )
+    create = m.CreateActorRequest(
+        code_sha256=digest, home_region="eu", bindings=[binding], limits=limits,
+        subscriptions=[subscription], idempotency_key="create-a",
+    )
+    update = m.UpdateActorRequest(
+        actor_id=actor, code_sha256=digest, bindings=[binding], limits=limits,
+        expected_configuration_revision=0, idempotency_key="update-a",
+    )
+    inspect = m.InspectActorRequest(actor_id=actor)
+    add = m.AddSubscriptionRequest(actor_id=actor, subscription=subscription, idempotency_key="add-a")
+    remove = m.RemoveSubscriptionRequest(actor_id=actor, subscription_id="subscription-a", idempotency_key="remove-a")
+    resume = m.ResumeSubscriptionRequest(actor_id=actor, subscription_id="subscription-a", idempotency_key="resume-a")
+    checkpoint = m.CheckpointActorRequest(actor_id=actor, idempotency_key="checkpoint-a")
     invoke = m.InvokeActorRequest(
-        actor, "POST", "/invoke", b"request-body",
-        [m.Header(name="content-type", value="application/json")],
+        actor_id=actor, method="POST", url="/invoke", body=b"request-body",
+        headers=[m.Header(name="content-type", value="application/json")],
     )
     expected = fixture["expectedObservation"]
     for operation, request in (

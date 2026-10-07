@@ -1,0 +1,1 @@
+{"schema":"acyclic.stream.native.installed-browser-fallback.v1","transport":"http","processRuntime":"browser","httpRequestObserved":true,"installedPackage":"@acyclic-labs/stream"}

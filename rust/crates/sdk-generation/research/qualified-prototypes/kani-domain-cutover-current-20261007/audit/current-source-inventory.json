@@ -1,0 +1,88 @@
+{
+  "schema": "acyclic.kani-domain-cutover/v1",
+  "captured_at": "2026-10-07T13:54:29.5937842Z",
+  "status": "prepared_not_run",
+  "canonical_current_checkout": "Q:\\sdk\\work\\sdkgen-main-port-current",
+  "current_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "current_subject": "Qualify Actors cancellation and native fallback",
+  "original_snapshot": "Q:/sdk/work/sdkgen-main-actual03bb",
+  "original_snapshot_revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+  "source_inventory_current": {
+    "rust/crates/actors/src/contract.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\src\\contract.rs",
+      "sha256": "735E6CE63A46319700A92C08C32E0AB1FFD35CB99630369BBB05C5C6F5B79275"
+    },
+    "rust/crates/actors/src/contract_definitions.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\src\\contract_definitions.rs",
+      "sha256": "8F763C6BB965BE2DF0C18DE5E041E644F542DE71D61D1A94936218EC556F8CB0"
+    },
+    "Cargo.lock": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\Cargo.lock",
+      "sha256": "76CBBF63F05EE624982D0403AFCCD837D148ADCF0C2E22E786472324F3208B1E"
+    },
+    "rust/crates/actors/src/lib.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\src\\lib.rs",
+      "sha256": "12953671CAD77738DB59068976FFAFB47121BEEDD27B215D6B57F99CE9A5F68A"
+    },
+    "rust/crates/actors/src/domain/kani_proofs.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\src\\domain\\kani_proofs.rs",
+      "sha256": "1B8E6785B888135993394B3C4CC9E9A6C544C0645466E5C71D67AF465B1CF462"
+    },
+    "rust/crates/actors/src/wire.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\src\\wire.rs",
+      "sha256": "5773FBB750C9FAB97F177C86FD816D3EAEC175C806E30AC4C8ADD07DF363BD77"
+    },
+    "rust/crates/actors/src/domain.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\src\\domain.rs",
+      "sha256": "C580E4657C1A26489E46C34E87DDD380ED80D8D2F9260D5BA77702B4571CDDBA"
+    },
+    "Cargo.toml": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\Cargo.toml",
+      "sha256": "226AA5AC0D5631BCCCBEE061E9470DE42FFC1625BDDC573E3F44946E6DE6D076"
+    },
+    "rust/crates/actors/Cargo.toml": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-port-current\\rust\\crates\\actors\\Cargo.toml",
+      "sha256": "47C64A09C21007E95DFA52615989D6BF4A645237037E21683FBBEF484EB14927"
+    }
+  },
+  "source_inventory_original": {
+    "rust/crates/actors/src/contract.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\src\\contract.rs",
+      "sha256": "95161337CE9DE11FA71F50F87441CCE591F4F7556557B6DB8BF9976F170D7CD4"
+    },
+    "rust/crates/actors/src/contract_definitions.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\src\\contract_definitions.rs",
+      "sha256": "F16D71CD32AB96B990B72ED35F9F7238C52DB44CFDDCF866230D4A55D1B5777A"
+    },
+    "Cargo.lock": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\Cargo.lock",
+      "sha256": "F4F0E48273E0D9AA5232339D8B7F4A8162B1F242ED651580B293712A30DDC8A2"
+    },
+    "rust/crates/actors/src/lib.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\src\\lib.rs",
+      "sha256": "D9609E96206C2D3915D55B0BF00FA8BE7E5C49747749725CE75EFFBE3CE374C9"
+    },
+    "rust/crates/actors/src/domain/kani_proofs.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\src\\domain\\kani_proofs.rs",
+      "sha256": "E71AFBB9AAB686396E2084EF018F802617753AAEED451DB5C26F10A4EDF1A1CF"
+    },
+    "rust/crates/actors/src/wire.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\src\\wire.rs",
+      "sha256": "CA6F3403948843F017B2B59BE089EB83FFF6B02EDAAEC062CB1473977CA98B55"
+    },
+    "rust/crates/actors/src/domain.rs": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\src\\domain.rs",
+      "sha256": "62A5C972C19F9D83D894BF59C449DFE4AEA0637BBF598ED0744A09146411909C"
+    },
+    "Cargo.toml": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\Cargo.toml",
+      "sha256": "EFEE03BA4D746D7AF09460235425DD8556B0355116E2D2A5E46158778ABF9121"
+    },
+    "rust/crates/actors/Cargo.toml": {
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-invariants-current-actual03bb-20261007\\source\\rust\\crates\\actors\\Cargo.toml",
+      "sha256": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE"
+    }
+  },
+  "source_binding": "Prepared harnesses must import acyclic_actors::domain and acyclic_actors::wire from this checkout; no local projection or copied conversion algorithm.",
+  "claims": "Preparation only. No Kani result is claimed for current revision."
+}

@@ -33,3 +33,5 @@ Cutover rerun plan:
 4. Report only the refreshed result; this artifact cannot be relabeled as a
    proof of a later source revision.
 
+
+Post-proof checkout observation is recorded in audit/current-source-observation.json. The worktree tip observed after the run is 42874b98e8079c14a32981216b0b2d19e365dcf6; numeric.rs and lib.rs are clean and have no diff from f775b8465d836cf69b358f9fa9ebd8edbfa819db, with identical SHA-256 values. This does not retag the launch receipt; it records relevant-file identity for review.

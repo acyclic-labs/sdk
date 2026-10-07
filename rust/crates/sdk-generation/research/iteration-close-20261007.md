@@ -151,3 +151,19 @@ and installed artifacts. No auto-merge is enabled.
 - Direct production `acyclic_fs::exact_u32_from_f64` verification covers arbitrary IEEE-754 bit patterns. Kani reported zero failures across 14 checks; an intentional fractional-acceptance negative control failed. The source-bound verification manifest records the theorem, source hashes, pinned toolchain and raw logs. This proves the specified numeric conversion property only. The separate original Actors solver remains active; no terminal proof result is claimed.
 - Kotlin's older producer receipt demonstrates installed runtime cancellation and immutable records, but aliases erase nominal distinctions and `CurrentHead(Boolean)` admits invalid construction. It does not qualify the integrated producer or close the strongest-type requirement. Maintained generator policy work remains assigned.
 - Foundation source checkpoint `0f91d7683e68028cf9e4a5b553d58693af447153` and Actors candidate `f8bf8daf64fae0c04366fd1e5326053dde3d4e9e` were verified remotely. Further source and evidence changes require another checkpoint.
+
+## Stream merge admission
+
+PR259 merged at `2026-10-07T13:53:51Z`, producing main
+`c8bef0be476cbfd5d4fa30d1f8d017fa5336d964`. Final signed source was
+`486bd26ac1f9c8c9a88b13a70bdcf49d5637ecb1`. Exact installed-package
+qualification, independent review and required inexpensive CI passed. Root
+independently verified the loaded native binary, stalled-TLS abort in 272 ms,
+zero remaining sockets, credentials rejected before network and zero unhandled
+or uncaught failures. Raw qualification evidence and the merge record are
+preserved under `qualified-prototypes/stream-pr259-final486-20261007`.
+
+Filesystem and Actors must preserve this new main during final integration.
+The goal remains active: unified generation, all-owner docs profiles, complete
+generated snippets, remaining family authority and exact language qualification
+are outstanding. No registry publishing or deployment occurred.

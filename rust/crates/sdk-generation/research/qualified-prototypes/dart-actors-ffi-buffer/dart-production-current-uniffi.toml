@@ -1,0 +1,2 @@
+[bindings.dart]
+external_packages = { acyclic_actors = "acyclic_actors.dart" }

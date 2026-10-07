@@ -1,0 +1,12 @@
+{
+  "schema": "acyclic.kani-domain-cutover-receipt/v1",
+  "artifact": "kani-domain-cutover-current-20261007",
+  "status": "prepared_not_run",
+  "source_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "source_inventory": "audit/current-source-inventory.json",
+  "prepared_harness_sha256": "5E25B766545DF9FDD03B45101F03976486FBED47BCC8CB72618970F39C65CDFA",
+  "existing_harness_source": "Q:/sdk/work/sdkgen-main-port-current/rust/crates/actors/src/domain/kani_proofs.rs",
+  "terminal_exit": null,
+  "raw_log": null,
+  "note": "No Kani process launched. Existing Actors solver PTY 17660 / CBMC PID 1031718 remains untouched. This receipt records preparation only."
+}
