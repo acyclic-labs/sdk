@@ -12,3 +12,21 @@ header contents:
 #include <stdint.h>
 #include <stdlib.h>
 (uniffi/acyclic declarations count=0)
+
+$ ssh ivar '/tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/debug/actors-uniffi-bindgen generate --language c --out-dir /tmp/acyclic-php-c-out /tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/release/libacyclic_actors_uniffi.dylib'
+error: invalid value 'c' for '--language <LANGUAGE>'
+  [possible values: kotlin, swift, python, ruby]
+exit=2
+$ ssh ivar '/tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/debug/actors-uniffi-bindgen generate --language php --out-dir /tmp/acyclic-php-out /tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/release/libacyclic_actors_uniffi.dylib'
+error: invalid value 'php' for '--language <LANGUAGE>'
+  [possible values: kotlin, swift, python, ruby]
+exit=2
+$ ssh ivar 'shasum -a 256 /tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/debug/actors-uniffi-bindgen; /tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/debug/actors-uniffi-bindgen --version'
+79e3d19adcec7a8e6a81805769e0a85b7a26b429edd9604445edac5cdf2d91a0  /tmp/acyclic-sdk-mac/rust/crates/actors-uniffi/target/debug/actors-uniffi-bindgen
+uniffi-bindgen 0.31.0
+
+$ wsl bash -lc 'sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php-cli php8.1-common'
+task-owned install attempt remained silent/hung before package completion; session was interrupted after repeated 30-second polls
+$ php -v; php -m | grep -i ffi
+PHP_VERSION=8.5.11
+PHP_FFI_EXTENSION=absent

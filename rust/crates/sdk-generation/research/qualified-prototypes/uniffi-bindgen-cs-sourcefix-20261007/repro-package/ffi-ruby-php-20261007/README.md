@@ -4,7 +4,17 @@ This is source-only qualification evidence against the exact Actors UniFFI nativ
 
 ## Maintained-option inventory
 
-The pinned official UniFFI 0.31.0 backend list is Kotlin, Swift, Python, and Ruby; there is no PHP backend in that release. For PHP the maintained OSS option investigated here is Mozilla cbindgen 0.29.4, which can generate C declarations from ordinary Rust `pub extern "C"` items but cannot see UniFFI proc-macro-generated declarations. A PHP FFI consumer would therefore need an independently handwritten UniFFI header/adapter, which is outside the allowed prototype scope.
+The pinned official UniFFI 0.31.0 backend list is Kotlin, Swift, Python, and Ruby. The exact binary rejects both `--language c` and `--language php` with `possible values: kotlin, swift, python, ruby`; this is a generator capability result, rather than a claim that PHP as a runtime is impossible.
+
+The maintained options investigated for PHP were:
+
+- Mozilla `cbindgen` 0.29.4 (MPL-2.0): a Rust-to-C header generator. It produced only standard includes from the Actors UniFFI crate because the exported ABI is proc-macro generated.
+- [`xberg-io/alef`](https://github.com/xberg-io/alef) 0.107.0 (MIT): a source-driven polyglot generator with PHP native-extension and C-FFI targets. Its documented input is an Alef-configured Rust API surface, not UniFFI metadata or an existing UniFFI cdylib. A task-local Windows build was started from the pinned crate source but did not complete in the shared build window, so no PHP output is claimed.
+- [`ext-php-rs`](https://github.com/extphprs/ext-php-rs) (MIT/Apache-2.0): a Rust-to-native-PHP-extension framework using PHP-specific Rust attributes. It requires a producer-side adapter and does not consume an existing UniFFI metadata contract.
+- [`FFIMe`](https://github.com/ircmaxell/FFIMe) and [`klitsche/ffigen`](https://packagist.org/packages/klitsche/ffigen) (MIT / package WIP): PHP FFI wrapper generators that require a C header as input; neither emits a header from UniFFI metadata.
+- [`ant-ffi`](https://github.com/maidsafe/ant-ffi) (archived, domain-specific): demonstrates PHP FFI usage but maintains a custom C ABI and is not a reusable UniFFI PHP backend.
+
+This leaves a precise prototype boundary: no maintained option tested here can consume the existing Actors UniFFI metadata and emit a PHP consumer without adding a producer-side adapter or handwritten ABI mirror. That is a current pipeline gap, not an exclusion of PHP itself.
 ## Ruby: executable unary/type path
 
 - Generator: Mozilla `uniffi_bindgen` 0.31.0 from the locked `uniffi = 0.31.0` source, MPL-2.0, repository `https://github.com/mozilla/uniffi-rs`; Cargo.lock registry checksum for `uniffi_bindgen` is `4ed0150801958d4825da56a41c71f000a457ac3a4613fa9647df78ac4b6b6881`.
@@ -16,12 +26,15 @@ The pinned official UniFFI 0.31.0 backend list is Kotlin, Swift, Python, and Rub
 
 The generated Ruby source exposes the typed `ActorsClient` methods and `CancellationHandle`, but UniFFI 0.31.0's Ruby backend emits the async Actors methods as synchronous wrappers around a `uint64` future handle and then calls `consumeIntoOptionalTypeActorObservation` on that integer. Against the real fixture this fails before issuing a request: `NoMethodError: undefined method consumeIntoOptionalTypeActorObservation for 105553120178704:Integer`, and fixture state remains `started=0, aborted=0, active=0`. Therefore Ruby has a qualified unary/type path and cancellation-handle value semantics, but no valid in-flight cancellation qualification for these async Actors methods with this maintained generator revision.
 
-## PHP: maintained C ABI path is blocked without a handwritten contract
+## PHP: maintained C ABI path and generator capability evidence
 
 - Maintained C ABI generator exercised: Mozilla `cbindgen` 0.29.4, MPL-2.0, repository `https://github.com/mozilla/cbindgen`.
 - Command: `cbindgen --lang c --output target/actors-uniffi.h` from the exact `actors-uniffi` crate.
 - Result: exit 0, header SHA256 `CB16FEEB6243454A636876FA5A6E046595E73F112EAA59DAC9381732696D6452`, containing only the standard includes and **zero** `acyclic`/`uniffi_` declarations.
 - Cause: UniFFI's exported C ABI is emitted by proc-macro scaffolding and is present in the compiled native library metadata/symbols, not as Rust `pub extern "C"` items that cbindgen can render. PHP's FFI extension would require a manually maintained declaration of the UniFFI `RustBuffer`, `RustCallStatus`, opaque handles, and async/future ABI. That would be a handwritten contract mirror, outside this prototype's allowed scope.
-- Local PHP 8.5.11 also reports `PHP_FFI_EXTENSION=absent`; this is secondary evidence only. The empty cbindgen header is the reproducible semantic blocker, independent of installing PHP.
+- Exact official generator checks against the same producer and `uniffi-bindgen 0.31.0` binary (SHA256 `79E3D19ADCE7A8E6A81805769E0A85B7A26B429EDD9604445EDAC5CDF2D91A0`):
+  - `--language c`: exit 2, `invalid value 'c'`, possible values Kotlin/Swift/Python/Ruby.
+  - `--language php`: exit 2, `invalid value 'php'`, possible values Kotlin/Swift/Python/Ruby.
+- Local Windows PHP 8.5.11 reports `PHP_FFI_EXTENSION=absent`. A task-owned WSL install attempt (`sudo apt-get update && sudo apt-get install -y php-cli php8.1-common`) hung before package installation completed, so no WSL runtime qualification is claimed. The runtime gap is environment evidence; it does not replace the generator-capability result.
 
 No package or producer files are modified by this evidence.

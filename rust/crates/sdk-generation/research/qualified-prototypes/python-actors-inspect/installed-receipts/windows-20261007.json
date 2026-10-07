@@ -18,12 +18,12 @@
     "in-flight-task-cancellation",
     "server-abort-cleanup"
   ],
-  "fixture_options_sha256": "cf60629c1c9d1747950c168bd78764f524841c574fd89ce155e4fbcfa67a030f",
+  "fixture_options_sha256": "c785ea16ef6327b9f58ccccb94c4ef27fb3c83f47015b49cdf14a355b3e2aa90",
   "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
   "source_inventory_sha256": "8a6a377c8652a796d783072dd430c4a4d163a1a79773f81791f86be606803011",
   "toolchain": {
     "uniffi_bindgen": "0.31.0",
-    "uniffi_source_sha256": "E373C20E5BC88636118840F4AA19ADDAE14AD85B75FE6A4D0CDC48B57AF7D642",
+    "uniffi_source_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
     "python_patch_sha256": "E373C20E5BC88636118840F4AA19ADDAE14AD85B75FE6A4D0CDC48B57AF7D642"
   },
   "artifacts": {

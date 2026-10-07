@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "scenario": "machines/typescript-consumer",
+  "source": "rust/crates/machines/examples/machines-typescript-consumer.rs",
+  "sourceSha256": "13F730C1A5A626CD86B9A4C1D0915340F2C13DFC19D6985EE9E72B0E704261A7",
+  "command": "cargo run --manifest-path Cargo.toml -p acyclic-machines --example machines-typescript-consumer --locked",
+  "mode": "execute-local",
+  "output": "machines-typescript-consumer.output.json",
+  "outputSha256": "171F70B33B314988C6BAF45E574F5ABC2A6A008E7BA033A04245D16B3F80C69C",
+  "generator": "scripts/build-machines-wasm.mjs",
+  "generatedDeclaration": "acyclic_machines_wasm.generated.d.ts",
+  "generatedDeclarationSha256": "2ABEB8E10D3F664429AE6002FC47F1436CFD64CDA158C84E7B702F65E52CE4D5",
+  "generatedWasmSha256": "2CE19C548EDA7AE778775C104B8D320604957BD3FA057640304428A289B719AE",
+  "generatedTypeEvidence": [
+    "CreateIn",
+    "SuspensionIn",
+    "ExpirationIn",
+    "ObservationOut",
+    "PageOut",
+    "validatePageSize"
+  ],
+  "sourceWasmBuild": "staged output only; tracked generated artifacts unchanged",
+  "rustdocProfile": "rust/crates/sdk-docs/src/rustdoc_profiles.rs: package/target/features only; no scenario mutation required",
+  "packageTarballSha256": "2065DDA2022A0311C5F6B150EECB0CD327A07E65064411270390EA165CA05972",
+  "externalConsumer": {
+    "directory": "consumer",
+    "packageLockSha256": "9C4890C533E024D06B1079D7D2BD8CD062150D4BBC6072D354CB3BF104D3152C",
+    "installed": "@acyclic-labs/machines@0.2.0",
+    "typecheck": "bun x tsc -p tsconfig.json --pretty false",
+    "runtime": "bun runtime.mjs",
+    "runtimeResult": "installed-machines-runtime-ok",
+    "readonlyPolicyBrands": "positive and @ts-expect-error negative fixtures passed"
+  }
+}

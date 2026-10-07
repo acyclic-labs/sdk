@@ -24,6 +24,7 @@ pub enum ScenarioKind {
     ActorsUnary,
     StreamStreaming,
     FilesystemEmbedded,
+    MachinesTypescriptConsumer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +40,7 @@ pub struct Scenario {
     pub features: &'static [&'static str],
 }
 
-/// The first three source-backed scenarios. More examples require an explicit
+/// The first four source-backed scenarios. More examples require an explicit
 /// registry entry and a matching receipt; Cargo example discovery alone is
 /// deliberately insufficient for publishing user-facing snippets.
 pub const SCENARIOS: &[Scenario] = &[
@@ -73,6 +74,17 @@ pub const SCENARIOS: &[Scenario] = &[
         source_path: "rust/crates/filesystem/examples/embedded_workspace.rs",
         operation: "mounted-view",
         kind: ScenarioKind::FilesystemEmbedded,
+        mode: ScenarioMode::ExecuteLocal,
+        features: &[],
+    },
+    Scenario {
+        id: "machines/typescript-consumer",
+        family: "machines",
+        package: "acyclic-machines",
+        example: "machines-typescript-consumer",
+        source_path: "rust/crates/machines/examples/machines-typescript-consumer.rs",
+        operation: "create-list-consumer",
+        kind: ScenarioKind::MachinesTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
     },
@@ -204,10 +216,11 @@ mod tests {
 
     #[test]
     fn registry_contains_one_bounded_scenario_per_requested_family() {
-        assert_eq!(SCENARIOS.len(), 3);
+        assert_eq!(SCENARIOS.len(), 4);
         assert_eq!(SCENARIOS[0].kind, ScenarioKind::ActorsUnary);
         assert_eq!(SCENARIOS[1].kind, ScenarioKind::StreamStreaming);
         assert_eq!(SCENARIOS[2].kind, ScenarioKind::FilesystemEmbedded);
+        assert_eq!(SCENARIOS[3].kind, ScenarioKind::MachinesTypescriptConsumer);
         assert!(SCENARIOS.iter().all(|scenario| !scenario.id.is_empty()));
     }
 

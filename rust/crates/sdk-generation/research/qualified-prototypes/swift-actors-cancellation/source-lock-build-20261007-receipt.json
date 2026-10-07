@@ -1,0 +1,50 @@
+{
+  "schema": "acyclic.swift-maintained-uniffi-source-lock-build/v1",
+  "status": "PASS_BUILD_ONLY",
+  "recordedAt": "2026-10-07",
+  "producerSourceLock": "rust/crates/sdk-generation/research/qualified-prototypes/swift-actors-cancellation/producer-source.lock.json",
+  "producerFingerprint": "F145EF14998003FDF6C048174B14CCE50D35E99BEA56F57584464FBDCA1975D7",
+  "producerFileCount": 25,
+  "generatorCommit": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+  "runner": "rust/crates/sdk-generation/research/qualified-prototypes/swift-actors-cancellation/runner.ps1",
+  "workRoot": "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007",
+  "generated": {
+    "swift": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
+    "header": "A840ACE58A5D895D1E166A0F98311C2F71D90C7F53DC40DA6E56A918809D5578",
+    "modulemap": "7ABF028E5A5A4E169B3F85E4002F66B3463D0E499C1CA034111D6FB1F4709183"
+  },
+  "native": {
+    "dll": "A3D4F1660EE40256310461BB882055FAB39C5AB5B7B6F0B1FD45D669D0D60060",
+    "importLibrary": "64CACAA0F034C8D0DD52C4440A23DDE5A6131DC018693AA39DD2BF4FD3E98D18"
+  },
+  "package": {
+    "manifest": "BA885C3B4540A6FB757FFADDB89530C70D166FDBCCF6F0055AB49CDDD27C103C",
+    "ffiAnchor": "DDC92F7A70EDAAEF7EF9EDC0EA5BB887C138C4A8E1649D08E9FC821DA52D1E74",
+    "executable": "70A54AD2FC69CFB4C497CF1F78EA1A36BFF600E941EBA70F4D47A6ED5065EF98"
+  },
+  "validation": {
+    "producerBuiltFromLockedSource": true,
+    "bindgenUsedPinnedSource": true,
+    "semanticObjects": [
+      "ActorId",
+      "CodeSha256",
+      "ActorLimits"
+    ],
+    "swiftToolsVersion": "6.4",
+    "swiftPackageBuild": "PASS",
+    "fixtureRun": "SKIPPED_BUILD_ONLY",
+    "logSha256": "94FE228BA2E45B5D9505675F6E04F2E8606FB7BA9E0175E0F2DC610078B770FE"
+  },
+  "hashes": {
+    "rust\\crates\\sdk-generation\\research\\qualified-prototypes\\swift-actors-cancellation\\runner.ps1": "1D95730B0D1D2A477C66E5F108D9C1D39D72225436E142958709183811F32DF8",
+    "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007\\generated\\acyclic_actors_uniffi.swift": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
+    "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007\\producer-target\\release\\acyclic_actors_uniffi.dll.lib": "64CACAA0F034C8D0DD52C4440A23DDE5A6131DC018693AA39DD2BF4FD3E98D18",
+    "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007\\producer-target\\release\\acyclic_actors_uniffi.dll": "A3D4F1660EE40256310461BB882055FAB39C5AB5B7B6F0B1FD45D669D0D60060",
+    "rust\\crates\\sdk-generation\\research\\qualified-prototypes\\swift-actors-cancellation\\producer-source.lock.json": "A1DCA148580F4ACAED55FA387BF454E53B36D1E4C9A4B3CDDE843AFFFC6EF2AA",
+    "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007\\generated\\acyclic_actors_uniffi.modulemap": "7ABF028E5A5A4E169B3F85E4002F66B3463D0E499C1CA034111D6FB1F4709183",
+    "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007\\build\\out\\Products\\Debug-windows-x86_64\\ActorsConformanceConsumer.exe": "70A54AD2FC69CFB4C497CF1F78EA1A36BFF600E941EBA70F4D47A6ED5065EF98",
+    "rust\\crates\\sdk-generation\\research\\qualified-prototypes\\swift-actors-cancellation\\consumer\\Sources\\acyclic_actors_uniffiFFI\\ffi_anchor.c": "DDC92F7A70EDAAEF7EF9EDC0EA5BB887C138C4A8E1649D08E9FC821DA52D1E74",
+    "rust\\crates\\sdk-generation\\research\\qualified-prototypes\\swift-actors-cancellation\\consumer\\Package.swift": "BA885C3B4540A6FB757FFADDB89530C70D166FDBCCF6F0055AB49CDDD27C103C",
+    "Q:\\sdk\\work\\swift-actors-cancellation-source-lock-20261007\\generated\\acyclic_actors_uniffiFFI.h": "A840ACE58A5D895D1E166A0F98311C2F71D90C7F53DC40DA6E56A918809D5578"
+  }
+}

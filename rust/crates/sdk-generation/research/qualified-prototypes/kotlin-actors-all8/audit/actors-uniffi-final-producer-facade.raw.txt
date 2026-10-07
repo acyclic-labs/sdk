@@ -13,3 +13,35 @@ domain_contract_sha256=83C83BDA61625CA39F626731DF1842DF666A2FC0703FFE71D3748AF98
 format_check=cargo +1.98.1 fmt --manifest-path rust/crates/actors-uniffi/Cargo.toml -- --check PASS
 cargo_check=cargo +1.98.1 check --offline --manifest-path rust/crates/actors-uniffi/Cargo.toml BLOCKED: acyclic-actors has no uniffi feature until peer domain contract lands
 publication=none
+
+ACTORS_UNIFFI_PEER_FEATURE_RECHECK_20261007
+production_checkout=Q:\sdk\work\sdkgen-main-actual03bb
+root_workspace_registration=present
+actors_uniffi_feature=present
+feature_derive_source=rust/crates/actors/src/domain.rs
+peer_domain_sha256=BE9BDA2735770635F0A4D8F52AB9C10CDDF45E5B605FB1E85F5CE5E95D08ACE2
+shared_cargo_lock_sha256=B7186EB4D99F8EFFF2A121EA404764ABD15F0295DC79F7A01DA2D5A74F4FCA2A
+facade_cargo_sha256=03F3A7B92277A06FB9C544B711571840DBD6625F55D2D457CF1B3129586C5EBD
+facade_lib_sha256=506D50E7BA98E2C20B7827CB6DE5588AAB5FE1A8848D0D8A2525FE9EDC339859
+domain_contract_sha256=83C83BDA61625CA39F626731DF1842DF666A2FC0703FFE71D3748AF98CDA2C15
+cargo_check=cargo +1.98.1 check --offline --manifest-path Cargo.toml --package acyclic-actors-uniffi --locked BLOCKED
+blocker=peer custom semantic roots lack UniFFI TypeId/Lower/Lift
+missing_roots=ActorId,CodeSha256,PositiveU64,SubscriptionStart
+missing_root_locations=domain.rs:23,29,38,385
+required_peer_contract=feature-gated custom_type mappings for tuple newtypes plus feature-gated Enum derive for SubscriptionStart
+facade_edits=none during recheck
+publication=none
+domain_contract_sha256_after_peer-contract-note=BB52866BEA799C87864F0DFBAD9616E947BE8B6584DE880AD2A5B1A36E2D1B56
+facade_workspace_state=root-registered-no-nested-workspace
+
+ACTORS_UNIFFI_BINDGEN_BUILD_RECHECK_20261007
+production_checkout=Q:/sdk/work/sdkgen-main-actual03bb
+actors_uniffi_feature=present
+semantic_custom_roots=ActorId,CodeSha256,PositiveU64
+subscription_start=Record_with_nested_feature_gated_Enum
+cargo_check_package=PASS (offline locked)
+cargo_build_bindgen=BLOCKED
+blocker=actors/build.rs wire subscription_start exports Start alias but protify build inclusion requires StartProto
+required_peer_fix=expose StartProto alongside Start alias
+facade_edits=none
+publication=none

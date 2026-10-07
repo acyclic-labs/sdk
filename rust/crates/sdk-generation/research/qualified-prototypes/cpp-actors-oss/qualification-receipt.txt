@@ -9,9 +9,13 @@ Source identity:
   header, and native library hashes in the produced SOURCE-IDENTITY and
   SOURCE-INVENTORY files. A stale or unavailable HEAD is not used as source
   evidence.
+  Exact final10 Windows crate, Actors crate, static library, generated header,
+  CXX support header, installed CMake config, and consumer executables are
+  retained under `Q:\cpp-actors-package-final10-cpp` after disposable C-drive
+  build trees were removed.
 
 Installed package run (Linux/WSL, final package refresh):
-  scripts/check-cpp-actors-package.sh /tmp/cpp-actors-package-final8
+  scripts/check-cpp-actors-package.sh /tmp/cpp-actors-package-final10
   PASS: clean extracted package, CMake find_package consumer, positive runtime,
   all eight operation entry points, authenticated TLS, wrong-token rejection,
   in-flight cancellation with server-side HTTP/2 abort, and both strong-type
@@ -21,24 +25,35 @@ Installed package run (Linux/WSL, final package refresh):
   QUALIFICATION records external_all8_runtime_tls_auth:PASS and
   external_inflight_cancel_server_abort:PASS.
   Actors archive SHA-256: 539528f67d7d0a7539902a8e9f4e3b55bb94812324fe3171f5f4f7b7f5e07753
-  CXX archive SHA-256: de844a3c20d4d6843d5c4f917bc1220e237fc070efb733ce51b3759922526163
-  SOURCE-INVENTORY SHA-256: 9ae96b9e023fb8dc0a4590bce44f267c398df8f1d181e718b5fce90574798030
-  Linux/WSL native library SHA-256: 4beb9f00a70d3b5f689d35301ad6f481853714c640b0bbb111c62ca5c3195202
+  CXX archive SHA-256: 7ef0cb8a496cd8e79f3667e42045659659db36abd8ed2711781b5c9a428eaeb5
+  SOURCE-INVENTORY SHA-256: 0f73ba3d8d1c9415c3c7ffce57611903f58cd0c9aafd623eccb902945543333
+  Linux/WSL native library SHA-256: c5033bbeeec6d022684b4318738000b4daa93c778357dc869862cba1cd513b2a
 
 Windows MSVC cohort:
   cargo 1.98.1 / rustc 1.98.1, target x86_64-pc-windows-msvc: PASS.
-  Generated header compiled with MSVC 14.44.35207; direct C++ consumer
-  compile/link against the recorded Windows static library: PASS.
-  This is maintained producer/header/link evidence. The installed all-eight
-  runtime receipt above is the Linux/WSL run; no native Windows live fixture
-  result is implied by that line.
+  Cargo producer built x86_64-pc-windows-msvc with the installed MSVC
+  toolchain; clean external CMake consumer compiled the installed generated
+  header and linked against the Windows static library: PASS.
+  Installed Windows runtime all eight operations, TLS/authentication, typed
+  error, wrong-token rejection, in-flight cancellation, and server-side HTTP/2
+  abort cleanup: PASS.
+  Windows static library SHA-256: 79d410934fceb1331406764b9762e45cc6b7a1a533233ceaf4d866dbcd642203
+  Generated header SHA-256: 3d36055c5905a7ae32fff56537bd08e1d9b2713c4c681010f2d4265d20366559
+  Installed prefix was consumed through `find_package(AcyclicActorsCXX CONFIG
+  REQUIRED)` from a clean external CMake build. The runtime terminal was:
+  `live_cxx_operations:8 authentication_rejected:true cancellation:cancelled`
+  and the fixture receipt was `{"inspectStarted":true,"inspectAborted":true}`.
+  Clang 17 required `_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` for the
+  installed MSVC STL 14.44 headers; this changes only the consumer compiler
+  guard, not the MSVC-target Cargo producer artifact.
 
 macOS SSH/ivar cohort:
   Host: Darwin 24.6.0 arm64; Apple clang 17.0.0.13.5.
   cargo 1.98.1 / rustc 1.98.1, CXX 1.0.202: staticlib build PASS.
   clang++ positive header compile and static-library link/runtime PASS;
   uint64_t and nominal opaque-type expected negatives PASS.
-  macOS/ivar native library SHA-256: 1f05614e63087a459b51650591013697c878330d3958ea9ed9abc75192b373fd
+  macOS/ivar native library SHA-256: be0ac8cf6ad674e4b38abfd7fdb6ab3f03adcbe68264d5e9b2ba243e76b12539
+  Generated header SHA-256: 3d36055c5905a7ae32fff56537bd08e1d9b2713c4c681010f2d4265d20366559
   macOS output hashes and the remote commands are recorded in
   package-qualification.md. The macOS run used the exact two archives from the
   installed Linux package and did not claim a native macOS live TLS fixture.
@@ -46,8 +61,11 @@ macOS SSH/ivar cohort:
 Bridge and runtime scope:
   The Rust producer owns the Actors client, domain conversions, typed errors,
   optional presence, u64 values, and cancellation. CXX exposes the small opaque
-  client/operation boundary; it does not translate Rust futures into a separate
-  C++ transport implementation.
+  client/operation/result boundary; ActorOperationResult fields remain private
+  to Rust and generated accessors expose only qualification assertions. The
+  eight named CXX methods are thin delegates to typed Rust operations; it does
+  not translate Rust futures into a separate C++ transport implementation or
+  duplicate request/response layouts.
   cxx-async 0.1.4 remains an unlinked option because its cppcoro/Folly executor
   dependencies are unavailable here; that is an environment limitation, not a
   blanket exclusion of maintained executor-backed routes.

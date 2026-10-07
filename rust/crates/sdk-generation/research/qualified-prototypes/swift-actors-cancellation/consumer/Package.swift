@@ -1,3 +1,4 @@
+// swift-tools-version: 6.4
 // Source-only SwiftPM consumer layout.
 // runner.ps1 stages generated Swift/header/modulemap files into Generated/ before building.
 import PackageDescription

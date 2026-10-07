@@ -25,3 +25,5 @@ The source contains explicit negative branches for missing/false subscription on
 ## Current run state
 
 The raw run is `audit/domain-ingress-current-kani068.raw.txt`. At the time of this audit, enum mapping, ActorLimits, PositiveU64, actor unknown-state ingress, and subscription unknown-state ingress had completed successfully. `update_request_try_from_preserves_expected_revision` was still being solved by the same CBMC process; no PASS is claimed for the overall augmented set until the terminal summary and exit marker are present.
+
+The maintained predicate coverage also includes `code_sha256_predicate_accepts_only_nonzero_32_byte_prefixes`, which calls production `valid_code_sha256` over a symbolic `usize` prefix length bounded by the fixed 64-byte witness. It proves every tested length in 0..=64 is accepted exactly when length is 32 and at least one byte is nonzero, without allocating an unbounded vector. It does not claim lengths above the witness bound.

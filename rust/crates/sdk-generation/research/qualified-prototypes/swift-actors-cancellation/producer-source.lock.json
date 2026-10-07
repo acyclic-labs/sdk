@@ -6,11 +6,11 @@
     "rust/crates/actors"
   ],
   "fingerprintAlgorithm": "sha256 of sorted relative-path TAB file-sha256 lines with trailing newline",
-  "fingerprint": "CCB7F15F488DE624CF819F181F8FE2F2A95A8FD445A40FED133B256B96DC6BAF",
+  "fingerprint": "F145EF14998003FDF6C048174B14CCE50D35E99BEA56F57584464FBDCA1975D7",
   "files": [
     {
       "path": "rust/crates/actors-uniffi/Cargo.lock",
-      "sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890"
+      "sha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5"
     },
     {
       "path": "rust/crates/actors-uniffi/Cargo.toml",

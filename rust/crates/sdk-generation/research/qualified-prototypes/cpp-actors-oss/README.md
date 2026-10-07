@@ -19,6 +19,12 @@ opaque Rust ownership through `rust::Box`, and shared C-like enums/structs. The
 Rust bridge is the contract source; C++ never receives Rust layout or a raw
 pointer registry.
 
+The response projection is also Rust-owned: `ActorOperationResult` is opaque
+across CXX and the generated accessors expose only the assertions needed by
+this qualification consumer. The eight named operation entry points are thin
+delegates to the existing typed Rust client methods; no C++ request/response
+DTO or field layout is authored at the boundary.
+
 The smallest production boundary is a Rust-owned opaque client and operation:
 
 * `ActorsClient` owns `acyclic_actors::client::Client` and is only passed through
@@ -37,6 +43,12 @@ The smallest production boundary is a Rust-owned opaque client and operation:
 This is a bridge to maintained Rust behavior, not a C++ protobuf SDK. The Rust
 client, domain conversion, limits, enum validation, transport, and response
 semantics remain authoritative.
+
+The complete request/result/error field audit is in
+`typed-boundary-audit.md`. It records the fields preserved and lost by the
+qualification projection and intentionally does not call this prototype a
+full strongly typed C++ SDK: the eight public operation calls use canonical
+Rust-owned requests rather than caller-supplied request builders.
 
 ## Current Rust evidence
 
@@ -74,7 +86,7 @@ The patch is test-only and does not publish, exclude, or conceal Actors.
 ## Consumer compile qualification
 
 `generated/lib.rs.h` is the CXX-generated header from this exact bridge source;
-its SHA-256 is `F302DDDE6C4D2FE594B3C41EA45505C2EDCEA85DECD591EBD0AF45935BC5A713`.
+its SHA-256 is `3D36055C5905A7AE32FFF56537BD08E1D9B2713C4C681010F2D4265D20366559`.
 The consumer source is intentionally tiny and checks only bridge contracts:
 
 * `consumer/positive.cc` links and runs successfully with WSL Ubuntu `g++`.
@@ -109,9 +121,13 @@ The executable returned 0. Its connection probe invokes the actual Rust
 `client::connect` with an invalid non-HTTPS endpoint and observes the typed
 configuration error; no toy transport or independent DTO is involved. The
 The current Windows cohort has Rust 1.98.1 producer output and MSVC 14.44.35207
-header/consumer link evidence, recorded with its static-library hash. The live
-all-eight runtime receipt is the clean Linux/WSL installed run; it is not
-silently attributed to native Windows.
+header/consumer link evidence, recorded with its static-library hash. Its clean
+installed CMake consumer also compiled and linked with the installed package,
+ran all eight operations against the authenticated TLS fixture, rejected a
+wrong bearer token, and observed in-flight cancellation as a server-side
+HTTP/2 abort. The C++ compiler used the installed MSVC STL with the documented
+version-mismatch opt-out because the installed clang-cl is older than that STL;
+the Cargo producer and static library are still the MSVC target artifacts.
 
 ## Live authenticated TLS conformance
 
@@ -203,6 +219,11 @@ Primary upstream references (retrieved 2026-10-07):
 5. Run the packaged C++ positive and expected-negative compile checks for each
    supported compiler/target. Link/runtime qualification is still required on the
    supported native matrix.
+
+6. Coordinate with the foundation-port owner before adding Diplomat or other
+   generator feature annotations. The production domain must remain the sole
+   semantic source, and generated C++ declarations must consume that source
+   rather than introduce a parallel record model.
 
 No archive, generated protobuf, public Actor package, or frozen Q ownership was
 changed by this qualification.

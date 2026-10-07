@@ -12,9 +12,11 @@ release lane is explicitly adopted.
 The inspected producer checkout is
 `Q:\sdk\work\sdkgen-main-actual03bb` at revision
 `03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1`. Its working tree is dirty because
-the single-domain migration is in progress. The producer has no
-`rust/crates/actors-uniffi` directory yet, so the exact qualified JAR remains a
-task-local artifact from the earlier facade checkout.
+the single-domain migration is in progress. The maintained
+`rust/crates/actors-uniffi` facade is now registered in the root workspace and
+its package check passes against the current lock. The exact qualified JAR
+below remains a task-local artifact from the earlier facade cohort until the
+current producer native build and bindgen lane are rerun.
 
 The producer-owned extraction points are already clear:
 
@@ -115,3 +117,8 @@ registry, or claim that an older native resource belongs to a new source lock.
 When the facade integration lands in the production cutover, the same receipt
 is the admission input for the full bindgen, native rebuild, Maven package,
 external-negative compile, all-eight runtime, and pending-cancellation lanes.
+
+The current package check is green, but the bindgen/native build is waiting on
+one peer-owned build-script alias: `actors/build.rs` must expose
+`subscription_start::StartProto` alongside its existing `Start` alias for the
+new `SubscriptionStart` oneof. The facade does not edit that peer file.

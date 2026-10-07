@@ -22,17 +22,35 @@ $sourceFiles = @(
     'rust/crates/actors/src/contract.rs', 'rust/crates/actors/src/contract_definitions.rs',
     'rust/crates/actors/build.rs'
 )
+$facadeFiles = @(
+    'rust/crates/actors-uniffi/Cargo.toml',
+    'rust/crates/actors-uniffi/src/lib.rs',
+    'rust/crates/actors-uniffi/UNIFFI-DOMAIN-CONTRACT.md'
+)
 $hashes = [ordered]@{}
 foreach ($relative in $sourceFiles) {
     $path = Join-Path $SourceRoot ($relative -replace '/', '\')
     Require-File $path
     $hashes[$relative] = Sha256 $path
 }
+$facadeHashes = [ordered]@{}
+foreach ($relative in $facadeFiles) {
+    $path = Join-Path $SourceRoot ($relative -replace '/', '\')
+    Require-File $path
+    $facadeHashes[$relative] = Sha256 $path
+}
 
 $domain = Get-Content -Raw -LiteralPath (Join-Path $SourceRoot 'rust/crates/actors/src/domain.rs')
 $rootsMatch = [regex]::Match($domain, 'export_roots!\((?<body>[\s\S]*?)\);')
 if (-not $rootsMatch.Success) { throw 'domain.rs does not expose the producer-owned export_roots! list' }
 $semanticRoots = @($rootsMatch.Groups['body'].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$uniffiRootGaps = @('ActorId', 'CodeSha256', 'PositiveU64', 'SubscriptionStart') | Where-Object {
+    $root = $_
+    $escapedRoot = [regex]::Escape($root)
+    $hasDerivedType = $domain -match ('(?s)cfg_attr\(feature\s*=\s*"uniffi"[^\r\n]*derive\(uniffi::(?:Record|Enum)\)[^\r\n]*\).*?(?:pub\s+)?(?:struct|enum)\s+' + $escapedRoot + '\b')
+    $hasCustomType = $domain -match ('uniffi::custom_type!\(\s*' + $escapedRoot + '\b')
+    -not $hasDerivedType -and -not $hasCustomType
+}
 
 $client = Get-Content -Raw -LiteralPath (Join-Path $SourceRoot 'rust/crates/actors/src/client.rs')
 $operations = @([regex]::Matches($client, 'operation!\(\s*(?<name>[a-z_]+),') | ForEach-Object { $_.Groups['name'].Value })
@@ -70,6 +88,7 @@ $receipt = [ordered]@{
     source_commit = $sourceCommit
     source_worktree_dirty = $dirty
     source_files_sha256 = $hashes
+        facade_files_sha256 = $facadeHashes
     final_semantic_producer = [ordered]@{
         domain_module = 'rust/crates/actors/src/domain.rs'
         semantic_export_roots = $semanticRoots
@@ -77,6 +96,11 @@ $receipt = [ordered]@{
         http_routes = $routes
         extraction = @('domain.rs: export_roots! macro used by export_typescript', 'client.rs: operation! macro declarations', 'lib.rs: HTTP_ROUTES')
     }
+        uniffi_contract = [ordered]@{
+            feature_present = $domain -match 'cfg_attr\(feature\s*=\s*"uniffi"'
+            semantic_root_gaps = @($uniffiRootGaps)
+            status = if (@($uniffiRootGaps).Count -eq 0) { 'ready-for-cargo-check' } else { 'blocked-by-peer-domain-conversions' }
+        }
     current_cutover_gap = [ordered]@{
         actors_uniffi_present = $uniffiPresent
         required_integration = @('add a maintained UniFFI facade that depends on acyclic-actors by path', 'replace duplicate Kotlin type and operation tables with producer metadata extraction', 'hash the producer closure and Cargo lock at generation time', 'derive Maven version from Cargo metadata and retain standard JNA resource roots')

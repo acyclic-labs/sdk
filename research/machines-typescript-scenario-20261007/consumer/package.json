@@ -1,0 +1,6 @@
+{
+  "name": "machines-typescript-scenario-consumer",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@acyclic-labs/machines": "file:../package/acyclic-labs-machines-0.2.0.tgz" }
+}

@@ -3,6 +3,7 @@ param(
     [string]$ProducerSource = '',
     [string]$FixtureOptions = 'Q:\sdk\work\root-pending-actors-fixture-options.json',
     [string]$WorkRoot = 'Q:\sdk\work\swift-actors-cancellation-repro-20261007',
+    [switch]$BuildOnly,
     [ValidateSet('ActorsConformanceConsumer', 'ActorsAll8ConformanceConsumer')]
     [string]$Product = 'ActorsConformanceConsumer'
 )
@@ -13,7 +14,14 @@ if ([string]::IsNullOrWhiteSpace($ProducerSource)) {
     $ProducerSource = Join-Path $repoRoot 'rust\crates\actors-uniffi'
 }
 $ProducerSource = (Resolve-Path -LiteralPath $ProducerSource).Path
-$expectedProducerFingerprint = 'CCB7F15F488DE624CF819F181F8FE2F2A95A8FD445A40FED133B256B96DC6BAF'
+$producerLockPath = Join-Path $artifact 'producer-source.lock.json'
+if (!(Test-Path -LiteralPath $producerLockPath)) { throw "Missing producer source lock: $producerLockPath" }
+$producerLock = Get-Content -LiteralPath $producerLockPath -Raw | ConvertFrom-Json
+$expectedProducerFingerprint = $producerLock.fingerprint
+$expectedProducerRoot = (Resolve-Path (Join-Path $repoRoot ($producerLock.producerRoot -replace '/', '\'))).Path
+if ($ProducerSource.TrimEnd('\') -ne $expectedProducerRoot.TrimEnd('\')) {
+    throw "ProducerSource must resolve to the locked final producer: expected $expectedProducerRoot, got $ProducerSource"
+}
 $templates = @{
     'Async.swift' = '830FB89B3C97713CA2C1CF844BE63E0A1AD5D458AF7A3C87A3E2FF58A2B5E0C6'
     'macros.swift' = '5EB1C64482514E8962099B42BE14BBC2C0B375570869CFE391006A77802ABDB4'
@@ -23,7 +31,7 @@ foreach ($name in $templates.Keys) {
     $path = Join-Path $UniFFISource "uniffi_bindgen\src\bindings\swift\templates\$name"
     if (!(Test-Path -LiteralPath $path)) { throw "Missing pinned UniFFI template: $path" }
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
-    if ($actual -ne $templates[$name]) { throw "Pinned template hash mismatch for $name: $actual" }
+    if ($actual -ne $templates[$name]) { throw "Pinned template hash mismatch for ${name}: $actual" }
 }
 if (!(Test-Path -LiteralPath (Join-Path $ProducerSource 'Cargo.toml'))) {
     throw "ProducerSource is not the maintained actors-uniffi crate: $ProducerSource"
@@ -49,6 +57,17 @@ $producerFingerprint = (Get-FileHash -InputStream $producerStream -Algorithm SHA
 if ($producerFingerprint -ne $expectedProducerFingerprint) {
     throw "Maintained producer source fingerprint mismatch: expected $expectedProducerFingerprint, got $producerFingerprint"
 }
+$expectedByPath = @{}
+foreach ($entry in $producerLock.files) { $expectedByPath[$entry.path] = $entry.sha256.ToUpperInvariant() }
+if ($expectedByPath.Count -ne $producerLines.Count) {
+    throw "Maintained producer source file set mismatch: lock has $($expectedByPath.Count), source has $($producerLines.Count)"
+}
+foreach ($line in $producerLines) {
+    $parts = $line -split "`t", 2
+    if (!$expectedByPath.ContainsKey($parts[0]) -or $expectedByPath[$parts[0]] -ne $parts[1]) {
+        throw "Maintained producer source file hash mismatch: $($parts[0])"
+    }
+}
 
 # Build the native artifact from this exact producer source. A caller cannot
 # accidentally pair generated Swift with a stale or unrelated cdylib.
@@ -59,7 +78,7 @@ $RustDll = Join-Path $producerTarget 'release\acyclic_actors_uniffi.dll'
 if (!(Test-Path -LiteralPath $RustDll)) { throw "Producer build did not emit the Rust cdylib: $RustDll" }
 $package = Join-Path $WorkRoot 'consumer'
 $generated = Join-Path $WorkRoot 'generated'
-New-Item -ItemType Directory -Force "$package\Sources\ActorsConformanceConsumer","$package\Generated\AcyclicActors","$package\Generated\acyclic_actors_uniffiFFI\include","$package\Native\windows-x86_64","$WorkRoot\build" | Out-Null
+New-Item -ItemType Directory -Force "$package\Sources\ActorsConformanceConsumer","$package\Sources\ActorsAll8ConformanceConsumer","$package\Generated\AcyclicActors","$package\Generated\acyclic_actors_uniffiFFI\include","$package\Native\windows-x86_64","$WorkRoot\build" | Out-Null
 Copy-Item (Join-Path $artifact 'consumer\Package.swift') $package -Force
 Copy-Item (Join-Path $artifact 'consumer\Sources\ActorsConformanceConsumer\main.swift') "$package\Sources\ActorsConformanceConsumer\main.swift" -Force
 Copy-Item (Join-Path $artifact 'consumer\Sources\ActorsAll8ConformanceConsumer\main.swift') "$package\Sources\ActorsAll8ConformanceConsumer\main.swift" -Force
@@ -80,9 +99,17 @@ if ((Get-Content (Join-Path $generated 'acyclic_actors_uniffi.swift') -Raw) -not
 Copy-Item "$generated\acyclic_actors_uniffi.swift" "$package\Generated\AcyclicActors\Actors.swift" -Force
 Copy-Item "$generated\acyclic_actors_uniffiFFI.h" "$package\Generated\acyclic_actors_uniffiFFI\include\acyclic_actors_uniffiFFI.h" -Force
 Copy-Item "$generated\acyclic_actors_uniffi.modulemap" "$package\Generated\acyclic_actors_uniffiFFI\module.modulemap" -Force
-Copy-Item (Join-Path (Split-Path $RustDll) 'acyclic_actors_uniffi.lib') "$package\Native\windows-x86_64\acyclic_actors_uniffi.lib" -Force
+Copy-Item (Join-Path $artifact 'consumer\Sources\acyclic_actors_uniffiFFI\ffi_anchor.c') "$package\Generated\acyclic_actors_uniffiFFI\ffi_anchor.c" -Force
+$nativeImportLib = Join-Path (Split-Path $RustDll) 'acyclic_actors_uniffi.dll.lib'
+if (!(Test-Path -LiteralPath $nativeImportLib)) {
+    $nativeImportLib = Join-Path (Split-Path $RustDll) 'acyclic_actors_uniffi.lib'
+}
+if (!(Test-Path -LiteralPath $nativeImportLib)) { throw "Producer build did not emit a Windows import library beside $RustDll" }
+Copy-Item $nativeImportLib "$package\Native\windows-x86_64\acyclic_actors_uniffi.lib" -Force
 Copy-Item $RustDll "$package\Native\windows-x86_64\acyclic_actors_uniffi.dll" -Force
 swift build --package-path $package --scratch-path (Join-Path $WorkRoot 'build') --product $Product
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($BuildOnly) { exit 0 }
 $env:ACTORS_FIXTURE_OPTIONS = (Resolve-Path -LiteralPath $FixtureOptions).Path
 & (Join-Path $WorkRoot "build\out\products\debug-windows-x86_64\$Product.exe")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

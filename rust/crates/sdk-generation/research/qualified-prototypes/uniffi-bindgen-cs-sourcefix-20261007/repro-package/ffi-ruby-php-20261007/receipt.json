@@ -29,9 +29,51 @@
     "header_sha256": "CB16FEEB6243454A636876FA5A6E046595E73F112EAA59DAC9381732696D6452",
     "exit_code": 0,
     "exported_uniffi_declarations": 0,
-    "status": "BLOCKED_NO_GENERATED_CONSUMER_CONTRACT",
+    "status": "NO_CURRENT_METADATA_CONSUMER_BACKEND",
     "php_version": "8.5.11",
-    "ffi_extension": "absent_secondary"
+    "ffi_extension": "absent_secondary",
+    "uniffi_bindgen_binary_sha256": "79E3D19ADCE7A8E6A81805769E0A85B7A26B429EDD9604445EDAC5CDF2D91A0",
+    "uniffi_language_checks": {
+      "c": {
+        "exit_code": 2,
+        "stderr": "invalid value 'c' for '--language <LANGUAGE>'; possible values: kotlin, swift, python, ruby"
+      },
+      "php": {
+        "exit_code": 2,
+        "stderr": "invalid value 'php' for '--language <LANGUAGE>'; possible values: kotlin, swift, python, ruby"
+      }
+    },
+    "maintained_options": {
+      "alef": {
+        "version": "0.107.0",
+        "license": "MIT",
+        "repository": "https://github.com/xberg-io/alef",
+        "source_cargo_toml_sha256": "AA583121016B1AC46881DD4C5E31124D8A7D1909518DC440A4A81E11A4D33B78",
+        "status": "BUILD_STARTED_NO_OUTPUT_CLAIM",
+        "targets": ["php_native_extension", "c_ffi"],
+        "input": "source-driven Alef configuration; not UniFFI metadata"
+      },
+      "ext_php_rs": {
+        "repository": "https://github.com/extphprs/ext-php-rs",
+        "status": "ADAPTER_REQUIRED",
+        "input": "Rust source with PHP-specific extension attributes"
+      },
+      "ffime_ffigen": {
+        "repositories": ["https://github.com/ircmaxell/FFIMe", "https://packagist.org/packages/klitsche/ffigen"],
+        "status": "HEADER_REQUIRED",
+        "input": "C header; no UniFFI metadata consumer"
+      },
+      "ant_ffi": {
+        "repository": "https://github.com/maidsafe/ant-ffi",
+        "status": "ARCHIVED_DOMAIN_SPECIFIC",
+        "input": "custom C ABI; not reusable UniFFI backend"
+      }
+    },
+    "wsl_php_install": {
+      "command": "sudo apt-get update && sudo apt-get install -y php-cli php8.1-common",
+      "status": "HUNG_BEFORE_PACKAGE_COMPLETION",
+      "qualification": "not_claimed"
+    }
   },
   "scope": "source-only; no producer/package mutation; no publish/merge/deploy"
 }

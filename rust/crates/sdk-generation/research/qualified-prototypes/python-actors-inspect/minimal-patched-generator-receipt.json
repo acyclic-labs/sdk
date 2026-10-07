@@ -144,42 +144,42 @@
     "installed": {
       "windows": {
         "status": "PASS",
-        "receipt_path": "Q:\\sdk\\work\\python-actors-win-receipt-20261007-rerun5.json",
-        "receipt_sha256": "7324E1312548546DF7E74D4608F50EFE9B65744384ABB314E5829E2F41C27672",
+        "receipt_path": "Q:\\sdk\\work\\python-actors-win-receipt-20261007-rerun6.json",
+        "receipt_sha256": "2497A098ADC0793656079191A258223FFC362FE8CE364175AFD4B1B40618C1D1",
         "receipt_bytes": 1270
       },
       "linux_wsl": {
         "status": "PASS",
-        "receipt_path": "Q:\\sdk\\work\\python-actors-linux-receipt-20261007-rerun6.json",
-        "receipt_sha256": "1E41408122738B068E61CE07D4AD1A652657DFA652C90C75328567D4F3754A0A",
+        "receipt_path": "Q:\\sdk\\work\\python-actors-linux-receipt-20261007-rerun7.json",
+        "receipt_sha256": "5DD88C71E252E33EF76B95907E101B15A372D99D0E06D1D0525584040D419FC1",
         "receipt_bytes": 1232
       },
       "macos_ivar": {
         "status": "PASS",
-        "receipt_path": "ivar:/Users/var/python-actors-mac-receipt-20261007.json",
-        "receipt_sha256": "3C95984E07DB497A7208AC8AC281BA887D0ABA811E029A49E226147B1855FE4F",
+        "receipt_path": "Q:\\sdk\\work\\python-actors-mac-receipt-20261007-rerun5.json",
+        "receipt_sha256": "7D26B77260C9211C81FDE99F6348AA96264A8453C5BDBE1E27BDAC3551B68A2F",
         "receipt_bytes": 1215
       }
     },
     "installed_receipts": {
       "windows": {
         "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/windows-20261007.json",
-        "sha256": "7324E1312548546DF7E74D4608F50EFE9B65744384ABB314E5829E2F41C27672",
+        "sha256": "2497A098ADC0793656079191A258223FFC362FE8CE364175AFD4B1B40618C1D1",
         "bytes": 1270
       },
       "linux_wsl": {
         "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/linux-wsl-20261007.json",
-        "sha256": "1E41408122738B068E61CE07D4AD1A652657DFA652C90C75328567D4F3754A0A",
+        "sha256": "5DD88C71E252E33EF76B95907E101B15A372D99D0E06D1D0525584040D419FC1",
         "bytes": 1232
       },
       "macos_ivar": {
         "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/macos-ivar-20261007.json",
-        "sha256": "3C95984E07DB497A7208AC8AC281BA887D0ABA811E029A49E226147B1855FE4F",
+        "sha256": "7D26B77260C9211C81FDE99F6348AA96264A8453C5BDBE1E27BDAC3551B68A2F",
         "bytes": 1215
       },
       "producer_manifest": {
         "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-receipts/producer-manifest-20261007.json",
-        "sha256": "2CDA446831978A03E436A0482383F4C00C546B3CA5CD94A52E705DE4EB708CF3",
+        "sha256": "D5425FA2E7B9ACF298BA5D9705586659FC1EB1B1C89832E5513A9ECF46FD17D0",
         "bytes": 14108
       }
     },
