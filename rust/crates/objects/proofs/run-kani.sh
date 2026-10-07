@@ -137,8 +137,23 @@ kani_home_effective="${KANI_HOME:-$kani_home}"
 kani_rustc_version="unavailable"
 kani_toolchain_version="unavailable"
 if [[ -n "$kani_home_effective" ]]; then
-    kani_rustc_file=$(find "$kani_home_effective" -mindepth 2 -maxdepth 2 -type f -name rustc-version 2>/dev/null | sort | tail -n 1 || true)
-    kani_toolchain_file=$(find "$kani_home_effective" -mindepth 2 -maxdepth 2 -type f -name rust-toolchain-version 2>/dev/null | sort | tail -n 1 || true)
+    # KANI_HOME can contain multiple installed bundles. Select the bundle
+    # matching the wrapper version before using the root-level fallback; a
+    # lexical "latest" lookup could record a different compiler than the one
+    # cargo-kani actually selected.
+    kani_release_version=$(printf '%s\n' "$kani_version" | sed -n 's/.*Verifier \([0-9][0-9.]*\).*/\1/p')
+    kani_bundle_root="$kani_home_effective"
+    if [[ -n "$kani_release_version" && -d "$kani_home_effective/kani-$kani_release_version" ]]; then
+        kani_bundle_root="$kani_home_effective/kani-$kani_release_version"
+    fi
+    kani_rustc_file=""
+    kani_toolchain_file=""
+    if [[ -f "$kani_bundle_root/rustc-version" ]]; then
+        kani_rustc_file="$kani_bundle_root/rustc-version"
+    fi
+    if [[ -f "$kani_bundle_root/rust-toolchain-version" ]]; then
+        kani_toolchain_file="$kani_bundle_root/rust-toolchain-version"
+    fi
     [[ -z "$kani_rustc_file" ]] || kani_rustc_version=$(cat "$kani_rustc_file")
     [[ -z "$kani_toolchain_file" ]] || kani_toolchain_version=$(cat "$kani_toolchain_file")
 fi

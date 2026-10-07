@@ -121,5 +121,49 @@ enum projection currently returns a semantic error. A forward-compatible
 `Unknown(raw)` case would require a deliberate Rust domain change before any
 binding adapter change.
 
+## Generator pinning audit
+
+This audit separates resolved Rust libraries from the executable that emits a
+foreign-language declaration. A committed lockfile is reproducibility evidence
+even when a Cargo manifest uses a compatible range; a range is only a drift
+risk when the lockfile is regenerated or a build omits `--locked`.
+
+* **N-API-RS:** the workspace manifest requests `napi 3.6.1`,
+  `napi-derive 3.3.3`, and `napi-build 2.3.1` through compatible Cargo
+  requirements. The current workspace `Cargo.lock` resolves those libraries
+  to `napi 3.12.7`, `napi-derive 3.6.8`, and `napi-build 2.4.4`. Every
+  declaration build in `scripts/napi-types.mjs` invokes `cargo build --locked`.
+  The actual declaration executable is the Bun package `@napi-rs/cli 3.10.5`,
+  exact in `package.json` and resolved in `bun.lock`; it is imported by
+  `scripts/napi-types.mjs`. There is no observed N-API version drift. The
+  minimum maintenance rule is to retain the committed lock and use the
+  existing frozen Bun install in qualification; changing the Cargo ranges to
+  exact versions would be policy churn without a reproducibility benefit.
+
+* **ts-rs:** `ts-rs = "=12.0.1"` is exact in `rust/crates/actors/Cargo.toml`
+  and resolves to `12.0.1` in `Cargo.lock`. It is a Rust library/procedural
+  macro used by `domain::export_typescript`, not a separately installed
+  generator executable. No independent executable pin is missing in this
+  path; `cargo build --locked` is the relevant reproducibility boundary.
+
+* **WASM:** the Rust libraries `wasm-bindgen = "=0.2.117"` and
+  `wasm-bindgen-futures = "=0.4.67"` are present at those exact lockfile
+  resolutions. The executable is independently checked by
+  `scripts/ensure-wasm-bindgen.sh`: it requires `wasm-bindgen 0.2.117`,
+  verifies the Linux x86_64 release archive against its recorded SHA-256, and
+  uses `cargo install --locked wasm-bindgen-cli --version 0.2.117` on other
+  hosts. `scripts/build-provider-wasm.mjs` obtains the path from that resolver
+  before invoking it. The PowerShell and qualification shell lanes apply the
+  same version check. No executable drift is present in the maintained build
+  path.
+
+The generic Rust SDK-generation receipt records its own compiled launcher and
+Rust toolchain, but does not currently enumerate the external N-API CLI or
+WASM CLI identities in one cross-language receipt. That is a provenance
+metadata gap, not a version-resolution failure. The minimum follow-up is to
+add those already-enforced versions and, where available, executable/archive
+hashes to the generation receipt when the receipt is expanded; do not alter
+the current dependency pins solely to address this reporting gap.
+
 
 

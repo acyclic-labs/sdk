@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.kani-proof/v1",
-  "captured_at_utc": "2026-10-07T05:21:22Z",
+  "captured_at_utc": "2026-10-07T05:52:47Z",
   "status": "proved",
   "source": {
     "revision": "371bb4170e16aca973176b6756a261ee5add7297",
@@ -30,16 +30,19 @@
       "rust/crates/objects/src/v2/request.rs": "EA36517FEE4D162D5AAB4508AA3C093FC6E08EE999C926E8EF8C3750AFF380DF",
       "rust/crates/objects/src/v2/response.rs": "EA3F3DB771A4ABCC851C344072E4AB49D7127937AD34DFD190DCB420A2C8A8C0",
       "rust/crates/objects/src/v2/typed.rs": "37D198AF5958F613EEB7EA0FE7162201714C61F4F216A4CAECBD1D8545085EF9",
-      "rust/crates/objects/src/v2/upload.rs": "085F0199B1D996DFC1253C2648543E4B4EB3598DD9571669D1F658BFAF539C93"
+      "rust/crates/objects/src/v2/upload.rs": "085F0199B1D996DFC1253C2648543E4B4EB3598DD9571669D1F658BFAF539C93",
+      "rust/crates/objects/proofs/run-kani.sh": "50360463432802CA5208B39FB22F0732E4E14D15066CB8D68125C1EA37958108"
     },
     "closure": "rustc dependency inputs for acyclic-objects default-feature Kani compilation, including generated wire files and the native-runtime path dependency"
   },
   "tools": {
     "kani": "Kani Rust Verifier 0.68.0 (cargo plugin)",
     "cbmc": "CBMC 6.11.0",
-    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
-    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
-    "kani_home": "/home/var/.kani"
+    "host_rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "host_cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "kani_rustc": "rustc 1.100.0-nightly (8925ea358 2026-08-20)",
+    "kani_toolchain": "nightly-2026-08-21-x86_64-unknown-linux-gnu",
+    "kani_home": "/home/var/.kani/kani-0.68.0"
   },
   "command": {
     "entrypoint": "cargo-kani",
@@ -93,7 +96,7 @@
   },
   "evidence": {
     "external_log": "rust/crates/objects/proofs/objects-request-kani-proof.log",
-    "log_sha256": "50043FBF2C8481E6BDBB216C9F975E4984CED66EECA70B77849FB5002E9114D2",
+    "log_sha256": "FB6D73D472B6630D21FFBB5B1C055DB10EA232FE1C3FAA358DBFD49E476FAAAE",
     "required_markers": [
       "VERIFICATION:- SUCCESSFUL",
       "CARGO_KANI_EXIT=0"

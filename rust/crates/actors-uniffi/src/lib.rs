@@ -132,6 +132,336 @@ impl PositiveU64 {
     }
 }
 
+
+/// Rust-owned resource binding. The opaque object contains the canonical
+/// validated domain value; foreign callers cannot construct an invalid binding.
+#[derive(Debug, uniffi::Object)]
+pub struct Binding {
+    inner: domain::Binding,
+}
+
+#[uniffi::export]
+impl Binding {
+    #[uniffi::constructor]
+    pub fn new(
+        name: String,
+        capability: String,
+        resource: String,
+    ) -> Result<Arc<Self>, BindingError> {
+        domain::Binding::new(name, capability, resource)
+            .map(|inner| Arc::new(Self { inner }))
+            .map_err(domain_error)
+    }
+
+    pub fn name(&self) -> String { self.inner.name().to_owned() }
+    pub fn capability(&self) -> String { self.inner.capability().to_owned() }
+    pub fn resource(&self) -> String { self.inner.resource().to_owned() }
+}
+
+/// Rust-owned positive Actor resource limits.
+#[derive(Debug, uniffi::Object)]
+pub struct ActorLimits {
+    inner: domain::ActorLimits,
+}
+
+#[uniffi::export]
+impl ActorLimits {
+    #[uniffi::constructor]
+    pub fn new(
+        handler_timeout_millis: u64,
+        memory_bytes: u64,
+        checkpoint_bytes: u64,
+    ) -> Result<Arc<Self>, BindingError> {
+        domain::ActorLimits::new(handler_timeout_millis, memory_bytes, checkpoint_bytes)
+            .map(|inner| Arc::new(Self { inner }))
+            .map_err(domain_error)
+    }
+
+    pub fn handler_timeout_millis(&self) -> u64 { self.inner.handler_timeout_millis() }
+    pub fn memory_bytes(&self) -> u64 { self.inner.memory_bytes() }
+    pub fn checkpoint_bytes(&self) -> u64 { self.inner.checkpoint_bytes() }
+}
+
+/// Rust-owned subscription start selector, preserving cursor zero and
+/// current-head presence semantics.
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum SubscriptionStart {
+    Cursor { cursor: u64 },
+    CurrentHead { current_head: bool },
+}
+
+fn domain_subscription_start(value: SubscriptionStart) -> domain::SubscriptionStart {
+    match value {
+        SubscriptionStart::Cursor { cursor } => domain::SubscriptionStart::Cursor { cursor },
+        SubscriptionStart::CurrentHead { current_head } => {
+            domain::SubscriptionStart::CurrentHead { current_head }
+        }
+    }
+}
+
+/// Rust-owned validated subscription specification.
+#[derive(Debug, uniffi::Object)]
+pub struct SubscriptionSpec {
+    inner: domain::SubscriptionSpec,
+}
+
+#[uniffi::export]
+impl SubscriptionSpec {
+    #[uniffi::constructor]
+    pub fn new(
+        subscription_id: String,
+        stream_path: String,
+        start: SubscriptionStart,
+        placement_anchor: bool,
+    ) -> Result<Arc<Self>, BindingError> {
+        domain::SubscriptionSpec::new(
+            subscription_id,
+            stream_path,
+            domain_subscription_start(start),
+            placement_anchor,
+        )
+        .map(|inner| Arc::new(Self { inner }))
+        .map_err(domain_error)
+    }
+
+    pub fn subscription_id(&self) -> String { self.inner.subscription_id().to_owned() }
+    pub fn stream_path(&self) -> String { self.inner.stream_path().to_owned() }
+    pub fn placement_anchor(&self) -> bool { self.inner.placement_anchor() }
+}
+
+/// Wire header projected from the canonical header alias.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Header {
+    pub name: String,
+    pub value: String,
+}
+
+fn domain_headers(headers: Vec<Header>) -> Vec<domain::Header> {
+    headers
+        .into_iter()
+        .map(|header| domain::Header {
+            name: header.name,
+            value: header.value,
+        })
+        .collect()
+}
+
+/// Opaque validated create request.
+#[derive(Debug, uniffi::Object)]
+pub struct CreateActorRequest {
+    inner: domain::CreateActorRequest,
+}
+
+#[uniffi::export]
+impl CreateActorRequest {
+    #[uniffi::constructor]
+    pub fn new(
+        code_sha256: Arc<CodeSha256>,
+        home_region: String,
+        bindings: Vec<Arc<Binding>>,
+        limits: Arc<ActorLimits>,
+        subscriptions: Vec<Arc<SubscriptionSpec>>,
+        idempotency_key: String,
+    ) -> Result<Arc<Self>, BindingError> {
+        domain::CreateActorRequest::new(
+            code_sha256.inner.clone(),
+            home_region,
+            bindings.into_iter().map(|value| value.inner.clone()).collect(),
+            limits.inner.clone(),
+            subscriptions.into_iter().map(|value| value.inner.clone()).collect(),
+            idempotency_key,
+        )
+        .map(|inner| Arc::new(Self { inner }))
+        .map_err(domain_error)
+    }
+}
+
+/// Opaque validated update request.
+#[derive(Debug, uniffi::Object)]
+pub struct UpdateActorRequest {
+    inner: domain::UpdateActorRequest,
+}
+
+#[uniffi::export]
+impl UpdateActorRequest {
+    #[uniffi::constructor]
+    pub fn new(
+        actor_id: Arc<ActorId>,
+        code_sha256: Arc<CodeSha256>,
+        bindings: Vec<Arc<Binding>>,
+        limits: Arc<ActorLimits>,
+        expected_configuration_revision: u64,
+        idempotency_key: String,
+    ) -> Result<Arc<Self>, BindingError> {
+        domain::UpdateActorRequest::new(
+            actor_id.inner.clone(),
+            code_sha256.inner.clone(),
+            bindings.into_iter().map(|value| value.inner.clone()).collect(),
+            limits.inner.clone(),
+            expected_configuration_revision,
+            idempotency_key,
+        )
+        .map(|inner| Arc::new(Self { inner }))
+        .map_err(domain_error)
+    }
+}
+
+/// Opaque inspect request. The legacy ActorId overload remains on ActorsClient.
+#[derive(Debug, uniffi::Object)]
+pub struct InspectActorRequest {
+    inner: domain::InspectActorRequest,
+}
+
+#[uniffi::export]
+impl InspectActorRequest {
+    #[uniffi::constructor]
+    pub fn new(actor_id: Arc<ActorId>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: domain::InspectActorRequest::new(actor_id.inner.clone()),
+        })
+    }
+}
+
+/// Opaque validated add-subscription request.
+#[derive(Debug, uniffi::Object)]
+pub struct AddSubscriptionRequest {
+    inner: domain::AddSubscriptionRequest,
+}
+
+#[uniffi::export]
+impl AddSubscriptionRequest {
+    #[uniffi::constructor]
+    pub fn new(
+        actor_id: Arc<ActorId>,
+        subscription: Arc<SubscriptionSpec>,
+        idempotency_key: String,
+    ) -> Result<Arc<Self>, BindingError> {
+        domain::AddSubscriptionRequest::new(
+            actor_id.inner.clone(),
+            subscription.inner.clone(),
+            idempotency_key,
+        )
+        .map(|inner| Arc::new(Self { inner }))
+        .map_err(domain_error)
+    }
+}
+
+/// Opaque remove-subscription request.
+#[derive(Debug, uniffi::Object)]
+pub struct RemoveSubscriptionRequest {
+    inner: domain::RemoveSubscriptionRequest,
+}
+
+#[uniffi::export]
+impl RemoveSubscriptionRequest {
+    #[uniffi::constructor]
+    pub fn new(
+        actor_id: Arc<ActorId>,
+        subscription_id: String,
+        idempotency_key: String,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: domain::RemoveSubscriptionRequest::new(
+                actor_id.inner.clone(),
+                subscription_id,
+                idempotency_key,
+            ),
+        })
+    }
+}
+
+/// Opaque resume-subscription request.
+#[derive(Debug, uniffi::Object)]
+pub struct ResumeSubscriptionRequest {
+    inner: domain::ResumeSubscriptionRequest,
+}
+
+#[uniffi::export]
+impl ResumeSubscriptionRequest {
+    #[uniffi::constructor]
+    pub fn new(
+        actor_id: Arc<ActorId>,
+        subscription_id: String,
+        idempotency_key: String,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: domain::ResumeSubscriptionRequest::new(
+                actor_id.inner.clone(),
+                subscription_id,
+                idempotency_key,
+            ),
+        })
+    }
+}
+
+/// Opaque checkpoint request.
+#[derive(Debug, uniffi::Object)]
+pub struct CheckpointActorRequest {
+    inner: domain::CheckpointActorRequest,
+}
+
+#[uniffi::export]
+impl CheckpointActorRequest {
+    #[uniffi::constructor]
+    pub fn new(actor_id: Arc<ActorId>, idempotency_key: String) -> Arc<Self> {
+        Arc::new(Self {
+            inner: domain::CheckpointActorRequest::new(actor_id.inner.clone(), idempotency_key),
+        })
+    }
+}
+
+/// Opaque invocation request.
+#[derive(Debug, uniffi::Object)]
+pub struct InvokeActorRequest {
+    inner: domain::InvokeActorRequest,
+}
+
+#[uniffi::export]
+impl InvokeActorRequest {
+    #[uniffi::constructor]
+    pub fn new(
+        actor_id: Arc<ActorId>,
+        method: String,
+        url: String,
+        body: Vec<u8>,
+        headers: Vec<Header>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: domain::InvokeActorRequest::new(
+                actor_id.inner.clone(),
+                method,
+                url,
+                body,
+                domain_headers(headers),
+            ),
+        })
+    }
+}
+
+/// Typed invocation response with byte-preserving body and headers.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct InvokeActorResponse {
+    pub status: u32,
+    pub body: Vec<u8>,
+    pub headers: Vec<Header>,
+}
+
+fn invoke_actor_response(value: domain::InvokeActorResponse) -> InvokeActorResponse {
+    InvokeActorResponse {
+        status: value.status(),
+        body: value.body().to_vec(),
+        headers: value
+            .headers()
+            .iter()
+            .map(|header| Header {
+                name: header.name.clone(),
+                value: header.value.clone(),
+            })
+            .collect(),
+    }
+}
+
+
 /// Known Actors state values emitted by the canonical Rust domain.
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum ActorState {
@@ -265,16 +595,129 @@ pub struct ActorsClient {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl ActorsClient {
-    /// Inspects an Actor through the canonical Rust client and preserves the
-    /// response's optional Actor observation.
+    /// Executes the legacy inspect operation through the canonical Rust client.
     pub async fn inspect_actor(
         &self,
         actor_id: Arc<ActorId>,
         cancellation: Option<Arc<CancellationHandle>>,
     ) -> Result<Option<ActorObservation>, BindingError> {
         let request = domain::InspectActorRequest::new(actor_id.inner.clone());
+        self.inspect_inner(&request, cancellation).await
+    }
+
+    pub async fn inspect_actor_request(
+        &self,
+        request: Arc<InspectActorRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        self.inspect_inner(&request.inner, cancellation).await
+    }
+
+    pub async fn create_actor(
+        &self,
+        request: Arc<CreateActorRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
         let token = cancellation.as_ref().map(|handle| handle.token.clone());
-        let response = client::run_with_cancellation(self.inner.inspect_actor(&request), token)
+        let response = client::run_with_cancellation(self.inner.create_actor(&request.inner), token)
+            .await
+            .map_err(client_error)?;
+        Ok(response.actor().map(actor_observation))
+    }
+
+    pub async fn update_actor(
+        &self,
+        request: Arc<UpdateActorRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(self.inner.update_actor(&request.inner), token)
+            .await
+            .map_err(client_error)?;
+        Ok(response.actor().map(actor_observation))
+    }
+
+    pub async fn add_subscription(
+        &self,
+        request: Arc<AddSubscriptionRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(
+            self.inner.add_subscription(&request.inner),
+            token,
+        )
+        .await
+        .map_err(client_error)?;
+        Ok(response.actor().map(actor_observation))
+    }
+
+    pub async fn remove_subscription(
+        &self,
+        request: Arc<RemoveSubscriptionRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(
+            self.inner.remove_subscription(&request.inner),
+            token,
+        )
+        .await
+        .map_err(client_error)?;
+        Ok(response.actor().map(actor_observation))
+    }
+
+    pub async fn resume_subscription(
+        &self,
+        request: Arc<ResumeSubscriptionRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(
+            self.inner.resume_subscription(&request.inner),
+            token,
+        )
+        .await
+        .map_err(client_error)?;
+        Ok(response.actor().map(actor_observation))
+    }
+
+    pub async fn checkpoint_actor(
+        &self,
+        request: Arc<CheckpointActorRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(
+            self.inner.checkpoint_actor(&request.inner),
+            token,
+        )
+        .await
+        .map_err(client_error)?;
+        Ok(response.actor().map(actor_observation))
+    }
+
+    pub async fn invoke_actor(
+        &self,
+        request: Arc<InvokeActorRequest>,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<InvokeActorResponse, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(self.inner.invoke_actor(&request.inner), token)
+            .await
+            .map_err(client_error)?;
+        Ok(invoke_actor_response(response))
+    }
+}
+
+impl ActorsClient {
+    async fn inspect_inner(
+        &self,
+        request: &domain::InspectActorRequest,
+        cancellation: Option<Arc<CancellationHandle>>,
+    ) -> Result<Option<ActorObservation>, BindingError> {
+        let token = cancellation.as_ref().map(|handle| handle.token.clone());
+        let response = client::run_with_cancellation(self.inner.inspect_actor(request), token)
             .await
             .map_err(client_error)?;
         Ok(response.actor().map(actor_observation))
@@ -319,3 +762,5 @@ fn actors_client(inner: client::Client) -> Arc<ActorsClient> {
         inner: Arc::new(inner),
     })
 }
+
+

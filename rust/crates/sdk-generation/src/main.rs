@@ -1310,18 +1310,36 @@ fn normalize_rustdoc_paths(
                 if key == "span" {
                     continue;
                 }
-                // rustdoc also serializes compiler-generated attribute spans
-                // inside `attrs.other`.  These are metadata strings, rather
-                // than authored documentation.  Rewrite only exact generated
-                // source paths in that field; arbitrary strings elsewhere in
-                // the JSON must remain byte-for-byte unchanged.
-                if key == "other" {
-                    if let serde_json::Value::String(other) = value {
-                        normalize_generated_attribute_paths(other, replacements);
-                        continue;
-                    }
+                if key == "attrs" {
+                    normalize_rustdoc_attrs(value, replacements);
+                    continue;
                 }
                 normalize_rustdoc_paths(value, replacements);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_rustdoc_attrs(
+    value: &mut serde_json::Value,
+    replacements: &BTreeMap<PathBuf, String>,
+) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_rustdoc_attrs(value, replacements);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            if let Some(serde_json::Value::String(other)) = values.get_mut("other") {
+                // rustdoc serializes compiler-generated attribute spans inside
+                // `attrs.other`. Rewrite only this metadata field; arbitrary
+                // strings elsewhere in the JSON remain untouched.
+                normalize_generated_attribute_paths(other, replacements);
+            }
+            for value in values.values_mut() {
+                normalize_rustdoc_attrs(value, replacements);
             }
         }
         _ => {}
@@ -1346,7 +1364,11 @@ fn normalize_generated_attribute_paths(
         for candidate in candidates {
             *value = value.replace(&candidate, reference);
         }
-        replace_generated_path_with_mixed_separators(value, &slash_display, reference);
+        let path_for_matching = slash_display
+            .strip_prefix(r"//?/")
+            .or_else(|| slash_display.strip_prefix(r"/?/"))
+            .unwrap_or(&slash_display);
+        replace_generated_path_with_mixed_separators(value, path_for_matching, reference);
     }
 }
 
@@ -2314,6 +2336,7 @@ mod tests {
             serde_json::json!({
                 "span": { "filename": raw_filename },
                 "same": { "filename": source.to_string_lossy() },
+                "other": format!("authored text {}", format!(r"\?\{}", source.display())),
                 "attrs": [{
                     "other": format!("generated span {}:1:2", format!(r"\?\{}", source.display()))
                 }],
@@ -2333,7 +2356,7 @@ mod tests {
         let source_hash = hash_file(&source, "wire.rs".into()).unwrap().sha256;
         let source_string = source.to_string_lossy().into_owned();
         let generated = GeneratedSource {
-            physical_path: source,
+            physical_path: source.clone(),
             logical_path: logical_path.clone(),
             sha256: source_hash,
         };
@@ -2348,6 +2371,10 @@ mod tests {
             "../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs"
         );
         assert_eq!(value["same"]["filename"], source_string);
+        assert_eq!(
+            value["other"],
+            format!("authored text {}", format!(r"\?\{}", source.display()))
+        );
         assert_eq!(
             value["attrs"][0]["other"],
             "generated span ../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs:1:2"
