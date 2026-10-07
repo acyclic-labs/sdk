@@ -221,11 +221,7 @@ export interface JoinResult {
   readonly truncated: boolean;
 }
 
-export interface WorkspaceRebaseOptions {
-  readonly maximumGenerations: number;
-  readonly maximumChanges: number;
-  readonly maximumConflicts: number;
-}
+export type WorkspaceRebaseOptions = ReadonlyDeep<Pick<WasmBinding.BrowserJoinOptions, "maximumGenerations" | "maximumChanges" | "maximumConflicts">>;
 
 export type WorkspaceRebaseStatus = WasmBinding.BrowserWorkspaceRebaseResult["status"];
 
@@ -511,12 +507,7 @@ export type MutationResult = PublicWasm<WasmBinding.BrowserMutationResult>;
 /** Immutable content-addressed candidate built without publishing authority. */
 export type CheckpointResult = PublicWasm<WasmBinding.BrowserCheckpointResult>;
 
-export interface MaterializeOptions {
-  readonly destination: string;
-  readonly maximumDirectoryEntries: number;
-  readonly maximumExtentSpans: number;
-  readonly transferBytes: bigint;
-}
+export type MaterializeOptions = ReadonlyDeep<NativeBinding.NativeMaterializeOptions>;
 
 export interface MaterializationResult {
   readonly files: bigint;
@@ -913,11 +904,7 @@ export interface NativeFsEngine extends FsVolumeEngine {
 
 export type NativeWorkspaceMountPublication = "close-and-sync" | "per-mutation" | "manual";
 
-export interface NativeWorkspaceMountOptions {
-  readonly writable: boolean;
-  readonly subdirectory: string;
-  readonly publication: NativeWorkspaceMountPublication;
-}
+export type NativeWorkspaceMountOptions = ReadonlyDeep<Omit<NativeBinding.NativeWorkspaceMountOptions, "publication">> & { readonly publication: NativeWorkspaceMountPublication };
 
 export interface NativeWorkspaceMount {
   readonly path: string;
@@ -934,14 +921,7 @@ export interface NativeFsWorkspace extends FsWorkspace {
   seal(): Promise<FsGeneration>;
 }
 
-export interface NativeSourceOptions {
-  readonly mode: "pinned" | "tracking";
-  readonly maximumPaths: number;
-  readonly maximumExtentSpans: number;
-  readonly maximumQueuedChanges: number;
-  /** Canonical absolute prefixes omitted from capture and deletion inference. */
-  readonly excludedPaths?: readonly string[];
-}
+export type NativeSourceOptions = ReadonlyDeep<Omit<NativeBinding.NativeSourceOptions, "mode">> & { readonly mode: "pinned" | "tracking" };
 
 export type SourceStatus = NativeBinding.SourceStateStatus;
 
