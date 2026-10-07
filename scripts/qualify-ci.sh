@@ -8,6 +8,13 @@ lane="${1:?qualification lane is required}"
 mkdir -p "$SDK_TEMP_DIR" "$SDK_ARTIFACT_DIR" "$TOOLS_DIR"
 export PATH="$TOOLS_DIR/cargo/bin:$PATH"
 target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
+# Test timings and each top-level command's start time feed the job summary
+# (scripts/ci-summary.mjs, run by the qualification-lane action).
+observability="$SDK_TEMP_DIR/observability"
+mkdir -p "$observability"
+timing_start=$(($(date +%s) - SECONDS))
+trap 'printf "%s\t%s\0" "${EPOCHREALTIME:-$((timing_start + SECONDS))}" "$BASH_COMMAND" \
+  >>"$observability/steps.tsv"' DEBUG
 
 full_qualification="${FORCE:-false}"
 case "${GITHUB_EVENT_NAME:-}" in
