@@ -289,10 +289,31 @@ pub async fn connect_actors(
     let token_handle = cancellation.as_ref().map(|handle| handle.token.clone());
     client::run_with_cancellation(client::connect(&endpoint, &token), token_handle)
         .await
-        .map(|inner| {
-            Arc::new(ActorsClient {
-                inner: Arc::new(inner),
-            })
-        })
+        .map(actors_client)
         .map_err(client_error)
+}
+
+/// Connects with an optional caller-pinned CA certificate through the
+/// canonical Rust transport and returns an opaque client.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn connect_actors_with_ca(
+    endpoint: String,
+    token: String,
+    ca_certificate: Option<Vec<u8>>,
+    cancellation: Option<Arc<CancellationHandle>>,
+) -> Result<Arc<ActorsClient>, BindingError> {
+    let token_handle = cancellation.as_ref().map(|handle| handle.token.clone());
+    client::run_with_cancellation(
+        client::connect_with_ca_certificate(&endpoint, &token, ca_certificate.as_deref()),
+        token_handle,
+    )
+    .await
+    .map(actors_client)
+    .map_err(client_error)
+}
+
+fn actors_client(inner: client::Client) -> Arc<ActorsClient> {
+    Arc::new(ActorsClient {
+        inner: Arc::new(inner),
+    })
 }

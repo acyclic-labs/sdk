@@ -64,3 +64,9 @@ Native Linux installed Inference qualification for bac48c3432038bed318103f5ebeee
 Filesystem NAPI Rust tests passed12/12 after narrowing the unsafe conversion hooks (handle74779). Actual installed JavaScript boundary admission and generated declaration checks are next; Rust tests alone do not qualify that boundary.
 
 Remote checkpoint push completed: codex/rust-foundation-checkpoint-20261006 points to 0fb47f3d0e6476ce97be07959393ef69663b67f3. Subsequent changes require a new checkpoint. No coordinator main merge has occurred. PR252 still needs an approving review and thread resolution; its latest three source-collision/read-consistency/version-path findings are being checked before merge. PR254 package qualification is complete but remains stacked on PR252.
+
+Actual Windows Filesystem N-API qualification now passes through the built current DLL: invalid finite/integer/range classes reject in planExtents, open.maximumEntries, and createVolume.limits.maximumPathBytes; u32::MAX is accepted by open.maximumEntries. The generated declaration checks retain number. This follows Rust12/12, rather than using Rust-only tests as a proxy for JS conversion.
+
+The standalone Actors adapter builds with maintained UniFFI0.31 and generates Kotlin, Swift, and Python outputs in Q:/sdk/work/actors-uniffi-current-prototype. It exports the canonical private-CA connector with explicit cancellation. Native DLL SHA256 F04A0403781A67916B941307E67BC660C5CCDE0B6098F3F4ED6C960DC88FA77A; adapter source SHA256 A7E0399E381BA2A2B1D8D07587E81CF2C6245FAC3E04277E04331179DC2BC8CF. Installed foreign-language runtime qualification is pending; this is an inspect-only slice, not a complete Actors SDK.
+
+The shared Actors TLS/HTTP fixture refactor passes existing conformance: Node38, Bun38, Rust15 authenticated methods, including denied auth and Rust response-size bounds. New language probes reuse that sole fixture rather than implementing a second protocol server.

@@ -10,6 +10,16 @@ description = "Standalone UniFFI facade for the Rust-owned Actors client"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Keep the generator CLI opt-in so normal consumers only depend on the
+# runtime/scaffolding path.
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "actors-uniffi-bindgen"
+path = "src/bin/actors-uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
 [dependencies]
 acyclic-actors = { path = "../actors", default-features = true }
 thiserror = "2.0.17"

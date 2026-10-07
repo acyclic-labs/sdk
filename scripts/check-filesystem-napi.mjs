@@ -22,6 +22,15 @@ const { version } = JSON.parse(await readFile(
 if (typeof version !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error("invalid filesystem package version");
 }
+const generatedBindingTypes = await readFile(
+  new URL("../typescript/packages/filesystem/generated/native/binding.d.ts", import.meta.url),
+  "utf8",
+);
+for (const field of ["maximumEntries", "maximumPathBytes", "maximumSpans"]) {
+  if (!generatedBindingTypes.includes(`${field}: number`)) {
+    throw new Error(`generated N-API declaration changed ${field} away from number`);
+  }
+}
 
 const childBinding = process.env.ACYCLIC_FS_NAPI_CHILD_BINDING;
 if (childBinding !== undefined) {
@@ -104,6 +113,76 @@ async function qualify(bindingPath, engineRoot) {
   if (changes.changes().files.length === 0) {
     throw new Error("N-API change set omitted the authored file");
   }
+
+  const invalidU32Values = [
+    ["negative", -1],
+    ["fraction", 0.5],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["u32 overflow", 4_294_967_296],
+  ];
+  const expectStrictU32Rejection = async (label, operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (!message.includes("expected a finite integer in the u32 range")) {
+        throw new Error(`${label} rejected for the wrong reason: ${message}`);
+      }
+      return;
+    }
+    throw new Error(`${label} accepted a non-u32 value`);
+  };
+  for (const [label, value] of invalidU32Values) {
+    await expectStrictU32Rejection(
+      `planExtents ${label}`,
+      () => workspace.planExtents("/abi.txt", 0n, 1n, value),
+    );
+    await expectStrictU32Rejection(
+      `NativeFs.open maximumEntries ${label}`,
+      () => binding.NativeFs.open(join(engineRoot, `invalid-cache-${label}`), {
+        maximumEntries: value,
+        maximumBytes: 1024n * 1024n,
+        maximumInFlight: 8,
+        maximumWaitersPerObject: 8,
+      }),
+    );
+    await expectStrictU32Rejection(
+      `NativeFs.createVolume maximumPathBytes ${label}`,
+      () => fs.createVolume({
+        profile: "portable",
+        concurrency: "optimistic",
+        lifecycle: "ephemeral",
+        caseSensitivity: "sensitive",
+        unicode: "preserve",
+        symbolicLinks: true,
+        hardLinks: true,
+        sparseFiles: true,
+        limits: {
+          maximumPathBytes: value,
+          maximumComponentBytes: 255,
+          maximumPathDepth: 1024,
+          maximumObjectBytes: 64n * 1024n * 1024n,
+          maximumMutationsPerBatch: 2048,
+          maximumPathsPerBatch: 65_536,
+          maximumCheckoutDependencies: 262_144,
+          maximumDirectoryPageEntries: 1024,
+          maximumPageHeight: 64,
+          maximumReadBytes: 16n * 1024n * 1024n,
+          maximumFilesPerGeneration: 16n * 1024n * 1024n,
+          maximumObjectsPerGeneration: 64n * 1024n * 1024n,
+          maximumGenerationBytes: 1024n * 1024n * 1024n * 1024n,
+        },
+      }),
+    );
+  }
+  const maximumEntries = await binding.NativeFs.open(join(engineRoot, "u32-maximum-cache"), {
+    maximumEntries: 4_294_967_295,
+    maximumBytes: 1024n * 1024n,
+    maximumInFlight: 8,
+    maximumWaitersPerObject: 8,
+  });
+  maximumEntries.cancel();
   fs.cancel();
   console.log(`acyclic-fs N-API ABI passed on ${process.platform}-${process.arch}`);
 }
