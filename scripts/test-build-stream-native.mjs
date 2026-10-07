@@ -95,6 +95,7 @@ function validBuildInputs() {
       RUSTFLAGS: "-C target-feature=+crt-static",
       CARGO_ENCODED_RUSTFLAGS: null,
       RUSTC_WRAPPER: null,
+      RUSTC_WORKSPACE_WRAPPER: null,
       CARGO_TARGET_DIR: null,
     },
     cache: {
@@ -367,5 +368,51 @@ test("native qualification records explicit and implicit rustc linkers through a
     else process.env.RUSTC_WORKSPACE_WRAPPER = priorWrapper;
     assert.equal(process.env.PATH, priorPath);
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native capture restores nested wrappers and PATH and receipts retain the invoked workspace wrapper", async () => {
+  const prior = {
+    RUSTC_WRAPPER: process.env.RUSTC_WRAPPER,
+    RUSTC_WORKSPACE_WRAPPER: process.env.RUSTC_WORKSPACE_WRAPPER,
+    PATH: process.env.PATH,
+  };
+  const restore = () => {
+    for (const [name, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+  process.env.RUSTC_WRAPPER = "outer-global-wrapper";
+  process.env.RUSTC_WORKSPACE_WRAPPER = "outer-workspace-wrapper";
+  try {
+    const capture = await createRustcInvocationCapture();
+    const invoked = process.env.RUSTC_WORKSPACE_WRAPPER;
+    assert.equal(invoked, process.platform === "win32" ? "capture.cmd" : "capture");
+    assert.notEqual(process.env.PATH, prior.PATH);
+    await capture.close();
+    assert.equal(process.env.RUSTC_WRAPPER, "outer-global-wrapper");
+    assert.equal(process.env.RUSTC_WORKSPACE_WRAPPER, "outer-workspace-wrapper");
+    assert.equal(process.env.PATH, prior.PATH);
+
+    const raw = validBuildInputs();
+    raw.environment.RUSTC_WORKSPACE_WRAPPER = invoked;
+    const receipt = buildInputsReceipt(raw, structuredClone(raw));
+    assert.equal(receipt.raw_build_inputs.environment.RUSTC_WORKSPACE_WRAPPER, invoked);
+
+    const failing = await createRustcInvocationCapture();
+    assert.equal(process.env.RUSTC_WORKSPACE_WRAPPER, invoked);
+    try {
+      throw new Error("forced capture failure");
+    } catch (error) {
+      assert.match(error.message, /forced capture failure/u);
+    } finally {
+      await failing.close();
+    }
+    assert.equal(process.env.RUSTC_WRAPPER, "outer-global-wrapper");
+    assert.equal(process.env.RUSTC_WORKSPACE_WRAPPER, "outer-workspace-wrapper");
+    assert.equal(process.env.PATH, prior.PATH);
+  } finally {
+    restore();
   }
 });

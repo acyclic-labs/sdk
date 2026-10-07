@@ -537,6 +537,7 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
       RUSTFLAGS: envValue("RUSTFLAGS"),
       CARGO_ENCODED_RUSTFLAGS: envValue("CARGO_ENCODED_RUSTFLAGS"),
       RUSTC_WRAPPER: wrapper,
+      RUSTC_WORKSPACE_WRAPPER: envValue("RUSTC_WORKSPACE_WRAPPER"),
       CARGO_TARGET_DIR: envValue("CARGO_TARGET_DIR"),
     },
     cache: {
@@ -607,7 +608,7 @@ export function assertBuildInputs(value) {
   if (value.profile.name !== "release") throw new Error("native build profile is not release");
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
   assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
-  assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "CARGO_TARGET_DIR"], "environment");
+  assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
   const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
   const linker = assertObject(value.linker, "linker");
@@ -772,6 +773,10 @@ async function build(options) {
     };
     let rustcCapture = await createRustcInvocationCapture();
     try {
+      // Record the stable workspace-wrapper identity that Cargo actually
+      // invokes. buildInputs() runs before capture setup and only sees the
+      // ambient process environment.
+      attestedInputs.environment.RUSTC_WORKSPACE_WRAPPER = process.env.RUSTC_WORKSPACE_WRAPPER ?? null;
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
       await rm(resolve(output, generationManifestName), { force: true });
