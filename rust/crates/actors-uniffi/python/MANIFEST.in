@@ -1,0 +1,5 @@
+include README.md
+include src/acyclic_actors_uniffi/*.dll
+include src/acyclic_actors_uniffi/*.so
+include src/acyclic_actors_uniffi/*.dylib
+include src/acyclic_actors_uniffi/py.typed
