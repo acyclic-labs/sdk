@@ -23,6 +23,14 @@ pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey
     value.map(IdempotencyKey::new).transpose()
 }
 
+#[cfg(feature = "grpc")]
+/// Converts an optional wire idempotency key, rejecting an omitted key.
+pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
+    value
+        .ok_or(StreamError::InvalidArgument)
+        .and_then(IdempotencyKey::new)
+}
+
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     let condition = match value {
         CommitCondition::Tail { path, expected } => {
@@ -139,7 +147,8 @@ pub(crate) fn observation_from_wire(
     })
 }
 
-pub(crate) fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
+/// Converts an idempotency observation into its canonical wire representation.
+pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
     let outcome = match value.outcome {
         IdempotencyOutcome::Append(value) => {
             wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
@@ -218,7 +227,8 @@ pub(crate) fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse 
     }
 }
 
-pub(crate) fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
+/// Converts a wire commit-id byte sequence into the fixed-width domain id.
+pub fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
     let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
     Ok(CommitId::from_bytes(bytes))
 }
@@ -241,7 +251,8 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
     })
 }
 
-pub(crate) fn record_wire(value: Record) -> wire::Record {
+/// Converts a domain record into its canonical wire representation.
+pub fn record_wire(value: Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
         value: value.value,
@@ -270,12 +281,12 @@ pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
 }
 
 #[cfg(any(
+    feature = "grpc",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub(crate) fn append_from_wire(
-    value: wire::AppendRequest,
-) -> Result<crate::AppendRequest, StreamError> {
+/// Decodes an append request from its generated wire representation.
+pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
         path: path(value.path)?,
         records: value.records,
@@ -285,10 +296,12 @@ pub(crate) fn append_from_wire(
 }
 
 #[cfg(any(
+    feature = "grpc",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
+/// Decodes a fork request from its generated wire representation.
+pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
         source: path(value.source)?,
         destination: path(value.destination)?,
@@ -298,10 +311,12 @@ pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequ
 }
 
 #[cfg(any(
+    feature = "grpc",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub(crate) fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
+/// Decodes a read request from its generated wire representation.
+pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         path: path(value.path)?,
         from: value.from,
@@ -317,10 +332,12 @@ pub(crate) fn follow_from_wire(
 }
 
 #[cfg(any(
+    feature = "grpc",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub(crate) fn children_from_wire(
+/// Decodes a children request from its generated wire representation.
+pub fn children_from_wire(
     value: wire::ChildrenRequest,
 ) -> Result<crate::ChildrenRequest, StreamError> {
     Ok(crate::ChildrenRequest {
@@ -330,10 +347,12 @@ pub(crate) fn children_from_wire(
 }
 
 #[cfg(any(
+    feature = "grpc",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub(crate) fn children_page_from_wire(
+/// Decodes a paginated children request from its generated wire representation.
+pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
     Ok(crate::ChildrenPageRequest {
@@ -353,8 +372,12 @@ pub(crate) fn children_page_from_wire(
     })
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub(crate) fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+/// Converts a domain children page into its generated wire representation.
+pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
         hierarchy_version: Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
         children: value
@@ -369,12 +392,12 @@ pub(crate) fn children_page_to_wire(value: crate::ChildrenPage) -> wire::Childre
 }
 
 #[cfg(any(
+    feature = "grpc",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub(crate) fn commit_from_wire(
-    value: wire::CommitRequest,
-) -> Result<crate::CommitRequest, StreamError> {
+/// Decodes a commit request from its generated wire representation.
+pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {
         conditions: value
             .conditions
@@ -404,8 +427,12 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub(crate) fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+/// Converts an append outcome into its generated wire representation.
+pub fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
     let outcome = match value {
         crate::AppendOutcome::Committed(receipt) => {
             wire::append_response::Outcome::Committed(wire::AppendReceipt {
@@ -424,8 +451,12 @@ pub(crate) fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::Appen
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub(crate) fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+/// Converts a fork receipt into its generated wire representation.
+pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -459,8 +490,12 @@ pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub(crate) fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+/// Converts a commit outcome into its generated wire representation.
+pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
         crate::CommitOutcome::Committed(envelope) => {
             wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
@@ -476,8 +511,12 @@ pub(crate) fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::Commi
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub(crate) fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+/// Converts a committed envelope into its generated wire representation.
+pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
         mutations: value
@@ -547,7 +586,10 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 fn record_to_wire(value: crate::Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
@@ -557,7 +599,10 @@ fn record_to_wire(value: crate::Record) -> wire::Record {
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 fn committed_mutation_to_wire(value: crate::CommittedMutation) -> wire::CommittedMutation {
     let mutation = match value {
         crate::CommittedMutation::Append(value) => {
@@ -621,7 +666,10 @@ pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 fn conflict_to_wire(value: crate::CommitConflict) -> wire::CommitConflict {
     let conflict = match value {
         crate::CommitConflict::Tail {

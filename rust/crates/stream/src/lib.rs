@@ -30,7 +30,8 @@ mod local;
 mod memory;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
-mod wire_codec;
+/// Conversion helpers between the canonical Rust domain types and generated wire messages.
+pub mod wire_codec;
 
 /// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
@@ -686,6 +687,17 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
+    /// Connects eagerly through TLS and HTTP/2 for callers whose cancellation
+    /// contract includes connection establishment.
+    pub async fn connect_eager(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, grpc::ConnectError> {
+        Ok(Self::new(Arc::new(
+            grpc::Client::connect_eager(endpoint, bearer_token).await?,
+        )))
+    }
+
     /// Connects the high-level API through ambient roots plus one caller-supplied private CA.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
@@ -695,6 +707,22 @@ impl StreamClient<grpc::Client> {
         Ok(Self::new(Arc::new(
             grpc::Client::connect_with_ca_certificate(endpoint, bearer_token, certificate_pem)
                 .await?,
+        )))
+    }
+
+    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
+    pub async fn connect_eager_with_ca_certificate(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, grpc::ConnectError> {
+        Ok(Self::new(Arc::new(
+            grpc::Client::connect_eager_with_ca_certificate(
+                endpoint,
+                bearer_token,
+                certificate_pem,
+            )
+            .await?,
         )))
     }
 }
