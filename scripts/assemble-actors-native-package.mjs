@@ -75,12 +75,17 @@ async function main() {
     // WASM and prevents a corrupt companion from failing closed.
     await cp(packagePath, parentRoot, {
       recursive: true,
-      filter: (source) => !source.endsWith(".node"),
+      filter: (source) => source !== join(packagePath, "generated/native") && !source.endsWith(".node"),
     });
+    const verifiedNative = join(temporary, "native");
     run(process.execPath, [
       join(root, "scripts/build-actors-native.mjs"), "stage", "--bundle", bundle,
-      "--output", join(parentRoot, "generated/native"),
+      "--output", verifiedNative,
     ]);
+    await cp(verifiedNative, join(parentRoot, "generated/native"), {
+      recursive: true,
+      filter: (source) => !source.endsWith(".node"),
+    });
     run(process.execPath, [
       join(root, "scripts/build-wasm.mjs"), "actors",
       "--output", join(parentRoot, "generated/wasm"),
