@@ -62,6 +62,32 @@ fn domain_error(error: domain::DomainError) -> BindingError {
     }
 }
 
+/// Validates an Actor identity through the Rust-owned semantic constructor.
+/// Generated nominal foreign factories call this function before constructing
+/// their local wrapper; the predicate is intentionally not duplicated there.
+#[uniffi::export]
+pub fn validate_actor_id(value: String) -> Result<(), BindingError> {
+    domain::ActorId::new(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
+/// Validates a code digest through the Rust-owned semantic constructor.
+#[uniffi::export]
+pub fn validate_code_sha256(value: Vec<u8>) -> Result<(), BindingError> {
+    domain::CodeSha256::new(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
+/// Validates a positive unsigned integer through the Rust-owned constructor.
+#[uniffi::export]
+pub fn validate_positive_u64(value: u64) -> Result<(), BindingError> {
+    domain::PositiveU64::new(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
 fn client_error(error: client::Error) -> BindingError {
     match error {
         client::Error::Configuration(detail_message) => {

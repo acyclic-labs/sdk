@@ -69,4 +69,52 @@ describe("Rust-backed Actors client", () => {
     await expect(call).rejects.toMatchObject({ code: "cancelled" });
     finish?.(new Uint8Array());
   });
+
+  test("does not cancel a shared pending connection for another caller", async () => {
+    let releaseConnect!: (client: Awaited<ReturnType<ActorsRustBinding["connect"]>>) => void;
+    let connectionSignal!: AbortSignal;
+    const binding: ActorsRustBinding = {
+      connect: (_endpoint, _token, signal) => {
+        connectionSignal = signal!;
+        return new Promise(resolve => { releaseConnect = resolve; });
+      },
+    };
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = client.inspectActor({ actorId: "first" as semantic.ActorId }, { signal: firstController.signal });
+    const second = client.inspectActor({ actorId: "second" as semantic.ActorId }, { signal: secondController.signal });
+
+    firstController.abort();
+    await expect(first).rejects.toMatchObject({ code: "cancelled" });
+    expect(connectionSignal.aborted).toBe(false);
+
+    releaseConnect({ transport: "test", inspectActor: async () => new Uint8Array() });
+    await second;
+    expect(connectionSignal.aborted).toBe(false);
+  });
+
+  test("reconnects after the final pending connection waiter aborts", async () => {
+    let connects = 0;
+    let releaseSecond!: (client: Awaited<ReturnType<ActorsRustBinding["connect"]>>) => void;
+    const binding: ActorsRustBinding = {
+      connect: (_endpoint, _token, signal) => {
+        connects += 1;
+        if (connects === 2) return new Promise(resolve => { releaseSecond = resolve; });
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => setTimeout(() => reject(new Error("late connect abort")), 25), { once: true });
+        });
+      },
+    };
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding });
+    const controller = new AbortController();
+    const first = client.inspectActor({ actorId: "first" as semantic.ActorId }, { signal: controller.signal });
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ code: "cancelled" });
+
+    const second = client.inspectActor({ actorId: "second" as semantic.ActorId });
+    expect(connects).toBe(2);
+    releaseSecond({ transport: "test", inspectActor: async () => new Uint8Array() });
+    await second;
+  });
 });

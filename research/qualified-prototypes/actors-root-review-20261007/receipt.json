@@ -1,0 +1,9 @@
+{
+  "scope": "actual TypeScript shared-connect state machine; injected stalled binding, not transport qualification",
+  "sourceHead": "40bcdfa458d9b61a5568458808025c55698d904d",
+  "sourceStable": true,
+  "raw": "shared-connect-cancellation.raw.txt",
+  "probeExit": 0,
+  "clientSha256": "AE7C77847F7C7648DAC753631DFC773FFC87509B67B162789AB302A8DDD721FD",
+  "schema": "actors-root-review.v1"
+}

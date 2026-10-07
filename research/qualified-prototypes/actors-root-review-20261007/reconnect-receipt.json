@@ -1,0 +1,9 @@
+{
+  "raw": "reconnect-after-final-waiter-abort.raw.txt",
+  "sourceHead": "40bcdfa458d9b61a5568458808025c55698d904d",
+  "sourceStable": true,
+  "probeExit": 1,
+  "schema": "actors-root-review.v1",
+  "clientSha256": "999FD805403616A73F9D5535244BDE19B702ED4F39BCAB7F557CBAEEE586D137",
+  "scope": "actual TypeScript connection cache; injected delayed cancellation, not transport qualification"
+}

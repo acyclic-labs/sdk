@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { ActorsClient } from './node_modules/@acyclic-labs/actors/dist/index.js';
+const require=createRequire(import.meta.url);
+const binding=require('./node_modules/@acyclic-labs/actors/generated/native/binding.cjs');
+const ca=await import('node:fs/promises').then(fs=>fs.readFile('native-test-cert.pem'));
+const raw=await binding.NativeActorsClient.connectWithCa('https://127.0.0.1:54443','fixture-token',ca);
+
+const operations=['createActor','updateActor','inspectActor','addSubscription','removeSubscription','resumeSubscription','checkpointActor','invokeActor'];
+const nativeBinding={async connect(){ return Object.fromEntries(operations.map(op=>[op,async req=>{const result=await raw[`${op}Result`](req); if(result.value==null) throw new Error(JSON.stringify(result.error)); return new Uint8Array(result.value);} ])); }};
+const client=new ActorsClient({endpoint:'https://127.0.0.1:54443',token:'fixture-token',binding:nativeBinding});
+const digest=new Uint8Array(32).fill(1); const limits={handlerTimeoutMillis:1n,memoryBytes:2n,checkpointBytes:3n};
+await client.createActor({codeSha256:digest,homeRegion:'eu',bindings:[],limits,subscriptions:[],idempotencyKey:'create'});
+await client.updateActor({actorId:'actor-a',codeSha256:digest,bindings:[],limits,expectedConfigurationRevision:0n,idempotencyKey:'update'});
+await client.inspectActor({actorId:'actor-a'});
+await client.addSubscription({actorId:'actor-a',subscription:{subscriptionId:'sub',streamPath:'events',start:{start:{case:'currentHead',value:true}},placementAnchor:false},idempotencyKey:'add'});
+await client.removeSubscription({actorId:'actor-a',subscriptionId:'sub',idempotencyKey:'remove'});
+await client.resumeSubscription({actorId:'actor-a',subscriptionId:'sub',idempotencyKey:'resume'});
+await client.checkpointActor({actorId:'actor-a',idempotencyKey:'checkpoint'});
+await client.invokeActor({actorId:'actor-a',method:'POST',url:'/invoke',body:new Uint8Array([4,5]),headers:[{name:'content-type',value:'application/json'}]});
+console.log('direct native TLS/CA ActorsClient passed grpc and 8 operations');

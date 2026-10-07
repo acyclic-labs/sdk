@@ -66,6 +66,8 @@ export class ActorsClient {
   readonly #token: string;
   readonly #binding: ActorsRustBinding;
   #client: Promise<ActorsRustClient> | undefined;
+  #connectAbort: AbortController | undefined;
+  #connectWaiters = 0;
   readonly #observer: AcyclicObserver | undefined;
 
   constructor(options: ActorsOptions) {
@@ -98,13 +100,43 @@ export class ActorsClient {
   }
 
   #connection(signal?: AbortSignal): Promise<ActorsRustClient> {
+    throwIfAborted(signal);
     if (this.#client === undefined) {
-      this.#client = this.#binding.connect(this.#endpoint, this.#token, signal).catch(error => {
-        this.#client = undefined;
-        throw error;
-      });
+      const controller = new AbortController();
+      let pending!: Promise<ActorsRustClient>;
+      pending = this.#binding.connect(this.#endpoint, this.#token, controller.signal)
+        .then(client => {
+          if (this.#client === pending) this.#connectAbort = undefined;
+          return client;
+        })
+        .catch(error => {
+          if (this.#client === pending) {
+            this.#client = undefined;
+            this.#connectAbort = undefined;
+          }
+          throw error;
+        });
+      this.#connectAbort = controller;
+      this.#client = pending;
     }
-    return abortable(this.#client, signal);
+    const pending = this.#client;
+    this.#connectWaiters += 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.#connectWaiters -= 1;
+      if (this.#connectWaiters === 0 && this.#client === pending && this.#connectAbort !== undefined) {
+        // Evict before aborting. A bridge may reject asynchronously after the
+        // abort; a new caller must be able to start a fresh connection during
+        // that interval, and the old rejection must not clear the replacement.
+        const controller = this.#connectAbort;
+        this.#client = undefined;
+        this.#connectAbort = undefined;
+        controller.abort();
+      }
+    };
+    return abortable(pending, signal).finally(release);
   }
 }
 
@@ -162,8 +194,12 @@ function nativeBinding(): ActorsRustBinding {
         throw new ActorsTransportError("native Actors companion did not export NativeActorsClient", "configuration");
       }
       const cancellation = nativeCancellation(module, signal);
-      const inner = await Client.connect(endpoint, token, cancellation?.handle);
-      cancellation?.cleanup();
+      let inner: NativeActorsClient;
+      try {
+        inner = await Client.connect(endpoint, token, cancellation?.handle);
+      } finally {
+        cancellation?.cleanup();
+      }
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = `${operation}Result` as keyof NativeActorsMethods;
         return [operation, (request: Uint8Array, signal?: AbortSignal) => {
@@ -252,9 +288,26 @@ function isMissingNativeArtifact(error: unknown): boolean {
   if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
   const message = error instanceof Error ? error.message : String(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  if (/^Cannot find module ['"][^'"]*generated[\\/]native[\\/]binding\.cjs['"]/i.test(firstLine)) return true;
-  if (/^Cannot find package ['"]@acyclic-labs[\\/]actors-(?:win32|linux|darwin|freebsd)-[^'"]+['"]/i.test(firstLine)) return true;
-  return false;
+  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/i)?.[1];
+  if (requested === undefined) return false;
+  // Only the package's own generated loader is optional. Matching a path
+  // suffix would incorrectly turn a broken transitive dependency into a
+  // silent WASM fallback.
+  let expected = new URL("../generated/native/binding.cjs", import.meta.url).pathname;
+  try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
+  return normalizeModulePath(requested) === normalizeModulePath(expected);
+}
+
+function normalizeModulePath(path: string): string {
+  let value = path;
+  if (value.startsWith("file:")) {
+    try { value = new URL(value).pathname; } catch { return ""; }
+  }
+  return value
+    .replace(/^[/\\]+(?=[A-Za-z]:)/, "")
+    .replaceAll("\\", "/")
+    .replace(/\/+/g, "/")
+    .toLowerCase();
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

@@ -137,6 +137,27 @@ fn subscription_start_preserves_cursor_and_current_head_presence() {
 
 #[kani::proof]
 #[kani::unwind(1)]
+fn subscription_start_ingress_accepts_only_true_current_head_payload() {
+    let current_head: bool = kani::any();
+    let input = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::CurrentHead(current_head)),
+    };
+
+    match SubscriptionStart::try_from(input) {
+        Ok(parsed) => {
+            assert!(current_head);
+            assert_eq!(parsed.cursor_value(), None);
+            assert_eq!(parsed.current_head_value(), Some(true));
+        }
+        Err(error) => {
+            assert!(!current_head);
+            assert!(matches!(error, DomainError::InvalidSubscription));
+        }
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
 fn subscription_start_valid_wire_round_trip_preserves_oneof_identity() {
     let cursor: u64 = kani::any();
     let cursor_wire = wire::SubscriptionStart {

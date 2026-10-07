@@ -1,0 +1,1 @@
+{"connects":1,"first":"Actors operation cancelled","second":"still_pending","secondSignalAborted":false}
