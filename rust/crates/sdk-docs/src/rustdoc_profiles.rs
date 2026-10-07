@@ -10,13 +10,15 @@
 #![allow(missing_docs)]
 
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Package, TargetKind};
-use rustdoc_types::{Crate as RustdocCrate, Visibility, FORMAT_VERSION};
+use rustdoc_types::{Crate as RustdocCrate, FORMAT_VERSION, Visibility};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::public_api;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileError {
@@ -307,6 +309,31 @@ pub fn execute_profile(
     target_dir: impl AsRef<Path>,
     output_json: impl AsRef<Path>,
 ) -> Result<RustdocObservation, ProfileError> {
+    execute_profile_with_cargo(
+        manifest,
+        metadata,
+        profile,
+        available_targets,
+        target_dir,
+        output_json,
+        None,
+    )
+}
+
+/// Execute a profile with the caller's pinned Cargo binary.
+///
+/// The default [`execute_profile`] entry point remains convenient for library
+/// callers. The production generator uses this variant so experimental binding
+/// receipts use the same pinned Cargo as the stable Rustdoc stage.
+pub fn execute_profile_with_cargo(
+    manifest: impl AsRef<Path>,
+    metadata: &Metadata,
+    profile: &ProfileSpec,
+    available_targets: &BTreeSet<String>,
+    target_dir: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    cargo_path: Option<&Path>,
+) -> Result<RustdocObservation, ProfileError> {
     if !available_targets.contains(&profile.target) {
         return Err(ProfileError::UnsupportedTarget {
             target: profile.target.clone(),
@@ -326,9 +353,14 @@ pub fn execute_profile(
     fs::create_dir_all(target_dir).map_err(|error| {
         ProfileError::InvalidRustdoc(format!("cannot create target directory: {error}"))
     })?;
-    let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let cargo = cargo_path
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CARGO").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+    let mut command = Command::new(cargo);
     command
         .arg("rustdoc")
+        .arg("--locked")
         .arg("--manifest-path")
         .arg(manifest.as_ref())
         .arg("--package")
@@ -401,7 +433,7 @@ pub fn execute_profile(
 }
 
 pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, ProfileError> {
-    let receipt = read_public_receipt(path)?;
+    let receipt = read_public_receipt(path.as_ref())?;
     Ok(receipt
         .index
         .values()
@@ -453,7 +485,7 @@ pub fn extract_owned_api_for_crate(
             "binding API extraction requires a non-empty profile identity".to_owned(),
         ));
     }
-    let receipt = read_public_receipt(path)?;
+    let receipt = read_public_receipt(path.as_ref())?;
     let root = receipt.index.get(&receipt.root).ok_or_else(|| {
         ProfileError::InvalidRustdoc("binding receipt root is absent from its index".to_owned())
     })?;
@@ -463,20 +495,31 @@ pub fn extract_owned_api_for_crate(
             root.name
         )));
     }
-    let mut items = receipt
-        .index
-        .values()
-        .filter(|item| item.crate_id == 0 && item.visibility == Visibility::Public)
-        .filter_map(|item| {
-            let summary = receipt.paths.get(&item.id)?;
+    // Use the same format-59 compatibility adapter and public-api renderer as
+    // `build_data`. Rustdoc's debug representation is a compiler-internal
+    // identity and does not match the rendered SDK signature.
+    let public_items = public_api::extract(path.as_ref()).map_err(|error| {
+        ProfileError::InvalidRustdoc(format!(
+            "public API extraction failed for {}: {error}",
+            path.as_ref().display()
+        ))
+    })?;
+    let mut items = public_items
+        .into_iter()
+        .filter_map(|public_item| {
+            let item = receipt.index.get(&public_item.id)?;
+            if item.crate_id != 0 || item.visibility != Visibility::Public {
+                return None;
+            }
+            let summary = receipt.paths.get(&public_item.id)?;
             Some(OwnedApiItem {
                 rustdoc_package: owner.rustdoc_package.clone(),
                 published_owner: owner.published_package.clone(),
                 profile: profile.clone(),
                 key: ProjectionKey {
-                    path: summary.path.join("::"),
+                    path: public_item.path.join("::"),
                     kind: format!("{:?}", summary.kind).to_lowercase(),
-                    signature: format!("{:?}", item.inner),
+                    signature: public_item.display,
                 },
                 rustdoc_version: receipt.crate_version.clone(),
                 docs_present: item.docs.is_some(),
@@ -528,6 +571,26 @@ pub fn observe_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservation, Pro
         includes_private: receipt.includes_private,
         item_count: receipt.index.len(),
     })
+}
+
+/// Require a Rustdoc receipt to identify the exact Cargo package release it
+/// was generated from. This check runs even when a receipt happens to expose
+/// no projectable public items.
+pub fn validate_rustdoc_version(
+    metadata: &Metadata,
+    package: &str,
+    observation: &RustdocObservation,
+) -> Result<(), ProfileError> {
+    let package_metadata = package_by_name(metadata, package)
+        .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
+    let expected = package_metadata.version.to_string();
+    if observation.crate_version.as_deref() != Some(expected.as_str()) {
+        return Err(ProfileError::InvalidRustdoc(format!(
+            "Rustdoc receipt for {package} reports {:?}, Cargo reports {expected}",
+            observation.crate_version
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -634,7 +697,6 @@ pub fn project_into_docs(
     profiles: &BTreeMap<ProfileId, ProfileSpec>,
 ) -> Result<ProfileAvailability, ProfileError> {
     let mut lookup = BTreeMap::<(String, ProjectionKey), String>::new();
-    let mut signature_lookup = BTreeMap::<ProjectionKey, BTreeSet<String>>::new();
     for family in &data.families {
         for item in &family.items {
             let key = ProjectionKey {
@@ -643,10 +705,6 @@ pub fn project_into_docs(
                 signature: item.signature.clone(),
             };
             lookup.insert((family.crate_name.clone(), key.clone()), item.id.clone());
-            signature_lookup
-                .entry(key)
-                .or_default()
-                .insert(item.id.clone());
         }
     }
 
@@ -689,14 +747,13 @@ pub fn project_into_docs(
                 item.rustdoc_package, rustdoc_version, expected_rustdoc_version
             )));
         }
-        let crate_name = item.rustdoc_package.replace('-', "_");
-        let item_id = lookup
-            .get(&(crate_name, item.key.clone()))
-            .or_else(|| {
-                signature_lookup
-                    .get(&item.key)
-                    .and_then(|ids| (ids.len() == 1).then(|| ids.iter().next().unwrap()))
-            });
+        let crate_name = item
+            .key
+            .path
+            .split_once("::")
+            .map_or(item.key.path.as_str(), |(crate_name, _)| crate_name)
+            .to_owned();
+        let item_id = lookup.get(&(crate_name, item.key.clone()));
         let Some(item_id) = item_id else {
             return Err(ProfileError::InvalidRustdoc(format!(
                 "profile item {} is absent from the generated docs catalog",
@@ -814,12 +871,16 @@ mod tests {
             &BTreeSet::from(["host".into()]),
         )
         .unwrap();
-        assert!(profiles
-            .iter()
-            .any(|profile| profile.default_features && profile.features.is_empty()));
-        assert!(profiles
-            .iter()
-            .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()])));
+        assert!(
+            profiles
+                .iter()
+                .any(|profile| profile.default_features && profile.features.is_empty())
+        );
+        assert!(
+            profiles
+                .iter()
+                .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()]))
+        );
         assert!(profiles.iter().any(|profile| profile.default_features
             && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
     }
@@ -837,6 +898,24 @@ mod tests {
         let default = profile(true, BTreeSet::new()).id();
         assert_eq!(a, b);
         assert_ne!(a, default);
+    }
+
+    #[test]
+    fn rustdoc_version_must_match_cargo_package_even_without_items() {
+        let valid = RustdocObservation {
+            format_version: FORMAT_VERSION,
+            crate_name: "feature_rich".into(),
+            crate_version: Some("0.1.0".into()),
+            target: "host".into(),
+            includes_private: false,
+            item_count: 1,
+        };
+        validate_rustdoc_version(&metadata(), "feature-rich", &valid).unwrap();
+        let mut invalid = valid.clone();
+        invalid.crate_version = Some("0.9.0".into());
+        assert!(validate_rustdoc_version(&metadata(), "feature-rich", &invalid).is_err());
+        invalid.crate_version = None;
+        assert!(validate_rustdoc_version(&metadata(), "feature-rich", &invalid).is_err());
     }
 
     #[test]
@@ -861,12 +940,16 @@ mod tests {
             },
         ]);
         assert_eq!(merged.len(), 2);
-        assert!(merged
-            .iter()
-            .any(|item| item.key.signature == "(u8)" && item.profiles.len() == 2));
-        assert!(merged
-            .iter()
-            .any(|item| item.key.signature == "(String)" && item.profiles.len() == 1));
+        assert!(
+            merged
+                .iter()
+                .any(|item| item.key.signature == "(u8)" && item.profiles.len() == 2)
+        );
+        assert!(
+            merged
+                .iter()
+                .any(|item| item.key.signature == "(String)" && item.profiles.len() == 1)
+        );
     }
 
     #[test]
@@ -1105,14 +1188,16 @@ mod tests {
             entry.path.starts_with("acyclic_fs_napi::Native") && entry.kind == "struct"
         });
         let native_binding = native_binding.expect("binding-only type should be projected");
-        assert!(native_binding
-            .profiles
-            .iter()
-            .any(|profile| profile.rustdoc_package == "acyclic-fs-napi"
-                && profile.published_owner == "acyclic-fs"
-                && profile.rustdoc_version == "0.2.0"
-                && profile.published_version == "0.2.0"
-                && profile.capabilities == vec!["napi", "native"]));
+        assert!(
+            native_binding
+                .profiles
+                .iter()
+                .any(|profile| profile.rustdoc_package == "acyclic-fs-napi"
+                    && profile.published_owner == "acyclic-fs"
+                    && profile.rustdoc_version == "0.2.0"
+                    && profile.published_version == "0.2.0"
+                    && profile.capabilities == vec!["napi", "native"])
+        );
     }
 
     #[test]

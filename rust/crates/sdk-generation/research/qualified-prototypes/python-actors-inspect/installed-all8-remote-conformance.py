@@ -150,7 +150,10 @@ async def main():
             pass
         else:
             raise AssertionError("in-flight asyncio.Task.cancel did not cancel the request")
-        for _ in range(200):
+        # Cross-host relays can delay the marker after the client has already
+        # cancelled the task. Allow five seconds for the server-side close
+        # observation while still requiring the marker from this run.
+        for _ in range(500):
             if "stream-close" in marker.read_text(encoding="utf-8", errors="replace"):
                 break
             await asyncio.sleep(0.01)

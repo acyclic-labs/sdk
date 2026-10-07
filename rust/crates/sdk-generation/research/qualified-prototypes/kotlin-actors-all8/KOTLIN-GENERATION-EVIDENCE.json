@@ -30,7 +30,7 @@
     "cargo_package": "acyclic-actors-uniffi",
     "cargo_version": "0.2.0",
     "cargo_manifest_sha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377",
-    "cargo_lock_sha256": "97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE",
+    "cargo_lock_sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890",
     "domain_source": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\actors\\src\\domain.rs",
     "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
     "uniffi_version": "0.31.0",
@@ -63,25 +63,34 @@
     }
   },
   "fresh_current_lock_rebuild": {
-    "cargo_lock_sha256": "B1E42E6BA03A535A25A1E369AE3BAAE1BCCB3789360D709229C67581FEE5AA11",
-    "windows_native_sha256": "E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F",
-    "generated_kotlin_sha256": "201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58",
-    "jar_path": "Q:\\sdk\\work\\actors-uniffi-kotlin-internal-current-20261007\\consumer\\target\\acyclic-actors-uniffi-kotlin-0.2.0.jar",
-    "jar_sha256": "6A616B2A73774F150E36C050E6D6FBD1AA5E21C5CBE801F0AACE04C38C16C5E4",
+    "cargo_lock_sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890",
+    "windows_native_sha256": "ECB17115C459A505A7759C08E22FE6D0B3AF86F626C719E4E5C42876979A1FA9",
+    "generated_kotlin_sha256": "6E8DEB62ABBADAB68E90D3F1591DBD2872B6EE490A23A2C80A7443E9DF4100B3",
+    "jar_path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\kotlin-current-lock-20261007\\consumer\\target\\acyclic-actors-uniffi-kotlin-0.2.0.jar",
+    "jar_sha256": "9877BE2BB3FF38964F05044A1EBA1101B0F70595D3956BCE84F6866E43DB7AE3",
     "native_resources": {
-      "linux-x86-64/libacyclic_actors_uniffi.so": "AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24",
-      "win32-x86-64/acyclic_actors_uniffi.dll": "E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F",
-      "darwin-aarch64/libacyclic_actors_uniffi.dylib": "28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719"
+      "linux-x86-64/libacyclic_actors_uniffi.so": "CA29BE00B65DE10B9AC69E83A72C86F846EFE74AD086BA05A2ADA10B68AEF68B",
+      "win32-x86-64/acyclic_actors_uniffi.dll": "ECB17115C459A505A7759C08E22FE6D0B3AF86F626C719E4E5C42876979A1FA9",
+      "darwin-aarch64/libacyclic_actors_uniffi.dylib": "C81C54D135C95D8AE6DE51AD257CC99FA53FCC8908A6D925EC604AB13B2D1937"
     },
     "receipts": {
-      "wsl_constructor": "KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS",
-      "windows_all8": "KOTLIN_ALL8_IMMUTABLE_PROBE_PASS",
-      "windows_pending": "KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS",
-      "macos_all8": "KOTLIN_ALL8_IMMUTABLE_PROBE_PASS",
-      "macos_pending": "KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS",
-      "macos_continuation_map": "KOTLIN_NATIVE_PENDING_CONTINUATION_MAP_PASS"
+      "linux_all8": "KOTLIN_ALL8_IMMUTABLE_PROBE_PASS",
+      "linux_pending": "KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS",
+      "windows_native_rebuild": "PASS",
+      "macos_native_rebuild": "PASS",
+      "external_negative_compile": {
+        "raw_handle": "Cannot access '<init>': it is internal in 'ActorId'",
+        "no_handle": "Cannot access '<init>': it is internal in 'ActorId'",
+        "wrong_enum_payload": "The boolean literal does not conform to the expected type ULong"
+      }
     },
-    "loader_policy": "standard JNA Platform.RESOURCE_PREFIX resources; no custom loader or native-path setup"
+    "loader_policy": "standard JNA Platform.RESOURCE_PREFIX resources; no custom loader or native-path setup",
+    "raw_receipts": [
+      "audit/kotlin-current-lock-linux-all8.raw.txt",
+      "audit/kotlin-current-lock-linux-pending.raw.txt",
+      "audit/kotlin-current-lock-native-provenance.raw.txt",
+      "audit/kotlin-current-lock-external-negative.raw.txt"
+    ]
   },
   "typing_review": {
     "immutable_records": true,

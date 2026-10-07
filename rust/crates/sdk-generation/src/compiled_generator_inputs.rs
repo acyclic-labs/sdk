@@ -30,6 +30,7 @@ pub const PATHS: &[&str] = &[
     "rust/crates/sdk-docs/Cargo.lock",
     "rust/crates/sdk-docs/src/lib.rs",
     "rust/crates/sdk-docs/src/public_api.rs",
+    "rust/crates/sdk-docs/src/rustdoc_profiles.rs",
     "rust/crates/sdk-generation/Cargo.toml",
     "rust/crates/sdk-generation/Cargo.lock",
     "rust/crates/sdk-generation/build.rs",

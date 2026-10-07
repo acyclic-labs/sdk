@@ -1,57 +1,56 @@
 C++ Actors binding qualification receipt
-Captured: 2026-10-07 (native Windows linked refresh plus live TLS fixture)
+Captured: 2026-10-07 (installed package refresh, Windows producer evidence, macOS/ivar build)
 Authoritative source checkout: C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk
-Source git at initial capture: 371bb4170e16aca973176b6756a261ee5add7297
-Bridge generator: cxx/cxx-build 1.0.202 (Cargo.lock)
 
-Generated header:
-  generated/lib.rs.h
-  SHA256 F302DDDE6C4D2FE594B3C41EA45505C2EDCEA85DECD591EBD0AF45935BC5A713
+Source identity:
+  The linked checkout did not expose a resolvable Git worktree identity at the
+  final package run. Qualification is therefore bound to the exact Actors and
+  CXX .crate archives, extracted file inventory, lockfiles, toolchain, generated
+  header, and native library hashes in the produced SOURCE-IDENTITY and
+  SOURCE-INVENTORY files. A stale or unavailable HEAD is not used as source
+  evidence.
 
-Rust producer (WSL Ubuntu):
-  RUSTC_WRAPPER= cargo build --locked --target-dir /tmp/cpp-actors-oss-target
-  PASS; staticlib /tmp/cpp-actors-oss-target/debug/libcpp_actors_oss_qualification.a
+Installed package run (Linux/WSL, final package refresh):
+  scripts/check-cpp-actors-package.sh /tmp/cpp-actors-package-final8
+  PASS: clean extracted package, CMake find_package consumer, positive runtime,
+  all eight operation entry points, authenticated TLS, wrong-token rejection,
+  in-flight cancellation with server-side HTTP/2 abort, and both strong-type
+  expected negatives.
+  Terminal: live_cxx_operations:8 authentication_rejected:true cancellation:cancelled
+  Fixture receipt: {"inspectStarted":true,"inspectAborted":true}
+  QUALIFICATION records external_all8_runtime_tls_auth:PASS and
+  external_inflight_cancel_server_abort:PASS.
 
-Linked consumer (WSL Ubuntu g++):
-  g++ -std=c++11 -I generated -I <cxxbridge/include> -c consumer/positive.cc
-  g++ positive.o libcpp_actors_oss_qualification.a -ldl -lpthread -lm -o /tmp/cpp-actors-positive
-  /tmp/cpp-actors-positive
-  PASS (exit 0)
+Windows MSVC cohort:
+  cargo 1.98.1 / rustc 1.98.1, target x86_64-pc-windows-msvc: PASS.
+  Generated header compiled with MSVC 14.44.35207; direct C++ consumer
+  compile/link against the recorded Windows static library: PASS.
+  This is maintained producer/header/link evidence. The installed all-eight
+  runtime receipt above is the Linux/WSL run; no native Windows live fixture
+  result is implied by that line.
 
-Expected-negative consumers:
-  consumer/negative.cc: PASS as a negative (std::string cannot convert to uint64_t)
-  consumer/negative-nominal.cc: PASS as a negative (ActorsClient cannot bind ActorsOperation&)
+macOS SSH/ivar cohort:
+  Host: Darwin 24.6.0 arm64; Apple clang 17.0.0.13.5.
+  cargo 1.98.1 / rustc 1.98.1, CXX 1.0.202: staticlib build PASS.
+  clang++ positive header compile and static-library link/runtime PASS;
+  uint64_t and nominal opaque-type expected negatives PASS.
+  macOS output hashes and the remote commands are recorded in
+  package-qualification.md. The macOS run used the exact two archives from the
+  installed Linux package and did not claim a native macOS live TLS fixture.
 
-The linked positive probe calls the real acyclic_actors::client::connect through
-Rust with an invalid non-HTTPS endpoint and verifies the typed Configuration error;
-its observation uses the real domain::ActorObservation::try_from and PositiveU64.
-The cancellation operation uses the real tokio_util CancellationToken.
+Bridge and runtime scope:
+  The Rust producer owns the Actors client, domain conversions, typed errors,
+  optional presence, u64 values, and cancellation. CXX exposes the small opaque
+  client/operation boundary; it does not translate Rust futures into a separate
+  C++ transport implementation.
+  cxx-async 0.1.4 remains an unlinked option because its cppcoro/Folly executor
+  dependencies are unavailable here; that is an environment limitation, not a
+  blanket exclusion of maintained executor-backed routes.
 
-Windows MSVC:
-  cargo build --locked --target x86_64-pc-windows-msvc PASS.
-  Direct generated-header consumer compile/link with cl/link PASS.
-  The cargo-managed bridge source path warning remains a build-script integration
-  limitation; the staticlib and installed consumer link are qualified.
-
-Live authenticated TLS conformance fixture:
-  consumer/live-remote.cc invokes each of the 8 CXX operation entry points
-  PASS: real TLS CA, bearer token, all 8 operations, wrong-token rejection
-  PASS: delayed fixture observed HTTP/2 abort after C++ cancellation
-  Output: live_cxx_operations:8 authentication_rejected:true cancellation:cancelled
-
-The fixture uses the maintained Rust client and domain types; it does not claim
-direct C++ future support or qualification of an internet service. cxx-async
-0.1.4 remains an unlinked option pending cppcoro/Folly executor dependencies;
-its generic Rust-future bridge does not inherently exclude Tokio.
-
-Installed artifact/external consumer:
-  CXX header and Windows static library copied to a clean temp install root.
-  cl compiled positive.cc and live-remote.cc outside the workspace; link PASS.
-  negative.cc and negative-nominal.cc both failed with the expected type errors.
-  cargo package --allow-dirty --no-verify cannot prepare an extracted archive:
-  acyclic-actors is an unpublished path dependency absent from crates.io.
-  See package-qualification.md for the source inventory and artifact hashes.
-
-Scope:
-  source-only qualification evidence plus temporary WSL build output under /tmp;
-  no Q checkout, public package, generated protobuf, or frozen ownership changed.
+Packaging boundary:
+  The Actors workspace crate is unpublished and cannot be resolved from the
+  crates.io index by a direct cargo package command. The qualification packages
+  the produced Actors archive, extracts it, and uses an explicit external
+  [patch.crates-io] path while packaging/building the CXX archive offline. No
+  registry publication, hidden dependency, generated protobuf, or public Actor
+  package was changed.

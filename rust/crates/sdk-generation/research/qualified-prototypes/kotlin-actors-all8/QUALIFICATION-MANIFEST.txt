@@ -141,7 +141,7 @@ Rust-owned JVM generation inputs and derived evidence (source only; no registry 
 - Rust metadata source SHA-256: 3FFD3FBED012AB61EF2BC77544B91F322590A56F795EBD89701CCED4BF1E38A9
 - derived artifact evidence: KOTLIN-GENERATION-EVIDENCE.json, SHA-256 E99E9F48121EB37C88F4C204251E18015B77A938F7A93F00E0A7CFF759B17B4A
 - design notes: KOTLIN-GENERATION-DESIGN-NOTES.md, SHA-256 17B65BC1A9DA958832E2802302480BE1BC9E78A29862B23423B76AE961E45432
-- Cargo authority: acyclic-actors-uniffi version 0.2.0 from cargo metadata; manifest SHA-256 3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377; lock SHA-256 97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE
+- Cargo authority: acyclic-actors-uniffi version 0.2.0 from cargo metadata; manifest SHA-256 3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377; current generated lock SHA-256 9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890
 - generated coordinate: dev.acyclic:acyclic-actors-uniffi-kotlin:0.2.0, version emitted from Cargo metadata
 - external nominal negative: separate Maven consumer failed raw `(UniffiWithHandle, Long)` construction as internal and rejected `SubscriptionStart.Cursor(true)` as wrong ULong
 - native runtime: new JAR retained native hashes and passed constructor, all-eight, service-error, and generated-null pending cancellation probes
@@ -163,3 +163,14 @@ Fresh current-lock patched package rebuild (2026-10-07):
 - macOS arm64 ivar installed-JAR live fixture: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; generated-null pending probe observed server abort and active=0: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS
 - macOS arm64 ivar maintained-runtime probe: continuation map baseline=0, during=1, after=0 across three cancelled operations; KOTLIN_NATIVE_PENDING_CONTINUATION_MAP_PASS
 - no generated Kotlin source, native loader, java.library.path, or custom native-path code was added; the previous JAR and DLL were retained as historical receipts rather than retagged
+
+Current-lock platform parity rebuild (2026-10-07):
+- generated standalone Cargo.lock SHA-256 used for all three native builds: 9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890
+- generated Kotlin SHA-256: 6E8DEB62ABBADAB68E90D3F1591DBD2872B6EE490A23A2C80A7443E9DF4100B3
+- rebuilt native resources: Linux CA29BE00B65DE10B9AC69E83A72C86F846EFE74AD086BA05A2ADA10B68AEF68B; Windows ECB17115C459A505A7759C08E22FE6D0B3AF86F626C719E4E5C42876979A1FA9; macOS arm64 C81C54D135C95D8AE6DE51AD257CC99FA53FCC8908A6D925EC604AB13B2D1937
+- exact task-local JAR: C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar; SHA-256 9877BE2BB3FF38964F05044A1EBA1101B0F70595D3956BCE84F6866E43DB7AE3
+- Linux WSL Java 17 all-eight/service-error/cancellation receipt: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS
+- Linux WSL Java 17 real pending native coroutine cancellation: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS; server observed started +1, aborted +1, active=0
+- raw receipts: audit/kotlin-current-lock-linux-all8.raw.txt; audit/kotlin-current-lock-linux-pending.raw.txt; audit/kotlin-current-lock-native-provenance.raw.txt
+- current JAR external Maven negative compile: raw ActorId(UniffiWithHandle, 1L) and ActorId(NoHandle) rejected as internal; SubscriptionStart.Cursor(true) rejected as ULong mismatch; raw receipt audit/kotlin-current-lock-external-negative.raw.txt
+- every platform native resource was rebuilt from the current Rust source and the same generated lock; no older macOS or Windows bytes were assigned the current lock identity

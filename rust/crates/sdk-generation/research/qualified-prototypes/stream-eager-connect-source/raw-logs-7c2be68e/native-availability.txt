@@ -1,0 +1,1 @@
+{"native":true,"platform":"win32","arch":"x64"}

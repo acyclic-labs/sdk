@@ -400,6 +400,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
                 artifact["path"] == "generated/workers/proto/workers/v1/workers.proto"
             })
     );
+    let availability_path = first.join("sdk-docs-profile-availability.v1.json");
+    let availability: serde_json::Value =
+        serde_json::from_slice(&fs::read(&availability_path).unwrap()).unwrap();
+    assert_eq!(availability["schema"], "sdk-docs-profile-availability.v1");
+    assert!(!availability["entries"].as_array().unwrap().is_empty());
+    assert_eq!(
+        fs::read(&availability_path).unwrap(),
+        fs::read(second.join("sdk-docs-profile-availability.v1.json")).unwrap()
+    );
     assert!(
         manifest["artifacts"]
             .as_array()
@@ -510,6 +519,19 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .success()
     );
     fs::write(&schema_path, schema_bytes).unwrap();
+    assert!(
+        run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
+            .status
+            .success()
+    );
+    let availability_bytes = fs::read(&availability_path).unwrap();
+    fs::write(&availability_path, b"tampered profile availability\n").unwrap();
+    assert!(
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
+            .status
+            .success()
+    );
+    fs::write(&availability_path, availability_bytes).unwrap();
     assert!(
         run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status

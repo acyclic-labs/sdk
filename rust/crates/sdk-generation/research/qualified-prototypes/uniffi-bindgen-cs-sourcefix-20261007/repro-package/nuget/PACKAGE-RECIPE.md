@@ -21,7 +21,9 @@ The Windows qualification layout is `lib/net8.0/Acyclic.Actors.dll`,
 `buildTransitive/net8.0/Acyclic.Actors.targets`, using the Rust Cargo version
 `0.2.0` as package version. The cross-platform qualification cohort adds
 `runtimes/linux-x64/native/libacyclic_actors_uniffi.so` to the same managed
-assembly and targets. The targets file only copies the existing Rust native
+assembly and targets. The macOS arm64 cohort uses
+`runtimes/osx-arm64/native/libacyclic_actors_uniffi.dylib` with its own archive
+and targets file. The targets file only copies the existing Rust native
 library; it contains no transport, semantic, or cancellation runtime.
 
 External receipt:
@@ -46,8 +48,16 @@ External receipt:
 - clean external Linux net8.0 MSBuild restore/build: PASS, 0 warnings, 0 errors
 - clean external Linux net8.0 runtime against a WSL-local fixture: PASS; all
   nine generated Actors methods completed
-- macOS remains unqualified: the available `ivar` host has Rust 1.96.0 and no
-  .NET SDK, while this source cohort uses Rust 1.98.1 and .NET SDK 8.0.425
+- the available `ivar` host originally had Rust 1.96.0 and no .NET SDK; the
+  macOS cohort installs isolated Rust 1.98.1 and .NET SDK 8.0.425
+- macOS arm64 cohort archive SHA256:
+  `C550F231F320CDE3CB584267891D3362312EB00A4ABA910D877B15ADA7C6B0E0`
+- macOS arm64 producer/package SHA256:
+  `7604093B31926938B10C7E70B7AD783D3E98121016EA14DF8B60ECB3DE495155`
+- clean external macOS net8.0 MSBuild restore/build: PASS, 0 warnings, 0 errors
+- clean external macOS runtime all-eight and three-iteration cancellation cleanup:
+  PASS; `started=3`, `aborted=3`, `active=0`
+- macOS raw-handle and strong-type probes: expected CS1729 and CS1503
 
 The artifact remains external and unpublished. Keep this recipe and receipt
 with the source qualification cohort when reviewing a future package build.

@@ -25,7 +25,7 @@ The source closure is anchored by Rust-owned metadata and the Actors domain hash
 standalone Cargo manifest hash
 `3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377`, its
 lockfile hash
-`97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE`, and
+`9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890`, and
 the immutable-record UniFFI configuration hash
 `950AB29CBC05E20643831B08A16FA5CABB99258FB4E0EACEA1FC78D54718B599`.
 UniFFI and bindgen are both pinned to `0.31.0`. The generated Kotlin hash is

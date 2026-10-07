@@ -3,6 +3,14 @@
 Captured 2026-10-07 from the authoritative checkout
 `C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk`.
 
+The current receipt is the installed-package run
+`/tmp/cpp-actors-package-final8`. The linked checkout did not expose a
+resolvable Git worktree identity at that run, so the tested source is identified
+by the exact `.crate` archives and the extracted file-level `SOURCE-INVENTORY`,
+not by a possibly stale `HEAD`. The output also includes `SOURCE-IDENTITY`,
+`SOURCE_COMMIT` (explicitly unavailable when Git cannot resolve the worktree),
+and `SHA256SUMS` for the staged archives, header, native library, and inventory.
+
 ## Artifact
 
 The evidence crate is `cpp-actors-oss-qualification` version `0.1.0`, using
@@ -23,6 +31,20 @@ were built from the following exact inputs:
 | `generated/lib.rs.h` | `F302DDDE6C4D2FE594B3C41EA45505C2EDCEA85DECD591EBD0AF45935BC5A713` |
 | Windows static library | `A62B99A7BA3363FA0F40B7544595AA67B2EDFBA92B51638A7AA7DED307069639` |
 
+The final installed run produced these package identities:
+
+| artifact | SHA-256 |
+|---|---|
+| `acyclic-actors-0.2.0.crate` | `539528F67D7D0A7539902A8E9F4E3B55BB94812324FE3171F5F4F7B7F5E07753` |
+| `cpp-actors-oss-qualification-0.1.0.crate` | `2822E36617DC8CCEBB99EFEC6B0756C874FDBF5031EDD95086C7646E500425B0` |
+| Linux/WSL static library | `75918AC219261BEF06582E939C2E43F0C1D071AB6B8F9EECA1B880C6E1D823FA` |
+| macOS/ivar static library | `928DF4CC0BB4F5BC8B1080B4A1527FCCE78435B1D0CFB1069495CE20A9E7BC7` |
+
+The CXX archive's extracted source inventory is staged as
+`SOURCE-INVENTORY`; it hashes every file under both extracted crates. The macOS
+run consumed the same two archives, with generated header SHA-256
+`F302DDDE6C4D2FE594B3C41EA45505C2EDCEA85DECD591EBD0AF45935BC5A713`.
+
 Producer qualification passed with:
 
 ```text
@@ -32,10 +54,12 @@ cargo build --locked --target x86_64-pc-windows-msvc
 ```
 
 The generated header compiled with MSVC `14.44.35207`, and the C++ consumer
-linked against the static library. The external consumer invoked all eight
-typed operation entry points, checked optional response presence and the
-canonical large `u64` cursor, rejected a wrong bearer token, and observed an
-in-flight cancellation as a server-side HTTP/2 abort:
+linked against the Windows static library. This is producer/header/link
+evidence for the maintained native Windows cohort. The external Linux/WSL
+consumer invoked all eight typed operation entry points, checked optional
+response presence and the canonical large `u64` cursor, rejected a wrong
+bearer token, and observed an in-flight cancellation as a server-side HTTP/2
+abort:
 
 ```text
 live_cxx_operations:8 authentication_rejected:true cancellation:cancelled
@@ -46,6 +70,28 @@ The expected-negative consumers remain part of the installed-header check:
 `negative.cc` rejects a `std::string` where the generated API requires
 `uint64_t`, and `negative-nominal.cc` rejects passing `ActorsClient` where the
 nominal opaque `ActorsOperation` type is required.
+
+## Cross-platform installed cohort
+
+The Linux/WSL installed package is the live runtime qualification: clean
+external `find_package`, all eight operations, TLS/authentication, typed error,
+in-flight cancellation, and server abort cleanup all passed. The Windows cohort
+has current Rust/CXX producer output and direct MSVC header/link evidence; its
+live all-eight result is not substituted for the Linux/WSL runtime receipt.
+
+The macOS/ivar cohort was rebuilt from the exact two package archives with
+`cargo +1.98.1 build --locked` on Darwin 24.6.0 arm64. Apple clang 17 compiled
+the installed generated header, linked the static library, and ran the positive
+consumer; both strong-type negatives failed as expected. The macOS native
+library hash is recorded above. No macOS live TLS fixture is claimed because
+the retained live fixture is the Linux/WSL installed run.
+
+This matrix separates a local/embedded native artifact from a remote fixture:
+the CXX bridge remains Rust-first and delegates transport, typed errors, u64,
+optional presence, and cancellation to Actors. Other maintained OSS executor
+routes (including `cxx-async` with cppcoro/Folly) remain candidates when their
+dependencies are installed; an unavailable executor is recorded as an
+environment gap rather than a broad language or platform exclusion.
 
 ## Clean package boundary
 

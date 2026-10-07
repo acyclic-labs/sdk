@@ -1,0 +1,16 @@
+schema=acyclic.stream.native.hashguard.v3
+source_revision=7c2be68e75f966f0dccbe0cfef44e79f1195c9fc
+source_sha256=sha256:f1cd7e8afe02172fd8dfeb340c5632f1a6e0684ccbbb79c50914eb27a5dcf72d
+native_artifact_sha256=sha256:c7bc9317bc331b971804f3408316c103dfc6b16638d529a39a64935f049317f8
+native_artifact_bytes=5358080
+bundle=Q:/sdk/work/stream-native-bundle-7c2be68e/index.win32-x64-msvc.node
+staged=Q:/sdk/work/stream-package-7c2be68e/generated/native/index.win32-x64-msvc.node
+archive_extracted=Q:/sdk/work/install-extract-7c2be68e/package/generated/native/index.win32-x64-msvc.node
+installed=Q:/sdk/work/stream-installed-7c2be68e/node_modules/@acyclic-labs/stream/generated/native/index.win32-x64-msvc.node
+loaded_module=Q:/sdk/work/stream-installed-7c2be68e/node_modules/@acyclic-labs/stream/generated/native/index.win32-x64-msvc.node
+bundle_sha256=c7bc9317bc331b971804f3408316c103dfc6b16638d529a39a64935f049317f8
+staged_sha256=c7bc9317bc331b971804f3408316c103dfc6b16638d529a39a64935f049317f8
+archive_extracted_sha256=c7bc9317bc331b971804f3408316c103dfc6b16638d529a39a64935f049317f8
+installed_sha256=c7bc9317bc331b971804f3408316c103dfc6b16638d529a39a64935f049317f8
+loaded_module_sha256=c7bc9317bc331b971804f3408316c103dfc6b16638d529a39a64935f049317f8
+all_native_copies_equal=true

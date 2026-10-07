@@ -34,7 +34,7 @@
     "manifest": "rust/actors-uniffi/Cargo.toml",
     "manifest_sha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB737",
     "lockfile": "rust/actors-uniffi/Cargo.lock",
-    "lockfile_sha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5",
+    "lockfile_sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890",
     "facade_source": "rust/actors-uniffi/src/lib.rs",
     "facade_source_sha256": "9AF194096FEE04643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A",
     "cargo_metadata": "rust/cargo-metadata.json",
@@ -94,6 +94,17 @@
       "runtime_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-linux-runtime.terminal.log",
       "rust_toolchain": "1.98.1",
       "macos": "unqualified; ivar Rust 1.96.0 and no .NET SDK"
+    },
+    "macos_arm64": {
+      "archive": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\feed-macos\\Acyclic.Actors.0.2.0.nupkg",
+      "archive_sha256": "C550F231F320CDE3CB584267891D3362312EB00A4ABA910D877B15ADA7C6B0E0",
+      "managed_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+      "native_sha256": "7604093B31926938B10C7E70B7AD783D3E98121016EA14DF8B60ECB3DE495155",
+      "build": "PASS; macOS 15.6 arm64, .NET SDK 8.0.425, 0 warnings, 0 errors",
+      "all8": "PASS",
+      "cancellation": "PASS; baseline=0, peaks=1,1,1, started=3, aborted=3, active=0",
+      "negative": "EXPECTED FAIL CS1729 and CS1503",
+      "rust": "1.98.1"
     }
   }
 }

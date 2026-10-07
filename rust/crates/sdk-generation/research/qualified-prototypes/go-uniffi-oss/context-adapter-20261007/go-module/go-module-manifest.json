@@ -74,6 +74,7 @@
   "qualificationScope": {
     "linuxWsl": "PASS: external module consumer all-eight, context cancellation, server-abort followed by authenticated call, u64 max and 2^53 boundary, and compile negatives",
     "macosIvar": "UNQUALIFIED_FOR_GO: native identity is retained; Go toolchain/runtime scope requires a separate run",
-    "windows": "UNQUALIFIED_FOR_GO: Windows native identity is retained; Linux Go runtime was used"
+    "windows": "UNQUALIFIED_FOR_GO: Windows native identity is retained; Linux Go runtime was used",
+    "externalConsumerTerminalSha256": "FBB795EDAC8550004ECCD49D96F6CC2329152E5135460CF6C3E4793F0AE52746"
   }
 }

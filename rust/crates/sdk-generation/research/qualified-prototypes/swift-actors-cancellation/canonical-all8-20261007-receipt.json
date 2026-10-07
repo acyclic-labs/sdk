@@ -1,0 +1,75 @@
+{
+  "schema": "acyclic.swift-maintained-uniffi-qualification/v1",
+  "status": "PASS_WINDOWS_MACOS",
+  "recordedAt": "2026-10-07",
+  "fixture": {
+    "kind": "canonical-maintained-grpc-conformance-fixture",
+    "source": "typescript/packages/actors/test/grpc-conformance-fixture-server.mjs",
+    "pid": 57784,
+    "endpoint": "https://localhost:64869",
+    "options": "Q:\\sdk\\work\\swift-canonical-all8-20261007-options.json",
+    "optionsSha256": "231C6B1CA1BFCB44B2943CA2A85A3B8472A3D34D1E9CE9B97A27F4C45E90754C",
+    "serverStopped": true,
+    "serverPidTerminalObservation": "PID 57784 absent after owned fixture cleanup"
+  },
+  "producer": {
+    "uniffiSource": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "commit": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "templates": {
+      "Async": "830FB89B3C97713CA2C1CF844BE63E0A1AD5D458AF7A3C87A3E2FF58A2B5E0C6",
+      "macros": "5EB1C64482514E8962099B42BE14BBC2C0B375570869CFE391006A77802ABDB4",
+      "Helpers": "932944185A48F7C99C81E0A08C3F89304515D7C20D025F552875D8BB816A7E44"
+    }
+  },
+  "runtime": {
+    "nativeDll": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "generatedSwift": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
+    "generatedHeader": "A840ACE58A5D895D1E166A0F98311C2F71D90C7F53DC40DA6E56A918809D5578",
+    "package": "Q:\\sdk\\work\\swift-canonical-all8-20261007-swift-consumer"
+  },
+  "inputs": {
+    "operations": [
+      "inspect",
+      "create",
+      "update",
+      "add",
+      "resume",
+      "checkpoint",
+      "invoke",
+      "remove"
+    ],
+    "checkpointIdempotencyKey": "checkpoint-a",
+    "u64Cursor": "9007199254740993",
+    "wrongTokenTypedServiceError": "grpc=16"
+  },
+  "python": {
+    "script": "Q:\\sdk\\work\\swift-canonical-all8-20261007-python-all8.py",
+    "result": "PASS ALL8PASS"
+  },
+  "swift": {
+    "executable": "Q:\\sdk\\work\\swift-canonical-all8-20261007-swift-build2\\out\\Products\\Debug-windows-x86_64\\ActorsConformanceConsumer.exe",
+    "result": "PASS",
+    "exitCode": 0
+  },
+  "notes": [
+    "Canonical fixture asserts checkpoint idempotency key checkpoint-a; the staged Swift consumer was copied from the maintained source consumer and only its external fixture-specific checkpoint key was adjusted.",
+    "No generator source, maintained Rust source, or tracked generated output was changed."
+  ],
+  "macos": {
+    "host": "ivar",
+    "os": "Darwin 24.6.0 arm64",
+    "rustc": "1.98.1",
+    "swift": "6.1.2",
+    "producerRoot": "/Users/var/mac-swift-producer-20261007",
+    "nativeDylib": "/Users/var/mac-swift-producer-20261007/rust/crates/actors-uniffi/target/release/libacyclic_actors_uniffi.dylib",
+    "nativeDylibSha256": "8959C7F8A903ED9DBE3139935CE23BA9FC5E0356FE65390493853995DA9B5AB4",
+    "generatedSwiftSha256": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
+    "generatedHeaderSha256": "A840ACE58A5D895D1E166A0F98311C2F71D90C7F53DC40DA6E56A918809D5578",
+    "executable": "/Users/var/mac-swift-producer-20261007/swift-build/arm64-apple-macosx/debug/ActorsConformanceConsumer",
+    "executableSha256": "43E1D4A2743CE2A75B5576038514B279C032D006ACF72CAE369E781714EAAB7F",
+    "runLog": "Q:\\sdk\\work\\swift-canonical-all8-20261007-macos-run.log",
+    "runLogSha256": "EA4ED6FE20C6795CE3C440E4F39A3AEBB44BAE39CFC2F3A61DAF20B434F3F0AB",
+    "result": "PASS exit=0; all eight typed operations and grpc16 typed service error",
+    "producerSourceSnapshotSha256": "7CA3BAD38F2A41A4E778043B734FE4A04C8C81AF846D96E14171E3BC5C9F99B9"
+  }
+}

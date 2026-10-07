@@ -4,8 +4,11 @@ This is a source-only qualification fixture against the authoritative checkout:
 
 `C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk`
 
-The recorded source snapshot was Rust git `371bb4170e16aca973176b6756a261ee5add7297`.
-The fixture is deliberately outside the public Actors crate and does not change the
+The final installed-package receipt is bound to the exact Actors and CXX
+`.crate` archives plus the extracted `SOURCE-INVENTORY` and artifact hashes.
+The linked checkout could not provide a resolvable Git worktree identity at the
+final run, so a stale `HEAD` is not presented as compiled-source evidence. The
+fixture is deliberately outside the public Actors crate and does not change the
 wire schema, generated protobuf, or public package API.
 
 ## Decision
@@ -105,8 +108,10 @@ g++ ... consumer/positive.cc libcpp_actors_oss_qualification.a -ldl -lpthread -l
 The executable returned 0. Its connection probe invokes the actual Rust
 `client::connect` with an invalid non-HTTPS endpoint and observes the typed
 configuration error; no toy transport or independent DTO is involved. The
-Windows MSVC driver remains unqualified because it previously failed while
-compiling emitted `lib.rs.cc`; WSL provides the linked producer qualification.
+The current Windows cohort has Rust 1.98.1 producer output and MSVC 14.44.35207
+header/consumer link evidence, recorded with its static-library hash. The live
+all-eight runtime receipt is the clean Linux/WSL installed run; it is not
+silently attributed to native Windows.
 
 ## Live authenticated TLS conformance
 

@@ -151,11 +151,27 @@ install -m 0644 "$actors_archive" "$cxx_archive" "$output/"
 # the bytes whose hashes identify the installed producer/consumer boundary.
 install -m 0644 "$install_root/include/lib.rs.h" "$output/lib.rs.h"
 install -m 0644 "$native_library" "$output/libcpp_actors_oss_qualification.a"
-(cd "$output" && sha256sum \
-  "$(basename "$actors_archive")" "$(basename "$cxx_archive")" \
-  lib.rs.h libcpp_actors_oss_qualification.a > SHA256SUMS)
+# Keep a file-level inventory of the exact extracted source crates used by the
+# tested package. This makes the receipt reproducible even when the checkout
+# cannot provide a usable Git worktree identity.
+{
+  printf '%s\n' '# exact extracted source inventory (sha256  relative-path)'
+  (
+    cd "$actors_path"
+    find . -type f -print0 | sort -z | while IFS= read -r -d '' path; do
+      sha256sum "$path" | sed 's#  \.\/#  actors/#'
+    done
+  )
+  (
+    cd "$cxx_path"
+    find . -type f -print0 | sort -z | while IFS= read -r -d '' path; do
+      sha256sum "$path" | sed 's#  \.\/#  cxx/#'
+    done
+  )
+} > "$output/SOURCE-INVENTORY"
 printf 'actors_archive_sha256=%s\n' "$(sha256sum "$actors_archive" | cut -d' ' -f1)" > "$output/SOURCE-IDENTITY"
 printf 'cxx_archive_sha256=%s\n' "$(sha256sum "$cxx_archive" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'source_inventory_sha256=%s\n' "$(sha256sum "$output/SOURCE-INVENTORY" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
 printf 'actors_cargo_lock_sha256=%s\n' "$(sha256sum "$actors_path/Cargo.lock" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
 printf 'cxx_cargo_lock_sha256=%s\n' "$(sha256sum "$cxx_path/Cargo.lock" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
 printf 'toolchain_sha256=%s\n' "$(sha256sum "$root/rust-toolchain.toml" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
@@ -168,5 +184,8 @@ else
   echo 'git identity unavailable; qualification is bound to exact source/archive/artifact hashes' >&2
   printf 'unavailable (checkout does not expose a resolvable Git worktree)\n' > "$output/SOURCE_COMMIT"
 fi
-printf 'find_package_install:PASS\nexternal_positive_runtime_typed_error_cancel:PASS\nexternal_all8_link:PASS\nexternal_all8_runtime_tls_auth:PASS\nexternal_inflight_cancel_server_abort:PASS\nnegative_u64:PASS\nnegative_nominal:PASS\n' > "$output/QUALIFICATION"
+(cd "$output" && sha256sum \
+  "$(basename "$actors_archive")" "$(basename "$cxx_archive")" \
+  lib.rs.h libcpp_actors_oss_qualification.a SOURCE-INVENTORY SOURCE-IDENTITY > SHA256SUMS)
+printf 'find_package_install:PASS\nexternal_positive_runtime_typed_error_cancel:PASS\nexternal_all8_link:PASS\nexternal_all8_runtime_tls_auth:PASS\nexternal_inflight_cancel_server_abort:PASS\nnegative_u64:PASS\nnegative_nominal:PASS\ninstalled_linux_wsl_runtime:PASS\nwindows_msvc_producer_artifact:RECORDED\nmacos_ssh_runtime:NOT_RUN\n' > "$output/QUALIFICATION"
 printf 'cpp_actors_package_qualification:PASS\n'

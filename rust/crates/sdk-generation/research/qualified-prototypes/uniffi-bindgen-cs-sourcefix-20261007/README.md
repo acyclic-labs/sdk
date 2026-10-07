@@ -63,9 +63,14 @@ warnings and errors, copied that `.so`, and ran all nine generated Actors
 methods successfully against a WSL-local fixture; the terminal evidence is
 `corrected-linux-msbuild.terminal.log` and `corrected-linux-runtime.terminal.log`.
 The Linux native library was built from this source revision with Rust
-1.98.1 and the consumer with task-local .NET SDK 8.0.425. The available
-`ivar` macOS host has Rust 1.96.0 and no .NET SDK, so no macOS package claim is
-made.
+1.98.1 and the consumer with task-local .NET SDK 8.0.425. The same source
+revision now has a distinct macOS arm64 cohort at
+`consumer/installed-macos` and `feed-macos/Acyclic.Actors.0.2.0.nupkg` (archive
+SHA-256 `C550F231F320CDE3CB584267891D3362312EB00A4ABA910D877B15ADA7C6B0E0`).
+Its `runtimes/osx-arm64/native/libacyclic_actors_uniffi.dylib` has SHA-256
+`7604093B31926938B10C7E70B7AD783D3E98121016EA14DF8B60ECB3DE495155`; external
+net8.0 MSBuild, all-eight runtime, cancellation cleanup, and CS1729/CS1503
+negative probes pass on `ivar` with isolated Rust 1.98.1 and .NET SDK 8.0.425.
 
 The generated source and consumers are retained as qualification artifacts;
 no DLL, native binary, Cargo target, or managed build output is persisted in

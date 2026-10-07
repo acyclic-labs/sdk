@@ -122,3 +122,26 @@ arm64 using the task-local Temurin 17 runtime. The macOS continuation map was
 of three coroutine cancellations. Linux, Windows, and macOS resources remain
 under JNA's standard resource prefixes; no loader, `java.library.path`, or
 custom native-path setup was introduced.
+
+## Current-lock platform parity rebuild
+
+The prior current-lock package receipt is superseded by a task-local rebuild
+from the source closure and generated standalone lock SHA-256
+`9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890`.
+The exact JAR is
+`C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar`, SHA-256
+`9877BE2BB3FF38964F05044A1EBA1101B0F70595D3956BCE84F6866E43DB7AE3`.
+The source-derived Kotlin SHA-256 is
+`6E8DEB62ABBADAB68E90D3F1591DBD2872B6EE490A23A2C80A7443E9DF4100B3`.
+
+Each native resource was rebuilt from the same current Rust source and lock:
+Linux x86_64 `CA29BE00B65DE10B9AC69E83A72C86F846EFE74AD086BA05A2ADA10B68AEF68B`,
+Windows x86_64 `ECB17115C459A505A7759C08E22FE6D0B3AF86F626C719E4E5C42876979A1FA9`,
+and macOS arm64 `C81C54D135C95D8AE6DE51AD257CC99FA53FCC8908A6D925EC604AB13B2D1937`.
+The Linux JAR run covered all eight operations, typed service errors, and
+cancellation (`KOTLIN_ALL8_IMMUTABLE_PROBE_PASS`) and covered a real pending
+native coroutine cancellation with server cleanup
+(`KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS`, aborted `1`, active
+`0`). An external Maven consumer of this exact JAR rejected both forged
+`ActorId` constructors as internal and rejected `SubscriptionStart.Cursor(true)`
+as a `ULong` mismatch. Raw terminal receipts are under `audit/`.

@@ -1,0 +1,16 @@
+[ERROR] C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\external-negative\src\main\kotlin\Negative.kt: (8, 28) Cannot access '<init>': it is internal in 'ActorId'
+[ERROR] C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\external-negative\src\main\kotlin\Negative.kt: (9, 27) Cannot access '<init>': it is internal in 'ActorId'
+[ERROR] C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\external-negative\src\main\kotlin\Negative.kt: (10, 65) The boolean literal does not conform to the expected type ULong
+[ERROR] Failed to execute goal org.jetbrains.kotlin:kotlin-maven-plugin:1.9.21:compile (compile) on project kotlin-external-negative: Compilation failure: Compilation failure: 
+[ERROR] C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\external-negative\src\main\kotlin\Negative.kt:[8,28] Cannot access '<init>': it is internal in 'ActorId'
+[ERROR] C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\external-negative\src\main\kotlin\Negative.kt:[9,27] Cannot access '<init>': it is internal in 'ActorId'
+[ERROR] C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\external-negative\src\main\kotlin\Negative.kt:[10,65] The boolean literal does not conform to the expected type ULong
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+JAR_SHA256: 9877BE2BB3FF38964F05044A1EBA1101B0F70595D3956BCE84F6866E43DB7AE3
+Generated_Kotlin_SHA256: 6E8DEB62ABBADAB68E90D3F1591DBD2872B6EE490A23A2C80A7443E9DF4100B3

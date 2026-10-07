@@ -124,3 +124,13 @@ this loop.
 
 Ordinary CI stays cheap. Broader qualification binds source, generator versions
 and installed artifacts. No auto-merge is enabled.
+
+## Current integration audit: 2026-10-07
+
+- Main is 89cb2ec2e1c3b7a48c6555c0c3f9c7dcd77bdf3f (PR265). Preserve its tracing, observer adapters and lint/qualification changes in all ports.
+- Stream signed source 7c2be68e75f966f0dccbe0cfef44e79f1195c9fc is remotely pushed to PR259. Exact archive 5e8de23b53f61a8450038846a2a81f5a93b0518cab2cf1625517b6150c9dc24e independently passes native cancellation and native/WASM byte guards. New review findings require preserving invalid ifAbsent input and Rust-owned follow recovery before admission. No merge claimed.
+- Machines PR264 installed external consumer positive/negative typing and runtime smoke passed at9711. Re-port only its two owned files onto current main, preserving observer exports; refresh exact-source package evidence.
+- Filesystem source candidate actual4c5191da93365fff068ec8f588946e7b7792825f has36 admission cases passing. Receipt contained a nonexistent source hash and lacks full native archive/prepost attestation; repair, sign, integrate latest main and requalify. Finite payload kind typing remains required.
+- Actors remains two authored semantic/schema layers. Production cutover onto executable semantic structs is required; minimal maintained Protify extensions are assigned, plus persistent archived descriptor mutation tests. Passing76 tests does not establish single authority.
+- Rustdoc profile integration library/sidecar tests pass, but production feature/target receipt matrix, private binding inputs and compiled freshness/version checks remain assigned before admission.
+- Formal evidence includes actual production cursor full-u64 proof and11 domain harnesses. Refresh against final derived semantic producer before claiming final property coverage.

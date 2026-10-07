@@ -29,7 +29,8 @@
   "rust_artifact": {
     "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
     "adapter_path": "rust/crates/actors-uniffi/src/lib.rs",
-    "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2"
+    "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "lockfile_sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890"
   },
   "generation": {
     "config": "generated/uniffi.toml",
@@ -148,7 +149,8 @@
     "nuget_recipe": "repro-package/nuget/PACKAGE-RECIPE.md",
     "external_package_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json",
     "external_nupkg_sha256": "5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC",
-    "cross_platform_external_nupkg_sha256": "CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6"
+    "cross_platform_external_nupkg_sha256": "CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6",
+    "macos_external_nupkg_sha256": "C550F231F320CDE3CB584267891D3362312EB00A4ABA910D877B15ADA7C6B0E0"
   },
   "cross_platform_cohort": {
     "qualification_status": "fresh cross-platform extraction; distinct from the canonical Windows archive",
@@ -193,5 +195,27 @@
     "producer_source": "foundation revision 371bb4170e16aca973176b6756a261ee5add7297 copied into WSL native filesystem",
     "producer_command": "CARGO_TARGET_DIR=/tmp/acyclic-actors-uniffi-linux-target cargo build --manifest-path /tmp/acyclic-sdk-source/rust/crates/actors-uniffi/Cargo.toml --release --locked",
     "producer_sha256": "60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEF2853F2BCE146AC258"
+  },
+  "macos_arm64_package_probe": {
+    "qualification_status": "fresh macOS arm64 extraction; distinct from Windows and Linux archives",
+    "external_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json#macos_arm64_extraction",
+    "extraction": "consumer/installed-macos",
+    "archive_sha256": "C550F231F320CDE3CB584267891D3362312EB00A4ABA910D877B15ADA7C6B0E0",
+    "managed_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+    "assembly_identity": "Acyclic.Actors",
+    "assembly_mvid": "f825bea3-9d44-4f3c-a7a8-605fb59691a3",
+    "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "producer_sha256": "7604093B31926938B10C7E70B7AD783D3E98121016EA14DF8B60ECB3DE495155",
+    "native_asset": "runtimes/osx-arm64/native/libacyclic_actors_uniffi.dylib",
+    "rust_toolchain": "1.98.1",
+    "dotnet_sdk": "8.0.425",
+    "all8": "PASS; NUPKG_MACOS_ARM64_ALL8_RUNTIME=PASS",
+    "cancellation": "PASS; DOTNET_GENERATED_CANCELLATIONTOKEN_PASS baseline=0 peaks=1,1,1, started=3 aborted=3 active=0",
+    "negative": "EXPECTED FAIL; CS1729 and CS1503",
+    "terminal_logs": [
+      "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\macos-all8-terminal.log",
+      "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\macos-cancellation-terminal.log",
+      "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\macos-negative-terminal.log"
+    ]
   }
 }

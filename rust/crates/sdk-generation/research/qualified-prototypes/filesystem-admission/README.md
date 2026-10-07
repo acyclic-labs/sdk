@@ -133,3 +133,31 @@ a receipt could be written.
 
 This is a qualification input and receipt format. It intentionally contains no
 generated WASM, native binary, or duplicated numeric validation logic.
+
+## Canonical kind/payload type prototype
+
+`kind-payload-types.mjs` is a bounded source-only generator for the remaining
+finite-kind type gap. It reads the maintained Rust `FileKind` and `FilePayload`
+enum declarations, converts their variant names to the existing kebab-case wire
+values, and emits one shared TypeScript type module. The generated module is a
+review artifact; it does not modify production WASM or N-API bindings:
+
+```text
+node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/kind-payload-types.mjs \
+  --source-root <frozen-source-root> \
+  --output <review-directory>/filesystem-kind-payload-types.d.ts
+```
+
+The prototype deliberately has no copied enum or hand-maintained literal list.
+Its regression test copies only the two canonical Rust enum sources, verifies
+the maintained values, then adds a fixture variant and requires the generated
+union to change with that source:
+
+```text
+node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/kind-payload-types.test.mjs
+```
+
+The production follow-up should make the WASM `file_kind`/`payload_kind` DTO
+annotations and the N-API declaration overlay reference this one generated
+module. The filesystem binding owner should choose the binding-specific
+annotation mechanism; this prototype does not edit peer binding sources.

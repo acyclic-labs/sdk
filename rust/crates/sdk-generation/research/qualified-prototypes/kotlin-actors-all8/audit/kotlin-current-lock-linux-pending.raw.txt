@@ -1,0 +1,16 @@
+Kotlin current-lock Linux pending cancellation receipt
+Date: 2026-10-07
+JAR: C:\Users\varun\.codex\worktrees\rust-source-foundation\kotlin-current-lock-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar
+JAR_SHA256: 9877BE2BB3FF38964F05044A1EBA1101B0F70595D3956BCE84F6866E43DB7AE3
+Cargo.lock_SHA256: 9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890
+Linux_native_SHA256: CA29BE00B65DE10B9AC69E83A72C86F846EFE74AD086BA05A2ADA10B68AEF68B
+Fixture transport: WSL Java -> local WSL proxy 127.0.0.1:64495 -> Windows fixture [::1]:58093; control 127.0.0.1:64493 -> Windows 127.0.0.1:58095
+Java: OpenJDK 17.0.20.1 (Ubuntu WSL)
+ACTORS_PENDING_ENDPOINT=https://localhost:64495
+ACTORS_PENDING_CONTROL=http://127.0.0.1:64493
+ACTORS_PENDING_CA_FILE=pending-ca-win.pem
+
+OBSERVED generated_null pending started=true
+OBSERVED generated_null pending coroutine_cancelled=true
+OBSERVED generated_null pending aborted=1,active=0
+KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS
