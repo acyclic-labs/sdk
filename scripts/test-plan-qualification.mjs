@@ -141,6 +141,27 @@ test("forced runs execute every lane", () => {
   assert.deepEqual(reused, {});
 });
 
+test("forced reusable release calls keep the full lane scope", () => {
+  const event = classifyQualificationEvent({
+    eventName: "push",
+    ref: "refs/tags/acyclic-v1.2.3",
+    force: true,
+  });
+  assert.equal(event, qualificationEventKinds.forcedDispatch);
+  assert.equal(requiresFullQualification(event), true);
+
+  const { matrix, reused } = chooseLanes(lanes, {
+    force: true,
+    mainPush: false,
+    coreOnly: true,
+    trusted: source,
+    marker: everywhere,
+    retained: retainedAll,
+  });
+  assert.equal(matrix.length, lanes.length);
+  assert.deepEqual(reused, {});
+});
+
 test("routine pull requests qualify only the core gate and policy lanes", () => {
   const { matrix } = chooseLanes(lanes, {
     force: false,

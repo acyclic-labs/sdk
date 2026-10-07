@@ -1536,38 +1536,43 @@ fn safe_version(version: &str) -> Result<String, Error> {
         )));
     }
 
-    // Keep ordinary semver and preview names readable, but encode every byte
-    // outside the portable path alphabet.  Encoding `%` as well makes this
-    // mapping injective (`preview:1` and `preview_1` must remain distinct).
-    let encoded = percent_encode_version(version.as_bytes(), false);
-    let needs_full_encoding = encoded == "."
-        || encoded == ".."
-        || encoded.ends_with('.')
-        || encoded.ends_with(' ')
-        || is_windows_reserved_segment(&encoded);
-
-    if needs_full_encoding {
-        Ok(percent_encode_version(version.as_bytes(), true))
+    // Keep ordinary lowercase names readable. Unsafe names use a literal
+    // `~` plus lowercase UTF-8 hex so URL handling cannot decode them before
+    // the static server performs its filesystem lookup. Excluding `~` from
+    // the readable alphabet keeps this mapping injective.
+    let encoded = if version
+        .as_bytes()
+        .iter()
+        .all(|byte| is_portable_version_byte(*byte))
+        && version != "."
+        && version != ".."
+        && !version.ends_with('.')
+        && !version.ends_with(' ')
+        && !is_windows_reserved_segment(version)
+    {
+        version.to_owned()
     } else {
-        Ok(encoded)
+        hex_version(version.as_bytes())
+    };
+    if encoded.len() > 255 {
+        return Err(Error::Invalid(format!(
+            "version path segment exceeds 255 bytes: {version:?}"
+        )));
     }
+    Ok(encoded)
 }
 
 fn is_portable_version_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
 }
 
-fn percent_encode_version(bytes: &[u8], encode_all: bool) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(bytes.len());
+fn hex_version(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(1 + bytes.len() * 2);
+    encoded.push('~');
     for byte in bytes {
-        if !encode_all && is_portable_version_byte(*byte) {
-            encoded.push(*byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push(HEX[(*byte >> 4) as usize] as char);
-            encoded.push(HEX[(*byte & 0x0f) as usize] as char);
-        }
+        encoded.push(HEX[(*byte >> 4) as usize] as char);
+        encoded.push(HEX[(*byte & 0x0f) as usize] as char);
     }
     encoded
 }
@@ -1650,17 +1655,31 @@ mod tests {
     #[test]
     fn preview_version_paths_are_injective_and_portable() {
         assert_eq!(safe_version("preview-1").unwrap(), "preview-1");
-        assert_eq!(safe_version("preview:1").unwrap(), "preview%3A1");
+        assert_eq!(safe_version("preview:1").unwrap(), "~707265766965773a31");
         assert_eq!(safe_version("preview_1").unwrap(), "preview_1");
-        assert_eq!(safe_version("branch_ABC").unwrap(), "branch_%41%42%43");
+        assert_eq!(safe_version("branch_ABC").unwrap(), "~6272616e63685f414243");
         assert_ne!(
             safe_version("preview:1").unwrap(),
             safe_version("preview_1").unwrap()
         );
-        assert_eq!(safe_version("a%b").unwrap(), "a%25b");
-        assert_eq!(safe_version("CON").unwrap(), "%43%4F%4E");
-        assert_eq!(safe_version("con.txt").unwrap(), "%63%6F%6E%2E%74%78%74");
-        assert_eq!(safe_version("a/b").unwrap(), "a%2Fb");
+        assert_eq!(safe_version("a%b").unwrap(), "~612562");
+        assert_eq!(safe_version("CON").unwrap(), "~434f4e");
+        assert_eq!(safe_version("con.txt").unwrap(), "~636f6e2e747874");
+        assert_eq!(safe_version("a/b").unwrap(), "~612f62");
+        assert_eq!(safe_version(&"a".repeat(255)).unwrap().len(), 255);
+        assert!(
+            safe_version(&"a".repeat(256))
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 255 bytes")
+        );
+        assert_eq!(safe_version(&":".repeat(127)).unwrap().len(), 255);
+        assert!(
+            safe_version(&":".repeat(128))
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 255 bytes")
+        );
     }
 
     #[test]
@@ -2602,7 +2621,7 @@ mod tests {
         );
         assert!(
             output
-                .join("preview/branch_%41%42%43/sdk-docs-data.v1.json")
+                .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
                 .is_file()
         );
         fs::remove_dir_all(output).expect("test output should be removable");
