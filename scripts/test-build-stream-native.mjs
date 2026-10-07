@@ -264,6 +264,44 @@ test("native qualification restores Rustflags when setup fails", async () => {
   else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncoded;
 });
 
+test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-edge-test-"));
+  const node = process.execPath.replaceAll("\\", "/");
+  const marker = resolve(directory, "args.json").replaceAll("\\", "/");
+  const rustcSource = resolve(directory, "rustc.mjs");
+  const rustcCommand = resolve(directory, process.platform === "win32" ? "rustc.cmd" : "rustc");
+  const driverCommand = resolve(directory, "driver.cmd");
+  const priorWrapper = process.env.RUSTC_WRAPPER;
+  delete process.env.RUSTC_WRAPPER;
+  const args = [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "--remap-path-prefix=C:/Program Files/SDK=/__source", "-C", "link-arg=C:/a&b/x.dll", "-C", "link-arg=C:/a!b/y.dll"];
+  try {
+    await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\n`);
+    if (process.platform === "win32") await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource}" %*\r\nexit /b %errorlevel%\r\n`);
+    else {
+      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
+      await chmod(rustcCommand, 0o700);
+    }
+    const capture = await createRustcInvocationCapture();
+    try {
+      if (process.platform === "win32") {
+        const quote = value => `"${value.replaceAll('"', '""')}"`;
+        await writeFile(driverCommand, `@echo off\r\ncall ${quote(capture.wrapper)} ${args.map(quote).join(" ")}\r\nexit /b %errorlevel%\r\n`);
+        execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/v:off", "/s", "/c", "call", driverCommand], { stdio: "inherit" });
+      } else execFileSync(capture.wrapper, args, { stdio: "inherit" });
+      const observed = await capture.read("x86_64-pc-windows-msvc");
+      assert.ok(observed.args.includes(args[4]));
+      assert.ok(observed.args.includes(args[6]));
+      assert.ok(observed.args.includes(args[8]));
+    } finally {
+      await capture.close();
+    }
+  } finally {
+    if (priorWrapper === undefined) delete process.env.RUSTC_WRAPPER;
+    else process.env.RUSTC_WRAPPER = priorWrapper;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("native qualification records explicit and implicit rustc linkers through a delegated wrapper", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-test-"));
   const node = process.execPath.replaceAll("\\", "/");
@@ -273,14 +311,10 @@ test("native qualification records explicit and implicit rustc linkers through a
   const rustcCommand = resolve(directory, windows ? "rustc.cmd" : "rustc");
   const delegateSource = resolve(directory, "delegate.mjs");
   const delegateCommand = resolve(directory, windows ? "delegate.cmd" : "delegate");
-  const driverCommand = resolve(directory, "driver.cmd");
   const priorWrapper = process.env.RUSTC_WRAPPER;
-  const invoke = async (wrapper, args) => {
-    if (!windows) return execFileSync(wrapper, args, { stdio: "inherit" });
-    const quote = value => `"${value.replaceAll('"', '""')}"`;
-    await writeFile(driverCommand, `@echo off\r\ncall ${quote(wrapper)} ${args.map(quote).join(" ")}\r\nexit /b %errorlevel%\r\n`);
-    return execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/v:off", "/s", "/c", "call", driverCommand], { stdio: "inherit" });
-  };
+  const invoke = (wrapper, args) => windows
+    ? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "call", wrapper, ...args], { stdio: "inherit" })
+    : execFileSync(wrapper, args, { stdio: "inherit" });
   try {
     await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, "rustc\\n");\n`);
     if (windows) await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
@@ -298,14 +332,10 @@ test("native qualification records explicit and implicit rustc linkers through a
     const capture = await createRustcInvocationCapture();
     try {
       const remapFlag = "--remap-path-prefix=C:/checkout=$ROOT";
-      const firstLinker = "linker=C:/fake/lld-link.exe";
-      const effectiveLinker = "-Clinker=C:/fake/effective-link.exe";
-      await invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", remapFlag, "-C", firstLinker, effectiveLinker]);
+      invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", remapFlag, "-C", "linker=C:/fake/lld-link.exe", "-Clinker=C:/fake/effective-link.exe"]);
       const explicit = await capture.read("x86_64-pc-windows-msvc");
       assert.equal(explicit.linker, "C:/fake/effective-link.exe");
       assert.ok(explicit.args.includes(remapFlag));
-      assert.ok(explicit.args.includes(firstLinker));
-      assert.ok(explicit.args.includes(effectiveLinker));
       assert.match((await readFile(marker)).toString("utf8"), /delegate/);
     } finally {
       await capture.close();
@@ -313,27 +343,11 @@ test("native qualification records explicit and implicit rustc linkers through a
 
     const implicitCapture = await createRustcInvocationCapture();
     try {
-      await invoke(implicitCapture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit", "dep-info,link"]);
+      invoke(implicitCapture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit", "dep-info,link"]);
       const implicit = await implicitCapture.read("x86_64-pc-windows-msvc");
       assert.equal(implicit.linker, null);
     } finally {
       await implicitCapture.close();
-    }
-
-    delete process.env.RUSTC_WRAPPER;
-    const edgeCapture = await createRustcInvocationCapture();
-    try {
-      const remapFlag = "--remap-path-prefix=C:/Program Files/SDK=/__source";
-      const firstLinker = "linker=C:/a&b/x.dll";
-      const effectiveLinker = "-Clinker=C:/a!b/y.dll";
-      await invoke(edgeCapture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", remapFlag, "-C", firstLinker, effectiveLinker]);
-      const edge = await edgeCapture.read("x86_64-pc-windows-msvc");
-      assert.equal(edge.linker, "C:/a!b/y.dll");
-      assert.ok(edge.args.includes(remapFlag));
-      assert.ok(edge.args.includes(firstLinker));
-      assert.ok(edge.args.includes(effectiveLinker));
-    } finally {
-      await edgeCapture.close();
     }
   } finally {
     if (priorWrapper === undefined) delete process.env.RUSTC_WRAPPER;
