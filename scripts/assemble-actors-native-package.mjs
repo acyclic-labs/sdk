@@ -88,7 +88,7 @@ async function main() {
     });
     run(process.execPath, [
       join(root, "scripts/build-wasm.mjs"), "actors",
-      "--output", join(parentRoot, "generated/wasm"),
+      join(parentRoot, "generated/wasm"),
     ]);
     await mkdir(output, { recursive: true });
     const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
