@@ -421,14 +421,16 @@ case "$lane" in
     ;;
   typescript)
     # Pull requests and main pushes only; full runs cover this in the linux
-    # lane. check:generated compares fresh WASM against the committed bindings,
-    # so it runs before the build in `bun run test` rewrites them.
+    # lane. As there, check:generated runs after `bun run test` has built the
+    # uncommitted packages, against the restored committed filesystem and
+    # stream WASM whose host-specific bytes that build rewrites.
     source scripts/ensure-bun.sh
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
-    bun run check:generated
     bun run test
+    git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm
+    bun run check:generated
     ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
