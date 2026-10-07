@@ -377,8 +377,12 @@ function isMissingGeneratedLoader(error: unknown): boolean {
   if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
   const message = errorMessage(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/i)?.[1];
+  const requested = firstLine.match(/^(?:ResolveMessage:\s*)?Cannot find module ['"]([^'"]+)['"]/i)?.[1];
   if (requested === undefined) return false;
+  if (requested === "../generated/native/binding.cjs") {
+    const importer = firstLine.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
+    return importer !== undefined && /[\\/]dist[\\/]client\.js$/i.test(importer);
+  }
   // Only the package's own generated loader is optional. Matching a path
   // suffix would incorrectly turn a broken transitive dependency into a
   // silent WASM fallback.
