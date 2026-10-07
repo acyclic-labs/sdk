@@ -32,10 +32,11 @@ The 19 source-closed entries are: `actors/transport-conformance-unary`,
 `inference/typescript-consumer`, `plugin/cli-help`,
 `native-runtime/positional-io`, and the seven `harness/*` policy examples.
 The two endpoint entries are source-validated and compile-qualified, then
-executed against task-local authenticated fixtures; their separate fixture
-commands, script hashes, outputs, and no-production-service scope are recorded
-in `endpoint-qualification.json`. The other 17 execute locally and are bound
-in `generated/execution-catalog.json`. All six package consumer projections
+executed automatically by the same Rust generation gate against task-local
+authenticated fixtures; their fixture commands, script hashes, outputs, and
+no-production-service scope are recorded in `endpoint-qualification.json`.
+`generated/execution-catalog.json` contains all 19 passed executions (17 local
+and 2 endpoint). All six package consumer projections
 pass strict TypeScript compilation and Bun runtime qualification against
 extracted 0.2.0 package archives. Only those six entries have TypeScript
 projections.

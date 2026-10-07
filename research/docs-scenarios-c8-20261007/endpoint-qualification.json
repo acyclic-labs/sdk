@@ -6,7 +6,7 @@
       "id": "actors/transport-conformance-unary",
       "package": "acyclic-actors",
       "sourcePath": "rust/crates/actors/examples/transport-conformance.rs",
-      "sourceSha256": "sha256:7e8a1ac472da7dbb20cd271ed0537acd0ae3b7f4c75c493fce7d177173d6f610",
+      "sourceSha256": "sha256:c5766b10af12750aa90c2f5af6adf5e01718e8e0a80bd00b1348163ad6e4d8f5",
       "compile": "passed: cargo check --quiet --locked --manifest-path rust/crates/actors/Cargo.toml --example transport-conformance",
       "execution": "passed-local-fixture",
       "fixture": {
@@ -30,7 +30,7 @@
       "id": "stream/http-conformance-streaming",
       "package": "acyclic-stream",
       "sourcePath": "rust/crates/stream/examples/http-conformance.rs",
-      "sourceSha256": "sha256:60091cf290ccf8758dd204fa93e4cabcef97939692a694e75fb10985c679b054",
+      "sourceSha256": "sha256:756d82617df13bd1606bca5e055cc1413dc456974edea3f0b93b4dcdc5c8b265",
       "compile": "passed: cargo check --quiet --locked --manifest-path rust/crates/stream/Cargo.toml --features http --example http-conformance",
       "execution": "passed-local-fixture",
       "fixture": {

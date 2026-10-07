@@ -11,7 +11,8 @@
       "kind": "actorsUnary",
       "mode": "executeWithEndpoint",
       "features": [],
-      "sourceSha256": "sha256:7e8a1ac472da7dbb20cd271ed0537acd0ae3b7f4c75c493fce7d177173d6f610"
+      "fixtureScript": "typescript/packages/actors/test/grpc-conformance.mjs",
+      "sourceSha256": "sha256:c5766b10af12750aa90c2f5af6adf5e01718e8e0a80bd00b1348163ad6e4d8f5"
     },
     {
       "id": "actors/typescript-consumer",
@@ -23,6 +24,7 @@
       "kind": "actorsTypescriptConsumer",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:3d4ae12d12a5ab4f00db6e832704b4dc328535cbb12750dacc9c302ba4cb8630"
     },
     {
@@ -34,8 +36,11 @@
       "operation": "tail",
       "kind": "streamStreaming",
       "mode": "executeWithEndpoint",
-      "features": [],
-      "sourceSha256": "sha256:60091cf290ccf8758dd204fa93e4cabcef97939692a694e75fb10985c679b054"
+      "features": [
+        "http"
+      ],
+      "fixtureScript": "typescript/packages/stream/test/http-provider-conformance.mjs",
+      "sourceSha256": "sha256:756d82617df13bd1606bca5e055cc1413dc456974edea3f0b93b4dcdc5c8b265"
     },
     {
       "id": "stream/typescript-consumer",
@@ -47,6 +52,7 @@
       "kind": "streamTypescriptConsumer",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:453c43c63537c1619fbe2125a7d5c8573936a9afb796a5c355c1dc8641e2569f"
     },
     {
@@ -58,7 +64,10 @@
       "operation": "mounted-view",
       "kind": "filesystemEmbedded",
       "mode": "executeLocal",
-      "features": [],
+      "features": [
+        "local"
+      ],
+      "fixtureScript": null,
       "sourceSha256": "sha256:4760d3a245f09921df8ffc6fccf40ddb76a1c51b1e030bd72d3fec0ac4f1da01"
     },
     {
@@ -71,6 +80,7 @@
       "kind": "machinesTypescriptConsumer",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:1ac8f91f682935c5b9dc944bad34b46cd09147b3867565884f006b27b1b85819"
     },
     {
@@ -83,6 +93,7 @@
       "kind": "workersModuleContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:fb95511bf01a20cc452ba4980f7e479a6189c46f94b0cd75fef534709a7cd8bd"
     },
     {
@@ -95,6 +106,7 @@
       "kind": "workersTypescriptConsumer",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:76f4ebecfb61d9b56a0dd26a731ed2c71d642ada3367a5defaad2a020eec87ec"
     },
     {
@@ -107,6 +119,7 @@
       "kind": "objectsTypescriptConsumer",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:808b777b5acf816f9ece6be23832a898570e0e46801e7b130535463e1e81680c"
     },
     {
@@ -119,6 +132,7 @@
       "kind": "inferenceContractDefaults",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:19c84ae0eb108ddc36641a40e6f7e3dc8435a6ab1f7d3b777861b2ca73a42900"
     },
     {
@@ -131,6 +145,7 @@
       "kind": "pluginCliHelp",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:8628f9f83b642cd125f9a963b188bf8cc3f3a045a3782d23f71352bb27abf6b6"
     },
     {
@@ -143,6 +158,7 @@
       "kind": "nativeRuntimePositionalIo",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:0c1864ff4c6c206e35a732338d5306afde1a04a85c739d685735a8849262dee7"
     },
     {
@@ -155,6 +171,7 @@
       "kind": "harnessAuthorityIdContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:69ff67d3c9711b62a801bbda129babf7f53eff88f81cf53b9ce8ed92034d5911"
     },
     {
@@ -167,6 +184,7 @@
       "kind": "harnessChildPageContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:4ad0630d55725d110b9178d3d2df6d2dc66f3d37eff3cc29de2251fcd6206f26"
     },
     {
@@ -179,6 +197,7 @@
       "kind": "harnessComponentLabelContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:bf4eed9dce6a8961f28079ea34e0f7b3c6bdffa514640fc5a8ca35de2fcafee0"
     },
     {
@@ -191,6 +210,7 @@
       "kind": "harnessConversationPageContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:0d2604469078e55df7dbce808eae0241f0e826b58eca4a31399850db35d0f238"
     },
     {
@@ -203,6 +223,7 @@
       "kind": "harnessCustomExecutor",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:7875493d336c610062d599c8c3840d59a37893a71db0d4eb43f35db70b49597d"
     },
     {
@@ -215,6 +236,7 @@
       "kind": "harnessLimitsContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:6a14df1e2fe587648484117ccb812601d4c2cfadfae7363948f7deb495bec42c"
     },
     {
@@ -227,6 +249,7 @@
       "kind": "harnessPrivateDirectoryPageContract",
       "mode": "executeLocal",
       "features": [],
+      "fixtureScript": null,
       "sourceSha256": "sha256:cac1310c95f4f404adeeb285c9324b29d8c9b0666f5cde664033ab94fc80a7d3"
     }
   ]

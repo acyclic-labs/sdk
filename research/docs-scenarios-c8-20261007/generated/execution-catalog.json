@@ -1,10 +1,26 @@
 [
   {
+    "id": "actors/transport-conformance-unary",
+    "sourceSha256": "sha256:c5766b10af12750aa90c2f5af6adf5e01718e8e0a80bd00b1348163ad6e4d8f5",
+    "mode": "executeWithEndpoint",
+    "status": "passed",
+    "stdoutSha256": "sha256:be4f8d6a0a1d7a844a2630df691ba4eb5f2a96ea578bb8ce64712e9415d7f49b",
+    "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
     "id": "actors/typescript-consumer",
     "sourceSha256": "sha256:3d4ae12d12a5ab4f00db6e832704b4dc328535cbb12750dacc9c302ba4cb8630",
     "mode": "executeLocal",
     "status": "passed",
     "stdoutSha256": "sha256:ece2cee6ef8b6565a9c4e9cd9dfb40e09be6c56562ac0bb02436c51fa05bcf17",
+    "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "id": "stream/http-conformance-streaming",
+    "sourceSha256": "sha256:756d82617df13bd1606bca5e055cc1413dc456974edea3f0b93b4dcdc5c8b265",
+    "mode": "executeWithEndpoint",
+    "status": "passed",
+    "stdoutSha256": "sha256:cbb193da151909928448e8cf66c1143a3464da0ee282b85a3f7996f70aa4c7f7",
     "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   {

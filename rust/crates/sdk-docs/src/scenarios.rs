@@ -551,6 +551,12 @@ pub fn execute_local(
             stdout,
         });
     }
+    executions.sort_by_key(|execution| {
+        sources
+            .iter()
+            .position(|source| source.scenario.id == execution.scenario.id)
+            .unwrap_or(usize::MAX)
+    });
     Ok(executions)
 }
 
@@ -613,6 +619,12 @@ pub fn execute_all(
             stdout,
         });
     }
+    executions.sort_by_key(|execution| {
+        sources
+            .iter()
+            .position(|source| source.scenario.id == execution.scenario.id)
+            .unwrap_or(usize::MAX)
+    });
     Ok(executions)
 }
 
@@ -1131,10 +1143,11 @@ impl std::error::Error for Error {}
 
 /// Validate the concrete source closure for every registered scenario.
 ///
-/// The digest covers the example, its package manifest, and the workspace
-/// lockfile. A receipt tied to this digest cannot be reused after a source or
-/// dependency change. The function does not execute a process or claim that
-/// an endpoint scenario has passed.
+/// The digest covers the example, its package manifest, the workspace
+/// lockfile, and any declared endpoint fixture script. A receipt tied to this
+/// digest cannot be reused after a source, fixture, or dependency change. The
+/// function does not execute a process or claim that an endpoint scenario has
+/// passed.
 pub fn validate(root: &Path) -> Result<Vec<ScenarioSource>, Error> {
     let mut seen = std::collections::BTreeSet::new();
     let mut result = Vec::with_capacity(SCENARIOS.len());

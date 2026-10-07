@@ -1,7 +1,9 @@
 {
   "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
   "rustScenarioRegistry": 19,
-  "rustScenarioExecution": 17,
+  "rustScenarioExecution": 19,
+  "localScenarioExecution": 17,
+  "endpointScenarioExecution": 2,
   "rustEndpointExecution": 2,
   "generatedTypescriptProjections": 6,
   "typescriptQualification": {
