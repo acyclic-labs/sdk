@@ -1,8 +1,8 @@
 {
   "schema": "acyclic.ruby.current-c8-generic-frozen.v1",
-  "status": "QUALIFIED_WSL_LINUX_X86_64_CURRENT_SOURCE",
+  "status": "QUALIFIED_WSL_LINUX_X86_64_SOURCE_SNAPSHOT",
   "date": "2026-10-07",
-  "scope": "WSL2 Ubuntu Jammy x86_64; current producer revision 737775737a54c31c1d50b11c677ca9ae900b45b2; Mac historical receipt preserved separately",
+  "scope": "WSL2 Ubuntu Jammy x86_64; source snapshot revision 737775737a54c31c1d50b11c677ca9ae900b45b2 (captured before the later Q checkout cutover); Mac historical receipt preserved separately",
   "producer": {
     "checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
     "revision": "737775737a54c31c1d50b11c677ca9ae900b45b2",
@@ -63,8 +63,9 @@
     "fullU64": ["9223372036854775808", "18446744073709551615", "9007199254740993"],
     "wireRoundTrip": "u64-frozen-terminal.txt",
     "frozenReadonly": "record_frozen, nominal_frozen, record_readonly, enum_private_factory PASS",
-    "windows": "not claimed in this receipt",
+    "windows": "current checkout c3d82376... has separate Windows receipt; runtime excluded by ffi build error",
     "macOS": "historical current-c8-generic-mac-20261007 receipt preserved; not retagged"
   }
 }
+
 

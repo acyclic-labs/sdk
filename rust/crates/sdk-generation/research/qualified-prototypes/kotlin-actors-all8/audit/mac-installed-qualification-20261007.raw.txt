@@ -1,0 +1,52 @@
+MAC_STREAM_UNIFFI_KOTLIN_QUALIFICATION_20261007
+HOST=Mac.ts.net lan
+ProductName:		macOS
+ProductVersion:		15.6
+BuildVersion:		24G84
+arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+JRE
+openjdk version "17.0.20.1" 2026-08-18
+OpenJDK Runtime Environment Temurin-17.0.20.1+1 (build 17.0.20.1+1)
+OpenJDK 64-Bit Server VM Temurin-17.0.20.1+1 (build 17.0.20.1+1, mixed mode, sharing)
+SOURCE_AND_LOCK_HASHES
+407a338212cf2b208d99280b0804c3f83fb4ae01315519cb671c3167b12f58d9  prototype/src/lib.rs
+f7a2dd11fb370e9595bdfa6c32fc41a9b67a60bbab06ec711cb7a03eb873ffa6  prototype/src/bin.rs
+2c186aae94fcff2d99774ef453507ce0dd861c314c939828e2ab9a014720b9bd  prototype/Cargo.toml
+7b2a751a8f5774031b5b9c9d71af4670a1d8b46f77c5958cd66575e7b92fbccb  prototype/Cargo.lock
+adab4f663d8e89e40167715922cba7ead525f9e110c9c55c7960e7c69a8ce824  prototype/uniffi.toml
+ff6cb85eb59bff8651dfa226afc4703e17a12086ffe07bda7d68f983bf073bb0  sdkgen-actors-c8-minimal/Cargo.toml
+7c8703075b8c8db0f6298cdf876e6741c7d285b3a6e71c879a4b65eccfb02206  sdkgen-actors-c8-minimal/Cargo.lock
+72e0b44159ff74e8418b6f9882fc8e0309bb91830a7a197043467b723274b358  sdkgen-actors-c8-minimal/rust/crates/stream/Cargo.toml
+36fb4673272ff6dafe77dddcce616a22cb0df751fca7257e9e918e47dc8dac12  sdkgen-actors-c8-minimal/rust/crates/stream/src/lib.rs
+97ce1e95d37f135e82041718afe0f50064e6e2b08bfa7551e954178ce58fbb4a  sdkgen-actors-c8-minimal/rust/crates/native-runtime/Cargo.toml
+9aaaab6bc8319975ceec92f0160bb2f5ac3a95c2b4f1b8ada0dfec4409f49728  prototype/remote-fixture/Cargo.toml
+e1bdbad2ce744c1aa9a0594c626bcab5e1c085cbcc633dbc37815fecb466e99d  prototype/remote-fixture/Cargo.lock
+3e41e6df7a8fa8b0321f938fd5809083cd258b972154d76303395a74cb2e1c29  prototype/remote-fixture/src/main.rs
+BUILT_ARTIFACT_HASHES
+b3d5c3c287881b2ebe5b94b691a06e1539890206f10a83babbd4f64d7bb44bd5  prototype/target-mac/debug/libactors_stream_uniffi_kotlin_prototype.dylib
+3f0bbe7639d3e63956e13eecfdd4c0f18a2126f4b6af27fc1c6cb5565ecdc1c9  prototype/remote-fixture/target-mac/debug/actors-stream-tls-fixture
+fcff21d468d7cf16eee385567bde3db6419667c9533ced0740a9c881a4429546  consumer/actors-stream-uniffi-kotlin-prototype-0.0.0.jar
+c982e1886f204c24f250766ec2f0a4a28512b2f88b32e71a869a05dacdbacffb  mac-source-cohort-20261007.tar.gz
+LOCK_SIZES
+   56658 prototype/Cargo.lock
+  149997 sdkgen-actors-c8-minimal/Cargo.lock
+   51809 prototype/remote-fixture/Cargo.lock
+  258464 total
+PROBE_RESULTS
+JAR_RUN=remote-run-mac-final-20261007
+STREAM_KOTLIN_FLOW_ORDERED_TYPED_PASS
+STREAM_KOTLIN_ACTIVE_ABORT_CLEANUP_PASS
+STREAM_KOTLIN_REMOTE_TLS_ORDERED_TYPED_PASS
+STREAM_KOTLIN_REMOTE_RECOVERY_CURSOR_PASS
+STREAM_KOTLIN_REMOTE_SERVER_ABORT_PASS
+FIXTURE_MARKERS
+open
+closed
+DEPENDENCY_HASHES
+ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478  deps/annotations-13.0.jar
+a564158d28ab5127fc6a958028ed54279fe0999662c46425b6a3b09a2a52094d  deps/jna-5.15.0.jar
+3b479313ab6caea4e5e25d3dee8ca80c302c89ba73e1af4dafaa100f6ef9296a  deps/kotlin-stdlib-1.9.21.jar
+9860906a1937490bf5f3b06d2f0e10ef451e65b95b269f22daf68a3d1f5065c5  deps/kotlinx-coroutines-core-jvm-1.8.0.jar
+SOURCE_ARCHIVE
+-rw-r--r--@ 1 var  staff  252301 Oct  7 18:55 mac-source-cohort-20261007.tar.gz

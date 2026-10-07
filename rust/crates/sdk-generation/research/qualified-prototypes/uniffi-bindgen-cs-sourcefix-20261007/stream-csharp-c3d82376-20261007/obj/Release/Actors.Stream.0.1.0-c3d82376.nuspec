@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>Actors.Stream</id>
+    <version>0.1.0-c3d82376</version>
+    <authors>Rust Foundation Stream</authors>
+    <license type="expression">Apache-2.0</license>
+    <licenseUrl>https://licenses.nuget.org/Apache-2.0</licenseUrl>
+    <readme>README.md</readme>
+    <description>Research C# binding for Rust-owned Stream cursors</description>
+    <repository type="git" url="https://github.com/NordSecurity/uniffi-bindgen-cs" commit="e10ce410eb3a10cc19c7928b93ea8d84e038c034" />
+    <dependencies>
+      <group targetFramework="net8.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\bin\Release\net8.0\Actors.Stream.dll" target="lib\net8.0\Actors.Stream.dll" />
+    <file src="C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\README.md" target="README.md" />
+    <file src="C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\native\win-x64\actors_stream_uniffi_kotlin_prototype.dll" target="runtimes\win-x64\native\actors_stream_uniffi_kotlin_prototype.dll" />
+    <file src="C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\native\linux-x64\libactors_stream_uniffi_kotlin_prototype.so" target="runtimes\linux-x64\native\libactors_stream_uniffi_kotlin_prototype.so" />
+  </files>
+</package>

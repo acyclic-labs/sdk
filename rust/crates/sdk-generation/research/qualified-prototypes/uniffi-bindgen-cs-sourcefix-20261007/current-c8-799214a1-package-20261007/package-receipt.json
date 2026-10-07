@@ -1,17 +1,18 @@
 {
   "schema": "acyclic.actors.uniffi.csharp.nupkg.qualification.v2",
-  "status": "QUALIFIED_PACKAGE_WINDOWS_LINUX_MACOS_RUNTIME_RECEIPT_MAC_ASSET_PENDING",
+  "status": "QUALIFIED_PACKAGE_WINDOWS_LINUX_MACOS_RUNTIME_CURRENT_SOURCE",
   "generatedUtc": "2026-10-07",
   "package": {
     "id": "Acyclic.Actors",
     "version": "0.2.0-c8.799214a1",
     "archive": "out/Acyclic.Actors.0.2.0-c8.799214a1.nupkg",
-    "archiveSha256": "D59BFD515EEF721BE2715A868B503FB1E959F89314F18C2DD2715D5434377F1A",
+    "archiveSha256": "323299DE9DD9005F0EB0BEA537447F6B18EB8A6C7F311D6536DE9F91F57F0B4E",
     "published": false,
     "layout": [
       "lib/net8.0/Acyclic.Actors.dll",
       "runtimes/win-x64/native/acyclic_actors_uniffi.dll",
-      "runtimes/linux-x64/native/libacyclic_actors_uniffi.so"
+      "runtimes/linux-x64/native/libacyclic_actors_uniffi.so",
+      "runtimes/osx-arm64/native/libacyclic_actors_uniffi.dylib"
     ]
   },
   "producer": {
@@ -90,6 +91,22 @@
     "consumer\\negative-build.log": {
       "sha256": "674203A7DD57DCBBA0B912B8B45BE827CC98F8326A09549B76214DA1A0CB6AAE",
       "bytes": 4281
+    },
+    "native\\osx-arm64\\libacyclic_actors_uniffi.dylib": {
+      "sha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1",
+      "bytes": 5149584
+    },
+    "consumer\\mac-all8.log": {
+      "sha256": "AB55EF716CDD3BB1E0BD6D6BEE8BD17C302356EC03BC20D4E28D89E7E7633CAF",
+      "bytes": 63
+    },
+    "consumer\\mac-u64.log": {
+      "sha256": "1E41B06896F148BA65A679C2D29E6447D7A43BCE27C6C912E0E5E989471AD9BA",
+      "bytes": 110
+    },
+    "consumer\\mac-cancellation.log": {
+      "sha256": "F97942B3F24D549B2B0B63D28888A5B636FE94CCE6C46E5F6607F0E5FB35B94C",
+      "bytes": 339
     }
   },
   "checks": {
@@ -116,10 +133,12 @@
       "compileExit": 1
     },
     "macos": {
-      "runtime": "PASS in immutable 799 receipt against exact managed source/assembly and native hash",
-      "packageAsset": "PENDING exact macOS dylib unavailable on Windows packaging host; stale dylibs rejected by hash",
-      "expectedNativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1"
+      "all8": "PASS",
+      "fullU64": "PASS",
+      "cancellation": "PASS; started=6 aborted=6 active=0; async map baseline=0 peaks=1,1,1",
+      "externalConsumer": "Fresh PackageReference restore from updated local nupkg, managed output built with Windows .NET SDK 8.0.425, executed on macOS 15.6 arm64 ivar with task-local .NET runtime 8.0.31 and exact osx-arm64 asset",
+      "nativeSha256": "BCB47A647F14E276CFC8388B0D6070DB33721B7955BF91CA49CBA15C04AFD4A1"
     }
   },
-  "provenance": "Fresh package consumers are bound to this package archive and current 799 producer/generator identities. The immutable 799 receipt remains unchanged and is referenced for prior three-platform runtime evidence; no stale package receipt was relabeled."
+  "provenance": "Fresh package consumers on Windows, Linux, and macOS are bound to this archive and current 799 producer/generator identities. The macOS dylib was retrieved from ivar and hash-verified against the immutable 799 receipt before packaging. Historical receipts remain historical."
 }

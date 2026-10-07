@@ -1,0 +1,17 @@
+{
+  "status": "source_hash_match_reuses_prior_proof",
+  "artifact": "kani-exact-u32-f64-c8-ba8d1fa-20261007",
+  "prior_proof_receipt": "receipt.c8-ba8d1fa.json",
+  "prior_tested_revision": "ba8d1fa931912e69a9c6e591423552b58fe57557",
+  "integrated_checkout": "C:/Users/varun/.codex/worktrees/filesystem-main-review/sdk",
+  "integrated_revision": "cd6ab86bf9f5fbfa8eeb416b6604de379df67903",
+  "production_source": "rust/crates/filesystem/src/numeric.rs",
+  "production_symbol": "acyclic_fs::exact_u32_from_f64",
+  "source_hashes_match": true,
+  "source_hashes": {
+    "numeric.rs": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF",
+    "lib.rs": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB"
+  },
+  "solver_rerun": false,
+  "scope": "Exact production-file hash binding only; no whole-checkout claim. Any change to either production hash requires a new Kani run."
+}

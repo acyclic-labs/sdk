@@ -1,0 +1,57 @@
+{
+  "schema": "swift-actors-cancellation-runtime/v1",
+  "createdAt": "2026-10-07",
+  "status": "WINDOWS_PASS_MAC_PASS_LINUX_PENDING",
+  "producer": {
+    "workspace": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+    "revision": "1ac5b398644d9d7056a95cd579c6a5315dd98db8",
+    "libSourceSha256": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+    "windowsDllSha256": "8601E37B58020E7C5F2E6ADF6445D59679002D78018FA95B14E3F7B09DCFEDE9",
+    "windowsImportLibSha256": "46F6E7213830F78712EACCC49253858CC6CDE81BA3BA654CE619B04A4D81EBAE"
+  },
+  "generator": {
+    "source": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "uniffiVersion": "0.31.0",
+    "historicalRevision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "CustomTypeSha256": "10A58FB8890C0D2DF102F45E1330BB2ABBB20938A9C8FC2803652C7A0C9B4035",
+    "EnumTemplateSha256": "C0E66A925F2DB14035C3C80BB3C84E8E2E7F9E2ACD9D41D5EA6469CC47082E81"
+  },
+  "windowsToolchain": {
+    "swift": "Swift version 6.4 (swift-6.4-RELEASE)",
+    "target": "x86_64-unknown-windows-msvc",
+    "package": "C:\\Users\\varun\\.codex\\swift-win-779-20261007\\package",
+    "generatedSwiftSha256": "699903753C4E4C378E6D05F36917F7BD51D797A9AB0F9D30033F24324DA35140",
+    "generatedUniFFISwiftSha256": "CC419003CCB5A1BA006B2298C52A37FB3955299C41573AB6B3C9255C4D496855",
+    "all19ExeSha256": "C2A7A3A224B3F53C3A792E3C6FDD82D5C24688FBCAE728A928B3F02452E2594E",
+    "cancelExeSha256": "831873386D76A85C467C770E543702A62DDA44B550506E309F9A7D00A42477C9",
+    "boundaryFixtureSha256": "8B317248D2B4CA3B18C5C2FE007E841BD5D6E9253F509E5D3633E4FBE9403AB0",
+    "cancelFixtureSha256": "514412D9381BA4F1D8758555CD4D35E73EE0D0A0130FFD75BC338EF1ADE544C5",
+    "negativeSourceSha256": "381CBD967140A976E0361046FA58E4E385B0708EB09C8FC3A8B279FC046DB9E9"
+  },
+  "macToolchain": {
+    "host": "ivar",
+    "swift": "Apple Swift version 6.1.2 (swiftlang-6.1.2.1.2 clang-1700.0.13.5)",
+    "package": "/Users/var/swift-mac-package-20261007/consumer",
+    "generatedSwiftSha256": "9d81f635076da91ad9d3cea1716a82108748b6e2ebcf7027b46e7694e19ebd46",
+    "generatedUniFFISwiftSha256": "296705c7210fb0a7a64e5868659450a63e6088b8da6fb0cf066c828ce36657d7",
+    "nativeDylibSha256": "6d06c0fb87445fa4991c5f6c677e5881cba25708e2e94a6cb1b702691d4031de",
+    "all8ExeSha256": "90da625bbc73e50936c275ad91f33e2ad285ac6da6817c425086f25891483066",
+    "cancelExeSha256": "153b0eb3afd54a3da02f73d59738de40371135a26c88619df7ced25df0e44769",
+    "cancellationSourceSha256": "a3a511aaa6001e789cc3afb1586a5cd7ae17dffa697b97da1b25172c8972efec"
+  },
+  "results": {
+    "windowsAll19": "PASS",
+    "windowsFullRange": "PASS (0, 2^63, u64.max; PositiveU64.max; presence)",
+    "windowsAll8": "PASS",
+    "windowsTaskCancel": "PASS (CancellationError; server active->aborted exactly once)",
+    "windowsNegativeCompile": "PASS (readonly let and ActorId rawValue rejected)",
+    "macAll8": "PASS (existing all8 fixture process; stage markers; typed service error)",
+    "macTaskCancel": "PASS (existing pending fixture; started 7, aborted 7, active 0; CancellationError)",
+    "linux": "PENDING official Swift 6.4 archive acquisition"
+  },
+  "caveats": [
+    "The Windows nominal package was generated from the maintained generator against the source-pinned metadata used for the current working-tree producer artifact; the clean git 779 worktree rebuild was separately attempted and its non-nominal metadata does not match this generated nominal package, so it is not relabeled as a nominal 779 runtime.",
+    "Mac runtime used the existing installed Mac package and existing live fixture handles; no fixture restart was performed.",
+    "Original Linux receipt swift-main-779-linux-20261007-receipt.json remains unchanged and pending."
+  ]
+}

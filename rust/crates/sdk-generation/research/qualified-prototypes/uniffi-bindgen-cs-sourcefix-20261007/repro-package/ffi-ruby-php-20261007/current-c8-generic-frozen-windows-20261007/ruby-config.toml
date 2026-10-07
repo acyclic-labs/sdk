@@ -1,0 +1,18 @@
+[bindings.ruby]
+cdylib_path = "C:/Users/varun/AppData/Local/Temp/ruby-c8-win-native-target-20261007/release/acyclic_actors_uniffi.dll"
+
+[bindings.ruby.custom_types.ActorId]
+nominal = true
+validator = "validate_actor_id"
+
+[bindings.ruby.custom_types.CodeSha256]
+nominal = true
+validator = "validate_code_sha256"
+
+[bindings.ruby.custom_types.PositiveU64]
+nominal = true
+validator = "validate_positive_u64"
+
+[bindings.ruby.custom_types.CurrentHeadMarker]
+nominal = true
+validator = "validate_current_head_marker"

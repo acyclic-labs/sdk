@@ -1,0 +1,14 @@
+[package]
+name = "kani-workcounters-add-zero-cd6-20261007"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-fs = { path = "../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem", default-features = false }
+
+[[bin]]
+name = "kani_workcounters"
+path = "src/bin/kani_workcounters.rs"

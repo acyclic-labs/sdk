@@ -1,0 +1,152 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling kani-exact-u32-f64-c8-ba8d1fa-20261007 v0.1.0 (/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/kani-exact-u32-f64-c8-ba8d1fa-20261007)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.15s
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compilingwarning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+ kani-exact-u32-f64-c8-ba8d1fa-20261007 v0.1.0 (/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/kani-exact-u32-f64-c8-ba8d1fa-20261007)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.09s
+Checking harness negative_control_wrongly_accepts_fraction...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /tmp/kani-exact-u32-f64-c8-ba8d1fa-proof/kani/x86_64-unknown-linux-gnu/debug/build/kani-exact-u32-f64-c8-ba8d1fa-20261007/455269c47b4f1962/out/kani_exact_u32_f64_negative__RNvCs2f4PHD5epdB_27kani_exact_u32_f64_negative41negative_control_wrongly_accepts_fraction.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs line 594 column 5 function std::result::Result::<u32, &str>::is_ok thread 0
+Runtime Symex: 0.0144774s
+size of program expression: 417 steps
+slicing removed 242 assignments
+Generated 10 VCC(s), 3 remaining after simplification
+Runtime Postprocess Equation: 0.000108526s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00048844s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 6.505e-06s
+Solving with CaDiCaL 3.0.0
+72 variables, 81 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 5.5351e-05s
+Runtime decision procedure: 0.000590157s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+73 variables, 82 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 1.0125e-05s
+Runtime decision procedure: 2.2574e-05s
+
+RESULTS:
+Check 1: negative_control_wrongly_accepts_fraction.assertion.1
+	 - Status: FAILURE
+	 - Description: "intentional mutation control: 0.5 must not be accepted"
+	 - Location: src/bin/kani_exact_u32_f64_negative.rs:7:5 in function negative_control_wrongly_accepts_fraction
+
+Check 2: std::result::Result::<u32, &str>::is_ok.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:594:5 in function std::result::Result::<u32, &str>::is_ok
+
+Check 3: std::result::Result::<u32, &str>::is_ok.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<u32, &str>::is_ok
+
+Check 4: std::result::Result::<u32, &str>::is_ok.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<u32, &str>::is_ok
+
+Check 5: std::result::Result::<u32, &str>::is_ok.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<u32, &str>::is_ok
+
+Check 6: std::result::Result::<u32, &str>::is_ok.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<u32, &str>::is_ok
+
+Check 7: std::result::Result::<u32, &str>::is_ok.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<u32, &str>::is_ok
+
+Check 8: std::result::Result::<u32, &str>::is_ok.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:595:18 in function std::result::Result::<u32, &str>::is_ok
+
+Check 9: acyclic_fs::exact_u32_from_f64.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../rust-sdk-docs-source/sdk/work/filesystem-main-port-c8/rust/crates/filesystem/src/numeric.rs:14:5 in function acyclic_fs::exact_u32_from_f64
+
+Check 10: core::f64::math::fract.NaN.1
+	 - Status: SUCCESS
+	 - Description: "NaN on subtraction"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/f64.rs:1946:9 in function core::f64::math::fract
+
+
+SUMMARY:
+ ** 1 of 10 failed
+Failed Checks: intentional mutation control: 0.5 must not be accepted
+ File: "src/bin/kani_exact_u32_f64_negative.rs", line 7, in negative_control_wrongly_accepts_fraction
+
+VERIFICATION:- FAILED
+Verification Time: 0.064085186s
+
+Manual Harness Summary:
+Verification failed for - negative_control_wrongly_accepts_fraction
+Complete - 0 successfully verified harnesses, 1 failures, 1 total.
+TERMINAL_EXIT_MARKER

@@ -1,0 +1,39 @@
+{
+  "artifact": "signed-1269511-rulelocal",
+  "source_checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal-signed",
+  "source_revision": "1269511d636b8ceeea1604a23919a9c1448241fa",
+  "launch_checkout_head": "919a04d83a265d90f1bce7ede2dfdbfa301829a9",
+  "production_source_hash": "361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257",
+  "proof_module_hash": "0D4C0F6F7D95111E6727D6E7AE885EF755B42887C3439B9AF57EE9211154F576",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "cadical",
+    "default_unwind": 2
+  },
+  "command": "cargo-kani -p acyclic-actors --target-dir /tmp/kani-signed-1269511 --harness [9 signed rule-local harnesses] --default-unwind 2 --solver cadical --output-format regular",
+  "raw_log": "audit/signed-1269511-rulelocal-kani068.raw.txt",
+  "raw_sha256": "DA7DCA31470983FF72CBF4800809E2525E193FA25B8AB245AC0D85A30494A837",
+  "status": "qualified_partial",
+  "verified_harnesses": 6,
+  "cbmc_failed_harnesses": 3,
+  "failed_harnesses": [
+    "actor_response_try_from_preserves_optional_actor_presence",
+    "actor_observation_try_from_preserves_u64_presence_and_fixed_bytes",
+    "subscription_observation_try_from_preserves_u64_and_failed_cursor_presence"
+  ],
+  "failure_reason": "CBMC alloc::handle_alloc_error unsupported_construct reached in Vec/String conversion; no assertion counterexample; do not count as PASS",
+  "theorem_scope": [
+    "PositiveU64::new: arbitrary u64, accepts iff nonzero and preserves value",
+    "ActorLimits::new: arbitrary three u64 values, accepts iff all nonzero and preserves values",
+    "SubscriptionStart valid cursor/CurrentHead(true) ingress/egress roundtrip preserves oneof identity",
+    "Unknown SubscriptionState/ActorState mappings preserve raw unknown values",
+    "all enum numeric mappings are inverse/lossless"
+  ],
+  "excluded": [
+    "full arbitrary-string transport behavior",
+    "failed conversion harnesses",
+    "update admission acceptance and expected-revision projection pending separate run"
+  ]
+}

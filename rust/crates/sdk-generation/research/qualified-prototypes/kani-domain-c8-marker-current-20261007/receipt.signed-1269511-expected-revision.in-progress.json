@@ -1,0 +1,21 @@
+{
+  "status": "inconclusive_solver_active",
+  "source_checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal-signed",
+  "source_revision": "1269511d636b8ceeea1604a23919a9c1448241fa",
+  "production_source_hash": "361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257",
+  "proof_module_hash": "0D4C0F6F7D95111E6727D6E7AE885EF755B42887C3439B9AF57EE9211154F576",
+  "harness": "update_request_expected_revision_only_after_production_admission",
+  "calls": [
+    "crate::validate_update",
+    "UpdateActorRequest::try_from",
+    "UpdateActorRequest::expected_configuration_revision"
+  ],
+  "assumption": "canonical fixed one-binding fixture; only expected_configuration_revision is arbitrary u64",
+  "pty": 44535,
+  "cbmc_pid": 2557627,
+  "target_dir": "/tmp/kani-signed-1269511",
+  "raw_log": "audit/signed-1269511-expected-revision-kani068.raw.txt",
+  "claim": "No theorem claim until terminal Kani summary",
+  "acceptance_harness": "update_request_production_admission_accepts_canonical_fixture",
+  "acceptance_status": "not launched; remains unqualified/inconclusive"
+}

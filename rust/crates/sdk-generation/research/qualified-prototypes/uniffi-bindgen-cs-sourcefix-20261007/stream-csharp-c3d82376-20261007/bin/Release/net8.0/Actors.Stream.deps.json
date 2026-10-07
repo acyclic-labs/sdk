@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "Actors.Stream/0.1.0-c3d82376-macos-arm64": {
+        "runtime": {
+          "Actors.Stream.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Actors.Stream/0.1.0-c3d82376-macos-arm64": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

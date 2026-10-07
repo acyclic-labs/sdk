@@ -1,0 +1,32 @@
+assembly_simple_name=Actors.Stream
+assembly_version=0.1.0.0
+C# STREAM NUGET QUALIFICATION RAW EVIDENCE
+date=2026-10-07
+status=QUALIFIED_CSHARP_STREAM_WINDOWS_LINUX_NUGET_CURRENT_PRODUCER
+package=Actors.Stream.0.1.0-c3d82376.nupkg
+package_sha256=9AF117CF6F8A8C56DE9E535CBE9DBF36362AA4D50AD235D3757132537AB4F44D
+producer_revision=c3d82376d5b5e32a7886a4af7f8a65de8fe60795
+generator_revision=e10ce410eb3a10cc19c7928b93ea8d84e038c034
+fixture_endpoint=https://localhost:51942
+fixture_ca_sha256=16F4EF3869E95EBD406602104F82E230ACF3BDF3385F51FD7C059F4A2E89C539
+fixture_live_handle=follow-open -> follow-closed (remote fixture stopped after run)
+--- LOCAL CONSUMER RUN ---
+CSHARP_STREAM_LOCAL_ORDERED_TYPED_U64_PASS
+CSHARP_STREAM_LOCAL_CANCELLATION_CLOSE_RECOVERY_PASS
+--- REMOTE CONSUMER RUN ---
+CSHARP_STREAM_REMOTE_TLS_ORDERED_TYPED_U64_PASS
+CSHARP_STREAM_REMOTE_CANCELLATION_SERVER_CLOSE_RECOVERY_PASS
+--- RAW-HANDLE NEGATIVE BUILD ---
+C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\negative\Program.cs(8,17): error CS1729: 'RecordCursor' does not contain a constructor that takes 2 arguments [C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\negative\Negative.csproj]
+
+Build FAILED.
+
+C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\negative\Program.cs(8,17): error CS1729: 'RecordCursor' does not contain a constructor that takes 2 arguments [C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk\rust\crates\sdk-generation\research\qualified-prototypes\uniffi-bindgen-cs-sourcefix-20261007\stream-csharp-c3d82376-20261007\negative\Negative.csproj]
+    0 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:01.58
+--- INSTALLED ARTIFACTS ---
+managed_sha256=0D6963E7642852F135218A19D9F4ADBC64F16AA1010EB78C046EE3C79F109523
+win_native_sha256=AD102FB905B9996480BCA69F66248B042C8112FDEAB520155573FBC740AB49A5
+linux_native_sha256=66E29E4EAED05CC838BCCC82E13E128C10A4CC30DAF0F400958C346976A966F2

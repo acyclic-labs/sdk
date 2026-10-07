@@ -39,6 +39,6 @@
       "lib.rs": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB"
     }
   },
-  "accepted_receipt": "receipt.json",
-  "negative_receipt": "receipt.negative-control.json"
+  "accepted_receipt": "receipt.c8-ba8d1fa.json",
+  "negative_receipt": "receipt.c8-ba8d1fa.negative-control.json"
 }

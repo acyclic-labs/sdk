@@ -1,0 +1,5 @@
+control_endpoint=http://127.0.0.1:37293
+state_before_release={"started":10,"aborted":10,"active":0}
+POST /release=200
+state_after_release={"started":10,"aborted":10,"active":0}
+server_abort_cleanup=PASS

@@ -1,0 +1,3619 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling libc v0.2.190
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling anyhow v1.0.104
+   Compiling bytes v1.12.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde_core v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling memchr v2.8.3
+   Compiling serde v1.0.229
+   Compiling pin-project-lite v0.2.17
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde_derive v1.0.229
+   Compiling once_cell v1.21.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-core v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling itoa v1.0.18
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling num-traits v0.2.19
+   Compiling synstructure v0.14.0
+   Compiling either v1.19.0
+   Compiling itertools v0.14.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling synstructure v0.13.2
+   Compiling yoke-derive v0.8.2
+   Compiling zerofrom v0.1.8
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prost-derive v0.14.4
+   Compiling mio v1.2.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling socket2 v0.6.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio-macros v2.7.2
+   Compiling equivalent v1.0.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling stable_deref_trait v1.2.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling thiserror v2.0.20
+   Compiling yoke v0.8.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio v1.53.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hashbrown v0.17.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling indexmap v2.14.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling http v1.5.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling winnow v1.0.4
+   Compiling zerovec-derive v0.11.6
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.20
+   Compiling futures-task v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling slab v0.4.12
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-util v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling zerovec v0.11.8
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tracing-core v0.1.36
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tracing-attributes v0.1.31
+   Compiling displaydoc v0.2.7
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling bitflags v2.13.2
+   Compiling smallvec v1.16.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-sink v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio-util v0.7.19
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling cc v1.6.0
+   Compiling tracing v0.1.44
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling http-body v1.1.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling rustix v1.1.5
+   Compiling getrandom v0.3.4
+   Compiling zmij v1.0.23
+   Compiling percent-encoding v2.3.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling ring v0.17.14
+   Compiling ident_case v1.0.1
+   Compiling ref-cast v1.0.27
+   Compiling strsim v0.11.1
+   Compiling tower-service v0.3.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling linux-raw-sys v0.12.1
+   Compiling cfg-if v1.0.5
+   Compiling darling_core v0.24.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prost v0.14.4
+   Compiling tinystr v0.8.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling writeable v0.6.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling fastrand v2.5.0
+   Compiling rustc-hash v2.1.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling paste v1.0.15
+   Compiling litemap v0.8.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling zeroize v1.8.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prettyplease v0.3.0
+   Compiling httparse v1.10.1
+   Compiling rustls-pki-types v1.15.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_locale_core v2.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling getrandom v0.2.17
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling askama_parser v0.15.6
+   Compiling tempfile v3.27.0
+   Compiling darling_macro v0.24.1
+   Compiling zerotrie v0.2.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling potential_utf v0.1.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling basic-toml v0.1.10
+   Compiling ref-cast-impl v1.0.27
+   Compiling try-lock v0.2.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling fnv v1.0.7
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling utf8_iter v1.0.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_properties_data v2.3.0
+   Compiling heck v0.5.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling untrusted v0.9.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling unicode-segmentation v1.12.0
+   Compiling atomic-waker v1.1.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling h2 v0.4.20
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_collections v2.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling want v0.3.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling askama_derive v0.15.6
+   Compiling icu_provider v2.3.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling darling v0.24.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-channel v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling sync_wrapper v1.0.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling pulldown-cmark v0.13.4
+   Compiling ipnet v2.12.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prettyplease v0.2.37
+   Compiling rustls v0.23.45
+   Compiling log v0.4.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling base64 v0.22.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tower-layer v0.3.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling camino v1.2.6
+   Compiling httpdate v1.0.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hyper v1.12.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling bon-macros v3.10.2
+   Compiling askama_macros v0.15.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling rustls-webpki v0.103.15
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling chrono v0.4.45
+   Compiling uniffi_internal_macros v0.31.0
+   Compiling fs-err v2.11.0
+   Compiling subtle v2.6.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde_json v1.0.151
+   Compiling foldhash v0.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling unicase v2.10.0
+   Compiling regex-automata v0.4.18
+   Compiling hashbrown v0.15.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling uniffi_pipeline v0.31.0
+   Compiling proto-types v0.2.2
+   Compiling icu_normalizer v2.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling icu_properties v2.3.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hyper-util v0.1.20
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tower v0.5.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling convert_case v0.10.0
+   Compiling http-body-util v0.1.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling toml_parser v1.1.3+spec-1.1.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling toml_datetime v0.7.0
+   Compiling serde_spanned v1.0.0
+   Compiling syn-utils v0.5.0
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling fixedbitset v0.5.7
+   Compiling bool-enum v0.1.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling siphasher v1.0.4
+   Compiling winnow v0.7.15
+   Compiling termcolor v1.4.1
+   Compiling ts-rs-macros v12.0.1
+   Compiling toml v0.9.5
+   Compiling uniffi_meta v0.31.0
+   Compiling protify-proc-macro v0.1.4
+   Compiling petgraph v0.8.3
+   Compiling idna_adapter v1.2.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio-rustls v0.26.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling regex v1.13.1
+   Compiling pulldown-cmark-to-cmark v22.0.3
+   Compiling similar v2.7.0
+   Compiling webpki-roots v1.0.9
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prost-types v0.14.4
+   Compiling form_urlencoded v1.2.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling console v0.15.11
+   Compiling cargo-platform v0.1.9
+   Compiling semver v1.0.28
+   Compiling mime v0.3.17
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling allocator-api2 v0.2.21
+   Compiling multimap v0.10.1
+   Compiling static_assertions v1.1.0
+   Compiling foldhash v0.2.0
+   Compiling borrow-or-share v0.2.4
+   Compiling fluent-uri v0.4.1
+   Compiling hashbrown v0.16.1
+   Compiling uniffi_core v0.31.0
+   Compiling prost-build v0.14.4
+   Compiling axum-core v0.5.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling cargo_metadata v0.19.2
+warning: use of an unstable feature
+   --> /home/var/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs:271:50
+    |
+271 | ...ber_access, feature(error_generic_member_access))]
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+
+   Compiling similar-asserts v1.7.0
+   Compiling uniffi_macros v0.31.0
+   Compiling idna v1.1.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tonic-build v0.14.6
+   Compiling askama v0.15.6
+   Compiling bon v3.10.2
+   Compiling ordered-float v5.5.0
+   Compiling ordermap v1.2.2
+   Compiling pin-project-internal v1.1.13
+   Compiling protoc-bin-vendored-win32 v3.2.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0
+   Compiling matchit v0.8.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling protoc-bin-vendored-linux-s390_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0
+   Compiling owo-colors v4.4.0
+   Compiling float_eq v1.0.1
+   Compiling protify v0.1.4
+   Compiling protoc-bin-vendored v3.2.0
+   Compiling axum v0.8.9
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling pin-project v1.1.13
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tonic-prost-build v0.14.6
+   Compiling url v2.5.8
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling uniffi v0.31.0
+   Compiling ts-rs v12.0.1
+   Compiling hyper-timeout v0.5.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling ordered-float v2.10.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio-stream v0.1.19
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling async-trait v0.1.92
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling ryu v1.0.23
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde_urlencoded v0.7.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tower-http v0.6.11
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tonic v0.14.6
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde-value v0.7.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling acyclic-actors v0.2.0 (/mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors)
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1279:26
+     |
+1279 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1218:26
+     |
+1218 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1181:26
+     |
+1181 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1138:26
+     |
+1138 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1096:26
+     |
+1096 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1047:26
+     |
+1047 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Messages must be wrapped in Option in direct impls
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1058:19
+     |
+1058 |     subscription: SubscriptionSpec,
+     |                   ^^^^^^^^^^^^^^^^
+
+error: Unknown attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1021:26
+     |
+1021 | #[proto_message(proxied, fallible = DomainError)]
+     |                          ^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:948:26
+    |
+948 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Messages must be wrapped in Option in direct impls
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:963:13
+    |
+963 |     limits: ActorLimits,
+    |             ^^^^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:879:26
+    |
+879 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Messages must be wrapped in Option in direct impls
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:894:13
+    |
+894 |     limits: ActorLimits,
+    |             ^^^^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:35
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |                                      ^^^^^^^^
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:785:26
+    |
+785 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Enums must use `i32` in direct impls
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:800:12
+    |
+800 |     state: ActorState,
+    |            ^^^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:713:26
+    |
+713 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Enums must use `i32` in direct impls
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:726:12
+    |
+726 |     state: SubscriptionState,
+    |            ^^^^^^^^^^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:671:26
+    |
+671 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Enums must use `i32` in direct impls
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:681:11
+    |
+681 |     code: ErrorCode,
+    |           ^^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:529:26
+    |
+529 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Messages must be wrapped in Option in direct impls
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:542:12
+    |
+542 |     start: SubscriptionStart,
+    |            ^^^^^^^^^^^^^^^^^
+
+error: expected one of `.`, `;`, `?`, `}`, or an operator, found `Ok`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:473:5
+    |
+473 |     #[proto_oneof(proxied, fallible = DomainError)]
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected one of `.`, `;`, `?`, `}`, or an operator
+    |
+    = note: this error originates in the attribute macro `proto_oneof` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:473:28
+    |
+473 |     #[proto_oneof(proxied, fallible = DomainError)]
+    |                            ^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:396:26
+    |
+396 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Oneofs must be wrapped in `Option` in a direct impl
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:408:12
+    |
+408 |     start: subscription_start::Start,
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:342:26
+    |
+342 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:287:26
+    |
+287 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error: Unknown attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:257:26
+    |
+257 | #[proto_message(proxied, fallible = DomainError)]
+    |                          ^^^^^^^^
+
+error[E0432]: unresolved imports `crate::contract::ActorLimitsProto`, `crate::contract::ActorObservationProto`, `crate::contract::AddSubscriptionRequestProto`, `crate::contract::AddSubscriptionResponseProto`, `crate::contract::BindingProto`, `crate::contract::CheckpointActorRequestProto`, `crate::contract::CheckpointActorResponseProto`, `crate::contract::CreateActorRequestProto`, `crate::contract::CreateActorResponseProto`, `crate::contract::ServiceErrorProto`, `crate::contract::HeaderProto`, `crate::contract::InspectActorRequestProto`, `crate::contract::InspectActorResponseProto`, `crate::contract::InvokeActorRequestProto`, `crate::contract::InvokeActorResponseProto`, `crate::contract::RemoveSubscriptionRequestProto`, `crate::contract::RemoveSubscriptionResponseProto`, `crate::contract::ResumeSubscriptionRequestProto`, `crate::contract::ResumeSubscriptionResponseProto`, `crate::contract::SubscriptionObservationProto`, `crate::contract::SubscriptionSpecProto`, `crate::contract::SubscriptionStartProto`, `crate::contract::UpdateActorRequestProto`, `crate::contract::UpdateActorResponseProto`
+  --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/build.rs:32:9
+   |
+32 | ...   ActorLimitsProto as ActorLimits, ActorObservationProto as ActorObservation,
+   |       ----------------^^^^^^^^^^^^^^^  ---------------------^^^^^^^^^^^^^^^^^^^^
+   |       |                                |
+   |       |                                no `ActorObservationProto` in `contract`
+   |       no `ActorLimitsProto` in `contract`
+33 | ...   AddSubscriptionRequestProto as AddSubscriptionRequest,
+   |       ---------------------------^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |       |
+   |       no `AddSubscriptionRequestProto` in `contract`
+34 | ...   AddSubscriptionResponseProto as AddSubscriptionResponse,
+   |       ----------------------------^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |       |
+   |       no `AddSubscriptionResponseProto` in `contract`
+35 | ...   BindingProto as Binding,
+   |       ------------^^^^^^^^^^^
+   |       |
+   |       no `BindingProto` in `contract`
+36 | ...   CheckpointActorRequestProto as CheckpointActorRequest,
+   |       ---------------------------^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |       |
+   |       no `CheckpointActorRequestProto` in `contract`
+37 | ...   CheckpointActorResponseProto as CheckpointActorResponse,
+   |       ----------------------------^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |       |
+   |       no `CheckpointActorResponseProto` in `contract`
+38 | ...   CreateActorRequestProto as CreateActorRequest,
+   |       -----------------------^^^^^^^^^^^^^^^^^^^^^^
+   |       |
+   |       no `CreateActorRequestProto` in `contract`
+39 | ...   CreateActorResponseProto as CreateActorResponse,
+   |       ------------------------^^^^^^^^^^^^^^^^^^^^^^^
+   |       |
+   |       no `CreateActorResponseProto` in `contract`
+40 | ...   ServiceErrorProto as Error,
+   |       -----------------^^^^^^^^^
+   |       |
+   |       no `ServiceErrorProto` in `contract`
+41 | ...   HeaderProto as Header,
+   |       ^^^^^^^^^^^^^^^^^^^^^
+42 | ...   InspectActorRequestProto as InspectActorRequest,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+43 | ...   InspectActorResponseProto as InspectActorResponse,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+44 | ...   InvokeActorRequestProto as InvokeActorRequest,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 | ...   InvokeActorResponseProto as InvokeActorResponse,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+46 | ...   RemoveSubscriptionRequestProto as RemoveSubscriptionRequest,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+47 | ...   RemoveSubscriptionResponseProto as RemoveSubscriptionResponse,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+48 | ...   ResumeSubscriptionRequestProto as ResumeSubscriptionRequest,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+49 | ...   ResumeSubscriptionResponseProto as ResumeSubscriptionResponse,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+50 | ...   SubscriptionObservationProto as SubscriptionObservation,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+51 | ...   SubscriptionSpecProto as SubscriptionSpec,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+52 | ...   SubscriptionStartProto as SubscriptionStart,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+53 | ...   UpdateActorRequestProto as UpdateActorRequest,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+54 | ...   UpdateActorResponseProto as UpdateActorResponse,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0432]: unresolved imports `generated::ActorLimitsProto`, `generated::ActorObservationProto`, `generated::AddSubscriptionRequestProto`, `generated::AddSubscriptionResponseProto`, `generated::BindingProto`, `generated::CheckpointActorRequestProto`, `generated::CheckpointActorResponseProto`, `generated::CreateActorRequestProto`, `generated::CreateActorResponseProto`, `generated::ServiceErrorProto`, `generated::HeaderProto`, `generated::InspectActorRequestProto`, `generated::InspectActorResponseProto`, `generated::InvokeActorRequestProto`, `generated::InvokeActorResponseProto`, `generated::RemoveSubscriptionRequestProto`, `generated::RemoveSubscriptionResponseProto`, `generated::ResumeSubscriptionRequestProto`, `generated::ResumeSubscriptionResponseProto`, `generated::SubscriptionObservationProto`, `generated::SubscriptionSpecProto`, `generated::SubscriptionStartProto`, `generated::UpdateActorRequestProto`, `generated::UpdateActorResponseProto`
+  --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/contract.rs:46:5
+   |
+46 |     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
+   |     ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^              ^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `AddSubscriptionRequestProto` in `contract::generated`
+   |     |                 |
+   |     |                 no `ActorObservationProto` in `contract::generated`
+   |     no `ActorLimitsProto` in `contract::generated`
+47 |     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `CheckpointActorRequestProto` in `contract::generated`
+   |     |                             |
+   |     |                             no `BindingProto` in `contract::generated`
+   |     no `AddSubscriptionResponseProto` in `contract::generated`
+48 |     CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^ no `CreateActorResponseProto` in `contract::generated`
+   |     |                             |
+   |     |                             no `CreateActorRequestProto` in `contract::generated`
+   |     no `CheckpointActorResponseProto` in `contract::generated`
+49 |     ErrorCode, ServiceErrorProto, HeaderProto, InspectActorRequestProto, InspectActorResponseProto,
+   |                ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                |
+   |                no `ServiceErrorProto` in `contract::generated`
+50 |     InvokeActorRequestProto, InvokeActorResponseProto, RemoveSubscriptionRequestProto,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+51 |     RemoveSubscriptionResponseProto, ResumeSubscriptionRequestProto,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+52 |     ResumeSubscriptionResponseProto, SubscriptionObservationProto, SubscriptionSpecProto,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+53 |     SubscriptionStartProto, SubscriptionState, UpdateActorRequestProto, UpdateActorResponseProto,
+   |     ^^^^^^^^^^^^^^^^^^^^^^                     ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: a similar name exists in the module
+   |
+46 -     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
+46 +     ActorLimits, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
+   |
+help: a similar name exists in the module
+   |
+46 -     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
+46 +     ActorLimitsProto, ActorObservation, ActorState, AddSubscriptionRequestProto,
+   |
+help: a similar name exists in the module
+   |
+46 -     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
+46 +     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequest,
+   |
+help: a similar name exists in the module
+   |
+47 -     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
+47 +     AddSubscriptionResponse, BindingProto, CheckpointActorRequestProto,
+   |
+help: a similar name exists in the module
+   |
+47 -     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
+47 +     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequest,
+   |
+help: a similar name exists in the module
+   |
+48 -     CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
+48 +     CheckpointActorResponse, CreateActorRequestProto, CreateActorResponseProto,
+   |
+help: a similar name exists in the module
+   |
+48 -     CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
+48 +     CheckpointActorResponseProto, CreateActorRequest, CreateActorResponseProto,
+   |
+help: a similar name exists in the module
+   |
+48 -     CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
+48 +     CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponse,
+   |
+help: a similar name exists in the module
+   |
+49 -     ErrorCode, ServiceErrorProto, HeaderProto, InspectActorRequestProto, InspectActorResponseProto,
+49 +     ErrorCode, ServiceError, HeaderProto, InspectActorRequestProto, InspectActorResponseProto,
+   |
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:267:5
+    |
+267 |     value: String,
+    |     ^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:265:5
+    |
+265 |     name: String,
+    |     ^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:300:5
+    |
+300 |     resource: String,
+    |     ^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:298:5
+    |
+298 |     capability: String,
+    |     ^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:296:5
+    |
+296 |     name: String,
+    |     ^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:355:5
+    |
+355 |     checkpoint_bytes: PositiveU64,
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:353:5
+    |
+353 |     memory_bytes: PositiveU64,
+    |     ^^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:351:5
+    |
+351 |     handler_timeout_millis: PositiveU64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:408:5
+    |
+408 |     start: subscription_start::Start,
+    |     ^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:482:9
+    |
+482 |         CurrentHead(CurrentHeadMarker),
+    |         ^^^^^^^^^^^
+    |
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:430:9
+    |
+430 |     use super::*;
+    |         ^^^^^^^^
+help: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+    |
+476 +     #[derive(Enumeration, Message, Oneof)]
+477 |     pub enum Start {
+    |
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:479:9
+    |
+479 |         Cursor(u64),
+    |         ^^^^^^
+    |
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:430:9
+    |
+430 |     use super::*;
+    |         ^^^^^^^^
+help: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+    |
+476 +     #[derive(Enumeration, Message, Oneof)]
+477 |     pub enum Start {
+    |
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:542:5
+    |
+542 |     start: SubscriptionStart,
+    |     ^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:540:5
+    |
+540 |     stream_path: String,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:538:5
+    |
+538 |     subscription_id: String,
+    |     ^^^^^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:681:5
+    |
+681 |     code: ErrorCode,
+    |     ^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:726:5
+    |
+726 |     state: SubscriptionState,
+    |     ^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:724:5
+    |
+724 |     stream_path: String,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:722:5
+    |
+722 |     subscription_id: String,
+    |     ^^^^^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:800:5
+    |
+800 |     state: ActorState,
+    |     ^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:798:5
+    |
+798 |     home_region: String,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:796:5
+    |
+796 |     code_sha256: CodeSha256,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:794:5
+    |
+794 |     actor_id: ActorId,
+    |     ^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:856:13
+    |
+856 |             actor: Option<ActorObservation>,
+    |             ^^^^^
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+    = note: this error originates in the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:894:5
+    |
+894 |     limits: ActorLimits,
+    |     ^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:892:5
+    |
+892 |     bindings: Vec<Binding>,
+    |     ^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:890:5
+    |
+890 |     home_region: String,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:888:5
+    |
+888 |     code_sha256: CodeSha256,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:963:5
+    |
+963 |     limits: ActorLimits,
+    |     ^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:961:5
+    |
+961 |     bindings: Vec<Binding>,
+    |     ^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:959:5
+    |
+959 |     code_sha256: CodeSha256,
+    |     ^^^^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:957:5
+    |
+957 |     actor_id: ActorId,
+    |     ^^^^^^^^
+    |
+    = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+    |
+ 13 | use protify::*;
+    |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1030:5
+     |
+1030 |     actor_id: ActorId,
+     |     ^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1058:5
+     |
+1058 |     subscription: SubscriptionSpec,
+     |     ^^^^^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1056:5
+     |
+1056 |     actor_id: ActorId,
+     |     ^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1109:5
+     |
+1109 |     idempotency_key: String,
+     |     ^^^^^^^^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1107:5
+     |
+1107 |     subscription_id: String,
+     |     ^^^^^^^^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1105:5
+     |
+1105 |     actor_id: ActorId,
+     |     ^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1151:5
+     |
+1151 |     idempotency_key: String,
+     |     ^^^^^^^^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1149:5
+     |
+1149 |     subscription_id: String,
+     |     ^^^^^^^^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1147:5
+     |
+1147 |     actor_id: ActorId,
+     |     ^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1192:5
+     |
+1192 |     idempotency_key: String,
+     |     ^^^^^^^^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1190:5
+     |
+1190 |     actor_id: ActorId,
+     |     ^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1236:5
+     |
+1236 |     headers: Vec<Header>,
+     |     ^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1233:5
+     |
+1233 |     body: Vec<u8>,
+     |     ^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1230:5
+     |
+1230 |     url: String,
+     |     ^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1228:5
+     |
+1228 |     method: String,
+     |     ^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1226:5
+     |
+1226 |     actor_id: ActorId,
+     |     ^^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1293:5
+     |
+1293 |     headers: Vec<Header>,
+     |     ^^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1290:5
+     |
+1290 |     body: Vec<u8>,
+     |     ^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error: cannot find attribute `prost` in this scope
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1287:5
+     |
+1287 |     status: u32,
+     |     ^^^^^^
+     |
+     = note: `prost` is an attribute that can be used by the derive macros `Enumeration`, `Message` and `Oneof`, you might be missing a `derive` attribute
+note: `prost` is imported here, but it is a crate, not an attribute
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:13:5
+     |
+  13 | use protify::*;
+     |     ^^^^^^^^^^
+
+error[E0119]: conflicting implementations of trait `Clone` for type `InvokeActorResponse`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1282:10
+     |
+1279 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1282 | #[derive(Clone, Debug, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `InvokeActorResponse`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `InvokeActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1221:10
+     |
+1218 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1221 | #[derive(Clone, Debug, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `InvokeActorRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `CheckpointActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1184:10
+     |
+1181 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1184 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `CheckpointActorRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `ResumeSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1141:10
+     |
+1138 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1141 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `ResumeSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `RemoveSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1099:10
+     |
+1096 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1099 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `RemoveSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `AddSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1050:10
+     |
+1047 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1050 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `AddSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `InspectActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1024:10
+     |
+1021 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1024 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |          ^^^^^ conflicting implementation for `InspectActorRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `UpdateActorRequest`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:951:10
+    |
+948 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+951 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `UpdateActorRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `CreateActorRequest`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:882:10
+    |
+879 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+882 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `CreateActorRequest`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `CheckpointActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `CheckpointActorResponse`
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `ResumeSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `ResumeSubscriptionResponse`
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `RemoveSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `RemoveSubscriptionResponse`
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `AddSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `AddSubscriptionResponse`
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `InspectActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `InspectActorResponse`
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `UpdateActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `UpdateActorResponse`
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `CreateActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:18
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                  ^^^^^ conflicting implementation for `CreateActorResponse`
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Clone` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Clone` for type `ActorObservation`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:788:10
+    |
+785 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+788 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `ActorObservation`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `SubscriptionObservation`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:716:10
+    |
+713 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+716 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `SubscriptionObservation`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `ServiceError`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:674:10
+    |
+671 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+674 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `ServiceError`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `SubscriptionSpec`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:532:10
+    |
+529 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+532 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `SubscriptionSpec`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `domain::subscription_start::Start`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:475:14
+    |
+473 |     #[proto_oneof(proxied, fallible = DomainError)]
+    |     ----------------------------------------------- first implementation here
+474 |     #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+475 |     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |              ^^^^^ conflicting implementation for `domain::subscription_start::Start`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `SubscriptionStart`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:399:10
+    |
+396 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+399 | #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `SubscriptionStart`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `ActorLimits`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:345:10
+    |
+342 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+345 | #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `ActorLimits`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `Binding`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:290:10
+    |
+287 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+290 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `Binding`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `Header`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:260:10
+    |
+257 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+260 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |          ^^^^^ conflicting implementation for `Header`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `InvokeActorResponse`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1282:17
+     |
+1279 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1282 | #[derive(Clone, Debug, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `InvokeActorResponse`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `InvokeActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1221:17
+     |
+1218 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1221 | #[derive(Clone, Debug, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `InvokeActorRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `CheckpointActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1184:17
+     |
+1181 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1184 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `CheckpointActorRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `ResumeSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1141:17
+     |
+1138 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1141 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `ResumeSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `RemoveSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1099:17
+     |
+1096 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1099 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `RemoveSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `AddSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1050:17
+     |
+1047 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1050 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `AddSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `InspectActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1024:17
+     |
+1021 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1024 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                 ^^^^^ conflicting implementation for `InspectActorRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `UpdateActorRequest`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:951:17
+    |
+948 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+951 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `UpdateActorRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `CreateActorRequest`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:882:17
+    |
+879 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+882 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `CreateActorRequest`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `CheckpointActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `CheckpointActorResponse`
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `ResumeSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `ResumeSubscriptionResponse`
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `RemoveSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `RemoveSubscriptionResponse`
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `AddSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `AddSubscriptionResponse`
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `InspectActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `InspectActorResponse`
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `UpdateActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `UpdateActorResponse`
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `CreateActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:25
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                         ^^^^^ conflicting implementation for `CreateActorResponse`
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `Debug` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `Debug` for type `ActorObservation`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:788:17
+    |
+785 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+788 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `ActorObservation`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `SubscriptionObservation`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:716:17
+    |
+713 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+716 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `SubscriptionObservation`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `ServiceError`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:674:17
+    |
+671 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+674 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `ServiceError`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `SubscriptionSpec`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:532:17
+    |
+529 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+532 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `SubscriptionSpec`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `domain::subscription_start::Start`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:475:27
+    |
+473 |     #[proto_oneof(proxied, fallible = DomainError)]
+    |     ----------------------------------------------- first implementation here
+474 |     #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+475 |     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |                           ^^^^^ conflicting implementation for `domain::subscription_start::Start`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `SubscriptionStart`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:399:23
+    |
+396 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+399 | #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |                       ^^^^^ conflicting implementation for `SubscriptionStart`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `ActorLimits`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:345:23
+    |
+342 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+345 | #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |                       ^^^^^ conflicting implementation for `ActorLimits`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `Binding`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:290:17
+    |
+287 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+290 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `Binding`
+
+error[E0119]: conflicting implementations of trait `Debug` for type `Header`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:260:17
+    |
+257 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+260 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                 ^^^^^ conflicting implementation for `Header`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `InvokeActorResponse`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1282:24
+     |
+1279 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1282 | #[derive(Clone, Debug, PartialEq, TS)]
+     |                        ^^^^^^^^^ conflicting implementation for `InvokeActorResponse`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `InvokeActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1221:24
+     |
+1218 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1221 | #[derive(Clone, Debug, PartialEq, TS)]
+     |                        ^^^^^^^^^ conflicting implementation for `InvokeActorRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `CheckpointActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1184:28
+     |
+1181 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1184 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                            ^^^^^^^^^ conflicting implementation for `CheckpointActorRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `ResumeSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1141:28
+     |
+1138 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1141 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                            ^^^^^^^^^ conflicting implementation for `ResumeSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `RemoveSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1099:28
+     |
+1096 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1099 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                            ^^^^^^^^^ conflicting implementation for `RemoveSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `AddSubscriptionRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1050:28
+     |
+1047 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1050 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                            ^^^^^^^^^ conflicting implementation for `AddSubscriptionRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `InspectActorRequest`
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1024:28
+     |
+1021 | #[proto_message(proxied, fallible = DomainError)]
+     | ------------------------------------------------- first implementation here
+...
+1024 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+     |                            ^^^^^^^^^ conflicting implementation for `InspectActorRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `UpdateActorRequest`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:951:28
+    |
+948 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+951 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `UpdateActorRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `CreateActorRequest`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:882:28
+    |
+879 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+882 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `CreateActorRequest`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `CheckpointActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `CheckpointActorResponse`
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `ResumeSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `ResumeSubscriptionResponse`
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `RemoveSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `RemoveSubscriptionResponse`
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `AddSubscriptionResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `AddSubscriptionResponse`
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `InspectActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `InspectActorResponse`
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `UpdateActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `UpdateActorResponse`
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `CreateActorResponse`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:850:36
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ------------------------------------------------- first implementation here
+...
+850 |         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                                    ^^^^^^^^^ conflicting implementation for `CreateActorResponse`
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the derive macro `PartialEq` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `ActorObservation`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:788:28
+    |
+785 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+788 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `ActorObservation`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `SubscriptionObservation`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:716:28
+    |
+713 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+716 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `SubscriptionObservation`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `ServiceError`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:674:28
+    |
+671 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+674 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `ServiceError`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `SubscriptionSpec`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:532:28
+    |
+529 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+532 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `SubscriptionSpec`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `domain::subscription_start::Start`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:475:38
+    |
+473 |     #[proto_oneof(proxied, fallible = DomainError)]
+    |     ----------------------------------------------- first implementation here
+474 |     #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+475 |     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |                                      ^^^^^^^^^ conflicting implementation for `domain::subscription_start::Start`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `SubscriptionStart`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:399:34
+    |
+396 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+399 | #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |                                  ^^^^^^^^^ conflicting implementation for `SubscriptionStart`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `ActorLimits`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:345:34
+    |
+342 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+345 | #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    |                                  ^^^^^^^^^ conflicting implementation for `ActorLimits`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `Binding`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:290:28
+    |
+287 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+290 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `Binding`
+
+error[E0119]: conflicting implementations of trait `PartialEq` for type `Header`
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:260:28
+    |
+257 | #[proto_message(proxied, fallible = DomainError)]
+    | ------------------------------------------------- first implementation here
+...
+260 | #[derive(Clone, Debug, Eq, PartialEq, TS)]
+    |                            ^^^^^^^^^ conflicting implementation for `Header`
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:257:1
+    |
+257 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:257:1
+    |
+257 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:287:1
+    |
+287 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:287:1
+    |
+287 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:342:1
+    |
+342 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:342:1
+    |
+342 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:396:1
+    |
+396 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:396:1
+    |
+396 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:473:5
+    |
+473 |     #[proto_oneof(proxied, fallible = DomainError)]
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     unreachable expression
+    |     any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_oneof` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:529:1
+    |
+529 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:529:1
+    |
+529 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:671:1
+    |
+671 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:671:1
+    |
+671 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:713:1
+    |
+713 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:713:1
+    |
+713 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:785:1
+    |
+785 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:785:1
+    |
+785 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+870 | actor_response_type!(CreateActorResponse, CreateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+871 | actor_response_type!(UpdateActorResponse, UpdateActorResponse);
+    | -------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+872 | actor_response_type!(InspectActorResponse, InspectActorResponse);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+873 | actor_response_type!(AddSubscriptionResponse, AddSubscriptionResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+874 | actor_response_type!(RemoveSubscriptionResponse, RemoveSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+875 | actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:847:10
+    |
+847 |             #[proto_message(proxied, fallible = DomainError)]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             unreachable expression
+    |             any code following this expression is unreachable
+...
+876 | actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the attribute macro `proto_message` which comes from the expansion of the macro `actor_response_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:879:1
+    |
+879 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:879:1
+    |
+879 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:920:9
+    |
+910 |     ) -> Result<Self, DomainError> {
+    |          ------------------------- expected `Result<CreateActorRequest, domain::DomainError>` because of return type
+...
+920 |         Self::try_from(wire)
+    |         ^^^^^^^^^^^^^^^^^^^^ expected `Result<CreateActorRequest, DomainError>`, found `Result<CreateActorRequest, Infallible>`
+    |
+    = note: expected enum `Result<_, domain::DomainError>`
+               found enum `Result<_, Infallible>`
+help: use `?` to coerce and return an appropriate `Err`, and wrap the resulting value in `Ok` so the expression remains of type `Result`
+    |
+920 |         Ok(Self::try_from(wire)?)
+    |         +++                    ++
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:948:1
+    |
+948 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:948:1
+    |
+948 | #[proto_message(proxied, fallible = DomainError)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | unreachable expression
+    | any code following this expression is unreachable
+    |
+    = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+   --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:990:9
+    |
+980 |     ) -> Result<Self, DomainError> {
+    |          ------------------------- expected `Result<UpdateActorRequest, domain::DomainError>` because of return type
+...
+990 |         Self::try_from(wire)
+    |         ^^^^^^^^^^^^^^^^^^^^ expected `Result<UpdateActorRequest, DomainError>`, found `Result<UpdateActorRequest, Infallible>`
+    |
+    = note: expected enum `Result<_, domain::DomainError>`
+               found enum `Result<_, Infallible>`
+help: use `?` to coerce and return an appropriate `Err`, and wrap the resulting value in `Ok` so the expression remains of type `Result`
+    |
+990 |         Ok(Self::try_from(wire)?)
+    |         +++                    ++
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1021:1
+     |
+1021 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1021:1
+     |
+1021 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1047:1
+     |
+1047 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1047:1
+     |
+1047 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1076:9
+     |
+1069 |     ) -> Result<Self, DomainError> {
+     |          ------------------------- expected `Result<AddSubscriptionRequest, domain::DomainError>` because of return type
+...
+1076 |         Self::try_from(wire)
+     |         ^^^^^^^^^^^^^^^^^^^^ expected `domain::DomainError`, found `Infallible`
+     |
+     = note: expected enum `Result<_, domain::DomainError>`
+                found enum `Result<_, Infallible>`
+help: use `?` to coerce and return an appropriate `Err`, and wrap the resulting value in `Ok` so the expression remains of type `Result`
+     |
+1076 |         Ok(Self::try_from(wire)?)
+     |         +++                    ++
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1096:1
+     |
+1096 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1096:1
+     |
+1096 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1138:1
+     |
+1138 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1138:1
+     |
+1138 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1181:1
+     |
+1181 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1181:1
+     |
+1181 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1218:1
+     |
+1218 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1218:1
+     |
+1218 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1279:1
+     |
+1279 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the macro `vec` which comes from the expansion of the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable expression
+    --> /mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors/src/domain.rs:1279:1
+     |
+1279 | #[proto_message(proxied, fallible = DomainError)]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     | |
+     | unreachable expression
+     | any code following this expression is unreachable
+     |
+     = note: this warning originates in the attribute macro `proto_message` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0119, E0308, E0432.
+For more information about an error, try `rustc --explain E0119`.
+error: could not compile `acyclic-actors` (build script) due to 170 previous errors; 49 warnings emitted
+error: Failed to execute cargo (exit status: 101). Found 170 compilation errors.
+TERMINAL_EXIT_MARKER

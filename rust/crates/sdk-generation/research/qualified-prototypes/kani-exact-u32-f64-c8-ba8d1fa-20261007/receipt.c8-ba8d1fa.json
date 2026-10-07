@@ -1,0 +1,27 @@
+{
+  "status": "proof_pass",
+  "artifact": "kani-exact-u32-f64-c8-ba8d1fa-20261007",
+  "source_checkout": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/work/filesystem-main-port-c8",
+  "source_revision": "ba8d1fa931912e69a9c6e591423552b58fe57557",
+  "source_status_pre_post": "numeric.rs and lib.rs hashes captured after proof; no source edits",
+  "production_symbol": "acyclic_fs::exact_u32_from_f64",
+  "production_source": "rust/crates/filesystem/src/numeric.rs",
+  "source_inventory": {
+    "numeric_rs_sha256": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF",
+    "lib_rs_sha256": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB",
+    "harness_sha256": "4E4D0A887CEDB5B6A06E6B02C068A044EB667681DF79659E514AAFAAD8AF204F"
+  },
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0"
+  },
+  "command": "cargo-kani --manifest-path Cargo.toml --package kani-exact-u32-f64-c8-ba8d1fa-20261007 --exact --default-unwind 2 -j1 --harness exact_u32_from_f64_all_bit_patterns",
+  "terminal_exit": 0,
+  "harness_summary": "Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+  "cbmc_summary": "0 of 14 failed (1 unreachable)",
+  "raw_log": "audit/exact-u32-f64-c8-ba8d1fa-kani068.raw.txt",
+  "raw_log_sha256": "FC7367B7A78E289450596843EC588A8E4320C01E526262059C3DEAC7DAEBA030",
+  "theorem": "For every u64 IEEE-754 bit pattern interpreted as f64, production exact_u32_from_f64 accepts iff finite, integral, nonnegative, and <= u32::MAX; on acceptance f64::from(returned_u32) equals the input numerically; otherwise Err."
+}

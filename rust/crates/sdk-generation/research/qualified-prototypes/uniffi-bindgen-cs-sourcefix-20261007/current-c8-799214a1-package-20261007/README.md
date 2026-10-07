@@ -4,7 +4,7 @@ Local qualification package generated from the Rust-owned `acyclic-actors-uniffi
 
 Producer identity: domain SHA-256 `E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF`; `Cargo.lock` SHA-256 `7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206`; generated C# SHA-256 `DB1AB1F6BFA65570E1B9EFBCDAB88CC8B0167A214E3DD65DFE027521F9B25907`.
 
-The assembly is `Acyclic.Actors` and targets `net8.0`. The package contains the generated managed binding and native assets for `win-x64` and `linux-x64`; macOS remains a separately verified runtime cohort in the immutable 799 receipt until its exact native asset is available for this package build. No transport wrapper or handwritten operation implementation is included.
+The assembly is `Acyclic.Actors` and targets `net8.0`. The package contains the generated managed binding and native assets for `win-x64`, `linux-x64`, and `osx-arm64`. No transport wrapper or handwritten operation implementation is included.
 
 The generated public API has nominal request/response records and `ulong` wire projections. The Rust producer owns semantic validation. Async methods accept `CancellationToken`; cancellation calls the Rust future cancel callback and is qualified with server abort cleanup in the 799 receipt.
 

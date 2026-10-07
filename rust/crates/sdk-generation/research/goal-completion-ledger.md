@@ -409,3 +409,15 @@ Actors signedworktree919a04d83a265d90f1bce7ede2dfdbfa301829a9 locallyformats7own
 Stream ownercurrentmainsignedfollowup30bdc7715c3f68579a24ca9e80b94fce7567c905 is887netadds infourfiles andunderindependentminimalityreview. Root directlyprobed deterministicRustflags with bothplain andencodedflags andconfirmed bothwerecombined. Cargoofficial documentation saysencoded>plain>targetconfig>buildconfig aremutuallyexclusivesources: https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags. Ownerandreviewerarecorrectingactualprecedence includingemptyencoded/configretention beforefreeze.
 
 Docs CLI5activeintegrationtests nowPASS stalerustdoc,sourceState,pluginclosure,release-skip,concurrentpublication. Profileaccuracy audit remainsopen: externalreceipts mustnotfabricate defaultFeatures true andemptyfeatures; generatedprofiles needCargo capability matrix coverage withminimalboundedfeatureprofiles. Allgoalrequirementsremainincompleteuntilactualqualifiedsourcecutoversandlanguagesfinish.
+
+## 2026-10-07 current-main Filesystem integration
+
+- Root integration now owns `C:/Users/varun/.codex/worktrees/filesystem-main-review/sdk`, main `cd6ab86bf9f5fbfa8eeb416b6604de379df67903` plus Filesystem candidate `ba8d1fa931912e69a9c6e591423552b58fe57557`, pending merge commit.
+- Resolved authored conflicts by preserving main's extracted operation-window adapter and optional lease commit arguments while retaining Rust-owned exact-u32 boundary types. Maintained WASM and N-API generation completed successfully from the combined source. Native typescript+napi-types feature check and formatting passed.
+- Combined typecheck identified main's operation-window adapter still importing deleted TypeScript rebase validation. Assigned Rust core positive-limit validation before durable transitions plus adapter deletion to Filesystem owner. Final binaries must be regenerated after this fix. Full Rust tests are running; no integration merge qualification claimed.
+- Exact integrated numeric.rs and lib.rs production hashes match the ba8 theorem inventory; formal owner recorded source binding without claiming a new solver run.
+- Stream independent clean Windows build proved RUSTC_WORKSPACE_WRAPPER avoids dependency command-line overflow while preserving existing RUSTC_WRAPPER. Cached binary nondeterminism and missing effective implicit-linker/profile provenance remain unresolved production blockers.
+- Docs independent parser/mutation suite now has 9 passing tests; full default CLI profile/catalog generation still needs completed end-to-end evidence. Generated versioned data remains SDK-only.
+- Actors signed 919a04d source remains unpushed at observation; mutable byte type aliases remain blocker. Maintained Windows/Linux/macOS companion assemblies exist, but final source/package qualification must follow the generic readonly projection fix.
+- JVM Stream source and three-platform artifacts/receipts now preserved in the existing unpublished GitHub recovery draft with verified API digests; no registry publication/deployment.
+- Goal remains active. No new merge performed in this iteration.

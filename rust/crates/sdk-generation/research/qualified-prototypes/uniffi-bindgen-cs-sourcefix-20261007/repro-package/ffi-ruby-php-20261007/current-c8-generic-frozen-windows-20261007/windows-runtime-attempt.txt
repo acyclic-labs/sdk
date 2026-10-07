@@ -1,0 +1,6 @@
+Windows runtime attempt: `gem install --no-document --install-dir %TEMP%\ruby-c8-win-ffi-home-20261007 ffi -v 1.17.2`
+
+Result: blocked while building ffi 1.17.2 for Ruby 4.0.7 x64-mingw-ucrt. Exact native-build error retained from terminal:
+`make: *** No rule to make target '/C/Users/varun/scoop/apps/ruby/4.0.7-1/include/ruby-4.0.0/ruby.h', needed by 'AbstractMemory.o'. Stop.`
+
+The generated files passed Ruby syntax checks and the Rust native DLL and maintained generator were built from the current producer copy. No Windows runtime qualification is claimed until a task-owned Ruby/ffi pair is available.

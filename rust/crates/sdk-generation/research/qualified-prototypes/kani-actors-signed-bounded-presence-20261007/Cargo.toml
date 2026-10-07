@@ -1,0 +1,14 @@
+[package]
+name = "kani-actors-signed-bounded-presence-20261007"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-actors = { path = "/mnt/c/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors" }
+
+[[bin]]
+name = "kani_bounded_presence"
+path = "src/bin/kani_bounded_presence.rs"

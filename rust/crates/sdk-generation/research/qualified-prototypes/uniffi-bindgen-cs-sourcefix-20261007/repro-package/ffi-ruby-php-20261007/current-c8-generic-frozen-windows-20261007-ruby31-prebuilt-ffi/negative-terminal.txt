@@ -1,0 +1,9 @@
+actor_id_empty=AcyclicActorsUniffi::BindingError::Semantic
+sha_short=AcyclicActorsUniffi::BindingError::Semantic
+positive_zero=AcyclicActorsUniffi::BindingError::Contract
+current_head_false=AcyclicActorsUniffi::BindingError::Semantic
+current_head_true=PASS
+actor_id_type=TypeError
+positive_type=TypeError
+readonly=NoMethodError
+RUBY_CURRENT_C8_GENERIC_NOMINAL_NEGATIVE_PASS

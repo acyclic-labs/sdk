@@ -1,0 +1,114 @@
+{
+  "version": 3,
+  "targets": {
+    "net8.0": {
+      "Actors.Stream/0.1.0-c3d82376": {
+        "type": "package",
+        "compile": {
+          "lib/net8.0/Actors.Stream.dll": {}
+        },
+        "runtime": {
+          "lib/net8.0/Actors.Stream.dll": {}
+        },
+        "runtimeTargets": {
+          "runtimes/linux-x64/native/libactors_stream_uniffi_kotlin_prototype.so": {
+            "assetType": "native",
+            "rid": "linux-x64"
+          },
+          "runtimes/win-x64/native/actors_stream_uniffi_kotlin_prototype.dll": {
+            "assetType": "native",
+            "rid": "win-x64"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Actors.Stream/0.1.0-c3d82376": {
+      "sha512": "rIKmUBjqd7cH+TTyVA/IGS0Exz7W/4pu4p6p3e7frx+67eEuranSRZlfBZY9esCZrNlMXdiLL50eoUA19b+6Eg==",
+      "type": "package",
+      "path": "actors.stream/0.1.0-c3d82376",
+      "files": [
+        ".nupkg.metadata",
+        "README.md",
+        "actors.stream.0.1.0-c3d82376.nupkg.sha512",
+        "actors.stream.nuspec",
+        "lib/net8.0/Actors.Stream.dll",
+        "runtimes/linux-x64/native/libactors_stream_uniffi_kotlin_prototype.so",
+        "runtimes/win-x64/native/actors_stream_uniffi_kotlin_prototype.dll"
+      ]
+    }
+  },
+  "projectFileDependencyGroups": {
+    "net8.0": [
+      "Actors.Stream >= 0.1.0-c3d82376"
+    ]
+  },
+  "packageFolders": {
+    "C:\\Users\\varun\\.codex\\tmp-csharp-stream-packages": {}
+  },
+  "project": {
+    "version": "1.0.0",
+    "restore": {
+      "projectUniqueName": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\Consumer.csproj",
+      "projectName": "Consumer",
+      "projectPath": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\Consumer.csproj",
+      "packagesPath": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-packages",
+      "outputPath": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\obj5\\",
+      "projectStyle": "PackageReference",
+      "configFilePaths": [
+        "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\NuGet.Config"
+      ],
+      "originalTargetFrameworks": [
+        "net8.0"
+      ],
+      "sources": {
+        "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\out": {}
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "projectReferences": {}
+        }
+      },
+      "warningProperties": {
+        "warnAsError": [
+          "NU1605"
+        ]
+      },
+      "restoreAuditProperties": {
+        "enableAudit": "true",
+        "auditLevel": "low",
+        "auditMode": "direct"
+      }
+    },
+    "frameworks": {
+      "net8.0": {
+        "targetAlias": "net8.0",
+        "dependencies": {
+          "Actors.Stream": {
+            "target": "Package",
+            "version": "[0.1.0-c3d82376, )"
+          }
+        },
+        "imports": [
+          "net461",
+          "net462",
+          "net47",
+          "net471",
+          "net472",
+          "net48",
+          "net481"
+        ],
+        "assetTargetFallback": true,
+        "warn": true,
+        "frameworkReferences": {
+          "Microsoft.NETCore.App": {
+            "privateAssets": "all"
+          }
+        },
+        "runtimeIdentifierGraphPath": "C:\\Users\\varun\\.codex\\tmp\\dotnet-sdk-8.0.425\\sdk\\8.0.425/PortableRuntimeIdentifierGraph.json"
+      }
+    }
+  }
+}

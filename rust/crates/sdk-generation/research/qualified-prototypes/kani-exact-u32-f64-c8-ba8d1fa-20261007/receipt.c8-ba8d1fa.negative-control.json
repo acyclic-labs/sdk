@@ -1,0 +1,26 @@
+{
+  "status": "expected_negative_control_failure",
+  "artifact": "kani-exact-u32-f64-c8-ba8d1fa-20261007",
+  "source_checkout": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/work/filesystem-main-port-c8",
+  "source_revision": "ba8d1fa931912e69a9c6e591423552b58fe57557",
+  "production_symbol": "acyclic_fs::exact_u32_from_f64",
+  "negative_harness": "src/bin/kani_exact_u32_f64_negative.rs",
+  "negative_harness_sha256": "97465BE5149D55F3231D5AAF89940C3927571174F6D92FA52DDB464BEA3466BB",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0"
+  },
+  "command": "cargo-kani --manifest-path Cargo.toml --package kani-exact-u32-f64-c8-ba8d1fa-20261007 --exact --default-unwind 2 -j1 --harness negative_control_wrongly_accepts_fraction",
+  "terminal_exit": 1,
+  "expected_failure": "intentional assertion that production exact_u32_from_f64(0.5) is Ok",
+  "cbmc_summary": "1 of 10 failed",
+  "failed_check": "intentional mutation control: 0.5 must not be accepted",
+  "raw_log": "audit/exact-u32-f64-c8-ba8d1fa-negative-kani068.raw.txt",
+  "raw_log_sha256": "210E03ABB8A6A0A9A0CA9A612332BFE5ACA0E3C47D416949DD97566E2F5E60FC",
+  "production_source_hashes_post_run": {
+    "numeric_rs_sha256": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF",
+    "lib_rs_sha256": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB"
+  }
+}

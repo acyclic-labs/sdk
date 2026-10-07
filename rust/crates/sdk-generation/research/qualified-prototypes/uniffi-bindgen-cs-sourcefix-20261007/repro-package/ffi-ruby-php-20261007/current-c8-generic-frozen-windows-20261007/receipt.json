@@ -1,0 +1,37 @@
+{
+  "schema": "acyclic.ruby.current-c8-generic-frozen-windows.v1",
+  "status": "GENERATED_NATIVE_BUILT_RUNTIME_EXCLUDED",
+  "date": "2026-10-07",
+  "scope": "Windows x64 MSVC producer build and maintained generator source rebuild; runtime excluded only because task-local Ruby 4.0.7 ffi 1.17.2 native extension could not compile",
+  "producer": {
+    "checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+    "revision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "sourceFiles": {
+      "rust/crates/actors-uniffi/src/lib.rs": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+      "rust/crates/actors/src/domain.rs": "361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257",
+      "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+      "Cargo.lock.sourceAuthority": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+      ".cargo/config.toml.sourceAuthority": "B0BAFCC74B1675391E1C26780708F70BFE0F64555A6949BC8D444A6C182AAE41"
+    },
+    "rust": "rustc 1.98.1",
+    "cargo": "cargo 1.98.1",
+    "ruby": "ruby 4.0.7 x64-mingw-ucrt"
+  },
+  "native": { "path": "acyclic_actors_uniffi.dll", "sha256": "C4A68D64665D8C7EECB1BD8662FAF0249203C3A808393B9506D71B81155057E5", "built": "PASS" },
+  "generator": {
+    "version": "uniffi_bindgen 0.31.0",
+    "binary": "actors-uniffi-bindgen.exe",
+    "sha256": "6FA8FC9B379BBD41167F59948FAE787CDCEC0E85130064004D2256775E6A7CFD",
+    "genericFrozenPatchSha256": "3A1E96D5C94BB8C635D5320BFFD68B064E570274FE205A52C01394D50C006DBC",
+    "generatedSyntax": "PASS"
+  },
+  "generated": {
+    "recordsSha256": "AC7EBECBD7A159AFA462DB70414A0223FCBCC7B9601E1635B7CD77893872B0F3",
+    "ffiSha256": "E96C465F55475F77AF933F7721817DC80352F7B78740F0739B9FFB6F2162AD74"
+  },
+  "runtime": {
+    "status": "EXCLUDED",
+    "reason": "ffi 1.17.2 build on Ruby 4.0.7 x64-mingw-ucrt failed: make: No rule to make target '/C/Users/varun/scoop/apps/ruby/4.0.7-1/include/ruby-4.0.0/ruby.h', needed by 'AbstractMemory.o'. Stop.",
+    "terminal": "windows-runtime-attempt.txt"
+  }
+}

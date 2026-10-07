@@ -33,10 +33,29 @@ follow-open=present
 follow-closed=present
 Linux fixture executable SHA256 677B0E48EB037BC825D61E497ECBA0C323FAE350FE2A5CEA8C64C88A5FF41C94
 
+MACOS ivar arm64 installed consumer
+Rust rustc 1.98.1 (48a229cea 2026-09-01); task-local Eclipse Temurin JRE 17.0.20.1+1 (2026-08-18), archive SHA256 190480874CCCEB358CBC840393207F77AC3E63A4C5F8129D0E23E9518B96AD05, no global Java/toolchain mutation.
+Mac producer source prototype/src/lib.rs SHA256 407A338212CF2B208D99280B0804C3F83FB4AE01315519CB671C3167B12F58D9
+Mac producer Cargo.lock SHA256 7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB
+Mac sdkgen source Cargo.lock SHA256 7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206
+Mac native dylib rebuilt from that source closure SHA256 B3D5C3C287881B2EBE5B94B691A06E1539890206F10A83BABBD4F64D7BB44BD5
+Mac installed JAR SHA256 FCFF21D468D7CF16EEE385567BDE3DB6419667C9533CED0740A9C881A4429546
+Native resource darwin-aarch64/libactors_stream_uniffi_kotlin_prototype.dylib (standard JNA path; no custom loader)
+java -cp <mac-installed-jar>:<task-local JRE dependency classpath> research.stream.StreamFlowProbeKt
+STREAM_KOTLIN_FLOW_ORDERED_TYPED_PASS
+STREAM_KOTLIN_ACTIVE_ABORT_CLEANUP_PASS
+java -cp <mac-installed-jar>:<task-local JRE dependency classpath> research.stream.RemoteStreamFlowProbeKt <fixture-directory>
+STREAM_KOTLIN_REMOTE_TLS_ORDERED_TYPED_PASS
+STREAM_KOTLIN_REMOTE_RECOVERY_CURSOR_PASS
+STREAM_KOTLIN_REMOTE_SERVER_ABORT_PASS
+follow-open=present
+follow-closed=present
+Mac fixture executable rebuilt from fixture source/lock SHA256 3F0BBE7639D3E63956E13EECFDD4C0F18A2126F4B6AF27FC1C6CB5565ECDC1C9
+Mac source/receipt archive: source/mac-source-cohort-20261007.tar.gz SHA256 C982E1886F204C24F250766EC2F0A4A28512B2F88B32E71A869A05DACDBACFFB
+Mac raw terminal receipt: audit/mac-installed-qualification-20261007.raw.txt SHA256 6E40FB658024CDD75BC17FC73979C92FC28F0276A5F04A430785F76D5C302B46
+
 COMPILE-ONLY PUBLIC SURFACE
 mvn -DskipTests package with PublicSurfaceProbe.kt
 PASS: all public local/remote append/read/follow/children/activeRecordCursors and cursor next/closeCursor compile; ULong.MAX_VALUE and UInt.MAX_VALUE accepted; StreamRecord/StreamChild fields compile; StreamBridgeException.Stream and Closed are exhaustively handled.
 PublicSurfaceProbe SHA256 02D5CC2247A8507C49637D496762B6184AFA949E25D874B07FD5D8DCE3617A87
 
-MACOS
-No connected macOS host or macOS native compiler is available in this task. No macOS JAR/resource hash is claimed or borrowed from another cohort.

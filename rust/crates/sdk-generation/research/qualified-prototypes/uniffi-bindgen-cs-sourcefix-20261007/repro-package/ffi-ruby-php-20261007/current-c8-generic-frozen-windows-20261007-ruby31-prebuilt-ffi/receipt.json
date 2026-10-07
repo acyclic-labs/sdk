@@ -1,0 +1,73 @@
+{
+  "schema": "acyclic.ruby.current-c8-generic-frozen-windows-ruby31-prebuilt-ffi.v1",
+  "date": "2026-10-07",
+  "status": "QUALIFIED_WINDOWS_X86_64_RUBY31_PREBUILT_FFI",
+  "scope": "Windows x64 maintained Ruby generator output and native Rust producer, external ffi prebuilt gem lane; Ruby 4 source-build failure retained in sibling historical receipt",
+  "producer": {
+    "checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+    "revision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "sourceFiles": {
+      "rust/crates/actors-uniffi/src/lib.rs": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+      "rust/crates/actors/src/domain.rs": "361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257",
+      "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+      "Cargo.lock.sourceAuthority": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+      ".cargo/config.toml.sourceAuthority": "B0BAFCC74B1675391E1C26780708F70BFE0F64555A6949BC8D444A6C182AAE41"
+    },
+    "rust": "rustc 1.98.1",
+    "cargo": "cargo 1.98.1"
+  },
+  "native": {
+    "path": "acyclic_actors_uniffi.dll",
+    "sha256": "C4A68D64665D8C7EECB1BD8662FAF0249203C3A808393B9506D71B81155057E5",
+    "built": "PASS"
+  },
+  "generator": {
+    "version": "uniffi_bindgen 0.31.0",
+    "binary": "actors-uniffi-bindgen.exe",
+    "sha256": "6FA8FC9B379BBD41167F59948FAE787CDCEC0E85130064004D2256775E6A7CFD",
+    "genericFrozenPatchSha256": "3A1E96D5C94BB8C635D5320BFFD68B064E570274FE205A52C01394D50C006DBC",
+    "asyncPatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "generatedSyntax": "PASS"
+  },
+  "generated": {
+    "records": "acyclic_actors.rb",
+    "recordsSha256": "AC7EBECBD7A159AFA462DB70414A0223FCBCC7B9601E1635B7CD77893872B0F3",
+    "ffi": "acyclic_actors_uniffi.rb",
+    "ffiSha256": "E96C465F55475F77AF933F7721817DC80352F7B78740F0739B9FFB6F2162AD74",
+    "preexistingGeneratedPackagePreserved": true
+  },
+  "runtime": {
+    "ruby": "Ruby 3.1.2 x64-mingw-ucrt",
+    "ffi": "ffi 1.17.2 x64-mingw-ucrt prebuilt",
+    "ffiGemSha256": "15D2DA54EE578657A333A6059ED16EABA1CBD794CEECD15944825B65C8381AC0",
+    "installedExternalConsumer": "PASS",
+    "allEight": "PASS",
+    "fullU64": [
+      "9223372036854775808",
+      "18446744073709551615"
+    ],
+    "fullU64Result": "PASS",
+    "u64AboveJsSafeInteger": "9007199254740993 in all8 cursor",
+    "nominalPresenceReadonly": "PASS",
+    "typedErrors": "PASS",
+    "pendingCancellation": "PASS BindingError::Cancelled",
+    "serverAbortCleanup": "PASS started=10 aborted=10 active=0",
+    "fixture": "Q:/sdk/work/go-remote-primitive-current/{fixture-options-linux.json,pending-fixture-options-linux.json} via existing WSL relay",
+    "terminal": {
+      "all8": "all8-terminal.txt",
+      "cancel": "cancel-terminal.txt",
+      "negative": "negative-terminal.txt",
+      "fullU64": "full-u64-terminal.txt",
+      "cleanup": "server-cleanup-terminal.txt"
+    }
+  },
+  "historicalRuby4Failure": {
+    "receipt": "../current-c8-generic-frozen-windows-20261007/receipt.json",
+    "reason": "Ruby 4.0.7 ffi 1.17.2 native extension source build failed with missing /C/.../ruby.h target under the prior Strawberry make lane; this artifact qualifies the task-owned Ruby 3.1 maintained prebuilt ffi lane and does not relabel that failure"
+  },
+  "notes": [
+    "Generated package uses maintained UniFFI Ruby source patch and source-derived metadata; no handwritten Actors methods or status map.",
+    "Ruby 3.1 runtime is task-local external consumer evidence on Windows; Ruby 4.0.7 remains separately recorded as source-build excluded.",
+    "Historical source cohort and receipts are unchanged."
+  ]
+}

@@ -39,14 +39,20 @@ The generator is task-local UniFFI 0.31.0 at `Q:\sdk\work\actors-uniffi-generato
 - Linux SO rebuilt from the same source/lock: `DF7E5BD07517D776EF9250F42ECEAC1D775458637F12A3C3881A4428053890B3`
 - Windows installed JAR: `B28EEB3D12A43A2147CAE1FC718448B87EC4EF553DD44725A5C4D460C813249F`
 - Linux installed JAR variant with standard `linux-x86-64/` JNA resource: `F548D44FE97A68A9F0074FA5A7B81C9889E03CA851C9A07B4ED0E14DE060A248`
+- Mac rebuilt native dylib from the transferred source closure: `B3D5C3C287881B2EBE5B94B691A06E1539890206F10A83BABBD4F64D7BB44BD5`
+- Mac installed JAR variant with standard `darwin-aarch64/` JNA resource: `FCFF21D468D7CF16EEE385567BDE3DB6419667C9533CED0740A9C881A4429546`
+- Mac fixture executable rebuilt from fixture source/lock: `3F0BBE7639D3E63956E13EECFDD4C0F18A2126F4B6AF27FC1C6CB5565ECDC1C9`
+- Mac sdkgen source `Cargo.lock`: `7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206`
+- Mac source cohort archive: `source/mac-source-cohort-20261007.tar.gz` (`C982E1886F204C24F250766EC2F0A4A28512B2F88B32E71A869A05DACDBACFFB`)
+- Mac raw installed receipt: `audit/mac-installed-qualification-20261007.raw.txt` (`6E40FB658024CDD75BC17FC73979C92FC28F0276A5F04A430785F76D5C302B46`)
 - `StreamFlows.kt`: `569D4D6F3FD1AEDB58E2E93E01A380F94CA43204AF1222050F3AE5CB252C1751`
 - `PublicSurfaceProbe.kt`: `02D5CC2247A8507C49637D496762B6184AFA949E25D874B07FD5D8DCE3617A87`
 
-The native files were independently rebuilt for Windows and Linux. No older native bytes were retagged with the current lock. No macOS host or macOS native build is connected to this task, so macOS installed-JAR execution is explicitly pending rather than claimed.
+The native files were independently rebuilt for Windows, Linux, and macOS arm64. Each platform receipt records its actual source and lock identities; no older native bytes were retagged with the current lock. The Mac source closure and fixture source are preserved in `source/mac-source-cohort-20261007.tar.gz`, with the raw remote terminal receipt beside it.
 
 ## Qualification result
 
-Windows and Linux installed JARs both pass ordered typed reads and coroutine cancellation cleanup. The Linux JAR uses the same generated classes and Rust source/lock cohort, with a standard JNA `linux-x86-64/` resource. The TLS remote fixture was rebuilt for Windows and Linux from the same fixture source/lock; both pass ordered reads, nonzero-cursor replay, post-abort recovery, and a server-side `follow-closed` marker after Kotlin cancellation. The compile-only surface probe passes Maven compilation and covers `ULong.MAX_VALUE`, `UInt.MAX_VALUE`, all public bridge operations, cursor methods, immutable records, and both typed error variants.
-Raw installed-platform receipt: platform-installed-qualification-20261007.raw.txt (SHA256 205097E4250C42EFCA9DB2F77F646E35E67F9C8D4389F15D9B228F99B3E2982C).
+Windows, Linux, and Mac installed JARs pass ordered typed reads and coroutine cancellation cleanup. The Linux and Mac JARs use standard JNA platform resources (`linux-x86-64/` and `darwin-aarch64/`) and independently rebuilt native libraries. The TLS remote fixture was rebuilt for all three platforms from the fixture source/lock; each passes ordered reads, nonzero-cursor replay, post-abort recovery, and a server-side `follow-closed` marker after Kotlin cancellation. The compile-only surface probe passes Maven compilation and covers `ULong.MAX_VALUE`, `UInt.MAX_VALUE`, all public bridge operations, cursor methods, immutable records, and both typed error variants; the exact generated classes are retained in each installed JAR.
+Raw installed-platform receipt: platform-installed-qualification-20261007.raw.txt (SHA256 A01DDE033AF862E18B5A3F51DC2911E042B6E079A916EABF401AEA89A418168A).
 Reusable Linux TLS/JAR runner: Q:\sdk\work\actors-stream-uniffi-kotlin-prototype-20261007\run-linux-remote.sh (hash recorded locally above).
 Runner SHA256: 622C5FC0A29FC6DA85EFF3A35F964B7F131527A8306E04F18DBB132C001C2A66.

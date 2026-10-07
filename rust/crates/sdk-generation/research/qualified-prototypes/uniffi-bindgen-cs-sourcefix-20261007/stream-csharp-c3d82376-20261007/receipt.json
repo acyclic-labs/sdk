@@ -1,0 +1,173 @@
+{
+  "schema": "research-csharp-stream-qualification/v1",
+  "date": "2026-10-07",
+  "status": "QUALIFIED_CSHARP_STREAM_WINDOWS_LINUX_NUGET_CURRENT_PRODUCER",
+  "scope": "isolated package qualification; no publish, merge, registry, or deployment",
+  "producer": {
+    "path": "Q:\\sdk\\work\\actors-stream-uniffi-kotlin-prototype-20261007",
+    "git_revision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "source": {
+      "lib_sha256": "407A338212CF2B208D99280B0804C3F83FB4AE01315519CB671C3167B12F58D9",
+      "bin_sha256": "F7A2DD11FB370E9595BDFA6C32FC41A9B67A60BBAB06EC711CB7A03EB873FFA6",
+      "cargo_toml_sha256": "2C186AAE94FCFF2D99774EF453507CE0DD861C314C939828E2AB9A014720B9BD",
+      "cargo_lock_sha256": "7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB",
+      "uniffi_toml_sha256": "ADAB4F663D8E89E40167715922CBA7EAD525F9E110C9C55C7960E7C69A8CE824"
+    },
+    "dependency": {
+      "path": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal\\rust\\crates\\stream",
+      "lib_sha256": "36FB4673272FF6DAFE77DDDCCE616A22CB0DF751FCA7257E9E918E47DC8DAC12",
+      "cargo_toml_sha256": "72E0B44159FF74E8418B6F9882FC8E0309BB91830A7A197043467B723274B358",
+      "cargo_lock_sha256": "dependency resolved by producer Cargo.lock 7B2A751A8F5774031B5B9C9D71AF4670A1D8B46F77C5958CD66575E7B92FBCCB"
+    }
+  },
+  "generator": {
+    "path": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007",
+    "git_revision": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "binary": {
+      "role": "maintained generator binary",
+      "path": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-20261007\\generator-target\\release\\uniffi-bindgen-cs.exe",
+      "sha256": "86AA185FFAE9507372DBD914459D7355183493456DD55EC651C6B398E3D8AC26"
+    },
+    "config": {
+      "role": "C# binding config",
+      "path": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-20261007\\uniffi-csharp.toml",
+      "sha256": "04DFB8836FF4F5317AEDF2757E4AFAC7DD18DA0E68B00BE82381E414635AAD95"
+    },
+    "maintained_templates": [
+      {
+        "role": "Async.cs",
+        "path": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007\\bindgen\\templates\\Async.cs",
+        "sha256": "A36A8BB469ED7CE964ACFE29B7B31F37A24D382B13582E647342312D52A6C3C7"
+      },
+      {
+        "role": "Helpers.cs",
+        "path": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007\\bindgen\\templates\\Helpers.cs",
+        "sha256": "D6C039CE40945881FFF74EC857B0EC7078378C0884B068D835242D1BA70991CB"
+      },
+      {
+        "role": "ObjectTemplate.cs",
+        "path": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007\\bindgen\\templates\\ObjectTemplate.cs",
+        "sha256": "06C3B51600E1080B6A9DB512B4CD380BFB95D1D51EF4EC77E816010584B2011A"
+      },
+      {
+        "role": "macros.cs",
+        "path": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007\\bindgen\\templates\\macros.cs",
+        "sha256": "572AE177639B70B6C49298932CAF9A50477BDFC8401752ECE2177D6C083F327B"
+      }
+    ],
+    "generated": {
+      "role": "generated C# source",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\src\\Actors.Stream.cs",
+      "sha256": "934F4618FC3BF0A70FA1C1A115AF450BA43AA3C9B35A0A42192BC847BCF60D67"
+    }
+  },
+  "native": {
+    "toolchain": "rust 1.98.1",
+    "windows": {
+      "role": "win-x64 release producer",
+      "path": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-20261007\\producer-target-win\\release\\actors_stream_uniffi_kotlin_prototype.dll",
+      "sha256": "AD102FB905B9996480BCA69F66248B042C8112FDEAB520155573FBC740AB49A5"
+    },
+    "linux": {
+      "role": "linux-x64 release producer",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\native\\linux-x64\\libactors_stream_uniffi_kotlin_prototype.so",
+      "sha256": "66E29E4EAED05CC838BCCC82E13E128C10A4CC30DAF0F400958C346976A966F2"
+    }
+  },
+  "adapter": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\src\\StreamAsyncEnumerable.cs",
+    "sha256": "DC9BFB6EE5B6B42AAC9FB01318629119F6E6B4A1CB85D4DFB775407B6B5A6D83",
+    "contract": "IAsyncEnumerable over generated Rust RecordCursor/ChildCursor; Next receives caller CancellationToken; finally calls generated CloseCursor(CancellationToken.None)",
+    "semantics": "no ordering, recovery, transport, buffering, or validation logic"
+  },
+  "package": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\out\\Actors.Stream.0.1.0-c3d82376.nupkg",
+    "sha256": "9AF117CF6F8A8C56DE9E535CBE9DBF36362AA4D50AD235D3757132537AB4F44D",
+    "installed_cache": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-packages-final2",
+    "installed": {
+      "role": "managed assembly",
+      "path": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-packages-final2\\actors.stream\\0.1.0-c3d82376\\lib\\net8.0\\Actors.Stream.dll",
+      "sha256": "0D6963E7642852F135218A19D9F4ADBC64F16AA1010EB78C046EE3C79F109523",
+      "assembly_simple_name": "Actors.Stream",
+      "assembly_version": "0.1.0.0"
+    },
+    "win_asset": {
+      "role": "installed win-x64 native",
+      "path": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-packages-final2\\actors.stream\\0.1.0-c3d82376\\runtimes\\win-x64\\native\\actors_stream_uniffi_kotlin_prototype.dll",
+      "sha256": "AD102FB905B9996480BCA69F66248B042C8112FDEAB520155573FBC740AB49A5"
+    },
+    "linux_asset": {
+      "role": "installed linux-x64 native",
+      "path": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-packages-final2\\actors.stream\\0.1.0-c3d82376\\runtimes\\linux-x64\\native\\libactors_stream_uniffi_kotlin_prototype.so",
+      "sha256": "66E29E4EAED05CC838BCCC82E13E128C10A4CC30DAF0F400958C346976A966F2"
+    }
+  },
+  "fixture": {
+    "exe": {
+      "role": "TLS fixture",
+      "path": "Q:\\sdk\\work\\actors-stream-uniffi-kotlin-prototype-20261007\\remote-fixture\\target\\debug\\actors-stream-tls-fixture.exe",
+      "sha256": "7835D929ACD9C2A975330C53250CFAF7F27D610E623A3E64B180B100DE1A455D"
+    },
+    "run_directory": "C:\\Users\\varun\\.codex\\tmp-csharp-stream-20261007\\remote-run-csharp-final",
+    "endpoint": "https://localhost:51942",
+    "ca_sha256": "16F4EF3869E95EBD406602104F82E230ACF3BDF3385F51FD7C059F4A2E89C539",
+    "auth": "Bearer fixture-token",
+    "server_markers": {
+      "opened": "follow-open",
+      "closed": "follow-closed"
+    }
+  },
+  "verification": {
+    "consumer_project": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\Consumer.csproj",
+    "package_restore": "fresh task-local NUGET_PACKAGES cache final2",
+    "local_build_log": {
+      "role": "local package build",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\build-final2.log",
+      "sha256": "1786236577E972E8A83E484B3548314690D59FBB67FD45370D9EBDEE62298085"
+    },
+    "local_run_log": {
+      "role": "local runtime",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\local-run-final2.log",
+      "sha256": "53DBE0BBE7C1E276A80EE6250A2C7DB123D4C96CE3D125D9DC36BBA8383CF560"
+    },
+    "remote_run_log": {
+      "role": "remote runtime",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\consumer\\remote-run-final.log",
+      "sha256": "5E5A7CB1097905F23E360CCEE22BB89D20002F8DD902EE524869B8ACFB7803EB"
+    },
+    "negative_build_log": {
+      "role": "raw-handle negative compile",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\negative\\build.log",
+      "sha256": "B3DA6A1CD211F26EE6388F1CEFD8A981661590EA9069D1EDD79CD50FEC3ECC08"
+    },
+    "passes": [
+      "CSHARP_STREAM_LOCAL_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_LOCAL_CANCELLATION_CLOSE_RECOVERY_PASS",
+      "CSHARP_STREAM_REMOTE_TLS_ORDERED_TYPED_U64_PASS",
+      "CSHARP_STREAM_REMOTE_CANCELLATION_SERVER_CLOSE_RECOVERY_PASS",
+      "negative compile CS1729 RecordCursor does not contain a constructor that takes 2 arguments"
+    ],
+    "full_width": "ulong.MaxValue and 0x8000000000000000UL reached the Rust provider on both local and remote Read paths; expected out_of_range was accepted as boundary proof",
+    "cleanup": "remote follow-open and follow-closed markers both present after cancellation",
+    "macos": "not claimed: this producer cohort supplies win-x64 and linux-x64 native assets only",
+    "raw_evidence": {
+      "role": "consolidated terminal qualification evidence",
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\uniffi-bindgen-cs-sourcefix-20261007\\stream-csharp-c3d82376-20261007\\qualification.raw.txt",
+      "sha256": "E5DFDB1B514F8D1CEC495672AF1555E7CBFE51E85044226848F2680DCC480B6C"
+    },
+    "operations": [
+      "local StreamClientBridge.Append",
+      "local StreamClientBridge.Read",
+      "local StreamClientBridge.Follow",
+      "local StreamClientBridge.Children",
+      "remote RemoteStreamClientBridge.Append",
+      "remote RemoteStreamClientBridge.Read",
+      "remote RemoteStreamClientBridge.Follow",
+      "remote RemoteStreamClientBridge.Children"
+    ]
+  },
+  "history": {
+    "previous_799_package": "preserved separately; not overwritten",
+    "stale_receipts": "not relabeled"
+  }
+}

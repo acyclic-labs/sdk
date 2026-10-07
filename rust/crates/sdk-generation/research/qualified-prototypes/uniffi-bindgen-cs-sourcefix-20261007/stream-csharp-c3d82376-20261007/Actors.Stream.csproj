@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Actors.Stream</AssemblyName>
+    <RootNamespace>Actors.Stream</RootNamespace>
+    <Version>0.1.0-c3d82376</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <InformationalVersion>0.1.0-c3d82376</InformationalVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>Actors.Stream</PackageId>
+    <Authors>Rust Foundation Stream</Authors>
+    <Description>Research C# binding for Rust-owned Stream cursors</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/NordSecurity/uniffi-bindgen-cs</RepositoryUrl>
+    <RepositoryCommit>e10ce410eb3a10cc19c7928b93ea8d84e038c034</RepositoryCommit>
+    <PackageOutputPath>$(MSBuildProjectDirectory)\out</PackageOutputPath>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="src\Actors.Stream.cs" />
+    <Compile Include="src\StreamAsyncEnumerable.cs" />
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <None Include="native\win-x64\actors_stream_uniffi_kotlin_prototype.dll" Pack="true" PackagePath="runtimes\win-x64\native\actors_stream_uniffi_kotlin_prototype.dll" />
+    <None Include="native\linux-x64\libactors_stream_uniffi_kotlin_prototype.so" Pack="true" PackagePath="runtimes\linux-x64\native\libactors_stream_uniffi_kotlin_prototype.so" />
+  </ItemGroup>
+</Project>

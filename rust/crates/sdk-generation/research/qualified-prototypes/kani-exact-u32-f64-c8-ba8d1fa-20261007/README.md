@@ -24,3 +24,7 @@ The source path in Cargo.toml is deliberately explicit and source-bound. A
 clean checkout must preserve that source checkout relation or update the path
 and refresh the source hashes and receipt.
 
+
+## c8 source identity
+
+The authoritative receipts for this copied runner are eceipt.c8-ba8d1fa.json and eceipt.c8-ba8d1fa.negative-control.json, bound to filesystem commit a8d1fa931912e69a9c6e591423552b58fe57557. Files named eceipt.json, eceipt.negative-control.json, and their latest265 raw logs are retained historical evidence from the prior 775b8465d836cf69b358f9fa9ebd8edbfa819db source and are not relabeled.
