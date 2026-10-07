@@ -234,6 +234,18 @@ export type WorkspaceRebaseStatus = WasmBinding.BrowserWorkspaceRebaseResult["st
 export type ResidencyAdmissionStatus = WasmBinding.BrowserAdmissionResult["status"] | NativeBinding.NativeResidencyStatus;
 export type PromotionAdmissionStatus = WasmBinding.BrowserPromotionAdmission["status"] | NativeBinding.NativePromotionStatus;
 
+/** Runtime discriminant metadata emitted by the canonical Rust bindings. */
+export interface StatusMetadata {
+  readonly transactionCommit: readonly WorkspaceCommitStatus[];
+  readonly transactionRebase: readonly TransactionRebaseResult["status"][];
+  readonly workspaceRebase: readonly WorkspaceRebaseStatus[];
+  readonly workspaceDelete: readonly WorkspaceDeleteStatus[];
+  readonly joinOutcome: readonly JoinStatus[];
+  readonly checkoutCommit: readonly CommitResult["status"][];
+  readonly liveMutation: readonly LiveMutationResult["status"][];
+  readonly rebaseDecision: readonly RebaseResult["status"][];
+}
+
 export interface WorkspaceRebaseResult {
   readonly status: WorkspaceRebaseStatus;
   readonly generationId: Uint8Array | undefined;
@@ -1003,6 +1015,7 @@ type GeneratedWasmFactories = Pick<
 >;
 
 export type WasmBindings = GeneratedWasmFactories & {
+  statusMetadata(): StatusMetadata;
   openBrowserFs(options: BrowserFsOptions): Promise<WasmRawFs>;
   openMemoryFs(options: MemoryFsOptions): WasmRawFs;
   readonly BrowserWorkspaceContextRegistry: typeof WasmBinding.BrowserWorkspaceContextRegistry;
@@ -1328,7 +1341,9 @@ type NativeBoundary<T> =
   T extends object ? { [Key in keyof T]: NativeBoundary<T[Key]> } :
   T;
 
-export type NativeBindings = NativeBoundary<typeof NativeBinding>;
+export type NativeBindings = NativeBoundary<typeof NativeBinding> & {
+  statusMetadata(): StatusMetadata;
+};
 export type NativeRawWorkspaceContextRegistry = NativeBoundary<NativeBinding.NativeWorkspaceContextRegistry>;
 export type NativeRawWorkspaceLineageRecord = NativeBoundary<NativeBinding.NativeWorkspaceLineageRecord>;
 export type NativeRawWorkspaceGraph = NativeBoundary<NativeBinding.NativeWorkspaceGraph>;

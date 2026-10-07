@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import type { WasmBindings } from "./contracts.js";
+import { installStatusMetadata } from "./workspace-results.js";
 
 let bindingsPromise: Promise<WasmBindings> | undefined;
 
@@ -19,6 +20,7 @@ export async function nodeWasmBindings(): Promise<WasmBindings> {
       new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
     );
     await typed.default({ module_or_path: compiled });
+    installStatusMetadata(typed.statusMetadata());
     return typed;
   }).catch((error: unknown) => {
     bindingsPromise = undefined;

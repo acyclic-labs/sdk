@@ -183,13 +183,13 @@ pub use distributed::StreamAuthorityStore;
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
-    DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
-    EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
-    FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
-    LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
-    ResolvedFileRangeReadRequest, StagedContent, Volume,
+    CheckoutCommitOutcome, CheckoutCommitStatus, ContentChange, ContentStager, ContentTimes,
+    DetachedFile, DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry,
+    DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange,
+    Fs, FsError, FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome,
+    JoinCommitWitness, LiveMutationOutcome, MergeConflict, MergePreparation,
+    NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
+    ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
@@ -224,8 +224,8 @@ pub use hosted::{
     MINIMUM_HANDSHAKE_RESPONSE_BYTES,
 };
 pub use kernel::{
-    GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
-    encode_generation_export_manifest,
+    GenerationExportManifest, GenerationExportManifestError, LiveMutationStatus,
+    RebaseDecisionStatus, decode_generation_export_manifest, encode_generation_export_manifest,
 };
 pub use lazy_workspace::{
     LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyLookup, LazyOverlay,
@@ -382,12 +382,13 @@ pub use windows_usn::{
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
     GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
-    JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
-    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
-    WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
-    WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
-    WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
-    WorkspaceRestore, WorkspaceStat, WorkspaceSync,
+    JoinOutcomeStatus, JoinPlan, Transaction, TransactionCommit, TransactionCommitStatus,
+    TransactionConflict, TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
+    TransactionRebaseStatus, TransactionSparseSeek, Workspace, WorkspaceDelete,
+    WorkspaceDeleteStatus, WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError,
+    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
+    WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
+    WorkspaceRebaseStatus, WorkspaceRestore, WorkspaceStat, WorkspaceSync,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,

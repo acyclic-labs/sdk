@@ -2,6 +2,7 @@
 
 use super::{RebaseConflict, RebaseDecision};
 use crate::foundation::{Digest, Epoch, GenerationId, Head};
+use strum::EnumDiscriminants;
 use thiserror::Error;
 
 /// One authority publication observation consumed by live retry orchestration.
@@ -39,7 +40,18 @@ pub enum LivePublicationObservation {
 }
 
 /// Terminal outcome of one direct-live mutation publication.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(LiveMutationStatus),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum LiveMutationOutcome {
     /// This call durably published the candidate generation.
     Committed {
