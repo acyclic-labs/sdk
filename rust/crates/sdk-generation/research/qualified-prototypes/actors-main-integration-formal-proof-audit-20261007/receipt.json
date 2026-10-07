@@ -2,21 +2,28 @@
   "artifact": "actors-main-integration-formal-proof-audit-20261007",
   "worktree": "C:\\Users\\varun\\.codex\\worktrees\\actors-main-integration\\sdk",
   "branch": "codex/actors-main-integration",
-  "head": "fcd86db81ba5076abf0a03758ff20593e90aab71",
-  "source_state": "clean signed candidate; receipt binds exact files below and must be rebound after any later edit",
+  "head": "ec0496fea57f137f2ecf4e4aa29c4275dbf3b0da",
+  "source_state": "clean signed candidate; receipt binds exact source files and harness logs below",
   "proof_file": "rust/crates/actors/src/domain/formal_proofs.rs",
-  "module_binding": "rust/crates/actors/src/domain.rs #[cfg(kani)] #[path = \"domain/formal_proofs.rs\"] mod kani_proofs;",
+  "module_binding": "rust/crates/actors/src/domain.rs #[cfg(kani)] #[path = \"domain/formal_proofs.rs\"] mod formal_proofs; domain.rs is included by contract.rs under contract::generated::domain",
   "source_sha256": {
-    "rust/crates/actors/src/domain.rs": "1ADBD09F66F551BB730257A38565F210E66D3B6C612A4A22ADECB5014B963414",
+    "rust/crates/actors/src/domain.rs": "53255601658C33F955EF8CB860FB71EC4682585D5F0E26CE20DE11616369515A",
     "rust/crates/actors/src/domain/formal_proofs.rs": "A221B0CEAE2BA25338CF63DB3F24BB5B46419857367B0B2564AE4AAD21E99CEB",
     "rust/crates/actors/src/lib.rs": "7F7076432EDCBC2D88A18F534B3259669622183F5B1EB1A3B6F7E1CF530F7252",
-    "rust/crates/actors/src/contract.rs": "E937CDF3F10DDF3957FA64B791A4FA7C3DE7486CB213B743D74A7C965EC61F62",
+    "rust/crates/actors/src/contract.rs": "4E01F66F5AEF315F25CCDC502C4B01634A7126F8F5105B4D338EB3FC5FACBEF0",
     "rust/crates/actors/build.rs": "8A02F03262256B58EEB6AA756BCA122984DB53D91420A548B33CC4708CD605C3",
     "rust/crates/actors/Cargo.toml": "D687485CFB5CDD125AD5E9D2DE008E018577593549510BEB19B04184A7B01F78"
   },
+  "proof_runner": {
+    "mirror": "/tmp/actors-fcd-proof-20261007",
+    "tool": "Kani Rust Verifier 0.68.0; CBMC 6.11.0; nightly-2026-08-21; CaDiCaL 3.0.0",
+    "execution": "Linux WSL2 ext4 task-local mirror, CARGO_NET_OFFLINE=true, RUSTC_WRAPPER=, --jobs 1",
+    "source_binding": "mirror hashes above equal Windows candidate file hashes immediately before runs"
+  },
   "theorems": [
     {
-      "harness": "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "harness": "contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "source_harness": "formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
       "production_calls": [
         "PositiveU64::new",
         "PositiveU64::get",
@@ -26,7 +33,8 @@
       "algorithm_copy": false
     },
     {
-      "harness": "domain::kani_proofs::actor_limits_constructor_accepts_exactly_positive_values",
+      "harness": "contract::generated::domain::formal_proofs::actor_limits_constructor_accepts_exactly_positive_values",
+      "source_harness": "formal_proofs::actor_limits_constructor_accepts_exactly_positive_values",
       "production_calls": [
         "ActorLimits::new",
         "ActorLimits::handler_timeout_millis",
@@ -37,7 +45,8 @@
       "algorithm_copy": false
     },
     {
-      "harness": "domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless",
+      "harness": "contract::generated::domain::formal_proofs::enum_numeric_mappings_are_inverse_and_lossless",
+      "source_harness": "formal_proofs::enum_numeric_mappings_are_inverse_and_lossless",
       "production_calls": [
         "SubscriptionState::try_from / i32::from",
         "ActorState::try_from / i32::from",
@@ -47,15 +56,41 @@
       "algorithm_copy": false
     }
   ],
-  "verification": {
-    "current_snapshot": "NOT_RUN_CURRENT_CANDIDATE; source-bound harness audit only while long Actors CBMC jobs are active",
-    "historical_receipts": "not reused; prior PASS receipts bind different source hashes",
-    "cargo_fmt_check": "PASS; cargo fmt --check --manifest-path rust/crates/actors/Cargo.toml exit 0",
-    "terminal_solver_state": {
-      "pid_1031718": "R+; expected_revision ingress CBMC",
-      "pid_2557627": "R+; expected_revision admission CBMC"
+  "kani_results": [
+    {
+      "harness": "contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "status": "PASS",
+      "checks": "0 of 100 failed",
+      "verification": "SUCCESSFUL",
+      "terminal_exit": 0,
+      "raw_log": "audit/positive-u64.raw.txt",
+      "raw_log_sha256": "5D1707B04CBB03AD8334F1F2676D772FA46CE1FF6196141C1C21A21601335D99"
+    },
+    {
+      "harness": "contract::generated::domain::formal_proofs::actor_limits_constructor_accepts_exactly_positive_values",
+      "status": "PASS",
+      "checks": "0 of 127 failed",
+      "verification": "SUCCESSFUL",
+      "terminal_exit": 0,
+      "raw_log": "audit/actor-limits.raw.txt",
+      "raw_log_sha256": "AB7E035BFA8BECB7C05A7AD82098426515BDCD89AABF17B2BE0C9FB99F19E402"
+    },
+    {
+      "harness": "contract::generated::domain::formal_proofs::enum_numeric_mappings_are_inverse_and_lossless",
+      "status": "PASS",
+      "checks": "0 of 33 failed (3 unreachable)",
+      "verification": "SUCCESSFUL",
+      "terminal_exit": 0,
+      "raw_log": "audit/enum.raw.txt",
+      "raw_log_sha256": "97B783301346815C2887907643B64B056C66EC9686677FE8C7D8AF20401FE010"
     }
+  ],
+  "verification": {
+    "current_snapshot": "PASS_CURRENT_CANDIDATE; all three retained harnesses ran against exact ec0496 source mirror",
+    "cargo_fmt_check": "PASS; cargo fmt --check --manifest-path rust/crates/actors/Cargo.toml exit 0",
+    "negative_controls": "NONE in this retained three-harness source; no negative result is implied",
+    "historical_receipts": "not reused; prior receipts bind different source hashes",
+    "terminal_solver_state": "Original long Actors solver handles were preserved and not restarted; this receipt covers only the three independent small runs"
   },
-  "claim_scope": "Three nominal constructor/enum conversion properties only; no transport, whole-request, arbitrary-string, digest-length, or whole-crate claim."
+  "claim_scope": "Exactly three direct production properties: PositiveU64 nonzero admission/value preservation, ActorLimits all-three-positive admission/accessor preservation, and SubscriptionState/ActorState/ErrorCode i32 forward/reverse identity including unknown raw preservation. No transport, whole-request, arbitrary-string, digest-length, presence/oneof, expected-revision, or whole-crate claim."
 }
-
