@@ -2,7 +2,6 @@ import type { FsWorkspace, WorkspaceRebaseOptions, WorkspaceRebaseResult, Native
 import type { OperationWindowCoordinator, OperationWindowLease, OperationWindowPhase, OperationWindowClose } from "./compat.js";
 import type { BrowserOperationWindowPhase, BrowserOperationWindowClose } from "../generated/wasm/acyclic_fs_wasm.js";
 import { copyBytes, copyOptionalBytes, requireIdentity, requireGenerationIdentity } from "./binding-values.js";
-import { validateWorkspaceRebaseOptions } from "./workspace-results.js";
 
 type RawOperationWindows<Workspace, Rebase> =
   Pick<NativeRawOperationWindowCoordinator, "begin" | "renew" | "observeParent"> & {
@@ -112,7 +111,6 @@ export function adaptOperationWindowCoordinator<Workspace, Rebase>(
       return parseOperationWindowPhase(await raw.inspect(workspaceId));
     },
     async finishWorkspace(workspace, lease, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
       const result = await raw.finishWorkspace(
         rawWorkspace(workspace),
         validateOperationWindowLease(lease),
@@ -129,7 +127,6 @@ export function adaptOperationWindowCoordinator<Workspace, Rebase>(
       throw new TypeError("operation window returned a malformed workspace close result");
     },
     async recoverWorkspace(workspace, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
       const result = await raw.recoverWorkspace(rawWorkspace(workspace), nowMillis, options);
       return result == null ? undefined : parseRebase(result);
     },

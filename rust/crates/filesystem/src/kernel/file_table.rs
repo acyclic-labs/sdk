@@ -13,6 +13,7 @@ use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
 use std::fmt;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSFIL";
@@ -125,7 +126,18 @@ pub enum InlineFileDataError {
 }
 
 /// Kind-specific immutable file payload.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(FilePayloadKind),
+    derive(EnumIter, AsRefStr),
+    cfg_attr(
+        all(feature = "typescript", target_arch = "wasm32"),
+        derive(serde::Serialize, tsify::Tsify),
+        serde(rename_all = "kebab-case")
+    ),
+    cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case")),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum FilePayload {
     /// Tiny regular-file bytes embedded in the authenticated file-table leaf.
     InlineRegular(InlineFileData),
@@ -164,6 +176,14 @@ pub enum FilePayload {
         /// Authenticated blob-index root.
         payload: ObjectId,
     },
+}
+
+impl FilePayload {
+    /// Returns the finite boundary kind for this payload.
+    #[must_use]
+    pub fn kind(&self) -> FilePayloadKind {
+        self.into()
+    }
 }
 
 /// One path-independent immutable file record.
