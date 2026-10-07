@@ -586,46 +586,46 @@ fn validate_values(
     let route = http_route::canonical(route)?;
     match route {
         http_route::IMAGES_QUALIFY => {
-            let response_image = field(&response_value, "image")?;
-            let expected_image = field(&expected_value, "image")?;
+            let response_image = field(response_value, "image")?;
+            let expected_image = field(expected_value, "image")?;
             image(response_image)?;
             image(expected_image)?;
             if response_image != expected_image {
                 return Err(error("qualified image was substituted"));
             }
-            let capabilities = array(field(&response_value, "capabilities")?, "capabilities")?;
+            let capabilities = array(field(response_value, "capabilities")?, "capabilities")?;
             for capability in capabilities {
                 one_of(capability, CAPABILITIES, "capability")?;
             }
             unique_strings(capabilities, "capabilities")?;
             digest(
-                field(&response_value, "compatibilityRevisionHex")?,
+                field(response_value, "compatibilityRevisionHex")?,
                 "compatibilityRevisionHex",
             )?;
         }
         http_route::MACHINES_INSPECT => {
-            machine(&response_value)?;
-            same(&response_value, &expected_value, "id", "machineId")?;
+            machine(response_value)?;
+            same(response_value, expected_value, "id", "machineId")?;
         }
         http_route::MACHINES_LIST => {
-            for value in array(field(&response_value, "machines")?, "machines")? {
+            for value in array(field(response_value, "machines")?, "machines")? {
                 machine(value)?;
             }
-            let next = field(&response_value, "next")?;
+            let next = field(response_value, "next")?;
             if !next.is_null() {
                 text(next, "next")?;
             }
         }
         http_route::CHECKPOINTS_INSPECT => {
-            checkpoint(&response_value)?;
-            same(&response_value, &expected_value, "id", "checkpointId")?;
+            checkpoint(response_value)?;
+            same(response_value, expected_value, "id", "checkpointId")?;
         }
         http_route::MACHINES_EVENTS => {
-            let expected_machine = expected_text(&expected_value, "machineId")?;
-            let mut previous = object(&expected_value, "expected")?
+            let expected_machine = expected_text(expected_value, "machineId")?;
+            let mut previous = object(expected_value, "expected")?
                 .get("afterSequence")
                 .and_then(Value::as_u64);
-            let events = array(field(&response_value, "events")?, "events")?;
+            let events = array(field(response_value, "events")?, "events")?;
             for value in events {
                 let (machine_id, sequence) = event(value)?;
                 if machine_id != expected_machine
@@ -635,7 +635,7 @@ fn validate_values(
                 }
                 previous = Some(sequence);
             }
-            let next = field(&response_value, "nextSequence")?;
+            let next = field(response_value, "nextSequence")?;
             if !next.is_null() {
                 let next = positive(next, "nextSequence")?;
                 if previous != Some(next) {
@@ -644,22 +644,22 @@ fn validate_values(
             }
         }
         http_route::MACHINES_USAGE => {
-            usage(&response_value)?;
-            if text(field(&response_value, "machine")?, "usage.machine")?
-                != expected_text(&expected_value, "machineId")?
-                || integer(field(&response_value, "startUnixMs")?, "startUnixMs")?
-                    != integer(field(&expected_value, "startUnixMs")?, "startUnixMs")?
-                || integer(field(&response_value, "endUnixMs")?, "endUnixMs")?
-                    != integer(field(&expected_value, "endUnixMs")?, "endUnixMs")?
+            usage(response_value)?;
+            if text(field(response_value, "machine")?, "usage.machine")?
+                != expected_text(expected_value, "machineId")?
+                || integer(field(response_value, "startUnixMs")?, "startUnixMs")?
+                    != integer(field(expected_value, "startUnixMs")?, "startUnixMs")?
+                || integer(field(response_value, "endUnixMs")?, "endUnixMs")?
+                    != integer(field(expected_value, "endUnixMs")?, "endUnixMs")?
             {
                 return Err(error("usage identity or interval was substituted"));
             }
-            if integer(field(&expected_value, "startUnixMs")?, "startUnixMs")?
-                >= integer(field(&expected_value, "endUnixMs")?, "endUnixMs")?
+            if integer(field(expected_value, "startUnixMs")?, "startUnixMs")?
+                >= integer(field(expected_value, "endUnixMs")?, "endUnixMs")?
             {
                 return Err(error("usage identity or interval was substituted"));
             }
-            if let Some(value) = object(&response_value, "usage")?.get("lineageReceiptSha256") {
+            if let Some(value) = object(response_value, "usage")?.get("lineageReceiptSha256") {
                 let encoded = object(value, "lineageReceiptSha256")?
                     .get("$bytes")
                     .and_then(Value::as_str);
@@ -672,17 +672,17 @@ fn validate_values(
             }
         }
         http_route::OPERATIONS_INSPECT | http_route::OPERATIONS_CANCEL => {
-            operation(&response_value)?;
-            same(&response_value, &expected_value, "id", "operationId")?;
+            operation(response_value)?;
+            same(response_value, expected_value, "id", "operationId")?;
         }
         http_route::OPERATIONS_WATCH => {
-            for value in array(&response_value, "operations")? {
+            for value in array(response_value, "operations")? {
                 operation(value)?;
-                same(value, &expected_value, "id", "operationId")?;
+                same(value, expected_value, "id", "operationId")?;
             }
         }
         http_route::OPERATIONS_RECOVER_ID => {
-            text(&response_value, "operationId")?;
+            text(response_value, "operationId")?;
         }
         http_route::MACHINES_CREATE
         | http_route::MACHINES_CHECKPOINT
@@ -694,8 +694,8 @@ fn validate_values(
         | http_route::MACHINES_DESTROY
         | http_route::CHECKPOINTS_DESTROY
         | http_route::OPERATIONS_RECOVER => {
-            mutation(&response_value)?;
-            bind_mutation(route, &response_value, &expected_value)?;
+            mutation(response_value)?;
+            bind_mutation(route, response_value, expected_value)?;
         }
         _ => unreachable!("canonical route table and response validator are out of sync"),
     }
@@ -712,17 +712,6 @@ pub fn decode(route: &str, response_json: &str, expected_json: &str) -> Result<J
         serde_json::from_str(expected_json).map_err(|e| error(e.to_string()))?;
     validate_values(route, &response_value, &expected_value)?;
     project(&response_value)
-}
-
-/// Validate one hosted HTTP JSON success response against its request context.
-/// This remains available for callers that only need validation; the transport
-/// uses `decode` so validation and scalar projection share this Rust boundary.
-pub fn validate(route: &str, response_json: &str, expected_json: &str) -> Result<(), JsValue> {
-    let response_value: Value =
-        serde_json::from_str(response_json).map_err(|e| error(e.to_string()))?;
-    let expected_value: Value =
-        serde_json::from_str(expected_json).map_err(|e| error(e.to_string()))?;
-    validate_values(route, &response_value, &expected_value)
 }
 
 fn project(value: &Value) -> Result<JsValue, JsValue> {
@@ -776,6 +765,25 @@ pub fn encode_request(value: &JsValue) -> Result<String, JsValue> {
     serde_json::to_string(&value).map_err(|cause| error(cause.to_string()))
 }
 
+/// Encodes integral numbers as JSON integers so `1` does not become `1.0`.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the bounds are exact powers of two and the value is finite and integral"
+)]
+fn json_number(value: f64) -> Option<serde_json::Number> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        serde_json::Number::from_f64(value)
+    } else if value >= 0.0 && value <= u64::MAX as f64 {
+        serde_json::Number::from_u128(value as u128)
+    } else if value >= i64::MIN as f64 {
+        serde_json::Number::from_i128(value as i128)
+    } else {
+        serde_json::Number::from_f64(value)
+    }
+}
+
 fn encode_js(value: &JsValue, seen: &JsMap) -> Result<Value, String> {
     if value.is_null() {
         return Ok(Value::Null);
@@ -784,18 +792,7 @@ fn encode_js(value: &JsValue, seen: &JsMap) -> Result<Value, String> {
         return Ok(Value::Bool(value));
     }
     if let Some(value) = value.as_f64() {
-        let number = if value.is_finite() && value.fract() == 0.0 {
-            if value >= 0.0 && value <= u64::MAX as f64 {
-                serde_json::Number::from_u128(value as u128)
-            } else if value >= i64::MIN as f64 {
-                serde_json::Number::from_i128(value as i128)
-            } else {
-                serde_json::Number::from_f64(value)
-            }
-        } else {
-            serde_json::Number::from_f64(value)
-        };
-        return Ok(number.map(Value::Number).unwrap_or(Value::Null));
+        return Ok(json_number(value).map_or(Value::Null, Value::Number));
     }
     if let Some(value) = value.as_string() {
         return Ok(Value::String(value));
