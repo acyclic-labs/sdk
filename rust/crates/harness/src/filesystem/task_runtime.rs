@@ -2,20 +2,21 @@
 
 use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
-    FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
+    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
     conversation::VolumeRef,
-    core::{AuthorityVerifier, Scope},
+    core::{AuthorityVerifier, SchemaRegistry, Scope},
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
-    executor::{Executor, StockExecutor, TurnInput, TurnOutput},
+    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
+    interaction::{Interaction, InteractionOutcome},
     model::{Model, ModelProvider},
     runtime::{
-        AgentHarness, ContentBindings, DurableTaskHost, ResumableTaskSession, RuntimeScope,
-        TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
+        AgentHarness, ContentBindings, DurableTaskHost, InteractionRouter, ResumableTaskSession,
+        RuntimeScope, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},
@@ -137,6 +138,7 @@ pub enum TaskWorkerOutcome {
 /// or registry. Callers create/reopen the private volume before opening this
 /// composition. Persistence and atomicity are properties of those providers.
 pub struct FilesystemTaskRuntime<P, A, O> {
+    stream: StreamClient<P>,
     host: Arc<CoordinatorTaskHost<P>>,
     harness: Arc<AgentHarness>,
     filesystem: Arc<FilesystemHost<A, O>>,
@@ -146,6 +148,37 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     tools: ToolRegistry,
     maximum_payload_bytes: u64,
     policy: Option<Arc<dyn ToolPolicy>>,
+    interaction_owner: Option<TaskInteractionOwner>,
+}
+
+struct TaskInteractionOwner {
+    verifier: AuthorityVerifier,
+    schemas: SchemaRegistry,
+    scope: Scope,
+    volume: VolumeRef,
+}
+
+struct TaskJournalInteractions {
+    task: TaskId,
+    journal: Arc<dyn ExecutionJournal>,
+}
+
+impl InteractionRouter for TaskJournalInteractions {
+    fn route<'a>(
+        &'a self,
+        operation_id: OperationId,
+        interaction: Interaction,
+    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
+        Box::pin(async move {
+            let id = crate::durable_host::task_interaction_id(self.task, operation_id);
+            self.journal.open_interaction(id, interaction).await?;
+            Ok(self
+                .journal
+                .interaction_outcome(id)
+                .await?
+                .unwrap_or(InteractionOutcome::Indeterminate { operation_id }))
+        })
+    }
 }
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
@@ -271,7 +304,7 @@ where
             DistributedCoordinator::open(&stream, reader.clone())
                 .await?
                 .with_payload_store(payloads.clone()),
-            stream,
+            stream.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),
@@ -302,6 +335,7 @@ where
             policy.clone(),
         )?;
         Ok(Self {
+            stream,
             host,
             harness,
             filesystem,
@@ -311,7 +345,80 @@ where
             tools,
             maximum_payload_bytes,
             policy,
+            interaction_owner: None,
         })
+    }
+
+    /// Binds the existing conversation owner for task approval/question tickets.
+    /// Each dispatch uses its admitted task journal and exact lease; this scope
+    /// permits request publication and conveys no participant response rights.
+    pub fn with_interaction_owner(
+        mut self,
+        verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        scope: Scope,
+        private_volume: VolumeRef,
+    ) -> Result<Self> {
+        verifier.verify(&scope)?;
+        if !scope
+            .capabilities()
+            .contains(crate::contract::capability::INTERACTION_OPEN)
+        {
+            return Err(Error::Unauthorized(
+                "interaction owner lacks interaction:open".into(),
+            ));
+        }
+        FilesystemInteractionHost::new(
+            self.stream.clone(),
+            self.filesystem.clone(),
+            verifier.audience().clone(),
+            verifier.clone(),
+            schemas.clone(),
+            scope.clone(),
+            private_volume.clone(),
+            self.maximum_payload_bytes,
+        )?;
+        self.interaction_owner = Some(TaskInteractionOwner {
+            verifier,
+            schemas,
+            scope,
+            volume: private_volume,
+        });
+        Ok(self)
+    }
+
+    fn bind_interaction_owner(
+        &self,
+        journal: FilesystemExecutionJournal<P, A, O>,
+        admitted_route: bool,
+    ) -> Result<FilesystemExecutionJournal<P, A, O>> {
+        if !admitted_route {
+            return Ok(journal);
+        }
+        if let Some(owner) = &self.interaction_owner {
+            journal.with_interaction_owner(
+                owner.verifier.clone(),
+                owner.schemas.clone(),
+                owner.scope.clone(),
+                owner.volume.clone(),
+            )
+        } else {
+            Ok(journal)
+        }
+    }
+
+    pub(super) fn bind_context_interactions(
+        &self,
+        context: TaskContext,
+        task: TaskId,
+        journal: Arc<FilesystemExecutionJournal<P, A, O>>,
+    ) -> Result<TaskContext> {
+        if self.interaction_owner.is_some() {
+            context
+                .with_owned_interactions(task, Arc::new(TaskJournalInteractions { task, journal }))
+        } else {
+            Ok(context)
+        }
     }
 
     /// The existing typed admission, recovery and cancellation API.
@@ -350,15 +457,22 @@ where
         turn: OperationId,
     ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
-        Ok(Arc::new(FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
-            execution_operation(task, turn),
-            self.filesystem.clone(),
-            self.volume.clone(),
-            self.verifier.clone(),
-            self.signed.clone(),
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
-        )?))
+        Ok(Arc::new(
+            self.bind_interaction_owner(
+                FilesystemExecutionJournal::for_task(
+                    self.host.journal_owner(task, fence).await?,
+                    execution_operation(task, turn),
+                    self.filesystem.clone(),
+                    self.volume.clone(),
+                    self.verifier.clone(),
+                    self.signed.clone(),
+                    self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                )?,
+                admission
+                    .grants
+                    .contains(crate::contract::capability::INTERACTION_ROUTE),
+            )?,
+        ))
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
@@ -755,14 +869,19 @@ where
             ));
         }
         let operation_id = execution_operation(task, turn);
-        let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, fence.clone()).await?,
-            operation_id,
-            self.filesystem.clone(),
-            self.volume.clone(),
-            self.verifier.clone(),
-            self.signed.clone(),
-            self.maximum_payload_bytes.min(limits.file_bytes),
+        let journal = self.bind_interaction_owner(
+            FilesystemExecutionJournal::for_task(
+                self.host.journal_owner(task, fence.clone()).await?,
+                operation_id,
+                self.filesystem.clone(),
+                self.volume.clone(),
+                self.verifier.clone(),
+                self.signed.clone(),
+                self.maximum_payload_bytes.min(limits.file_bytes),
+            )?,
+            admission
+                .grants
+                .contains(crate::contract::capability::INTERACTION_ROUTE),
         )?;
         let executor = StockExecutor::new(model, provider, context, self.tools.clone())
             .with_limits(limits)

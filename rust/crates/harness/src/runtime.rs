@@ -3291,6 +3291,7 @@ impl AgentHarness {
                         descendants,
                         scope,
                         policy_overrides: policies,
+                        owned_interactions: None,
                         model_steps: Arc::new(AtomicUsize::new(0)),
                     },
                     input,
@@ -3636,6 +3637,7 @@ impl AgentHarness {
             descendants,
             scope,
             policy_overrides: Vec::new(),
+            owned_interactions: None,
             model_steps: Arc::new(AtomicUsize::new(0)),
         })
     }
@@ -3733,10 +3735,26 @@ pub struct TaskContext {
     descendants: TaskGroup,
     scope: RuntimeScope,
     policy_overrides: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
+    owned_interactions: Option<Arc<dyn InteractionRouter>>,
     model_steps: Arc<AtomicUsize>,
 }
 
 impl TaskContext {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_owned_interactions(
+        mut self,
+        task: TaskId,
+        router: Arc<dyn InteractionRouter>,
+    ) -> Result<Self> {
+        if self.durable_task != Some(task) {
+            return Err(Error::Unauthorized(
+                "interaction owner differs from task context".into(),
+            ));
+        }
+        self.owned_interactions = Some(router);
+        Ok(self)
+    }
+
     /// Returns this invocation's stable local operation identity.
     #[must_use]
     pub const fn id(&self) -> OperationId {
@@ -4580,6 +4598,14 @@ impl TaskContext {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }
         if let Some(task) = self.durable_task {
+            if operation_id.into_bytes() == task.into_bytes() {
+                return Err(Error::Invalid(
+                    "interaction operation must differ from task admission".into(),
+                ));
+            }
+            if let Some(router) = &self.owned_interactions {
+                return router.route(operation_id, interaction).await;
+            }
             let host = self
                 .harness
                 .state
@@ -6565,6 +6591,7 @@ mod tests {
             descendants: TaskGroup::new(2),
             scope,
             policy_overrides: Vec::new(),
+            owned_interactions: None,
             model_steps: Arc::new(AtomicUsize::new(0)),
         };
         let message = ModelMessage {
@@ -6726,6 +6753,7 @@ mod tests {
             descendants: TaskGroup::new(1),
             scope,
             policy_overrides: Vec::new(),
+            owned_interactions: None,
             model_steps: Arc::new(AtomicUsize::new(0)),
         };
         let narrowed = context.scoped_policy(child_policy)?;

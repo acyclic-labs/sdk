@@ -669,7 +669,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         &self.scheduler
     }
 
-    #[cfg(feature = "filesystem")]
+    #[cfg(any(feature = "filesystem", test))]
     pub(crate) const fn revision(&self) -> u64 {
         self.revision
     }

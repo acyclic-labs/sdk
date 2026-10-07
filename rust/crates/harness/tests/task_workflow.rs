@@ -7,18 +7,20 @@ use acyclic_harness::context::ContextPipeline;
 use acyclic_harness::conversation::{
     ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
-use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
+use acyclic_harness::core::{
+    Action, AggregateKind, Authority, AuthorityIssuer, Command, EventPayload, SchemaRegistry,
+};
 use acyclic_harness::distributed::{DistributedCoordinator, SchedulerPayloadStore, Worker};
 use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
-    FilesystemTaskRuntime, MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND,
-    MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
-    TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND,
-    TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost, TaskCommandProgress,
-    TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome, TimerTaskCommand,
-    ToolTaskCommand,
+    FilesystemContentVerifier, FilesystemHost, FilesystemInteractionHost,
+    FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, MAIL_RECEIVE_TASK_COMMAND_KIND,
+    MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand,
+    MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
+    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost,
+    TaskCommandProgress, TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
+    TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -245,7 +247,12 @@ async fn worker_mail_receive_releases_capacity_until_committed_item() -> Result<
 
 #[tokio::test]
 async fn worker_mail_receive_requires_retained_read_grant() -> Result<()> {
-    worker_restart_with_options(WorkerCommand::MailReceive, false, false).await
+    Box::pin(worker_restart_with_options(
+        WorkerCommand::MailReceive,
+        false,
+        false,
+    ))
+    .await
 }
 
 #[tokio::test]
@@ -260,7 +267,12 @@ async fn passive_wakes_distinguish_successive_commands_at_one_checkpoint() -> Re
 
 #[tokio::test]
 async fn cancelled_timer_is_not_woken_after_reopen() -> Result<()> {
-    worker_restart_with_options(WorkerCommand::Timer, true, true).await
+    Box::pin(worker_restart_with_options(
+        WorkerCommand::Timer,
+        true,
+        true,
+    ))
+    .await
 }
 
 struct CompletedChildMachine(TaskMachine);
@@ -309,6 +321,10 @@ impl ToolPolicy for RestartPolicy {
                     ToolPolicyDecision::Deny {
                         reason: "pinned policy denied".into(),
                     }
+                } else if invocation.arguments.get("approval") == Some(&json!(true)) {
+                    ToolPolicyDecision::RequireApproval {
+                        prompt: "Approve this exact restore".into(),
+                    }
                 } else {
                     ToolPolicyDecision::Allow
                 },
@@ -318,7 +334,7 @@ impl ToolPolicy for RestartPolicy {
 }
 
 #[tokio::test]
-async fn worker_pinned_policy_denies_dispatch_and_reconciles_after_reopen() -> Result<()> {
+async fn worker_pinned_policy_approval_denies_dispatch_and_reconciles_after_reopen() -> Result<()> {
     worker_restart(WorkerCommand::PolicyTool).await
 }
 
@@ -473,7 +489,7 @@ impl ResumableMachine for CommandMachine {
     reason = "parallel restart assertions for suspended and uncertain ownership"
 )]
 async fn worker_restart(command: WorkerCommand) -> Result<()> {
-    worker_restart_with_options(command, true, false).await
+    Box::pin(worker_restart_with_options(command, true, false)).await
 }
 
 #[allow(
@@ -537,8 +553,27 @@ async fn worker_restart_with_options(
             "mail:send".to_owned(),
             "mail:read".to_owned(),
             "tool:call:test.restore".to_owned(),
+            "interaction:route".to_owned(),
             "task:spawn:test.restart@1".to_owned(),
             "task:spawn:test.child@1".to_owned(),
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let conversation_issuer = AuthorityIssuer::new(
+        "worker-approval",
+        [54; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "worker-approval".into(),
+        },
+    );
+    let conversation_scope = conversation_issuer.root_for_agent(
+        agent,
+        "owner",
+        Capabilities::new([
+            "conversation:bind".to_owned(),
+            "interaction:open".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
         ]),
@@ -551,6 +586,16 @@ async fn worker_restart_with_options(
             .without(&Capabilities::new(["mail:read"]))
     };
     let scope = RuntimeScope::new(grants, Limits::default())?;
+    let scope = if command == WorkerCommand::PolicyModel {
+        RuntimeScope::new(
+            scope
+                .grants()
+                .without(&Capabilities::new(["interaction:route"])),
+            Limits::default(),
+        )?
+    } else {
+        scope
+    };
     let base = TaskMachine {
         identity: MachineIdentity {
             name: "test.restart".into(),
@@ -651,6 +696,29 @@ async fn worker_restart_with_options(
             signed.clone(),
             65_536,
         )?);
+        if with_policy && !reopened {
+            Box::pin(async {
+                let mut aggregate = acyclic_harness::store::StreamAggregate::open(
+                    &stream,
+                    conversation_issuer.verifier().audience().clone(),
+                    conversation_issuer.verifier(),
+                    SchemaRegistry::new(),
+                )
+                .await?;
+                aggregate
+                    .execute(Command {
+                        operation_id: OperationId::from_bytes([90; 16]),
+                        idempotency_key: IdempotencyKey::new("worker-approval-bind")?,
+                        expected_revision: 0,
+                        scope: conversation_scope.clone(),
+                        causal_parent: None,
+                        action: Action::BindConversation { agent },
+                    })
+                    .await?;
+                Ok::<(), Error>(())
+            })
+            .await?;
+        }
         let runtime = FilesystemTaskRuntime::open_with_policy_and_clock(
             stream.clone(),
             filesystem.clone(),
@@ -673,6 +741,16 @@ async fn worker_restart_with_options(
             with_policy.then(|| policy.clone() as Arc<dyn ToolPolicy>),
         )
         .await?;
+        let runtime = if with_policy {
+            runtime.with_interaction_owner(
+                conversation_issuer.verifier(),
+                SchemaRegistry::new(),
+                conversation_scope.clone(),
+                volume.clone(),
+            )?
+        } else {
+            runtime
+        };
         if with_policy && reopened {
             let wrong = FilesystemTaskRuntime::open_with_policy_and_clock(
                 stream.clone(),
@@ -746,7 +824,11 @@ async fn worker_restart_with_options(
                     serde_json::to_value(ToolTaskCommand {
                         name: "test.restore".into(),
                         revision: "1".into(),
-                        arguments: json!({"file":file}),
+                        arguments: if with_policy {
+                            json!({"file":file,"approval":true})
+                        } else {
+                            json!({"file":file})
+                        },
                     })
                 } else {
                     serde_json::to_value(ModelTaskCommand {
@@ -1232,26 +1314,109 @@ async fn worker_restart_with_options(
                         payload: file,
                     };
                     if with_policy {
-                        let denied = serde_json::to_value(ToolTaskCommand {
-                            arguments: json!({"denied":true}),
-                            ..payload.clone()
-                        })
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                        assert!(matches!(
-                            runtime
-                                .commands()
-                                .execute(
-                                    context.clone(),
-                                    LeaseFence::from(&lease.reservation),
-                                    command.clone(),
-                                    denied
+                        Box::pin(async {
+                            let denied = serde_json::to_value(ToolTaskCommand {
+                                arguments: json!({"denied":true}),
+                                ..payload.clone()
+                            })
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                            assert!(matches!(
+                                runtime
+                                    .commands()
+                                    .execute(
+                                        context.clone(),
+                                        LeaseFence::from(&lease.reservation),
+                                        command.clone(),
+                                        denied
+                                    )
+                                    .await,
+                                Err(Error::Unauthorized(_))
+                            ));
+                            assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
+                            assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+                            assert_eq!(policy.evaluated.load(Ordering::SeqCst), 1);
+                            let pending = serde_json::to_value(&payload)
+                                .map_err(|error| Error::Invalid(error.to_string()))?;
+                            for _ in 0..2 {
+                                assert!(matches!(
+                                    runtime
+                                        .commands()
+                                        .execute(
+                                            context.clone(),
+                                            LeaseFence::from(&lease.reservation),
+                                            command.clone(),
+                                            pending.clone()
+                                        )
+                                        .await,
+                                    Err(Error::Indeterminate(_))
+                                ));
+                            }
+                            assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
+                            assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+                            let aggregate = acyclic_harness::store::StreamAggregate::open(
+                                &stream,
+                                conversation_issuer.verifier().audience().clone(),
+                                conversation_issuer.verifier(),
+                                SchemaRegistry::new(),
+                            )
+                            .await?;
+                            let events = aggregate.reducer().events_after(0, 64)?;
+                            assert_eq!(events.len(), 2, "request retry must reuse its ticket");
+                            let ticket = events
+                                .into_iter()
+                                .find_map(|event| match event.payload {
+                                    EventPayload::InteractionOpened { ticket } => Some(ticket),
+                                    _ => None,
+                                })
+                                .ok_or_else(|| Error::NotFound("approval ticket".into()))?;
+                            let interactions = FilesystemInteractionHost::new(
+                                stream.clone(),
+                                filesystem.clone(),
+                                conversation_issuer.verifier().audience().clone(),
+                                conversation_issuer.verifier(),
+                                SchemaRegistry::new(),
+                                conversation_scope.clone(),
+                                volume.clone(),
+                                65_536,
+                            )?;
+                            assert!(matches!(
+                                interactions
+                                    .resolve_approval(
+                                        OperationId::from_bytes([91; 16]),
+                                        conversation_scope.clone(),
+                                        acyclic_harness::InteractionId::from_bytes(
+                                            *ticket.id.as_bytes()
+                                        ),
+                                        1,
+                                        true,
+                                        None
+                                    )
+                                    .await,
+                                Err(Error::Unauthorized(_))
+                            ));
+                            let responder = conversation_issuer.root_for_agent(
+                                agent,
+                                "approver",
+                                Capabilities::new([
+                                    "interaction:resolve".to_owned(),
+                                    ticket.responder_grant(),
+                                ]),
+                            );
+                            interactions
+                                .resolve_approval(
+                                    OperationId::from_bytes([92; 16]),
+                                    responder,
+                                    acyclic_harness::InteractionId::from_bytes(
+                                        *ticket.id.as_bytes(),
+                                    ),
+                                    1,
+                                    true,
+                                    None,
                                 )
-                                .await,
-                            Err(Error::Unauthorized(_))
-                        ));
-                        assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
-                        assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
-                        assert_eq!(policy.evaluated.load(Ordering::SeqCst), 1);
+                                .await?;
+                            Ok::<(), Error>(())
+                        })
+                        .await?;
                     }
                     let wrong = serde_json::to_value(ToolTaskCommand {
                         revision: "2".into(),

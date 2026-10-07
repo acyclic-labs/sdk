@@ -437,6 +437,9 @@ where
             .map_err(|error| Error::Invalid(format!("invalid tool command: {error}")))?;
         let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
         let journal = self.runtime.execution_journal(task, fence, turn).await?;
+        let context = self
+            .runtime
+            .bind_context_interactions(context, task, journal.clone())?;
         let operation = super::task_runtime::execution_operation(task, turn);
         let limits = context.scope().limits();
         let runner =
