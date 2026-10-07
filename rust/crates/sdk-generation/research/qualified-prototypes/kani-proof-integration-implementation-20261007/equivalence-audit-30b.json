@@ -1,0 +1,176 @@
+{
+  "schema": "filesystem-kani-equivalence-audit.v1",
+  "audit_status": "qualified_equivalence_for_stated_bodies",
+  "generated_at": "2026-10-07",
+  "historical_solver_source": {
+    "source_revision": "c2e2d8ef80ab88a989c1f5955e6f35881f0274cd",
+    "source_worktree": "C:/Users/varun/.codex/tmp/kani-proof-filesystem-c2",
+    "qualified_commit": "056625cf9ae9da8701385e98f867335d2dd9816f",
+    "toolchain": {
+      "kani": "0.68.0",
+      "cbmc": "6.11.0",
+      "rust": "nightly-2026-08-21",
+      "solver": "CaDiCaL 3.0.0",
+      "jobs": 1,
+      "offline": true
+    },
+    "file_sha256": {
+      "src/kani_proofs.rs": "A3CE5EAD19B578EE6F473200CE116C90AA97D68594EB2DAFCA218F6C2537AFFE",
+      "src/operation_window/kani_reconcile_limits_proof.rs": "752E0863D65430D7CFEB03082F7A2D8F341513158E8A56C644C17A2395BF2BDD",
+      "src/numeric.rs": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF",
+      "src/operation_window.rs": "DDFF238809DA7EFC47D9D91929E1AEE815A6E05C01E4DB7E836090535545EBD7",
+      "src/lib.rs": "D5D463017806B69747F4F063DA04ADD8C71041BA5D5D2F646EA27FF1D5FB4367"
+    },
+    "raw_logs": {
+      "exact_u32_positive": {
+        "path": "rust/crates/sdk-generation/research/qualified-prototypes/kani-proof-integration-implementation-20261007/audit/exact-u32-positive.raw.txt",
+        "sha256": "FC1C84930F07F10A833FD8D7E59B211697EEA0097041B8C485B02A718E6C821D",
+        "result": "0 of 7 failed; VERIFICATION: SUCCESSFUL; terminal tool exit 0"
+      },
+      "reconcile_positive": {
+        "path": "rust/crates/sdk-generation/research/qualified-prototypes/kani-proof-integration-implementation-20261007/audit/reconcile-limits-positive.raw.txt",
+        "sha256": "D9A02E2C9CF0D9303315E25B0EA3DC8DD16FFD2F424BECA615CDABB7506C83C2",
+        "result": "0 of 94 failed (2 unreachable); VERIFICATION: SUCCESSFUL; terminal tool exit 0"
+      }
+    }
+  },
+  "current_source": {
+    "commit": "30bdb4983c",
+    "worktree": "C:/Users/varun/.codex/worktrees/filesystem-main-review/sdk",
+    "file_sha256_lf_checkout": {
+      "src/kani_proofs.rs": "59635972C5E04968B5875B624DD37AF74678C18E84B06E15626898D9321E9317",
+      "src/operation_window/kani_reconcile_limits_proof.rs": "9EABEE12C3AC11BD5C069F1772D4983735BC8B983E8AAA9740DBBF1A81014D30",
+      "src/numeric.rs": "F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF",
+      "src/operation_window.rs": "5A6CCB503D039679922D519C48DD69F8E213D073B3B376C97B517A9EE92559B1",
+      "src/lib.rs": "10BC1F4E4452D065E2A68B62B48F0361229F067ACAF827DC2C8984C989803299"
+    },
+    "crlf_kani_proofs_sha256": "0BDF2ABE151B8759FE38A3E9EEEFD273C5D3DD92AF522BF824E7457D84E1AB28"
+  },
+  "harness_body_equivalence": [
+    {
+      "label": "exact_u32_from_f64_all_bits",
+      "historical_canonical_sha256": "E78306E119110B77AD02414C5C120A874AB1EFEB0434855EE1DBEFFE5D1CB6D8",
+      "current_canonical_sha256": "E78306E119110B77AD02414C5C120A874AB1EFEB0434855EE1DBEFFE5D1CB6D8",
+      "historical_canonical_bytes": 485,
+      "current_canonical_bytes": 485,
+      "canonical_equal": true
+    },
+    {
+      "label": "validate_reconcile_limits_iff_all_three_nonzero",
+      "historical_canonical_sha256": "5F42C9CC0C2FA2319F993B52AA3D9A821324CE29804390819C71F1AEDB50CD89",
+      "current_canonical_sha256": "5F42C9CC0C2FA2319F993B52AA3D9A821324CE29804390819C71F1AEDB50CD89",
+      "historical_canonical_bytes": 642,
+      "current_canonical_bytes": 642,
+      "canonical_equal": true
+    }
+  ],
+  "production_function_equivalence": [
+    {
+      "label": "exact_u32_from_f64",
+      "historical_canonical_sha256": "7302B8222A73CA35A1F5B7CC314D61DA7B09FE649968A5DD3D639EBA8AEE53FC",
+      "current_canonical_sha256": "7302B8222A73CA35A1F5B7CC314D61DA7B09FE649968A5DD3D639EBA8AEE53FC",
+      "historical_canonical_bytes": 268,
+      "current_canonical_bytes": 268,
+      "canonical_equal": true
+    },
+    {
+      "label": "validate_reconcile_limits",
+      "historical_canonical_sha256": "DD4911652822A4CDC7050E00860B1E3F0D8884E0C7F702AD59C3F0A5514A8BD3",
+      "current_canonical_sha256": "DD4911652822A4CDC7050E00860B1E3F0D8884E0C7F702AD59C3F0A5514A8BD3",
+      "historical_canonical_bytes": 286,
+      "current_canonical_bytes": 286,
+      "canonical_equal": true
+    }
+  ],
+  "scope": {
+    "proved_by_historical_logs": [
+      "all IEEE-754 u64 bit patterns through production exact_u32_from_f64",
+      "all three u32 reconciliation limits through production validate_reconcile_limits"
+    ],
+    "equivalence_basis": "The current positive harness blocks and the two production function bodies have equal canonical hashes after line-ending and final-newline normalization.",
+    "not_proved": [
+      "new solver execution on commit 30b",
+      "whole filesystem behavior",
+      "transport or stateful mutation semantics",
+      "historical negative controls as production mutations"
+    ]
+  },
+  "trusted_components": [
+    "Kani 0.68.0",
+    "CBMC 6.11.0",
+    "nightly-2026-08-21 Rust compiler and standard library models",
+    "CaDiCaL 3.0.0",
+    "source line-ending and final-newline normalization used only for equivalence comparison"
+  ],
+  "theorem_bindings": [
+    {
+      "theorem": "exact_u32_from_f64_all_bits",
+      "harness_source": "src/kani_proofs.rs",
+      "production_function": "src/numeric.rs::exact_u32_from_f64",
+      "quantification": "all u64 IEEE-754 bit patterns",
+      "precondition": "none beyond the function's input being an f64 decoded from the symbolic bits",
+      "asserted_result": "Ok iff finite, integral, nonnegative, and <= u32::MAX; accepted value round-trips through f64",
+      "historical_solver_result": "0 of 7 failed; VERIFICATION: SUCCESSFUL"
+    },
+    {
+      "theorem": "validate_reconcile_limits_iff_all_three_nonzero",
+      "harness_source": "src/operation_window/kani_reconcile_limits_proof.rs",
+      "production_function": "src/operation_window.rs::validate_reconcile_limits",
+      "quantification": "all triples of u32 maximum_generations, maximum_changes, maximum_conflicts",
+      "precondition": "none; direct production validator call",
+      "asserted_result": "Ok exactly when all three fields are nonzero; otherwise WorkspaceError::JoinLimit",
+      "historical_solver_result": "0 of 94 failed (2 unreachable); VERIFICATION: SUCCESSFUL"
+    }
+  ],
+  "outstanding_formal_gaps": [
+    {
+      "property": "fresh solver execution at current commit 30bdb4983c",
+      "status": "not_run",
+      "gap": "Evidence is transferred by canonical body equivalence to the historical qualified run; no new Kani terminal result was produced on 30b.",
+      "safe_scope": "The transfer covers only the two equal harness bodies and the two equal production function bodies listed in this receipt.",
+      "approach": "Run pinned Kani 0.68 manually only if one of those production bodies or harness bodies changes; preserve exact source hashes and raw terminal output.",
+      "tcb": [
+        "canonical line-ending/final-newline normalization",
+        "Kani 0.68.0",
+        "CBMC 6.11.0",
+        "nightly-2026-08-21",
+        "CaDiCaL 3.0.0"
+      ]
+    },
+    {
+      "property": "durable operation-window state transitions",
+      "status": "not_proven",
+      "gap": "The reconciliation theorem covers only the pure admission validator, not CAS retry loops, leases, tickets, async backends, persistence, or state-machine transitions.",
+      "precondition": "A separately specified state-machine model or inductive invariant over production state and backend outcomes.",
+      "approach": "Add narrow production-bound transition invariants only after the state model and backend contract are fixed; retain ordinary regression tests for stateful behavior.",
+      "tcb": [
+        "production operation-window state model",
+        "backend/async contract",
+        "Rust compiler and standard-library models"
+      ]
+    },
+    {
+      "property": "whole filesystem, transport, and generated SDK behavior",
+      "status": "not_proven",
+      "gap": "The two function-level theorems do not imply whole-crate, transport, serialization, or generated-code guarantees.",
+      "precondition": "Each additional boundary property must name its production function and exact quantified domain.",
+      "approach": "Treat each boundary as a separate source-bound obligation; do not generalize these receipts.",
+      "tcb": [
+        "named production function",
+        "its compiler/macro expansion",
+        "relevant standard-library models"
+      ]
+    },
+    {
+      "property": "negative-control mutation evidence",
+      "status": "historical_control_only",
+      "gap": "Historical negative harnesses asserted false acceptance against unchanged production; they are expected failures, not mutated-production counterexamples.",
+      "precondition": "No production mutation is present in the qualified source.",
+      "approach": "Keep the raw expected-failure logs as controls and, if mutation testing is required, run isolated mutated fixtures with separate source identities.",
+      "tcb": [
+        "historical production source",
+        "isolated mutation fixture if later created"
+      ]
+    }
+  ]
+}
