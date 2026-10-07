@@ -11,7 +11,7 @@ use std::{num::NonZeroU64, path::Path};
 use crate::wire;
 use crate::contract::ACTORS_FILE;
 use protify::*;
-use ts_rs::{Config, ExportError, TS};
+use ts_rs::{Config, ExportError, TS, TypeVisitor};
 
 #[cfg(kani)]
 #[path = "domain/formal_proofs.rs"]
@@ -1263,6 +1263,75 @@ impl InvokeActorResponse {
     pub fn headers(&self) -> &[Header] { &self.headers }
 }
 
+// The semantic export registry is shared by ts-rs and the SDK facade generator.
+// ts-rs supplies the emitted identifier while its visitor recursively discovers
+// dependencies, so renamed or newly nested Rust declarations follow the same
+// executable export path automatically.
+macro_rules! typescript_roots {
+    ($callback:ident) => {
+        $callback!(
+            subscription_start::CurrentHeadMarker,
+            PositiveU64,
+            ErrorCode,
+            ServiceError,
+            ActorObservation,
+            CreateActorRequest,
+            UpdateActorRequest,
+            InspectActorRequest,
+            AddSubscriptionRequest,
+            RemoveSubscriptionRequest,
+            ResumeSubscriptionRequest,
+            CheckpointActorRequest,
+            InvokeActorRequest,
+            CreateActorResponse,
+            UpdateActorResponse,
+            InspectActorResponse,
+            AddSubscriptionResponse,
+            RemoveSubscriptionResponse,
+            ResumeSubscriptionResponse,
+            CheckpointActorResponse,
+            InvokeActorResponse,
+        )
+    };
+}
+
+struct TypeScriptExportVisitor<'a> {
+    config: &'a Config,
+    names: Vec<String>,
+    seen: std::collections::HashSet<std::any::TypeId>,
+}
+
+impl TypeVisitor for TypeScriptExportVisitor<'_> {
+    fn visit<T: TS + 'static + ?Sized>(&mut self) {
+        if !self.seen.insert(std::any::TypeId::of::<T>()) {
+            return;
+        }
+        if T::output_path().is_some() {
+            self.names.push(T::ident(self.config));
+        }
+        T::visit_dependencies(self);
+    }
+}
+
+/// Names emitted by the executable Rust semantic export registry, including
+/// recursively discovered ts-rs declarations.
+pub fn typescript_export_names(config: &Config) -> Vec<String> {
+    let mut visitor = TypeScriptExportVisitor {
+        config,
+        names: Vec::new(),
+        seen: std::collections::HashSet::new(),
+    };
+    macro_rules! visit_roots {
+        ($($root:ty),+ $(,)?) => {
+            $(visitor.visit::<$root>();)+
+        };
+    }
+    typescript_roots!(visit_roots);
+    visitor.names.sort();
+    visitor.names.dedup();
+    visitor.names
+}
+
 /// Export all public Actors request and response declarations and their
 /// recursively discovered semantic dependencies.
 ///
@@ -1280,28 +1349,7 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
         };
     }
 
-    export_roots!(
-        subscription_start::CurrentHeadMarker,
-        PositiveU64,
-        ErrorCode,
-        ServiceError,
-        CreateActorRequest,
-        UpdateActorRequest,
-        InspectActorRequest,
-        AddSubscriptionRequest,
-        RemoveSubscriptionRequest,
-        ResumeSubscriptionRequest,
-        CheckpointActorRequest,
-        InvokeActorRequest,
-        CreateActorResponse,
-        UpdateActorResponse,
-        InspectActorResponse,
-        AddSubscriptionResponse,
-        RemoveSubscriptionResponse,
-        ResumeSubscriptionResponse,
-        CheckpointActorResponse,
-        InvokeActorResponse,
-    );
+    typescript_roots!(export_roots);
     Ok(())
 }
 
@@ -1337,6 +1385,22 @@ mod tests {
         assert!(current_head.contains("true"));
 
         std::fs::remove_dir_all(output).expect("remove temporary export");
+    }
+
+    #[test]
+    fn typescript_export_names_follow_nested_ts_rs_metadata() {
+        let names = typescript_export_names(&Config::from_env());
+
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        for name in [
+            "ActorObservation",
+            "ActorState",
+            "CurrentHeadMarker",
+            "SubscriptionObservation",
+            "SubscriptionState",
+        ] {
+            assert!(names.iter().any(|candidate| candidate == name), "{name}");
+        }
     }
 
     #[test]
