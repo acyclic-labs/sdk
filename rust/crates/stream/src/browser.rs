@@ -415,19 +415,15 @@ impl StreamProvider for BrowserStream {
         // when the publishing context dies before sending any notification.
         // A dropped cursor stops polling; no detached task owns its lifetime.
         Ok(stream::try_unfold(
-            (self.clone(), path, from),
+            (self.clone(), path, memory::HistoryCursor::at(from)),
             |(provider, path, mut cursor)| async move {
                 loop {
-                    let mut page = provider
-                        .read(ReadRequest {
-                            path: path.clone(),
-                            from: cursor,
-                            limit: 1,
+                    let record = provider
+                        .with_provider(async |memory| {
+                            memory.next_follow_record(&path, &mut cursor).await
                         })
                         .await?;
-                    if let Some(record) = page.next().await {
-                        let record = record?;
-                        cursor += 1;
+                    if let Some(record) = record {
                         return Ok(Some((record, (provider, path, cursor))));
                     }
                     poll_delay().await?;

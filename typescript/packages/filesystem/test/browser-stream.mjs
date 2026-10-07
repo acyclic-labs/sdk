@@ -71,6 +71,9 @@ if (query.has("actor")) {
 
     // Interrupt between journal frame and metadata publication using an actual
     // IndexedDB abort. The same handle must discard its unpublished Rust state.
+    const cancel = new AbortController();
+    const cursor = stream.follow("events", { from: 0n, signal: cancel.signal })[Symbol.asyncIterator]();
+    assert((await cursor.next()).value.sequence === 0n, "follow lost its initial history");
     result.dataset.waiting = "aborted publication";
     const put = IDBObjectStore.prototype.put;
     let aborted = false;
@@ -106,8 +109,7 @@ if (query.has("actor")) {
         }
       };
     });
-    const cancel = new AbortController();
-    const cursor = stream.follow("events", { from: 2n, signal: cancel.signal })[Symbol.asyncIterator]();
+    assert((await cursor.next()).value.sequence === 1n, "cache recovery reset the consumed follow cursor");
     const next = cursor.next();
     const workerResult = await new Promise((resolve, reject) => {
       const id = ++sequence;
@@ -127,6 +129,19 @@ if (query.has("actor")) {
     assert(records.length === 3 && records[2].value[0] === 5, "bounded recovery lost journal facts");
     const envelope = await reopened.readCommit(workerOutcome.commitId);
     assert(envelope.mutations.length === 1, "restart lost immutable envelope");
+
+    result.dataset.waiting = "incremental backlog follow";
+    for (let index = 0n; index < 128n; index++) {
+      await stream.append("backlog", [Uint8Array.of(Number(index))], { ifTail: index });
+    }
+    const backlog = stream.follow("backlog", { from: 0n })[Symbol.asyncIterator]();
+    try {
+      for (let index = 0n; index <= 128n; index++) {
+        if (index === 64n) await reopened.append("backlog", [Uint8Array.of(128)], { ifTail: 128n });
+        const record = (await backlog.next()).value;
+        assert(record.sequence === index && record.value[0] === Number(index), "backlog follow skipped or repeated history across publication");
+      }
+    } finally { await backlog.return(); }
 
     const request = { conditions: [{ path: "deadline", ifAbsent: true }], mutations: [{ append: { path: "deadline", values: [Uint8Array.of(1)] } }] };
     let deadlineRejected = false;
