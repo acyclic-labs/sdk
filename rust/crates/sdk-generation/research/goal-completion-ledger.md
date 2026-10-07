@@ -339,3 +339,5 @@ exports a NAPI transport getter. Installed84a508 artifact still lacked that gett
 rebuilding and requalification are required rather than transferring the old receipt.
 Formal expected-revision solver remains verified live; compile-only c8 audit is
 not a completed theorem. All16 useful subagent slots are assigned. Goal remains active.
+
+GitHub recovered: draft PR267 https://github.com/acyclic-labs/sdk/pull/267 created and attached. Verified head7cef9472f2fb69aa5c2cdf9cf394774025ee7985 and isDraft=true. Initial statusCheckRollup/run list empty; no CI result claimed. No merge.
