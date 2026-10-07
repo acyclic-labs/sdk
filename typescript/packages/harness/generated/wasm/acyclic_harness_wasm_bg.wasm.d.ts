@@ -33,6 +33,8 @@ export const selectModelContext: (a: any, b: any, c: any, d: number, e: number, 
 export const taskAdmissionIdentities: (a: any) => [number, number, number];
 export const taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
 export const uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
+export const validateAuthorityPathSegment: (a: any) => [number, number, number, number];
+export const validateComponentLabel: (a: any) => [number, number, number, number];
 export const validateContextSelection: (a: any, b: any) => [number, number];
 export const validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
 export const validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
@@ -57,6 +59,7 @@ export const validateWireHandshake: (a: number, b: number, c: number, d: number)
 export const validateWireObserve: (a: number, b: number) => [number, number];
 export const validateWireResume: (a: number, b: number) => [number, number];
 export const validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
+export const validateWorkflowAdmission: (a: any) => [number, number, number];
 export const verifyFileBytes: (a: any, b: number, c: number) => [number, number];
 export const wasmcontentstore_generation: (a: number) => [number, number, number];
 export const wasmcontentstore_has: (a: number, b: any) => [number, number, number];

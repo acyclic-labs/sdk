@@ -52,7 +52,7 @@ impl MachineIdentity {
         crate::contract::validate_component_label(&self.version, "machine version")?;
         if self.digest == [0; 32] {
             return Err(Error::Invalid(
-                "machine needs an implementation digest".into(),
+                "machine implementation digest must be a nonzero 32-byte value".into(),
             ));
         }
         Ok(())
