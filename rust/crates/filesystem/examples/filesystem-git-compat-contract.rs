@@ -1,4 +1,5 @@
-#![allow(missing_docs)]
+//! Emits the Rust-owned Git compatibility wire tables consumed by the
+//! TypeScript Git compatibility contract generator.
 
 use acyclic_fs::git_compat::{
     GIT_COMPAT_ACTION_TYPESCRIPT_TYPES, GIT_COMPAT_ACTION_VARIANTS, GIT_COMPAT_BYTE_WIRE_FIELDS,

@@ -13,7 +13,6 @@ impl Wake for WakeCounter {
 
 struct PanicWake;
 
-#[allow(clippy::panic)]
 impl Wake for PanicWake {
     fn wake(self: Arc<Self>) {
         std::panic::panic_any("cancellation wake panic");
@@ -27,7 +26,6 @@ fn waiter_count(token: &CancellationToken) -> usize {
     }
 }
 
-#[allow(clippy::panic)]
 fn poison<T>(mutex: &Mutex<T>) {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let _guard = match mutex.lock() {

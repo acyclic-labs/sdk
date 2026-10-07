@@ -2354,7 +2354,6 @@ fn content_address<T: Serialize>(value: &T) -> Result<[u8; 32], LocalCoreStateSt
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::{
