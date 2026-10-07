@@ -12,7 +12,7 @@ function exhaustiveKeys<T>() {
   ): Keys => keys;
 }
 
-const workCounterKeys = exhaustiveKeys<WorkCounters>()([
+export const workCounterKeys = exhaustiveKeys<WorkCounters>()([
   "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten",
   "objectProbes", "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads",
   "pageWrites", "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded",
@@ -20,15 +20,9 @@ const workCounterKeys = exhaustiveKeys<WorkCounters>()([
   "peakAllocationBytes", "materializations",
 ]);
 
-function safeWorkNumber(value: bigint, key: string): number {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number)) throw new RangeError(`WASM work counter ${key} exceeds the public safe number range`);
-  return number;
-}
-
 export function copyWork(value: BrowserWorkCounters): WorkCounters {
-  const result = {} as Record<keyof WorkCounters, number>;
-  for (const key of workCounterKeys) result[key] = safeWorkNumber(value[key], key);
+  const result = {} as Record<keyof WorkCounters, bigint>;
+  for (const key of workCounterKeys) result[key] = BigInt(value[key]);
   return result;
 }
 
