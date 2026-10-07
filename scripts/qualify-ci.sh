@@ -23,9 +23,9 @@ esac
 # macOS ships shasum rather than sha256sum.
 sha256_matches() {
   if command -v sha256sum >/dev/null; then
-    echo "$1  $2" | sha256sum --check --status
+    echo "$1  $2" | sha256sum -c >/dev/null
   else
-    echo "$1  $2" | shasum -a 256 --check --status
+    echo "$1  $2" | shasum -a 256 -c >/dev/null
   fi
 }
 # Fetches a pinned release archive into $TOOLS_DIR once, verifies its SHA-256

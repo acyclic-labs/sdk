@@ -6,6 +6,29 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/acyclic-qualify-ci-test.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin"
 
+# The macOS runner's sha256sum accepts -c but not GNU long options. Exercise
+# the actual verifier with that interface, including rejected archive bytes.
+mkdir -p "$work/portable-sha/bin"
+printf 'verified archive\n' >"$work/portable-sha/archive"
+printf 'corrupted archive\n' >"$work/portable-sha/corrupt"
+export TEST_REAL_SHA256
+TEST_REAL_SHA256="$(command -v sha256sum)"
+archive_checksum="$(sha256sum "$work/portable-sha/archive" | cut -d ' ' -f 1)"
+cat >"$work/portable-sha/bin/sha256sum" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == '-c' ]] || exit 2
+exec "$TEST_REAL_SHA256" "$@"
+EOF
+chmod +x "$work/portable-sha/bin/sha256sum"
+(
+  export PATH="$work/portable-sha/bin:$PATH"
+  eval "$(sed -n '/^sha256_matches() {/,/^}/p' "$root/scripts/qualify-ci.sh")"
+  sha256_matches "$archive_checksum" "$work/portable-sha/archive"
+  if sha256_matches "$archive_checksum" "$work/portable-sha/corrupt"; then exit 1; fi
+  if sha256_matches "$archive_checksum" "$work/portable-sha/missing"; then exit 1; fi
+)
+
 cat >"$work/bin/jq" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
