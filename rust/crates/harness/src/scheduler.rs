@@ -1421,6 +1421,293 @@ mod tests {
         Ok(())
     }
 
+    /// One generated scheduler input over a small operation pool.
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Declare {
+            op: u8,
+            parent: Option<u8>,
+            dependency: Option<u8>,
+            orchestration: u8,
+            resources: u64,
+        },
+        WaitForCapacity(u8),
+        Admit(u8, u8, u64),
+        PartiallyAdmit(u8, u8, u64),
+        Reject(u8),
+        Start(u8, u8),
+        Checkpoint(u8, u8),
+        WaitForChildren(u8, u8),
+        ReleaseLease(u8, u8),
+        Cancel(u8, bool),
+        Complete(u8, u8, Option<u8>),
+        Orchestrate(u8),
+        /// The next lifecycle event for the operation's current phase.
+        Advance(u8, u8),
+    }
+
+    fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+        use proptest::prelude::*;
+        let op = || 1..6_u8;
+        let lease = || prop_oneof![9 => Just(0_u8), 1 => Just(1_u8)];
+        let declare = (
+            4..6_u8,
+            proptest::option::of(op()),
+            proptest::option::weighted(0.2, op()),
+        );
+        prop_oneof![
+            1 => (declare, 0..3_u8, 0..2_u64).prop_map(
+                |((op, parent, dependency), orchestration, resources)| Step::Declare {
+                    op,
+                    parent,
+                    dependency,
+                    orchestration,
+                    resources,
+                },
+            ),
+            2 => op().prop_map(Step::WaitForCapacity),
+            4 => (op(), lease(), 0..3_u64)
+                .prop_map(|(op, lease, amount)| Step::Admit(op, lease, amount)),
+            1 => (op(), lease(), 0..3_u64)
+                .prop_map(|(op, lease, amount)| Step::PartiallyAdmit(op, lease, amount)),
+            1 => op().prop_map(Step::Reject),
+            4 => (op(), lease()).prop_map(|(op, lease)| Step::Start(op, lease)),
+            1 => (op(), lease()).prop_map(|(op, lease)| Step::Checkpoint(op, lease)),
+            3 => (op(), lease()).prop_map(|(op, lease)| Step::WaitForChildren(op, lease)),
+            1 => (op(), lease()).prop_map(|(op, lease)| Step::ReleaseLease(op, lease)),
+            1 => (op(), any::<bool>()).prop_map(|(op, recursive)| Step::Cancel(op, recursive)),
+            4 => (op(), 0..4_u8, proptest::option::weighted(0.8, lease()))
+                .prop_map(|(op, outcome, fence)| Step::Complete(op, outcome, fence)),
+            4 => op().prop_map(Step::Orchestrate),
+            12 => (op(), any::<u8>()).prop_map(|(op, choice)| Step::Advance(op, choice)),
+        ]
+    }
+
+    fn reservation(lease: u8, amount: u64) -> Reservation {
+        Reservation {
+            id: format!("lease-{lease}"),
+            placement: "worker".into(),
+            admitted: ResourceRequest(BTreeMap::from([("cpu".into(), amount)])),
+        }
+    }
+
+    fn fence(lease: u8) -> LeaseFence {
+        LeaseFence::from(&reservation(lease, 0))
+    }
+
+    fn event(scheduler: &Scheduler, step: Step) -> Result<Option<SchedulerEvent>> {
+        Ok(Some(match step {
+            Step::Declare {
+                op,
+                parent,
+                dependency,
+                orchestration,
+                resources,
+            } => {
+                let orchestration = match orchestration {
+                    0 => Orchestration::Leaf,
+                    1 => Orchestration::Join,
+                    _ => Orchestration::Race,
+                };
+                let mut declared = spec(id(op), orchestration)?;
+                declared.dependencies.extend(dependency.map(id));
+                declared.resources = ResourceRequest(BTreeMap::from([("cpu".into(), resources)]));
+                if let Some(parent) = parent {
+                    declared.owner = spec(id(parent), Orchestration::Leaf)?.owner;
+                    declared.parent = Some(ParentLink {
+                        operation_id: id(parent),
+                        slot: format!("slot-{op}"),
+                    });
+                }
+                SchedulerEvent::Declared {
+                    spec: Box::new(declared),
+                }
+            }
+            Step::WaitForCapacity(op) => SchedulerEvent::WaitingForCapacity {
+                operation_id: id(op),
+            },
+            Step::Admit(op, lease, amount) => SchedulerEvent::Admitted {
+                operation_id: id(op),
+                reservation: reservation(lease, amount),
+            },
+            Step::PartiallyAdmit(op, lease, amount) => SchedulerEvent::PartiallyAdmitted {
+                operation_id: id(op),
+                reservation: reservation(lease, amount),
+            },
+            Step::Reject(op) => SchedulerEvent::Rejected {
+                operation_id: id(op),
+                reason: "rejected".into(),
+            },
+            Step::Start(op, lease) => SchedulerEvent::Started {
+                operation_id: id(op),
+                fence: fence(lease),
+            },
+            Step::Checkpoint(op, lease) => SchedulerEvent::Checkpointed {
+                operation_id: id(op),
+                checkpoint: crate::resources::CheckpointRef::new(
+                    ProviderRef::new("example", "machines", "1")?,
+                    vec![1],
+                    None,
+                )?,
+                fence: fence(lease),
+            },
+            Step::WaitForChildren(op, lease) => SchedulerEvent::WaitingForChildren {
+                operation_id: id(op),
+                fence: fence(lease),
+            },
+            Step::ReleaseLease(op, lease) => SchedulerEvent::LeaseReleased {
+                operation_id: id(op),
+                fence: fence(lease),
+            },
+            Step::Cancel(op, recursive) => SchedulerEvent::CancellationRequested {
+                operation_id: id(op),
+                recursive,
+            },
+            Step::Complete(op, outcome, lease) => SchedulerEvent::Completed {
+                operation_id: id(op),
+                outcome: match outcome {
+                    0 => Outcome::Succeeded(result_ref(b"2")?),
+                    1 => Outcome::Failed {
+                        message: "failed".into(),
+                    },
+                    2 => Outcome::Cancelled,
+                    _ => Outcome::Indeterminate {
+                        operation_id: id(op),
+                    },
+                },
+                fence: lease.map(fence),
+                execution_duration_ns: None,
+            },
+            Step::Advance(op, choice) => {
+                let Some(state) = scheduler.operation(id(op)) else {
+                    return Ok(None);
+                };
+                let lease = u8::from(
+                    state
+                        .reservation
+                        .as_ref()
+                        .is_some_and(|held| held.id == "lease-1"),
+                );
+                let next = match state.phase {
+                    OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity => {
+                        Step::Admit(op, lease, 1)
+                    }
+                    OperationPhase::Admitted => Step::Start(op, lease),
+                    OperationPhase::Running if state.spec.orchestration != Orchestration::Leaf => {
+                        Step::WaitForChildren(op, lease)
+                    }
+                    OperationPhase::Running => Step::Complete(op, choice % 4, Some(lease)),
+                    OperationPhase::WaitingForChildren => Step::Orchestrate(op),
+                    OperationPhase::Reconciling => Step::Complete(op, choice % 3, None),
+                    OperationPhase::Terminal => return Ok(None),
+                };
+                return event(scheduler, next);
+            }
+            Step::Orchestrate(op) => {
+                let Some(parent) = scheduler.operation(id(op)) else {
+                    return Ok(None);
+                };
+                let (outcome, cancel, reduction_digest) = match scheduler.orchestration(id(op)) {
+                    OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None),
+                    OrchestrationDecision::Assemble {
+                        assembly,
+                        values,
+                        cancel,
+                    } => (
+                        Outcome::Succeeded(result_ref(b"3")?),
+                        cancel,
+                        Some(assembly_invocation_digest(assembly, &values)?),
+                    ),
+                    OrchestrationDecision::Wait | OrchestrationDecision::Reduce { .. } => {
+                        return Ok(None);
+                    }
+                };
+                SchedulerEvent::Orchestrated {
+                    operation_id: id(op),
+                    expected_revision: parent.revision,
+                    outcome,
+                    cancel,
+                    reducer: None,
+                    reduction_digest,
+                }
+            }
+        }))
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn scheduler_apply_preserves_lifecycle_invariants(
+            orchestration in 0..3_u8,
+            steps in proptest::collection::vec(step(), 1..64),
+        ) {
+            use proptest::prelude::*;
+            let fail = |error: Error| TestCaseError::fail(error.to_string());
+            let mut scheduler = Scheduler::new();
+            // A parent with two children gives every step something to act on.
+            for (op, parent) in [(1, None), (2, Some(1)), (3, Some(1))] {
+                let declared = Step::Declare {
+                    op,
+                    parent,
+                    dependency: None,
+                    orchestration: if parent.is_none() { orchestration } else { 0 },
+                    resources: 1,
+                };
+                if let Some(event) = event(&scheduler, declared).map_err(fail)? {
+                    scheduler.apply(event).map_err(fail)?;
+                }
+            }
+            for step in steps {
+                let Some(event) = event(&scheduler, step).map_err(fail)? else {
+                    continue;
+                };
+                let before = scheduler.clone();
+                if scheduler.apply(event).is_err() {
+                    prop_assert_eq!(&scheduler, &before);
+                    continue;
+                }
+                for (id, prior) in &before.operations {
+                    let current = scheduler.operations.get(id);
+                    prop_assert!(current.is_some_and(|current| current.revision >= prior.revision));
+                    if prior.phase == OperationPhase::Terminal {
+                        // Terminal is absorbing; only an idempotent request
+                        // may still advance its revision.
+                        let current = current.map(|current| OperationState {
+                            revision: prior.revision,
+                            ..current.clone()
+                        });
+                        prop_assert_eq!(current.as_ref(), Some(prior), "terminal is absorbing");
+                    }
+                }
+                for operation in scheduler.operations.values() {
+                    prop_assert_eq!(
+                        operation.outcome.is_some(),
+                        matches!(
+                            operation.phase,
+                            OperationPhase::Terminal | OperationPhase::Reconciling
+                        )
+                    );
+                    prop_assert!(operation.reservation.is_none() || matches!(
+                        operation.phase,
+                        OperationPhase::WaitingForCapacity
+                            | OperationPhase::Admitted
+                            | OperationPhase::Running
+                    ));
+                }
+                let completed = scheduler.completion_order.iter().collect::<BTreeSet<_>>();
+                prop_assert_eq!(completed.len(), scheduler.completion_order.len());
+                let terminal = scheduler
+                    .operations
+                    .values()
+                    .filter(|operation| operation.phase == OperationPhase::Terminal)
+                    .map(|operation| &operation.spec.operation_id)
+                    .collect::<BTreeSet<_>>();
+                prop_assert_eq!(completed, terminal);
+            }
+        }
+    }
+
     #[test]
     fn declarations_store_state_references_and_bound_placement_metadata() -> Result<()> {
         let scheduler = Scheduler::new();
