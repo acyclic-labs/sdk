@@ -885,12 +885,7 @@ export interface NativeFsOptions {
   readonly objectCache: ObjectCacheOptions;
 }
 
-export interface ObjectCacheOptions {
-  readonly maximumEntries: number;
-  readonly maximumBytes: bigint;
-  readonly maximumInFlight: number;
-  readonly maximumWaitersPerObject: number;
-}
+export type ObjectCacheOptions = Readonly<NativeBinding.NativeObjectCacheOptions>;
 
 export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = GENERATED_OBJECT_CACHE_OPTIONS;
 
