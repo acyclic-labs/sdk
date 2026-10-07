@@ -706,6 +706,7 @@ fn validate_version_entry(
     }
     if schema == DATA_SCHEMA_VERSION {
         validate_v2_document_shape(&data_bytes, &entry.version)?;
+        validate_v2_schema_sidecar(output_dir, entry)?;
     }
     let data: DocsData = serde_json::from_slice(&data_bytes).map_err(|error| {
         Error::Invalid(format!(
@@ -739,6 +740,38 @@ fn validate_version_entry(
     }
     validate_source_info(&data.source, &data.channel)?;
     validate_navigation(&data)?;
+    Ok(())
+}
+
+fn validate_v2_schema_sidecar(output_dir: &Path, entry: &VersionEntry) -> Result<(), Error> {
+    let data_path = output_dir.join(&entry.data_file);
+    let sidecar_path = data_path
+        .parent()
+        .ok_or_else(|| Error::Invalid("v2 data file has no version directory".into()))?
+        .join("sdk-docs-data.v2.schema.json");
+    reject_reparse_ancestors(&sidecar_path)?;
+    let metadata = fs::symlink_metadata(&sidecar_path).map_err(|_| {
+        Error::Invalid(format!(
+            "version index entry {} refers to a missing v2 schema sidecar {}",
+            entry.version,
+            sidecar_path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Invalid(format!(
+            "version index entry {} v2 schema sidecar is not a regular file {}",
+            entry.version,
+            sidecar_path.display()
+        )));
+    }
+    let expected = serde_json::to_vec_pretty(&schema_json()?)?;
+    let actual = fs::read(&sidecar_path)?;
+    if actual != expected {
+        return Err(Error::Invalid(format!(
+            "version index entry {} v2 schema sidecar does not match the pinned schema",
+            entry.version
+        )));
+    }
     Ok(())
 }
 
@@ -1922,6 +1955,16 @@ pub fn schema_json() -> Result<serde_json::Value, Error> {
             required.push(serde_json::Value::String(field.into()));
         }
     }
+    let properties = object
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| Error::Invalid("DocsData schema properties are missing".into()))?;
+    for field in ["schema", "schemaVersion"] {
+        let property = properties
+            .get_mut(field)
+            .ok_or_else(|| Error::Invalid(format!("DocsData schema property {field} is missing")))?;
+        property["const"] = serde_json::Value::String(DATA_SCHEMA_VERSION.into());
+    }
     Ok(schema)
 }
 
@@ -1941,6 +1984,28 @@ mod tests {
             .expect("DocsData JSON schema should declare required fields");
         assert!(required.iter().any(|field| field == "packages"));
         assert!(required.iter().any(|field| field == "search"));
+        assert_eq!(first["properties"]["schema"]["const"], DATA_SCHEMA_VERSION);
+        assert_eq!(first["properties"]["schemaVersion"]["const"], DATA_SCHEMA_VERSION);
+        let mut wrong = serde_json::json!({
+            "schema": "sdk-docs-data.v1",
+            "schemaVersion": DATA_SCHEMA_VERSION,
+            "packages": {},
+            "search": {}
+        });
+        let error = validate_v2_document_shape(
+            &serde_json::to_vec(&wrong).expect("wrong-schema fixture should serialize"),
+            "1.0.0",
+        )
+        .expect_err("v2 schema validator must reject the wrong schema constant");
+        assert!(error.to_string().contains("must set schema"));
+        wrong["schema"] = DATA_SCHEMA_VERSION.into();
+        wrong["schemaVersion"] = "sdk-docs-data.v1".into();
+        let error = validate_v2_document_shape(
+            &serde_json::to_vec(&wrong).expect("wrong-version fixture should serialize"),
+            "1.0.0",
+        )
+        .expect_err("v2 schema validator must reject the wrong schemaVersion constant");
+        assert!(error.to_string().contains("must set schemaVersion"));
     }
     #[test]
     fn slug_and_title_are_deterministic() {
@@ -2073,7 +2138,7 @@ mod tests {
 
         for logical_path in [
             "generated/actors/CON.txt",
-            "generated/actors/unicode-ÃƒÅ½Ã‚Â».rs",
+            "generated/actors/unicode-ÃƒÆ’Ã…Â½Ãƒâ€šÃ‚Â».rs",
             "generated/actors/bad<name.rs",
             "generated/actors/bad>name.rs",
             "generated/actors/bad\"name.rs",
@@ -2919,6 +2984,30 @@ mod tests {
         write_bundle(&data, &output, true).expect("initial release should write");
         let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
         let valid = fs::read(&data_path).expect("valid bundle should be readable");
+        let schema_path = output.join("releases/1.0.0/sdk-docs-data.v2.schema.json");
+        let schema = fs::read(&schema_path).expect("v2 schema sidecar should be readable");
+        let index_path = output.join("sdk-docs-versions.v1.json");
+        let index_before_sidecar_failure =
+            fs::read(&index_path).expect("index should be readable before sidecar checks");
+        fs::remove_file(&schema_path).expect("schema sidecar should be removable");
+        let error = write_bundle(&data, &output, true)
+            .expect_err("missing v2 schema sidecar must block publication");
+        assert!(error.to_string().contains("missing v2 schema sidecar"));
+        assert_eq!(valid, fs::read(&data_path).expect("data must remain unchanged"));
+        assert_eq!(
+            index_before_sidecar_failure,
+            fs::read(&index_path).expect("index must remain unchanged")
+        );
+        fs::write(&schema_path, b"{}").expect("corrupt schema sidecar should be writable");
+        let error = write_bundle(&data, &output, true)
+            .expect_err("corrupt v2 schema sidecar must block publication");
+        assert!(error.to_string().contains("does not match the pinned schema"));
+        assert_eq!(valid, fs::read(&data_path).expect("data must remain unchanged"));
+        assert_eq!(
+            index_before_sidecar_failure,
+            fs::read(&index_path).expect("index must remain unchanged")
+        );
+        fs::write(&schema_path, schema).expect("valid schema sidecar should be restored");
         let mut missing_packages: serde_json::Value =
             serde_json::from_slice(&valid).expect("valid bundle should be JSON");
         missing_packages
@@ -2929,7 +3018,6 @@ mod tests {
             .expect("missing-package bundle should serialize");
         fs::write(&data_path, &missing_packages_bytes)
             .expect("missing-package bundle should be writable");
-        let index_path = output.join("sdk-docs-versions.v1.json");
         let mut index: VersionIndex =
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
@@ -3087,6 +3175,25 @@ mod tests {
         data.channel = Channel::Preview;
         data.source.revision = "3".repeat(40);
         write_bundle(&data, &output, false).expect("preview should write");
+        let preview_data_path = output.join("preview/preview-1/sdk-docs-data.v2.json");
+        let preview_bytes =
+            fs::read(&preview_data_path).expect("preview data should remain readable");
+        let preview_index_path = output.join("sdk-docs-versions.v1.json");
+        let preview_index_before_conflict =
+            fs::read(&preview_index_path).expect("preview index should be readable");
+        let mut conflicting_preview = data.clone();
+        conflicting_preview.source.revision = "f".repeat(40);
+        let error = write_bundle(&conflicting_preview, &output, false)
+            .expect_err("same preview version with a different revision must be immutable");
+        assert!(error.to_string().contains("refusing to rewrite"));
+        assert_eq!(
+            preview_bytes,
+            fs::read(&preview_data_path).expect("preview data must remain unchanged")
+        );
+        assert_eq!(
+            preview_index_before_conflict,
+            fs::read(&preview_index_path).expect("preview index must remain unchanged")
+        );
         data.version = "preview-2".into();
         data.source.revision = "4".repeat(40);
         write_bundle(&data, &output, false).expect("preview should advance");

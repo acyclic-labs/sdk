@@ -49,7 +49,7 @@ the physical file, rejects symlink or reparse-point paths, rejects absolute or
 escaping logical paths, rejects duplicate mappings, and verifies the digest
 before projection and again after projection. The resulting `SourceSpan.path`
 uses the logical path while retaining Rustdoc's line and column coordinates;
-generated-source inputs are transient and do not add fields to the v1 output
+generated-source inputs are transient and do not add fields to the v2 output
 schema.
 
 Crate-root `//!` documentation becomes a guide at the crate path. Public module
