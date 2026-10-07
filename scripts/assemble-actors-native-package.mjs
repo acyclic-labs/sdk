@@ -80,6 +80,10 @@ async function main() {
       recursive: true,
       filter: (source) => !source.endsWith(".node"),
     });
+    run(process.execPath, [
+      join(root, "scripts/build-actors-native.mjs"), "stage", "--bundle", bundle,
+      "--output", join(parentRoot, "generated/native"),
+    ]);
     await mkdir(output, { recursive: true });
     const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
 
