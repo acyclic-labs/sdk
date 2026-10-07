@@ -1358,36 +1358,6 @@ export declare class NativeWorkspaceTransaction {
   rebase(maximumConflicts: number): Promise<NativeTransactionRebaseResult>
 }
 
-/** Decodes a versioned merge-candidate envelope to its canonical payload. */
-export declare function decodeMergeCandidateJson(valueJson: string): string
-
-/** Decodes a versioned merge-plan envelope to its canonical payload. */
-export declare function decodeMergePlanJson(valueJson: string): string
-
-/** Decodes a multi-root candidate envelope to its canonical payload. */
-export declare function decodeMultiRootCandidateJson(valueJson: string): string
-
-/** Decodes a versioned multi-root plan envelope to its canonical payload. */
-export declare function decodeMultiRootPlanJson(valueJson: string): string
-
-/** Decodes a versioned publication envelope to its canonical payload. */
-export declare function decodePublicationJson(valueJson: string): string
-
-/** Encodes a merge-candidate payload in the versioned compatibility envelope. */
-export declare function encodeMergeCandidateJson(valueJson: string): string
-
-/** Encodes a merge-plan payload in the versioned compatibility envelope. */
-export declare function encodeMergePlanJson(valueJson: string): string
-
-/** Encodes a multi-root candidate payload in the compatibility envelope. */
-export declare function encodeMultiRootCandidateJson(valueJson: string): string
-
-/** Encodes a multi-root plan payload in the versioned compatibility envelope. */
-export declare function encodeMultiRootPlanJson(valueJson: string): string
-
-/** Encodes a publication payload in the versioned compatibility envelope. */
-export declare function encodePublicationJson(valueJson: string): string
-
 /** One direct-live authored transaction result with stable create positions. */
 export interface NativeAuthoredLiveMutationResult {
   /** One entry per authored operation; only create operations contain identities. */

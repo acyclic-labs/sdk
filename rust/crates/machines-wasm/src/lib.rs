@@ -6,9 +6,9 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
 use sha2::{Digest as _, Sha256};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -72,8 +72,7 @@ macro_rules! define_http_routes {
             "export interface MachinesHttpRoutes {\n",
             $("    readonly ", stringify!($name), ": ", stringify!($route), ";\n",)+
             "}\n\n",
-            "export function httpRoutes(): MachinesHttpRoutes;\n",
-            "export function httpRoute(route: MachinesHttpRoute): MachinesHttpRoute;\n\n",
+            "export function httpRoutes(): MachinesHttpRoutes;\n\n",
             "export interface MachinesHttpRequestMap {\n",
             $("    ", stringify!($route), ": ", $request, ";\n",)+
             "}\n\n",
@@ -146,13 +145,79 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
     Ok(Uuid::from_bytes(bytes).to_string())
 }
 
-/// Canonicalizes a hosted HTTP route through the Rust-owned route table before
-/// a client uses it to construct a request URL.
-#[wasm_bindgen(js_name = httpRoute, unchecked_return_type = "MachinesHttpRoute")]
-pub fn http_route(
-    #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
-) -> Result<String, JsValue> {
-    Ok(http_route::canonical(&route)?.to_owned())
+/// Validates transport-only options before the HTTP adapter constructs a
+/// request. Endpoint URL policy remains in JavaScript because this crate does
+/// not carry a URL parser; token and response-bound policy stay Rust-owned.
+#[wasm_bindgen(js_name = validateTransportOptions)]
+pub fn validate_transport_options(
+    #[wasm_bindgen(unchecked_param_type = "string")] token: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: JsValue,
+) -> Result<(), JsValue> {
+    let token = token.as_string().ok_or_else(|| {
+        js_error(
+            "invalid-token",
+            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+        )
+    })?;
+    let maximum_response_bytes = maximum_response_bytes.as_f64().ok_or_else(|| {
+        js_error(
+            "invalid-maximum",
+            "maximumResponseBytes must be a positive safe integer",
+        )
+    })?;
+    if token.chars().all(is_js_whitespace)
+        || token.as_bytes().len() > 8192
+        || token
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return Err(js_error(
+            "invalid-token",
+            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+        ));
+    }
+    if !public::is_safe_integer(maximum_response_bytes) || maximum_response_bytes <= 0.0 {
+        return Err(js_error(
+            "invalid-maximum",
+            "maximumResponseBytes must be a positive safe integer",
+        ));
+    }
+    Ok(())
+}
+
+fn is_js_whitespace(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+/// Validates the canonical Machines page-size policy before any provider is
+/// called, including custom TypeScript providers.
+#[wasm_bindgen(js_name = validatePageSize)]
+pub fn validate_page_size(
+    #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
+) -> Result<(), JsValue> {
+    let value = value
+        .as_f64()
+        .ok_or_else(|| js_error("invalid-page-size", "machine page limit must be 1..=256"))?;
+    if !public::is_safe_integer(value) || value < 1.0 || value > MAX_PAGE_SIZE as f64 {
+        return Err(js_error(
+            "invalid-page-size",
+            "machine page limit must be 1..=256",
+        ));
+    }
+    Ok(())
 }
 
 /// Parses and normalizes an immutable OCI image reference using the canonical
@@ -397,44 +462,26 @@ impl WasmSimulatedMachines {
         public::dispatch(&self.inner, operation_name, payload).await
     }
 
-    /// Validates and projects a hosted HTTP response against its request context.
-    #[wasm_bindgen]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "wasm-bindgen exports owned JavaScript strings"
-    )]
-    pub fn validate_http_response(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
-        response_json: String,
-        expected_json: String,
-    ) -> Result<(), JsValue> {
-        http::validate(&route, &response_json, &expected_json)
-    }
-
     /// Decodes a hosted HTTP response using the Rust-owned scalar wrappers and
     /// the same public DTO shape as simulator methods.
     #[wasm_bindgen(
         js_name = decodeHttpResponse,
         unchecked_return_type = "MachinesHttpResponseUnion"
     )]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "wasm-bindgen exports owned JavaScript strings"
-    )]
     pub fn decode_http_response(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
-        response_json: String,
-        expected_json: String,
+        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: &str,
+        response_json: &str,
+        expected_json: &str,
     ) -> Result<JsValue, JsValue> {
-        http::decode(&route, &response_json, &expected_json)
+        http::decode(route, response_json, expected_json)
     }
 
     /// Encodes a natural hosted request using Rust-owned bigint and bytes
     /// wrappers before it crosses the HTTP boundary.
     #[wasm_bindgen(js_name = encodeHttpRequest)]
     pub fn encode_http_request(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRequestUnion")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRequestUnion")] request: &JsValue,
     ) -> Result<String, JsValue> {
-        http::encode_request(&request)
+        http::encode_request(request)
     }
 }

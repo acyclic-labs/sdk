@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
-import { normalize_identity as rustNormalizeIdentity, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { normalize_identity as rustNormalizeIdentity, validatePageSize, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -69,6 +69,10 @@ describe("Machines simulation", () => {
       await reject(() => wasm.create({ ...base, expiration: { kind: "never", milliseconds: 1 } as never }), "unknown field");
       await reject(() => wasm.create({ ...base, expiration: { kind: "max-age", milliseconds: 0 } }), "nonzero");
       await reject(() => wasm.qualifyImage({ kind: "managed-oci", digestHex: "0".repeat(64) }), "zero");
+      // Rejections return through Rust rather than throwing past its frames,
+      // so the instance that saw every malformed input above stays usable.
+      const created = await wasm.create({ ...base, idempotencyKey: rustNormalizeIdentity("idempotency", "malformed-wasm") });
+      expect(created.kind).toBe("created");
     } finally {
       wasm.free();
     }
@@ -132,7 +136,7 @@ describe("Machines simulation", () => {
     expect((await machines.qualifyImage(image)).image).toEqual(image);
     const created = await machines.create({ ...request("high-level"), idempotencyKey: idempotencyKey("high-level") });
     expect((await machines.attach(created.id)).id).toBe(created.id);
-    await expect(machines.attach(machineId("missing"))).rejects.toThrow("resource not found");
+    await expect(machines.attach(machineId("missing"))).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
     const operation = await machines.recoverOperation(idempotencyKey("high-level"));
     expect(await machines.recover(operation.id)).toEqual({ id: operation.id, phase: "succeeded" });
     expect(await machines.recoverMutation(idempotencyKey("high-level"))).toHaveProperty("kind", "created");
@@ -205,8 +209,8 @@ describe("Machines simulation", () => {
     const observations = [];
     for await (const observation of provider.watchOperation(operation)) observations.push(observation);
     expect(observations).toEqual([expected]);
-    await expect(provider.recoverOperation("unknown")).rejects.toThrow("resource not found");
-    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toThrow("resource not found");
+    await expect(provider.recoverOperation("unknown")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
+    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
   });
 
   test("uses the lineage receipt commitment instead of the retired quantity", async () => {
@@ -298,10 +302,52 @@ describe("Machines simulation", () => {
   test("managed transport rejects insecure configuration and malformed contracts", async () => {
     expect(() => new HttpMachinesProvider({ endpoint: "http://example.test", token: "x" })).toThrow(TypeError);
     expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 0 })).toThrow(RangeError);
+    for (const maximumResponseBytes of [1.5, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes })).toThrow(RangeError);
+    }
     const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ id: "machine", state: "imaginary" })) });
     await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
     const invalidUtf8 = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([0xff])) });
     await expect(invalidUtf8.inspectMachine("machine" as never)).rejects.toThrow("valid UTF-8");
+  });
+
+  test("Rust transport validators reject coerced JavaScript values", () => {
+    const validateTransport = validateTransportOptions as unknown as (token: unknown, maximum: unknown) => void;
+    const validatePage = validatePageSize as unknown as (pageSize: unknown) => void;
+    for (const maximum of ["1", true, new Number(1), 1n, Symbol("maximum"), null, undefined]) {
+      expect(() => validateTransport("x", maximum)).toThrow();
+    }
+    for (const token of [null, true, new String("x"), 1n, Symbol("token"), undefined]) {
+      expect(() => validateTransport(token, 1)).toThrow();
+    }
+    expect(() => validateTransport("\uFEFF", 1)).toThrow();
+    expect(() => validateTransport(" \uFEFF ", 1)).toThrow();
+    validateTransport("x", 1);
+    for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, 257, 1.5]) {
+      expect(() => validatePage(pageSize)).toThrow();
+    }
+    validatePage(1);
+  });
+
+  test("delegates machine page limits to the Rust provider boundary", async () => {
+    const machines = new Machines(new SimulatedMachines());
+    await expect(machines.list({ pageSize: 0, maximum: 1 }).next()).rejects.toThrow("machine page limit must be 1..=256");
+    await expect(machines.list({ pageSize: 257, maximum: 257 }).next()).rejects.toThrow("machine page limit must be 1..=256");
+  });
+
+  test("validates page size before custom providers are called", async () => {
+    class RecordingProvider extends SimulatedMachines {
+      calls = 0;
+      override listMachines(after: ReturnType<typeof machineId> | null, limit: number) {
+        this.calls += 1;
+        return Promise.resolve({ machines: [], next: after });
+      }
+    }
+    const provider = new RecordingProvider();
+    for (const pageSize of [0, 257, 1.5]) {
+      await expect(new Machines(provider).list({ pageSize, maximum: 1 }).next()).rejects.toThrow(RangeError);
+    }
+    expect(provider.calls).toBe(0);
   });
 
   test("managed transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {

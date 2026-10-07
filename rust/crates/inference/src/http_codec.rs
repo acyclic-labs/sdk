@@ -23,11 +23,9 @@ pub struct HttpRoute {
 
 fn pool() -> Result<&'static DescriptorPool, &'static str> {
     static POOL: OnceLock<Option<DescriptorPool>> = OnceLock::new();
-    POOL.get_or_init(|| {
-        DescriptorPool::decode(include_bytes!("../inference_descriptor.bin").as_slice()).ok()
-    })
-    .as_ref()
-    .ok_or("inference descriptor is unavailable")
+    POOL.get_or_init(|| DescriptorPool::decode(crate::DESCRIPTOR).ok())
+        .as_ref()
+        .ok_or("inference descriptor is unavailable")
 }
 
 /// Derive the complete public route inventory from the canonical descriptor.

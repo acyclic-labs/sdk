@@ -7,7 +7,7 @@
 // set includes the in-memory backend the test suites run on: a Cargo test
 // build unifies dev-dependency features, so only a library-only run proves
 // that the library itself builds without them.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const fs = ["-p", "acyclic-fs"];
 const fsOnly = features => [...fs, "--no-default-features", ...(features ? ["--features", features] : [])];
@@ -30,6 +30,8 @@ const withTests = [
   ["-p", "acyclic-stream"],
   ["-p", "acyclic-stream", "--no-default-features"],
   ["-p", "acyclic-stream", "--no-default-features", "--features", "local"],
+  // Inference without its gRPC host, as the browser build uses it.
+  ["-p", "acyclic-inference", "--no-default-features"],
   // Harness host runtime alone, then each provider adapter feature alone.
   ["-p", "acyclic-harness"],
   ["-p", "acyclic-harness", "--features", "filesystem"],
@@ -52,13 +54,28 @@ const libraryOnly = [
   fsOnly("s3-http"),
 ];
 
-function clippy(args) {
-  const command = ["clippy", ...args, "--locked", "--", "-D", "warnings"];
-  process.stderr.write(`cargo ${command.join(" ")}\n`);
-  const result = spawnSync("cargo", command, { stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+// Each set is its own Cargo invocation, so `clippy-feature-sets.mjs WORKERS`
+// may lint several at once. Every extra worker gets its own target directory
+// so Cargo's build lock never serializes them; a shared compiler cache still
+// deduplicates their dependencies.
+const workers = Number(process.argv[2] ?? 1);
+const sets = [...withTests.map(set => [...set, "--all-targets"]), ...libraryOnly];
+let failed = 0;
+
+async function worker(index) {
+  const target = `${process.env.CARGO_TARGET_DIR ?? "target"}-clippy-${index}`;
+  const env = index === 0 ? process.env : { ...process.env, CARGO_TARGET_DIR: target };
+  for (let set = sets.shift(); set && !failed; set = sets.shift()) {
+    const command = ["clippy", ...set, "--locked", "--", "-D", "warnings"];
+    const child = spawn("cargo", command, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", chunk => (output += chunk));
+    child.stderr.on("data", chunk => (output += chunk));
+    const status = await new Promise((resolve, reject) => child.on("error", reject).on("close", resolve));
+    process.stderr.write(`cargo ${command.join(" ")}\n${output}`);
+    if (status !== 0) failed ||= status ?? 1;
+  }
 }
 
-for (const set of withTests) clippy([...set, "--all-targets"]);
-for (const set of libraryOnly) clippy(set);
+await Promise.all(Array.from({ length: workers }, (_, index) => worker(index)));
+process.exitCode = failed;

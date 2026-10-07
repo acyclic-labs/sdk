@@ -290,6 +290,27 @@ fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     assert!(matches!(zero.error, DirectoryReadError::ZeroLimit));
     assert_eq!(*zero.work, WorkCounters::default());
 
+    // Host bindings build cursors without the volume's name bound.
+    let oversized = LogicalName::new(NameEncoding::Utf8, vec![b'a'; 256], u32::MAX)?;
+    let cursor = list_tree_entries(
+        &store,
+        root,
+        Some(&oversized),
+        1,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+    )
+    .err()
+    .ok_or("oversized directory cursor unexpectedly succeeded")?;
+    assert!(matches!(
+        cursor.error,
+        DirectoryReadError::Decode(CanonicalDecodeError::FieldTooLarge {
+            observed: 256,
+            maximum: 255,
+        })
+    ));
+    assert_eq!(*cursor.work, WorkCounters::default());
+
     let wrong = list_tree_entries(
         &store,
         ObjectId {

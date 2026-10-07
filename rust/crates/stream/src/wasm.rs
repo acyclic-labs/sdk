@@ -9,7 +9,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use tsify_next::Tsify;
+use tsify::{Ts, Tsify};
 use wasm_bindgen::{JsCast, prelude::*};
 
 use crate::{
@@ -18,7 +18,6 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 #[allow(missing_docs)]
 pub enum StreamErrorCode {
     InvalidPath,
@@ -88,7 +87,7 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
 
 /// Type-only bridge for the complete Rust-owned Stream error-code contract.
 #[wasm_bindgen(js_name = __streamErrorCodeContract)]
-pub fn stream_error_code_contract(value: StreamErrorCode) -> StreamErrorCode {
+pub fn stream_error_code_contract(value: Ts<StreamErrorCode>) -> Ts<StreamErrorCode> {
     value
 }
 

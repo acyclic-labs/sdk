@@ -9,8 +9,6 @@ use crate::MAXIMUM_MESSAGE_BYTES;
 use crate::contract;
 use crate::wire;
 
-/// Customer-only reflection; no backend descriptors or implementation are packaged.
-pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
 /// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
 pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must contain 1 to 65536 bytes";
@@ -1058,6 +1056,7 @@ fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DESCRIPTOR;
     use prost::Message;
 
     fn evaluation_spec() -> wire::EvaluationSpec {

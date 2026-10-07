@@ -35,7 +35,7 @@ function targetPath(value) {
 }
 
 function parseArguments(argv) {
-  const result = { binary: [] };
+  const result = { binary: /** @type {string[]} */ ([]) };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (!["--binary", "--out"].includes(argument)) {

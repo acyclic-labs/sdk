@@ -33,7 +33,7 @@ crc-fast = { version = "1.10.0", optional = true }
 [dev-dependencies]
 proptest.workspace = true
 axum.workspace = true
-hmac = "0.12.1"
+hmac = "0.13.0"
 http.workspace = true
 rcgen = "0.14.10"
 sha2.workspace = true
@@ -61,7 +61,7 @@ cc = "1.2.56"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
-tsify-next = { version = "0.5.6", features = ["js"], optional = true }
+tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -104,7 +104,7 @@ native-watch = ["dep:notify"]
 native-mount = ["native-watch", "dep:fs2", "dep:fuser"]
 s3-http = ["distributed", "dep:base64", "dep:crc-fast", "dep:s3s", "dep:serde_urlencoded", "dep:subtle", "dep:sync_wrapper", "dep:time", "dep:urlencoding"]
 distributed = ["dep:acyclic-objects", "dep:acyclic-stream"]
-typescript = ["dep:tsify-next", "dep:wasm-bindgen"]
+typescript = ["dep:tsify", "dep:wasm-bindgen"]
 
 [lints]
 workspace = true

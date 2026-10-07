@@ -352,6 +352,71 @@ test("framed status mismatch rejects instead of stranding observation", async ()
   ])).rejects.toBeInstanceOf(WireError);
 });
 
+test("WebSocket bounds each server message in UTF-8 bytes", async () => {
+  expect(() => new WebSocketWireTransport("ws://example.test", negotiation, undefined, 0)).toThrow(RangeError);
+  const handshakeFrame = toJsonString(ServerFrameSchema, create(ServerFrameSchema, {
+    frame: { case: "handshake", value: handshake },
+  }));
+  const maximum = handshakeFrame.length;
+  // Non-ASCII text within the UTF-16 length bound but over the UTF-8 byte bound.
+  const wide = "é".repeat(Math.floor(maximum / 2) + 1);
+  expect(wide.length).toBeLessThan(maximum);
+  for (const oversized of [wide, new Uint8Array(maximum + 1), new Blob(["x".repeat(maximum + 1)])]) {
+    class FakeSocket extends EventTarget {
+      readonly readyState = WebSocket.OPEN;
+      sent = 0;
+      send() {
+        this.sent += 1;
+        const data = this.sent === 1 ? handshakeFrame : oversized;
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data })));
+      }
+      close() {}
+    }
+    const connection = await new WebSocketWireTransport("ws://example.test/v2/harness/ws", negotiation,
+      () => new FakeSocket() as unknown as WebSocket, maximum).connect(resume);
+    await expect((async () => { for await (const _ of connection) { /* drain */ } })())
+      .rejects.toThrow("server message exceeds configured bound");
+  }
+});
+
+test("a rejected WebSocket handshake closes its socket and listeners", async () => {
+  const handshakeFrame = toJsonString(ServerFrameSchema, create(ServerFrameSchema, {
+    frame: { case: "handshake", value: handshake },
+  }));
+  let listeners = 0;
+  let closed = false;
+  class FakeSocket extends EventTarget {
+    readonly readyState = WebSocket.OPEN;
+    override addEventListener(...args: Parameters<EventTarget["addEventListener"]>) {
+      listeners += 1;
+      super.addEventListener(...args);
+    }
+    override removeEventListener(...args: Parameters<EventTarget["removeEventListener"]>) {
+      listeners -= 1;
+      super.removeEventListener(...args);
+    }
+    send() { queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: handshakeFrame }))); }
+    close() { closed = true; }
+  }
+  await expect(new WebSocketWireTransport("ws://example.test/v2/harness/ws", negotiation,
+    () => new FakeSocket() as unknown as WebSocket, handshakeFrame.length - 1).connect(resume))
+    .rejects.toThrow("server message exceeds configured bound");
+  expect(closed).toBeTrue();
+  expect(listeners).toBe(0);
+});
+
+test("a rejected JSONL handshake closes its channel", async () => {
+  let closed = false;
+  const channel = {
+    async *[Symbol.asyncIterator]() { /* the server ends without a handshake */ },
+    async write() {},
+    close() { closed = true; },
+  };
+  await expect(new JsonlWireTransport(async () => channel, negotiation).connect(resume))
+    .rejects.toThrow("missing handshake response");
+  expect(closed).toBeTrue();
+});
+
 test("embedded status rejects an error correlated to another operation", async () => {
   const operationId = "01010101-0101-0101-0101-010101010101";
   const transport = new EmbeddedWireTransport({

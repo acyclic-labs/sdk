@@ -29,13 +29,34 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 
 #[allow(unused_imports)]
 pub use generated::{
-    ActorLimits, ActorObservation, ActorState, AddSubscriptionRequest, AddSubscriptionResponse,
-    Binding, CheckpointActorRequest, CheckpointActorResponse, CreateActorRequest,
-    CreateActorResponse, Error, ErrorCode, Header, InspectActorRequest, InspectActorResponse,
-    InvokeActorRequest, InvokeActorResponse, RemoveSubscriptionRequest, RemoveSubscriptionResponse,
-    ResumeSubscriptionRequest, ResumeSubscriptionResponse, SubscriptionObservation,
-    SubscriptionSpec, SubscriptionStart, SubscriptionState, UpdateActorRequest,
-    UpdateActorResponse, subscription_start,
+    subscription_start,
+    Binding,
+    ActorLimits,
+    SubscriptionStart,
+    SubscriptionSpec,
+    SubscriptionState,
+    SubscriptionObservation,
+    ActorState,
+    ActorObservation,
+    CreateActorRequest,
+    CreateActorResponse,
+    UpdateActorRequest,
+    UpdateActorResponse,
+    InspectActorRequest,
+    InspectActorResponse,
+    AddSubscriptionRequest,
+    AddSubscriptionResponse,
+    RemoveSubscriptionRequest,
+    RemoveSubscriptionResponse,
+    ResumeSubscriptionRequest,
+    ResumeSubscriptionResponse,
+    CheckpointActorRequest,
+    CheckpointActorResponse,
+    Header,
+    InvokeActorRequest,
+    InvokeActorResponse,
+    ErrorCode,
+    Error
 };
 
 /// Actors service operations generated from the protobuf contract.
@@ -44,50 +65,50 @@ pub use generated::ActorsService;
 
 #[cfg(test)]
 mod tests {
-	use super::render_proto_files;
-	use std::{
-		fs, io,
-		path::{Path, PathBuf},
-	};
+    use super::render_proto_files;
+    use std::{
+        fs, io,
+        path::{Path, PathBuf},
+    };
 
-	fn snapshot(root: &Path, directory: &Path) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
-		let mut entries = Vec::new();
-		for entry in fs::read_dir(directory)? {
-			let entry = entry?;
-			let path = entry.path();
-			if path.is_dir() {
-				entries.extend(snapshot(root, &path)?);
-			} else {
-				entries.push((
-					path
-						.strip_prefix(root)
-						.expect("generated path must be below its root")
-						.to_owned(),
-					fs::read(path)?,
-				));
-			}
-		}
-		entries.sort_by(|left, right| left.0.cmp(&right.0));
-		Ok(entries)
-	}
+    fn snapshot(root: &Path, directory: &Path) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                entries.extend(snapshot(root, &path)?);
+            } else {
+                entries.push((
+                    path.strip_prefix(root)
+                        .expect("generated path must be below its root")
+                        .to_owned(),
+                    fs::read(path)?,
+                ));
+            }
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(entries)
+    }
 
-	#[test]
-	fn render_proto_files_is_byte_deterministic() {
-		let root = std::env::temp_dir().join(format!(
-			"acyclic-actors-contract-determinism-{}",
-			std::process::id()
-		));
-		let first = root.join("first");
-		let second = root.join("second");
-		let _ = fs::remove_dir_all(&root);
+    #[test]
+    fn render_proto_files_is_byte_deterministic() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-actors-contract-determinism-{}",
+            std::process::id()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        let _ = fs::remove_dir_all(&root);
 
-		render_proto_files(&first).expect("first contract render");
-		render_proto_files(&second).expect("second contract render");
+        render_proto_files(&first).expect("first contract render");
+        render_proto_files(&second).expect("second contract render");
 
-		assert_eq!(
-			snapshot(&first, &first).expect("first generated snapshot"),
-			snapshot(&second, &second).expect("second generated snapshot")
-		);
-		fs::remove_dir_all(root).expect("remove deterministic-render fixture");
-	}
+        assert_eq!(
+            snapshot(&first, &first).expect("first generated snapshot"),
+            snapshot(&second, &second).expect("second generated snapshot")
+        );
+        fs::remove_dir_all(root).expect("remove deterministic-render fixture");
+    }
 }
+

@@ -218,6 +218,19 @@ impl<'a, F: Format> Machine<'a, F> {
         if !limits.page_limits_valid(1) {
             return Err(OperationFailure::before_work(Error::InvalidLimits));
         }
+        // Cursor comparisons are charged as names within the volume's bound,
+        // so a caller-built cursor must fit that bound too.
+        if let Some(observed) = after
+            .map(F::key_nested_bytes)
+            .filter(|&bytes| bytes > u64::from(limits.maximum_name_bytes))
+        {
+            return Err(OperationFailure::before_work(Error::Decode(
+                CanonicalDecodeError::FieldTooLarge {
+                    observed: u32::try_from(observed).unwrap_or(u32::MAX),
+                    maximum: limits.maximum_name_bytes,
+                },
+            )));
+        }
         let maximum_values = usize::try_from(maximum_values)
             .map_err(|_| OperationFailure::before_work(Error::LimitOverflow))?;
         let target = maximum_values

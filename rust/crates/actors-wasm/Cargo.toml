@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-actors-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebAssembly bridge for the canonical Rust Actors client"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false }
+js-sys.workspace = true
+prost.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+
+[lints]
+workspace = true

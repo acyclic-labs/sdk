@@ -24,19 +24,6 @@ const objectMethods = {
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
 const rustImpl = (source, header) => source.match(new RegExp(`${header}\\s*\\{([\\s\\S]*?)^\\}`, "m"))?.[1] ?? "";
-const actorsBuildOwnedGrpc = (rpc, source) => {
-  const contract = source("rust/crates/actors/src/contract.rs");
-  const definitions = source("rust/crates/actors/src/contract_definitions.rs");
-  const codegen = source("rust/crates/actors/src/codegen.rs");
-  const build = source("rust/crates/actors/build.rs");
-  const wire = source("rust/crates/actors/src/wire.rs");
-  return build.includes("codegen::generate(out_dir)")
-    && codegen.includes(".build_client(true)")
-    && codegen.includes(".build_server(true)")
-    && wire.includes('include!(concat!(env!("OUT_DIR"), "/rust/acyclic.actors.v1.rs"))')
-    && contract.includes('include!("contract_definitions.rs")')
-    && new RegExp(`\\b${rpc.name}\\s*\\{`).test(definitions);
-};
 
 // These checks establish source exposure. Runtime semantics are proved separately
 // by the complete transport fixtures, not by the inventory's presence flags.
@@ -72,7 +59,7 @@ export function createSourceInspector(root, read = path => {
     const grpc = source(`${rustBase}${objects ? "v2/" : ""}grpc.rs`);
     const http = source(`${rustBase}${objects ? "v2/" : ""}http.rs`);
     const module = name => new RegExp(`^pub mod ${name};`, "m").test(rustRoot);
-    const rustGrpc = family === "actors" ? actorsBuildOwnedGrpc(rpc, source) : module("grpc") && (objects || stream
+    const rustGrpc = module("grpc") && (objects || stream
       ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));

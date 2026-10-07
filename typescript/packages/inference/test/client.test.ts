@@ -85,7 +85,10 @@ test("Rust reflection supplies every nonzero terminal and validates request shap
     "completed", "output-limited", "tool-call", "refusal", "cancelled", "failed", "indeterminate",
   ]);
   expect(metadata.filter(item => item.partial).map(item => item.kind)).toEqual(["cancelled", "failed", "indeterminate"]);
-  await expect(validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'))).rejects.toThrow("invalid protobuf type");
+  // Rust errors keep their exact message and stable code across the WASM boundary.
+  const shape = validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'));
+  await expect(shape).rejects.toBeInstanceOf(InferenceProtocolError);
+  await expect(shape).rejects.toMatchObject({ code: "invalid", message: "CreateContextRequest.model has an invalid protobuf type" });
 });
 
 test("shared WASM loads are reused but a rejected load is retried", async () => {
@@ -317,7 +320,7 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   await expect(async () => { for await (const _event of undefinedEvent.watchRun(id)) { /* exhaust */ } }).toThrow(InferenceProtocolError);
 
   const truncated = new InferenceClient({ ...transport, async *watchRun() { yield create(RunEventSchema, { sequence: 0n, event: { case: "progress", value: { kind: "queued" } } }); } });
-  await expect(async () => { for await (const _event of truncated.watchRun(id)) { /* exhaust */ } }).toThrow("run stream ended before terminal");
+  await expect((async () => { for await (const _event of truncated.watchRun(id)) { /* exhaust */ } })()).rejects.toMatchObject({ code: "invalid", message: "run stream ended before terminal" });
 
   const duplicate = new InferenceClient({ ...transport, async *watchRun() {
     yield create(RunEventSchema, { sequence: 0n, event: { case: "progress", value: { kind: "queued" } } });

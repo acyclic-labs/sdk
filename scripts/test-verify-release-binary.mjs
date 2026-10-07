@@ -42,6 +42,7 @@ function pe(machine) {
   return bytes;
 }
 
+/** @type {[string, Buffer][]} */
 const cases = [
   ["linux-x64-gnu", elf(0x3e, "/lib64/ld-linux-x86-64.so.2")],
   ["linux-x64-musl", elf(0x3e, null)],

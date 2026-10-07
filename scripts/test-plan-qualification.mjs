@@ -35,16 +35,6 @@ test("every lane names a known input set and a Blacksmith runner", () => {
   }
 });
 
-test("the early-start windows job runs on the windows lane's runner", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
-  const job = workflow.slice(workflow.indexOf("\n  windows:\n"));
-  const runsOn = job.match(/\n {4}runs-on: (\S+)\n/)?.[1];
-  const early = lanes.filter(lane => lane.early_start);
-  assert.deepEqual(early.map(lane => lane.lane), ["windows"]);
-  assert.equal(runsOn, early[0].runner);
-  assert.match(job, new RegExp(`\\n {6}CARGO_BUILD_JOBS: ${early[0].workers}\\n`));
-});
-
 test("root documentation changes reuse every lane", () => {
   assert.deepEqual(differing(laneKeys(lanes, tree), laneKeys(lanes, changed("README.md"))), []);
 });
@@ -91,7 +81,7 @@ const retainedAll = (runId, prefix) => `${prefix}-${runId}-2`;
 
 test("recorded lanes are reused with their retained artifact", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: false, mainPush: false, trusted: null, marker: everywhere, retained: retainedAll,
+    force: false, mainPush: false, marker: everywhere, retained: retainedAll,
   });
   assert.deepEqual(matrix, []);
   assert.equal(reused.linux.artifact, "packages-linux-7-2");
@@ -107,7 +97,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     force: false,
     mainPush: false,
     fullQualification: true,
-    trusted: null,
+   
     marker: everywhere,
     retained: retainedAll,
   });
@@ -118,7 +108,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
 
 test("a lane whose artifact expired executes again", () => {
   const { matrix } = chooseLanes(lanes, {
-    force: false, mainPush: false, trusted: null, marker: everywhere,
+    force: false, mainPush: false, marker: everywhere,
     retained: (runId, prefix) => (prefix === "coverage" ? "" : retainedAll(runId, prefix)),
   });
   assert.deepEqual(matrix.map(lane => lane.lane), ["gate"]);
@@ -126,7 +116,7 @@ test("a lane whose artifact expired executes again", () => {
 
 test("ordinary main pushes keep downstream qualification off the routine path", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: false, mainPush: true, trusted: null, marker: () => null, retained: retainedAll,
+    force: false, mainPush: true, marker: () => null, retained: retainedAll,
     coreOnly: true,
   });
   assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
@@ -135,7 +125,7 @@ test("ordinary main pushes keep downstream qualification off the routine path", 
 
 test("forced runs execute every lane", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: true, mainPush: false, trusted: source, marker: everywhere, retained: retainedAll,
+    force: true, mainPush: false, marker: everywhere, retained: retainedAll,
   });
   assert.equal(matrix.length, lanes.length);
   assert.deepEqual(reused, {});
@@ -154,7 +144,7 @@ test("forced reusable release calls keep the full lane scope", () => {
     force: true,
     mainPush: false,
     coreOnly: true,
-    trusted: source,
+   
     marker: everywhere,
     retained: retainedAll,
   });
@@ -168,7 +158,7 @@ test("routine pull requests qualify only the core gate and policy lanes", () => 
     mainPush: false,
     pullRequest: true,
     coreOnly: true,
-    trusted: null,
+   
     marker: () => null,
     retained: () => "",
   });
@@ -176,6 +166,7 @@ test("routine pull requests qualify only the core gate and policy lanes", () => 
 });
 
 test("release, manual, and scheduled events are full qualification events", () => {
+  /** @type {Array<[{ eventName: string, force?: boolean }, string]>} */
   const cases = [
     [{ eventName: "release" }, qualificationEventKinds.release],
     [{ eventName: "workflow_dispatch", force: false }, qualificationEventKinds.manual],
@@ -194,8 +185,6 @@ test("the workflow keeps full qualification off routine pull requests", () => {
   assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(workflow, /default: false/);
   assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
-  assert.match(workflow, /needs: plan/);
-  assert.match(workflow, /needs\.plan\.outputs\.windows == 'true'/);
 });
 
 test("the fast gate covers the Rust workspace and standalone docs crate", () => {

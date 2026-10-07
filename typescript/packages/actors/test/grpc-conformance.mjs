@@ -208,7 +208,7 @@ try {
     });
   }
   await new Promise((resolve, reject) => {
-    const child = spawn("cargo", ["run", "--quiet", "--locked", "--manifest-path", "rust/crates/sdk-generation/Cargo.toml", "--example", "transport-conformance"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
+    const child = spawn("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "transport-conformance"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(JSON.stringify(options));
     child.on("error", reject);
     child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Rust conformance exited ${code}`)));

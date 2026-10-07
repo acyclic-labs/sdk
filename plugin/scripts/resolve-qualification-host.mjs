@@ -16,7 +16,7 @@ if (!process.env.GITHUB_OUTPUT) {
 const tests = resolve(dirname(fileURLToPath(import.meta.url)), "../tests");
 const lockPath = join(tests, "hosts", "package-lock.json");
 const lockBytes = readFileSync(lockPath);
-const lock = JSON.parse(lockBytes);
+const lock = JSON.parse(lockBytes.toString("utf8"));
 if (lock.lockfileVersion !== 3 || !lock.packages || !lock.packages[""]) {
   throw new Error("qualification host lock must be npm lockfile v3");
 }
@@ -59,10 +59,10 @@ for (const [name, entry] of [
 }
 
 const installedRoot = JSON.parse(
-  readFileSync(join(tests, "hosts", rootKey, "package.json")),
+  readFileSync(join(tests, "hosts", rootKey, "package.json"), "utf8"),
 );
 const installedPlatform = JSON.parse(
-  readFileSync(join(tests, "hosts", platformKey, "package.json")),
+  readFileSync(join(tests, "hosts", platformKey, "package.json"), "utf8"),
 );
 if (
   installedRoot.version !== root.version ||

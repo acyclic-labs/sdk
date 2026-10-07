@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node", "bun"]
+  },
+  "include": ["*.mjs", "../plugin/scripts/*.mjs"]
+}

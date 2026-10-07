@@ -22,10 +22,17 @@ use serde::{
     de::{self, Visitor},
 };
 use std::{collections::BTreeSet, num::NonZeroU32};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 /// A public JavaScript number accepted only when it is an exact safe integer.
+pub(crate) fn is_safe_integer(value: f64) -> bool {
+    value.is_finite()
+        && value >= 0.0
+        && value.fract() == 0.0
+        && value <= crate::MAX_SAFE_INTEGER as f64
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct SafeInput(u64);
 impl<'de> Deserialize<'de> for SafeInput {
@@ -61,11 +68,7 @@ impl<'de> Deserialize<'de> for SafeInput {
                 reason = "finite integral values bounded by crate::MAX_SAFE_INTEGER convert exactly"
             )]
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
-                if value.is_finite()
-                    && value >= 0.0
-                    && value.fract() == 0.0
-                    && value <= crate::MAX_SAFE_INTEGER as f64
-                {
+                if is_safe_integer(value) {
                     Ok(SafeInput(value as u64))
                 } else {
                     Err(E::custom("number must be an exact JavaScript safe integer"))
@@ -122,9 +125,7 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 fn provider_error(error: ProviderError) -> JsValue {
     let code = match &error {
-        ProviderError::NotFound(message) => {
-            return crate::js_error("not-found", format!("resource not found: {message}"));
-        }
+        ProviderError::NotFound(_) => "not-found",
         ProviderError::Conflict(_) => "conflict",
         ProviderError::Unsupported(_) => "unsupported",
         ProviderError::Invalid(_) => "invalid",
@@ -182,7 +183,6 @@ fn digest_out(value: [u8; 32]) -> String {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ImageIn {
     ManagedOci {
@@ -246,7 +246,6 @@ fn image_out(value: &Image) -> ImageOut {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CompatibilityIn {
     BestEffort {},
@@ -325,7 +324,6 @@ fn compatibility_out(value: &CompatibilityPolicy) -> CompatibilityOut {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SuspensionIn {
     Manual {},
@@ -349,7 +347,6 @@ fn suspension_in(value: SuspensionIn) -> Result<SuspensionPolicy, JsValue> {
     }
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ExpirationIn {
     Never {},
@@ -444,7 +441,6 @@ fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
     }
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 pub struct BudgetsIn {
@@ -471,7 +467,6 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
     }
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
@@ -836,21 +831,18 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineKey {
     machine_id: String,
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointKey {
     checkpoint_id: String,
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForkIn {
     checkpoint_id: String,
@@ -859,7 +851,6 @@ pub struct ForkIn {
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineForkIn {
     machine_id: String,
@@ -867,7 +858,6 @@ pub struct MachineForkIn {
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyIn {
     machine_id: String,
@@ -875,7 +865,6 @@ pub struct PolicyIn {
     idempotency_key: String,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct ListIn {
     #[tsify(type = "string | null")]
@@ -883,7 +872,6 @@ pub struct ListIn {
     limit: u32,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct EventsIn {
     machine_id: String,
@@ -892,7 +880,6 @@ pub struct EventsIn {
     limit: u32,
 }
 #[derive(Deserialize, Serialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageIn {
     machine_id: String,

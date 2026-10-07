@@ -46,7 +46,10 @@ mod tests {
     #[test]
     fn removes_verbatim_drive_prefix_without_losing_unicode() {
         let path = PathBuf::from(r"\\?\C:\sdk\é\actors.proto");
-        assert_eq!(protoc_path(&path), PathBuf::from(r"C:\sdk\é\actors.proto"));
+        assert_eq!(
+            protoc_path(&path),
+            PathBuf::from(r"C:\sdk\é\actors.proto")
+        );
     }
 
     #[cfg(windows)]

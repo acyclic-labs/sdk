@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod public_api;
+pub mod rustdoc_profiles;
 
 pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v2";
 pub const LEGACY_DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";

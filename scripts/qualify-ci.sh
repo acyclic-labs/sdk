@@ -286,16 +286,16 @@ case "$lane" in
     sudo apt-get update -qq
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y musl-tools
     rustup target add "$target"
+    export CC_aarch64_unknown_linux_musl=musl-gcc
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+    background release env CARGO_TARGET_DIR="$target_dir-release" \
+      CARGO_BUILD_TARGET="$target" node scripts/build-product.mjs
     # Run capture admission and publication in the shipped libc ABI. Path
     # statx and held-descriptor fstat can expose different optional metadata.
-    CC_aarch64_unknown_linux_musl=musl-gcc \
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-      cargo test -p acyclic-fs --features native-mount --locked \
-        --target "$target" --lib native_capture::
-    CC_aarch64_unknown_linux_musl=musl-gcc \
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-      CARGO_BUILD_TARGET="$target" node scripts/build-product.mjs
-    binary="${CARGO_TARGET_DIR:-target}/$target/release/acyclic"
+    cargo test -p acyclic-fs --features native-mount --locked \
+      --target "$target" --lib native_capture::
+    finish release
+    binary="$target_dir-release/$target/release/acyclic"
     node scripts/verify-release-binary.mjs "$release_target" "$binary"
     expected="$(cargo metadata --locked --no-deps --format-version 1 |
       jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')"
@@ -325,7 +325,7 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    node scripts/clippy-feature-sets.mjs
+    node scripts/clippy-feature-sets.mjs 2
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
       https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.0/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
@@ -341,6 +341,8 @@ case "$lane" in
       --all-targets --all-features --locked -- -D warnings
     cargo clippy -p acyclic-harness --features wasm \
       --target wasm32-unknown-unknown --locked -- -D warnings
+    cargo clippy -p acyclic-machines-wasm -p acyclic-inference-wasm -p acyclic-objects-wasm \
+      --target wasm32-unknown-unknown --all-targets --all-features --locked -- -D warnings
     if [[ "$(wasm-bindgen-test-runner --version 2>/dev/null)" != "wasm-bindgen-test-runner 0.2.117" ]]; then
       # The pinned release archive avoids compiling wasm-bindgen-cli on a cold cache.
       install_tool wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz \

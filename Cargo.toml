@@ -3,6 +3,8 @@
 # single product binary are listed explicitly so retired crates cannot return.
 members = [
   "rust/crates/actors",
+  "rust/crates/actors-napi",
+  "rust/crates/actors-wasm",
   "rust/crates/conformance",
   "rust/crates/filesystem",
   "rust/crates/filesystem-napi",
@@ -34,7 +36,7 @@ publish = true
 
 [workspace.dependencies]
 async-trait = "0.1.89"
-axum = { version = "0.8.9", features = ["ws"] }
+axum = "0.8.9"
 blake3 = "1.8.2"
 clap = { version = "4", features = ["derive", "env"] }
 diffy = "0.5.2"
@@ -44,7 +46,7 @@ futures = "0.3.31"
 hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
-indexed_db_futures = { version = "0.6.4", features = ["tx-done", "typed-arrays"] }
+indexed_db_futures = { version = "0.6.4", features = ["typed-arrays"] }
 jsonschema = { version = "0.57.0", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.6.1", features = ["async", "napi8", "serde-json"] }
@@ -69,13 +71,14 @@ s3s = "0.17.0"
 schemars = "1"
 serde-wasm-bindgen = "0.6.5"
 serde_urlencoded = "0.7.1"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 thiserror = "2.0.17"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
-toml = "0.8"
+toml = "1.1.6"
 tracing = "0.1.44"
+tsify = { version = "0.5.8", features = ["js"] }
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = { version = "0.14.6", features = ["transport", "tls-ring", "tls-webpki-roots"] }
