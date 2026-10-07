@@ -125,8 +125,7 @@ impl MachineRegistry {
     pub fn register(&mut self, machine: Arc<dyn ResumableMachine>) -> Result<()> {
         let identity = machine.identity();
         identity.validate()?;
-        jsonschema::validator_for(machine.state_schema())
-            .map_err(|error| Error::Invalid(format!("invalid machine state schema: {error}")))?;
+        crate::contract::compile_json_schema(machine.state_schema(), "machine state")?;
         let key = (
             identity.name.clone(),
             identity.version.clone(),
@@ -663,10 +662,7 @@ fn input_digest(input: &Value) -> Result<[u8; 32]> {
 }
 
 fn validate_state(schema: &Value, state: &Value) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map_err(|error| Error::Invalid(format!("invalid machine state schema: {error}")))?
-        .validate(state)
-        .map_err(|error| Error::Invalid(format!("machine state failed validation: {error}")))
+    crate::contract::validate_json_schema_value(schema, state, "machine state")
 }
 
 #[cfg(test)]

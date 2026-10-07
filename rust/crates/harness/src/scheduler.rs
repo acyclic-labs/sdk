@@ -340,9 +340,7 @@ impl Scheduler {
                 "placement labels exceed scheduler limits".into(),
             ));
         }
-        jsonschema::validator_for(&spec.entrypoint.result_schema).map_err(|error| {
-            Error::Invalid(format!("invalid entrypoint result schema: {error}"))
-        })?;
+        crate::contract::compile_json_schema(&spec.entrypoint.result_schema, "entrypoint result")?;
         if self.operations.contains_key(&spec.operation_id) {
             return Err(Error::Conflict("operation identity already exists".into()));
         }

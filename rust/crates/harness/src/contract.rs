@@ -82,10 +82,18 @@ pub(crate) fn validate_json_schema_value(
     value: &serde_json::Value,
     label: &str,
 ) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?
+    compile_json_schema(schema, label)?
         .validate(value)
         .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")))
+}
+
+/// Compiles one JSON Schema; `label` names it in the error.
+pub(crate) fn compile_json_schema(
+    schema: &serde_json::Value,
+    label: &str,
+) -> Result<jsonschema::Validator> {
+    jsonschema::validator_for(schema)
+        .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))
 }
 
 fn write_canonical_json(

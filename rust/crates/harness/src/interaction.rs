@@ -598,15 +598,11 @@ impl Interaction {
                     ..
                 },
                 InteractionResponse::Form { value },
-            ) => {
-                jsonschema::validator_for(response_schema)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .validate(value)
-                    .map_err(|error| {
-                        Error::Invalid(format!("interaction response failed validation: {error}"))
-                    })?;
-                Ok(())
-            }
+            ) => crate::contract::validate_json_schema_value(
+                response_schema,
+                value,
+                "interaction response",
+            ),
             (
                 Self::Choice {
                     options,
@@ -665,9 +661,7 @@ pub enum InteractionResponse {
 }
 
 fn validate_schema(schema: &Value) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map(|_| ())
-        .map_err(|error| Error::Invalid(format!("invalid interaction JSON Schema: {error}")))
+    crate::contract::compile_json_schema(schema, "interaction").map(|_| ())
 }
 
 fn nonempty(value: &str, name: &str) -> Result<()> {

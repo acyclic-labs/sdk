@@ -259,8 +259,7 @@ pub fn task_admission_identities(
 
 pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
     for (name, schema) in [("input", input), ("output", output)] {
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid task {name} schema: {error}")))?;
+        crate::contract::compile_json_schema(schema, &format!("task {name}"))?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))

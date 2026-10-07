@@ -157,8 +157,7 @@ impl ReducerRegistry {
     /// Registers one exact reducer without ambiguous replacement.
     pub fn register(&mut self, reducer: Arc<dyn DurableReducer>) -> Result<()> {
         let entrypoint = reducer.entrypoint();
-        jsonschema::validator_for(&entrypoint.result_schema)
-            .map_err(|error| Error::Invalid(format!("invalid reducer result schema: {error}")))?;
+        crate::contract::compile_json_schema(&entrypoint.result_schema, "reducer result")?;
         let key = (
             entrypoint.name.clone(),
             entrypoint.version.clone(),
@@ -366,14 +365,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .into_iter()
         .flatten()
         {
-            jsonschema::validator_for(schema)
-                .map_err(|error| {
-                    Error::Invalid(format!("invalid scheduler result schema: {error}"))
-                })?
-                .validate(&value)
-                .map_err(|error| {
-                    Error::Invalid(format!("scheduler result failed validation: {error}"))
-                })?;
+            crate::contract::validate_json_schema_value(schema, &value, "scheduler result")?;
         }
         Ok(())
     }

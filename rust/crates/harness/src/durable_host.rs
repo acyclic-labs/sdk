@@ -446,8 +446,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
-        let input = jsonschema::validator_for(&request.input_schema)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input")?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))
@@ -832,8 +831,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 &output_schema,
                 Some(&admission.input),
             )?;
-            jsonschema::validator_for(&output_schema)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            crate::contract::compile_json_schema(&output_schema, "output")?;
             admission.validate()?;
             let canonical = admission.canonical_value();
             let bytes = crate::contract::canonical_json_bytes(&canonical)?;

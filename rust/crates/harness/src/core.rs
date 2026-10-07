@@ -1215,12 +1215,9 @@ impl SchemaRegistry {
                 "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
-        jsonschema::validator_for(&schema)
-            .map_err(|error| Error::Invalid(format!("invalid JSON Schema: {error}")))?;
+        crate::contract::compile_json_schema(&schema, "extension")?;
         if let Some(configuration_schema) = &configuration_schema {
-            jsonschema::validator_for(configuration_schema).map_err(|error| {
-                Error::Invalid(format!("invalid configuration JSON Schema: {error}"))
-            })?;
+            crate::contract::compile_json_schema(configuration_schema, "configuration")?;
         }
         let mut required = BTreeSet::new();
         for dependency in dependencies {
@@ -1369,12 +1366,7 @@ impl SchemaRegistry {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
-        jsonschema::validator_for(&binding.schema)
-            .map_err(|error| Error::Invalid(format!("invalid registered JSON Schema: {error}")))?
-            .validate(&value)
-            .map_err(|error| {
-                Error::Invalid(format!("extension payload failed validation: {error}"))
-            })?;
+        crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload")?;
         Ok(())
     }
 
@@ -1413,10 +1405,7 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid configuration schema: {error}")))?
-            .validate(&value)
-            .map_err(|error| Error::Invalid(format!("configuration failed validation: {error}")))
+        crate::contract::validate_json_schema_value(schema, &value, "configuration")
     }
 }
 

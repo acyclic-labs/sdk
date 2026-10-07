@@ -37,8 +37,7 @@ impl ToolDefinition {
             ));
         }
         for schema in [&self.input_schema, &self.output_schema] {
-            jsonschema::validator_for(schema)
-                .map_err(|error| Error::Invalid(format!("invalid tool schema: {error}")))?;
+            crate::contract::compile_json_schema(schema, "tool")?;
         }
         Ok(())
     }
