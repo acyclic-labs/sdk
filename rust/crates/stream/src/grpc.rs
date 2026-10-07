@@ -41,6 +41,8 @@ const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 pub const MAX_ENDPOINTS: usize = 16;
 /// Maximum canonical URI bytes accepted for one endpoint.
 pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
+/// Maximum bearer credential bytes accepted by the native transport.
+pub const MAX_BEARER_TOKEN_BYTES: usize = 8 * 1024;
 pub use crate::MAX_CA_CERTIFICATE_BYTES;
 
 /// Connection configuration failure.
@@ -199,6 +201,7 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let authorization = Self::authorization(bearer_token.as_ref())?;
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
         let endpoints = Self::endpoints_with_tls(
             endpoints,
@@ -209,7 +212,7 @@ impl Client {
         for endpoint in endpoints {
             channels.push(endpoint.connect().await?);
         }
-        Self::from_channels(channels.into(), bearer_token)
+        Ok(Self::from_authorization(channels.into(), authorization))
     }
 
     fn channels_with_tls<I, S>(
@@ -273,19 +276,32 @@ impl Client {
         channels: Arc<[Channel]>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        let token = bearer_token.as_ref();
-        if token.trim().is_empty() || token.len() > 8192 {
+        let authorization = Self::authorization(bearer_token.as_ref())?;
+        Ok(Self::from_authorization(channels, authorization))
+    }
+
+    fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
+        if bearer_token.trim().is_empty()
+            || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
+            || bearer_token
+                .bytes()
+                .any(|byte| matches!(byte, b'\r' | b'\n'))
+        {
             return Err(ConnectError::InvalidCredential);
         }
-        let mut authorization = format!("Bearer {token}")
+        let mut authorization = format!("Bearer {bearer_token}")
             .parse::<MetadataValue<Ascii>>()
             .map_err(|_| ConnectError::InvalidCredential)?;
         authorization.set_sensitive(true);
-        Ok(Self {
+        Ok(authorization)
+    }
+
+    fn from_authorization(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
+        Self {
             channels,
             authorization,
             preferred: Arc::new(AtomicUsize::new(0)),
-        })
+        }
     }
 
     #[allow(
@@ -1121,7 +1137,7 @@ mod tests {
     use super::*;
     use crate::MemoryStream;
     use rcgen::generate_simple_self_signed;
-    use tokio::net::TcpListener;
+    use tokio::{io::AsyncReadExt, net::TcpListener};
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Identity, Server, ServerTlsConfig};
     use wire::stream_service_server::{StreamService, StreamServiceServer};
@@ -1302,6 +1318,59 @@ mod tests {
                 Err(ConnectError::InvalidCredential)
             ));
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_eager_connect_releases_a_stalled_tls_socket()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://127.0.0.1:{}", listener.local_addr()?.port());
+        let certificate = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certificate.cert.pem();
+        let (accepted_sender, accepted_receiver) = tokio::sync::oneshot::channel();
+        let (closed_sender, closed_receiver) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let _ = accepted_sender.send(());
+            let mut buffer = [0_u8; 1024];
+            loop {
+                match socket.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            let _ = closed_sender.send(());
+            Ok::<(), std::io::Error>(())
+        });
+        let pending = tokio::spawn(Client::connect_eager_with_ca_certificate(
+            endpoint,
+            "fixture",
+            certificate_pem,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), accepted_receiver).await??;
+        pending.abort();
+        let _ = pending.await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), closed_receiver).await??;
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn malformed_bearer_is_rejected_before_eager_network_io()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://127.0.0.1:{}", listener.local_addr()?.port());
+        let error = match Client::connect_eager(endpoint, "\r\n").await {
+            Ok(_) => return Err("malformed bearer unexpectedly connected".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(error, ConnectError::InvalidCredential));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept(),)
+                .await
+                .is_err()
+        );
         Ok(())
     }
 
