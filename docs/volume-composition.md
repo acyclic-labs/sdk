@@ -31,6 +31,9 @@ destination write grant; they expose no source workspace handle. Source and
 target generations are pinned, and publication retains the existing stale-target
 and idempotency checks. The project provider uses the same mechanism without an
 ancestry registry gate. Different provider deployments are rejected explicitly.
+Three-way imports retain the Filesystem planner's compatible-semantics and
+authenticated common-history requirements, including its configured lineage
+bound. Unrelated volume roots produce an explicit semantic error.
 
 Editable session skills can be forked into their own volume while built-ins
 remain a separate read-only grant. Project integration never invokes skills
@@ -51,7 +54,7 @@ durable evidence.
 | Selection is a real fork; omissions are not deletions | Initial feature bit and selected delta baseline | Authenticated immutable roots; bounded selection | `filtered_fork_subset_model_preserves_unselected_paths`, including the authored-deletion negative control; filtered rebase regression |
 | Scratch belongs to the direct parent and survives retry | Pinned private capture and durable creation-generation lookup | Same Filesystem provider; owner read grant | Preparation retry, local reopen, 32-sibling and 1,024-level recursive consumer tests |
 | Agent-owned destination writes require the owner | `VolumeRef::require_writer` shared by live/replay checks and `ContentGrant` | Trusted scope issuer; full volume identity in each capability | Copied-capability rejection and skills consumer with a different volume role |
-| Imports preserve source and concurrent destination edits | Sealed pinned plan and existing CAS publisher | Explicit source read and destination write grants; one deployment | Shared native/browser selection fixture; project and skills consumers; source-advance and stale-target tests |
+| Imports preserve source and concurrent destination edits | Sealed pinned plan and existing CAS publisher | Explicit source read and destination write grants; one deployment; compatible semantics and bounded common Filesystem history | Shared native/browser selection fixture; project and skills consumers; source-advance and stale-target tests |
 | Skills integration is separately authorized | Separate volume fork/import and built-in read grant | Approval workflow supplies the exact root destination grant | `skills_are_explicitly_forked_and_imported_with_read_only_builtins` |
 | Recovery cannot infer success from a process cache | Existing allocation journal and exact builder verification | Provider acknowledgements implement their durability contract | Every-provider-cut empty/selected fork tests, durable preparation and local reopen |
 | Discovery stays bounded by the selected query | Pinned authenticated directory page | Retained task-to-volume mapping remains owned by PR4/PR7 | 10,000 published-workspace test with nonincreasing page/backend reads and zero source traversal/materialization |
