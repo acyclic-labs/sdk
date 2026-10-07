@@ -29,6 +29,10 @@ mod http_validation;
 mod local;
 mod memory;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[allow(
+    deprecated,
+    reason = "tsify deprecates its wasm_abi attributes because a failed conversion throws past destructors (madonoharu/tsify#65); moving these exports to tsify::Ts is a separate binding change"
+)]
 mod wasm;
 mod wire_codec;
 

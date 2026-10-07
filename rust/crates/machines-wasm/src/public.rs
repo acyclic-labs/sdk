@@ -22,7 +22,7 @@ use serde::{
     de::{self, Visitor},
 };
 use std::{collections::BTreeSet, num::NonZeroU32};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 /// A public JavaScript number accepted only when it is an exact safe integer.

@@ -8,12 +8,16 @@
 
 use acyclic_machines::SimulatedMachines;
 use sha2::{Digest as _, Sha256};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod http;
+#[allow(
+    deprecated,
+    reason = "tsify deprecates its wasm_abi attributes because a failed conversion throws past destructors (madonoharu/tsify#65); moving these exports to tsify::Ts is a separate binding change"
+)]
 mod public;
 
 /// Largest integer a JavaScript number represents exactly.

@@ -16,6 +16,10 @@ pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpe
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 
 #[cfg(target_arch = "wasm32")]
+#[allow(
+    deprecated,
+    reason = "tsify deprecates its wasm_abi attributes because a failed conversion throws past destructors (madonoharu/tsify#65); moving these exports to tsify::Ts is a separate binding change"
+)]
 mod bindings {
     use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
     use acyclic_fs::compat_wire;
@@ -52,7 +56,7 @@ mod bindings {
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
-    use tsify_next::Tsify;
+    use tsify::Tsify;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
