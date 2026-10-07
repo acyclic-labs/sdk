@@ -1,0 +1,280 @@
+diff --git a/bindgen/templates/Async.cs b/bindgen/templates/Async.cs
+index 106bc66..756ef26 100644
+--- a/bindgen/templates/Async.cs
++++ b/bindgen/templates/Async.cs
+@@ -91,19 +91,30 @@ internal static class _UniFFIAsync {
+     public static async Task<T> UniffiRustCallAsync<T, F, E>(
+         ulong rustFuture,
+         Action<ulong, IntPtr, ulong> pollFunc,
++        Action<ulong> cancelFunc,
+         CompleteFuncDelegate<F> completeFunc,
+         Action<ulong> freeFunc,
+         Func<F, T> liftFunc,
+-        CallStatusErrorHandler<E> errorHandler
++        CallStatusErrorHandler<E> errorHandler,
++        CancellationToken cancellationToken
+     ) where E : System.Exception
+     {
++        CancellationTokenRegistration cancellationRegistration = default;
+         try {
++            if (cancellationToken.CanBeCanceled) {
++                cancellationRegistration = cancellationToken.Register(() => cancelFunc(rustFuture));
++            }
+             await PollFuture(rustFuture, pollFunc);
+             var result = _UniffiHelpers.RustCallWithError(errorHandler, (ref UniffiRustCallStatus status) => completeFunc(rustFuture, ref status));
+             return liftFunc(result);
+         }
++        catch (Exception error) when (cancellationToken.IsCancellationRequested && IsNativeCancellation(error))
++        {
++            throw new OperationCanceledException(cancellationToken);
++        }
+         finally
+         {
++            cancellationRegistration.Dispose();
+             freeFunc(rustFuture);
+         }
+     }
+@@ -111,19 +122,38 @@ internal static class _UniFFIAsync {
+     public static async Task UniffiRustCallAsync<E>(
+         ulong rustFuture,
+         Action<ulong, IntPtr, ulong> pollFunc,
++        Action<ulong> cancelFunc,
+         CompleteActionDelegate completeFunc,
+         Action<ulong> freeFunc,
+-        CallStatusErrorHandler<E> errorHandler
++        CallStatusErrorHandler<E> errorHandler,
++        CancellationToken cancellationToken
+     ) where E : System.Exception
+     {
++        CancellationTokenRegistration cancellationRegistration = default;
+          try {
++            if (cancellationToken.CanBeCanceled) {
++                cancellationRegistration = cancellationToken.Register(() => cancelFunc(rustFuture));
++            }
+             await PollFuture(rustFuture, pollFunc);
+             _UniffiHelpers.RustCallWithError(errorHandler, (ref UniffiRustCallStatus status) => completeFunc(rustFuture, ref status));
+ 
+         }
++        catch (Exception error) when (cancellationToken.IsCancellationRequested && IsNativeCancellation(error))
++        {
++            throw new OperationCanceledException(cancellationToken);
++        }
+         finally
+         {
++            cancellationRegistration.Dispose();
+             freeFunc(rustFuture);
+         }
+     }
++
++    private static bool IsNativeCancellation(Exception error)
++    {
++        // Generated UniFFI errors conventionally expose a nested Cancelled class.
++        // Keep this backend generic; no generated error type or operation registry
++        // is needed to translate a cancelled Rust future.
++        return error is OperationCanceledException || error.GetType().Name == "Cancelled";
++    }
+ }
+diff --git a/bindgen/templates/Helpers.cs b/bindgen/templates/Helpers.cs
+index 004ce17..30118a4 100644
+--- a/bindgen/templates/Helpers.cs
++++ b/bindgen/templates/Helpers.cs
+@@ -21,6 +21,10 @@ struct UniffiRustCallStatus {
+     public bool IsPanic() {
+         return code == 2;
+     }
++
++    public bool IsCancelled() {
++        return code == 3;
++    }
+ }
+ 
+ // Base class for all uniffi exceptions
+@@ -101,6 +105,8 @@ class _UniffiHelpers {
+             } else {
+                 throw new PanicException("Rust panic");
+             }
++        } else if (status.IsCancelled()) {
++            throw new OperationCanceledException();
+         } else {
+             throw new InternalException($"Unknown rust call status: {status.code}");
+         }
+diff --git a/bindgen/templates/ObjectTemplate.cs b/bindgen/templates/ObjectTemplate.cs
+index 09007d6..92250f6 100644
+--- a/bindgen/templates/ObjectTemplate.cs
++++ b/bindgen/templates/ObjectTemplate.cs
+@@ -19,7 +19,7 @@
+     {%- for meth in obj.methods() %}
+     {%- call cs::docstring(meth, 4) %}
+     {%- call cs::method_throws_annotation(meth.throws_type()) %}
+-    {%  call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({% call cs::arg_list_decl(meth) %});
++    {%  call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({% if meth.is_async() %}{% call cs::async_arg_list_decl(meth) %}{% else %}{% call cs::arg_list_decl(meth) %}{% endif %});
+     {%- endfor %}
+ }
+ 
+@@ -29,7 +29,10 @@
+     private int _wasDestroyed = 0;
+     private long _callCounter = 1;
+ 
+-    public {{ impl_name }}(ulong pointer) {
++    // The raw Rust handle is an implementation detail. The marker both prevents
++    // accidental foreign construction and keeps primitive nominal constructors
++    // unambiguous (for example PositiveU64(ulong)).
++    internal {{ impl_name }}(ulong pointer, bool _uniffi_raw_handle) {
+         this.pointer = pointer;
+     }
+ 
+@@ -41,12 +44,12 @@
+     {%- when Some with (cons) %}
+     {%- call cs::docstring(cons, 4) %}
+     {%- if cons.is_async() %}
+-    public static async Task<{{ impl_name }}> {{ impl_name }}Async ({%- call cs::arg_list_decl(cons) -%}) {
++    public static async Task<{{ impl_name }}> {{ impl_name }}Async ({%- call cs::async_arg_list_decl(cons) -%}) {
+         {%- call cs::async_call(cons, false) %}
+     }
+     {%- else %}
+     public {{ impl_name }}({% call cs::arg_list_decl(cons) -%}) :
+-        this({% call cs::to_ffi_call(cons) %}) {}
++        this({% call cs::to_ffi_call(cons) %}, true) {}
+     {%- endif %}
+     {%- when None %}
+     {%- endmatch %}
+@@ -130,7 +133,7 @@
+     {%- call cs::docstring(meth, 4) %}
+     {%- call cs::method_throws_annotation(meth.throws_type()) %}
+     {%- if meth.is_async() %}
+-    public {% if is_error && meth.name()|method_name(impl_name) == "Message" %}new {% endif %}async {% call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({%- call cs::arg_list_decl(meth) -%}) {
++    public {% if is_error && meth.name()|method_name(impl_name) == "Message" %}new {% endif %}async {% call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({%- call cs::async_arg_list_decl(meth) -%}) {
+         {%- call cs::async_call(meth, true) %}
+     }
+     {%- else %}
+@@ -180,12 +183,12 @@
+     {%- call cs::docstring(cons, 4) %}
+     {%- call cs::method_throws_annotation(cons.throws_type()) %}
+     {%- if cons.is_async() %}
+-    public static async Task<{{ impl_name }}> {{ cons.name()|method_name(impl_name) }} ({%- call cs::arg_list_decl(cons) -%}) {
++    public static async Task<{{ impl_name }}> {{ cons.name()|method_name(impl_name) }} ({%- call cs::async_arg_list_decl(cons) -%}) {
+         {%- call cs::async_call(cons, false) %}
+     }
+     {%- else %}
+     public static {{ impl_name }} {{ cons.name()|method_name(impl_name) }}({% call cs::arg_list_decl(cons) %}) {
+-        return new {{ impl_name }}({% call cs::to_ffi_call(cons) %});
++        return new {{ impl_name }}({% call cs::to_ffi_call(cons) %}, true);
+     }
+     {%- endif %}
+     {% endfor %}
+@@ -225,7 +228,7 @@ class {{ ffi_converter_type }}: FfiConverter<{{ interface_name }}, ulong> {
+     public override {{ interface_name }} Lift(ulong value) {
+         if ((value & 1UL) == 0UL) {
+             // Rust-generated handle, construct a new wrapper.
+-            return new {{ impl_name }}(value);
++            return new {{ impl_name }}(value, true);
+         } else {
+             // C#-generated handle, retrieve and remove from the handle map.
+             if (handleMap.Remove(value, out var obj)) {
+@@ -258,7 +261,7 @@ class {{ ffi_converter_type }}: FfiConverter<{{ impl_name }}, ulong> {
+     }
+ 
+     public override {{ impl_name }} Lift(ulong value) {
+-        return new {{ impl_name }}(value);
++        return new {{ impl_name }}(value, true);
+     }
+ 
+     public override {{ impl_name }} Read(BigEndianStream stream) {
+@@ -283,4 +286,4 @@ class {{ error_handler_name }} : CallStatusErrorHandler<{{ impl_name }}> {
+         return {{ ffi_converter_type }}.INSTANCE.Read(error_buf.AsStream());
+     }
+ }
+-{%- endif %}
+\ No newline at end of file
++{%- endif %}
+diff --git a/bindgen/templates/TopLevelFunctionTemplate.cs b/bindgen/templates/TopLevelFunctionTemplate.cs
+index bcb2a8e..6667f3f 100644
+--- a/bindgen/templates/TopLevelFunctionTemplate.cs
++++ b/bindgen/templates/TopLevelFunctionTemplate.cs
+@@ -5,7 +5,7 @@
+ {%- call cs::docstring(func, 4) %}
+ {%- call cs::method_throws_annotation(func.throws_type()) %}
+ {%- if func.is_async() %}
+-   public static async {% call cs::return_type(func) %} {{ func.name()|fn_name }}({%- call cs::arg_list_decl(func) -%}) 
++   public static async {% call cs::return_type(func) %} {{ func.name()|fn_name }}({%- call cs::async_arg_list_decl(func) -%}) 
+    {
+         {%- call cs::async_call(func, false) %}
+    }
+diff --git a/bindgen/templates/macros.cs b/bindgen/templates/macros.cs
+index 9a3f88e..934b7b5 100644
+--- a/bindgen/templates/macros.cs
++++ b/bindgen/templates/macros.cs
+@@ -68,6 +68,8 @@
+         {%- endif%}
+         // Poll
+         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.{{ func.ffi_rust_future_poll(ci) }}(future, continuation, data),
++        // Cancel
++        (ulong future) => _UniFFILib.{{ func.ffi_rust_future_cancel(ci) }}(future),
+         // Complete
+         (ulong future, ref UniffiRustCallStatus status) => {
+             {%- if func.return_type().is_some() %}
+@@ -88,6 +90,8 @@
+         {%- when None %}
+         NullCallStatusErrorHandler.INSTANCE
+         {% endmatch %}
++        ,
++        cancellationToken
+     );
+ {%- endmacro -%}
+ 
+@@ -98,6 +102,8 @@
+         _UniFFILib.{{ func.ffi_func().name() }}({{ self_lower_prefix }}{%- if func.arguments().len() > 0 %}, {% endif -%}{% call lower_arg_list(func) %}),
+         // Poll
+         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.{{ func.ffi_rust_future_poll(ci) }}(future, continuation, data),
++        // Cancel
++        (ulong future) => _UniFFILib.{{ func.ffi_rust_future_cancel(ci) }}(future),
+         // Complete
+         (ulong future, ref UniffiRustCallStatus status) => {
+             {%- if func.return_type().is_some() %}
+@@ -118,6 +124,8 @@
+         {%- when None %}
+         NullCallStatusErrorHandler.INSTANCE
+         {% endmatch %}
++        ,
++        cancellationToken
+     );
+ {%- endmacro -%}
+ 
+@@ -144,6 +152,12 @@
+     {%- endfor %}
+ {%- endmacro %}
+ 
++{%- macro async_arg_list_decl(func) %}
++    {%- call arg_list_decl(func) -%}
++    {%- if func.arguments().len() > 0 %}, {% endif -%}
++    CancellationToken cancellationToken = default
++{%- endmacro %}
++
+ {#-
+ // Arglist as used in the _UniFFILib function declations.
+ // Note unfiltered name but ffi_type_name filters.
+@@ -248,7 +262,7 @@ void
+     {%- call docstring(meth, 4) %}
+     {%- call method_throws_annotation(meth.throws_type()) %}
+     {%- if meth.is_async() %}
+-    public async {% call return_type(meth) %} {{ meth.name()|fn_name }}({%- call arg_list_decl(meth) -%}) {
++    public async {% call return_type(meth) %} {{ meth.name()|fn_name }}({%- call async_arg_list_decl(meth) -%}) {
+         {%- call async_value_method_call(self_lower_prefix, meth) %}
+     }
+     {%- else %}
+@@ -321,7 +335,7 @@ void
+     {%- call docstring(meth, 4) %}
+     {%- call method_throws_annotation(meth.throws_type()) %}
+     {%- if meth.is_async() %}
+-    public static async {% call return_type(meth) %} {{ meth.name()|fn_name }}(this {{ self_param_type }} self_{%- if meth.arguments().len() > 0 %}, {% endif -%}{%- call arg_list_decl(meth) -%}) {
++    public static async {% call return_type(meth) %} {{ meth.name()|fn_name }}(this {{ self_param_type }} self_{%- if meth.arguments().len() > 0 %}, {% endif -%}{%- call async_arg_list_decl(meth) -%}) {
+         {%- call async_value_method_call(self_lower_prefix, meth) %}
+     }
+     {%- else %}
+@@ -360,4 +374,4 @@ void
+     }
+     {%- when None %}
+     {%- endmatch %}
+-{%- endmacro %}
+\ No newline at end of file
++{%- endmacro %}

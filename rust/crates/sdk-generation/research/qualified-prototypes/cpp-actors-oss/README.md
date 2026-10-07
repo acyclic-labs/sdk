@@ -53,7 +53,7 @@ reimplementing protobuf semantics.
 ## Consumer compile qualification
 
 `generated/lib.rs.h` is the CXX-generated header from this exact bridge source;
-its SHA-256 is `E7561CEA8FBA89310CF1BC07D4356C477B6B956A20350ED79C2F5E6C5E526F46`.
+its SHA-256 is `D45817290B8A5E4DBB8D3B47B2595D7DEA5C92239D2C1181EFB710D5E94B89CB`.
 The consumer source is intentionally tiny and checks only bridge contracts:
 
 * `consumer/positive.cc` links and runs successfully with WSL Ubuntu `g++`.
@@ -90,6 +90,26 @@ configuration error; no toy transport or independent DTO is involved. The
 Windows MSVC driver remains unqualified because it previously failed while
 compiling emitted `lib.rs.cc`; WSL provides the linked producer qualification.
 
+## Live authenticated TLS conformance
+
+The bridge also has a live probe, `consumer/live-remote.cc`, which calls the
+real `acyclic_actors::client::connect_with_ca_certificate` and all eight Actors
+operations against the canonical repository gRPC conformance fixture. The
+fixture uses a generated local CA and bearer token; it is a live TLS/authenticated
+server boundary, not a toy transport or an independent DTO. The Rust facade
+checks the real `ActorObservation` fields, invoke status/header semantics,
+`u64` subscription cursor, and rejection of a wrong bearer token.
+
+The WSL run on 2026-10-07 passed:
+
+```text
+probe ok=1 completed=8 auth=1 error=0
+live_remote_operations:8 authentication_rejected:true
+```
+
+This qualifies the reduced opaque bridge against the canonical fixture. It does
+not qualify an internet service, every SDK family, or a direct C++ future ABI.
+
 ## Async and error boundary
 
 The current client methods are Rust `async fn` and use `run_with_cancellation`.
@@ -112,6 +132,12 @@ as a Rust-owned opaque/detail accessor and preserve unknown enum numbers through
   docs describe opaque Rust types, shared types, generated C++ code, and static
   assertions. Direct async FFI is explicitly not implemented; use the opaque
   oneshot/cancellation pattern.
+* **`pcwalton/cxx-async` 0.1.4:** maintained and specifically aimed at bridging
+  C++20 coroutines with Rust futures/streams. It integrates with cppcoro or Folly
+  and requires a separate C++ executor; it does not bind Tokio or another Rust
+  I/O runtime. Those executor headers/libraries are not installed in this
+  qualification environment, so it remains a viable follow-up for a C++20
+  product runtime rather than part of this bounded bridge.
 * **cbindgen 0.29.4:** maintained Mozilla generator and a viable fallback for a
   deliberately authored `extern "C"` ABI. It emits C/C++ headers but cannot infer
   Rust async, `Option`, typed error ownership, or opaque lifetime contracts. It
@@ -130,6 +156,7 @@ Primary upstream references (retrieved 2026-10-07):
 * https://cxx.rs/
 * https://cxx.rs/async.html
 * https://cxx.rs/extern-rust.html
+* https://github.com/pcwalton/cxx-async/releases/tag/v0.1.4
 * https://github.com/dtolnay/cxx/releases/tag/1.0.199
 * https://github.com/mozilla/cbindgen/tree/0.29.4
 * https://github.com/google/autocxx/blob/main/README.md

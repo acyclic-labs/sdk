@@ -29,6 +29,24 @@ mod ffi {
         error: ErrorKind,
     }
 
+    /// One typed result per operation. The Rust domain object remains opaque;
+    /// these are validated projections, not a second request/response model.
+    struct ActorOperationResult {
+        ok: bool,
+        error: ErrorKind,
+        message: String,
+        actor_id: String,
+        home_region: String,
+        active: bool,
+        subscriptions_empty: bool,
+        configuration_revision: u64,
+        checkpoint_epoch: u64,
+        has_checkpoint: bool,
+        checkpoint: u64,
+        status: u32,
+        has_location_header: bool,
+    }
+
     struct RemoteConformanceResult {
         ok: bool,
         operations_completed: u32,
@@ -45,8 +63,27 @@ mod ffi {
         type ActorsOperation;
 
         fn actors_client_new() -> Box<ActorsClient>;
+        fn actors_client_connect(
+            endpoint: &str,
+            token: &str,
+            ca_certificate: &str,
+        ) -> Box<ActorsClient>;
         fn actors_client_is_connected(client: &ActorsClient) -> bool;
+        fn actors_client_error_kind(client: &ActorsClient) -> ErrorKind;
+        fn actors_client_error_message(client: &ActorsClient) -> String;
         fn actors_client_connect_probe(endpoint: &str, token: &str) -> ClientConnectResult;
+        fn actors_create_actor(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_update_actor(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_inspect_actor(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_add_subscription(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_remove_subscription(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_resume_subscription(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_checkpoint_actor(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_invoke_actor(client: &ActorsClient) -> ActorOperationResult;
+        fn actors_inspect_actor_with_cancel(
+            client: &ActorsClient,
+            operation: &ActorsOperation,
+        ) -> ActorOperationResult;
         fn actors_live_conformance_probe(
             endpoint: &str,
             token: &str,
@@ -66,7 +103,7 @@ mod ffi {
         fn positive_u64_value(value: &PositiveU64View) -> u64;
 
         fn actors_operation_new() -> Box<ActorsOperation>;
-        fn actors_operation_cancel(operation: &mut ActorsOperation);
+        fn actors_operation_cancel(operation: &ActorsOperation);
         fn actors_operation_is_cancelled(operation: &ActorsOperation) -> bool;
     }
 }
@@ -74,6 +111,7 @@ mod ffi {
 pub struct ActorsClient {
     // The maintained client type is owned by Rust; a real constructor is async.
     inner: Option<client::Client>,
+    last_error: Option<ActorsError>,
 }
 
 pub struct ActorsError {
@@ -88,11 +126,49 @@ pub struct ActorsOperation {
 }
 
 fn actors_client_new() -> Box<ActorsClient> {
-    Box::new(ActorsClient { inner: None })
+    Box::new(ActorsClient {
+        inner: None,
+        last_error: None,
+    })
+}
+
+fn actors_client_connect(endpoint: &str, token: &str, ca_certificate: &str) -> Box<ActorsClient> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("qualification runtime must construct");
+    match runtime.block_on(client::connect_with_ca_certificate(
+        endpoint,
+        token,
+        Some(ca_certificate.as_bytes()),
+    )) {
+        Ok(client) => Box::new(ActorsClient {
+            inner: Some(client),
+            last_error: None,
+        }),
+        Err(error) => Box::new(ActorsClient {
+            inner: None,
+            last_error: Some(ActorsError::from_client(error)),
+        }),
+    }
 }
 
 fn actors_client_is_connected(client: &ActorsClient) -> bool {
     client.inner.is_some()
+}
+
+fn actors_client_error_kind(client: &ActorsClient) -> ffi::ErrorKind {
+    client
+        .last_error
+        .as_ref()
+        .map_or(ffi::ErrorKind::NoError, |error| error.kind)
+}
+
+fn actors_client_error_message(client: &ActorsClient) -> String {
+    client
+        .last_error
+        .as_ref()
+        .map_or_else(String::new, |error| error.message.clone())
 }
 
 fn actors_client_connect_probe(endpoint: &str, token: &str) -> ffi::ClientConnectResult {

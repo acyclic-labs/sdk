@@ -1,0 +1,36 @@
+[package]
+name = "acyclic-actors-uniffi"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+description = "Standalone UniFFI facade for the Rust-owned Actors client"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Keep the generator CLI opt-in so normal consumers only depend on the
+# runtime/scaffolding path.
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "actors-uniffi-bindgen"
+path = "src/bin/actors-uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+
+[[bin]]
+name = "actors-uniffi-cancellation-adapter"
+path = "src/bin/actors-uniffi-cancellation-adapter.rs"
+required-features = ["bindgen"]
+[dependencies]
+acyclic-actors = { path = "../actors", default-features = true }
+thiserror = "2.0.17"
+tokio-util = "=0.7.19"
+uniffi = { version = "=0.31.0", features = ["tokio"] }
+
+# This crate is intentionally its own workspace. It is not a member of the
+# SDK workspace until its generated bindings and native package are qualified.
+[workspace]

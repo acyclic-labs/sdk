@@ -1,12 +1,12 @@
 C++ Actors binding qualification receipt
-Captured: 2026-10-07 (WSL linked refresh)
+Captured: 2026-10-07 (WSL linked refresh plus live TLS fixture)
 Authoritative source checkout: C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk
 Source git at initial capture: 371bb4170e16aca973176b6756a261ee5add7297
 Bridge generator: cxx/cxx-build 1.0.202 (Cargo.lock)
 
 Generated header:
   generated/lib.rs.h
-  SHA256 E7561CEA8FBA89310CF1BC07D4356C477B6B956A20350ED79C2F5E6C5E526F46
+  SHA256 D45817290B8A5E4DBB8D3B47B2595D7DEA5C92239D2C1181EFB710D5E94B89CB
 
 Rust producer (WSL Ubuntu):
   RUSTC_WRAPPER= cargo build --locked --target-dir /tmp/cpp-actors-oss-target
@@ -31,6 +31,14 @@ Windows MSVC:
   Previous canonical Cargo build remained unqualified because the local driver
   reported the emitted lib.rs.cc path missing during compilation. WSL clang/g++
   is the successful linked producer qualification; this is a toolchain gap only.
+
+Live authenticated TLS conformance fixture:
+  consumer/live-remote.cc against the canonical Actors gRPC fixture
+  PASS: real TLS CA, bearer token, all 8 operations, wrong-token rejection
+  Output: live_remote_operations:8 authentication_rejected:true
+
+The fixture uses the maintained Rust client and domain types; it does not claim
+direct C++ future support or qualification of an internet service.
 
 Scope:
   source-only qualification evidence plus temporary WSL build output under /tmp;

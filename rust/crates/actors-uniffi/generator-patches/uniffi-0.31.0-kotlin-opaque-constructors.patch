@@ -1,0 +1,23 @@
+diff --git a/src/bindings/kotlin/templates/ObjectTemplate.kt b/src/bindings/kotlin/templates/ObjectTemplate.kt
+index 47ca7f7..0000000 100644
+--- a/src/bindings/kotlin/templates/ObjectTemplate.kt
++++ b/src/bindings/kotlin/templates/ObjectTemplate.kt
+@@ -123,7 +123,7 @@ open class {{ impl_class_name }}: Disposable, AutoCloseable, {{ interface_name }}
+     /**
+      * @suppress
+      */
+-    constructor(withHandle: UniffiWithHandle, handle: Long) {
++    internal constructor(withHandle: UniffiWithHandle, handle: Long) {
+         this.handle = handle
+         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+     }
+@@ -136,7 +136,7 @@ open class {{ impl_class_name }}: Disposable, AutoCloseable, {{ interface_name }}
+      * attempt to actually use an object constructed this way will fail as there is no
+      * connected Rust object.
+      */
+     @Suppress("UNUSED_PARAMETER")
+-    constructor(noHandle: NoHandle) {
++    internal constructor(noHandle: NoHandle) {
+         this.handle = 0
+         this.cleanable = null
+     }

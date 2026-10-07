@@ -1,6 +1,6 @@
 # Maintained UniFFI Python data enum typing patch
 
-This is an isolated qualification of the pinned Mozilla UniFFI `uniffi_bindgen` 0.31.0 source. It is not a dependency pin bump and does not modify the production crate source. The complete patched source is now retained in this directory under `uniffi-bindgen-0.31.0-pytyping/`; generated outputs remain in the external `Q:\sdk\work` qualification area. Upstream source revision `309762f55db3f0548194a9ceba3027fa64b18a93` and the declared `MPL-2.0` license are recorded in `PATCH-PROVENANCE.md`.
+This is an isolated qualification of the pinned Mozilla UniFFI `uniffi_bindgen` 0.31.0 source. It is not a dependency pin bump and does not modify the production crate source. The reviewed source patch is retained in this directory as `uniffi-python-typing.patch`; its pinned source archive metadata is recorded in `uniffi-python-typing-patch-provenance.md`, and generated outputs remain in the external `Q:\sdk\work` qualification area. Upstream source revision `309762f55db3f0548194a9ceba3027fa64b18a93` and the declared `MPL-2.0` license are recorded in `uniffi-python-typing-patch-provenance.md`.
 
 The current Python backend keeps its runtime API: each data carrying enum remains a parent class with nested variant constructors and runtime dynamic reparenting, so `isinstance(value, SubscriptionStart)` and existing constructor names continue to work. The patch adds a generated `SubscriptionStartValue = typing.Union[SubscriptionStart.CURSOR, SubscriptionStart.CURRENT_HEAD]` alias and uses that alias in all generated type references. The dynamic reparenting runs only when `typing.TYPE_CHECKING` is false; this lets mypy and Pyright see the actual nested constructors while runtime behavior remains unchanged. Error enums are excluded from the alias path, so `BindingErrorValue` is not invented.
 
@@ -32,6 +32,10 @@ Static qualification covered every generated data-carrying enum alias in this Ac
 
 The source-only pending cancellation probe is `python-asyncio-pending-cancellation.py`. Against the live pending fixture at `https://localhost:60389`, it ran three real `asyncio.Task.cancel()` cycles. Each cycle observed the service transition from `active=1` to `aborted` with `active=0`, saw one continuation-map entry while pending, and returned to map size zero. The terminal marker was `PYTHON_ASYNCIO_PENDING_CANCELLATION_PASS`; the final map size was zero. This qualifies Python consumer cancellation propagation through the Rust-owned `CancellationHandle` and cleanup, not a synthetic local future.
 
-The maintained source runner is `run-uniffi-python-typing-patch.sh`; its caller supplies all build, native-library, and generated-output paths. The qualification does not claim a production dependency update.
+The maintained source runner is `run-uniffi-python-typing-patch.sh`. It fetched and verified the pinned crates.io archive, applied the patch, rebuilt the generator, and reproduced the exact generated-module SHA `1BD8903E188767D88BB66E880FFB94D9B2896AD92E0BC9374EED9B7DFBB62FE0`. The qualification does not claim a production dependency update.
 
+
+
+
+The minimal runner was executed from a clean external work directory with Rust 1.98.1 and an external target/output directory. It completed successfully and its generated module matched the previously qualified SHA exactly.
 

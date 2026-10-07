@@ -1,0 +1,59 @@
+diff --git a/bindgen/templates/ObjectTemplate.cs b/bindgen/templates/ObjectTemplate.cs
+index 09007d6..11dac86 100644
+--- a/bindgen/templates/ObjectTemplate.cs
++++ b/bindgen/templates/ObjectTemplate.cs
+@@ -29,7 +29,10 @@
+     private int _wasDestroyed = 0;
+     private long _callCounter = 1;
+ 
+-    public {{ impl_name }}(ulong pointer) {
++    // The raw Rust handle is an implementation detail. The marker both prevents
++    // accidental foreign construction and keeps primitive nominal constructors
++    // unambiguous (for example PositiveU64(ulong)).
++    internal {{ impl_name }}(ulong pointer, bool _uniffi_raw_handle) {
+         this.pointer = pointer;
+     }
+ 
+@@ -46,7 +49,7 @@
+     }
+     {%- else %}
+     public {{ impl_name }}({% call cs::arg_list_decl(cons) -%}) :
+-        this({% call cs::to_ffi_call(cons) %}) {}
++        this({% call cs::to_ffi_call(cons) %}, true) {}
+     {%- endif %}
+     {%- when None %}
+     {%- endmatch %}
+@@ -185,7 +188,7 @@
+     }
+     {%- else %}
+     public static {{ impl_name }} {{ cons.name()|method_name(impl_name) }}({% call cs::arg_list_decl(cons) %}) {
+-        return new {{ impl_name }}({% call cs::to_ffi_call(cons) %});
++        return new {{ impl_name }}({% call cs::to_ffi_call(cons) %}, true);
+     }
+     {%- endif %}
+     {% endfor %}
+@@ -225,7 +228,7 @@ class {{ ffi_converter_type }}: FfiConverter<{{ interface_name }}, ulong> {
+     public override {{ interface_name }} Lift(ulong value) {
+         if ((value & 1UL) == 0UL) {
+             // Rust-generated handle, construct a new wrapper.
+-            return new {{ impl_name }}(value);
++            return new {{ impl_name }}(value, true);
+         } else {
+             // C#-generated handle, retrieve and remove from the handle map.
+             if (handleMap.Remove(value, out var obj)) {
+@@ -258,7 +261,7 @@ class {{ ffi_converter_type }}: FfiConverter<{{ impl_name }}, ulong> {
+     }
+ 
+     public override {{ impl_name }} Lift(ulong value) {
+-        return new {{ impl_name }}(value);
++        return new {{ impl_name }}(value, true);
+     }
+ 
+     public override {{ impl_name }} Read(BigEndianStream stream) {
+@@ -283,4 +286,4 @@ class {{ error_handler_name }} : CallStatusErrorHandler<{{ impl_name }}> {
+         return {{ ffi_converter_type }}.INSTANCE.Read(error_buf.AsStream());
+     }
+ }
+-{%- endif %}
+\ No newline at end of file
++{%- endif %}

@@ -1,0 +1,147 @@
+--- a/src/bindings/python/pipeline/types.rs
++++ b/src/bindings/python/pipeline/types.rs
+@@ -3,8 +3,25 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ use super::*;
++use std::collections::HashMap;
+ 
+ pub fn pass(namespace: &mut Namespace) -> Result<()> {
++    // Data-carrying enums use dynamically reparented nested classes at runtime.
++    // Emit a static union alias for all references so type checkers preserve
++    // each variant's payload type while keeping the runtime API unchanged.
++    let enum_value_aliases: HashMap<String, bool> = namespace
++        .type_definitions
++        .iter()
++        .filter_map(|definition| match definition {
++            TypeDefinition::Enum(e)
++                if !e.is_flat && matches!(e.shape, EnumShape::Enum) =>
++            {
++                Some((e.name.clone(), true))
++            }
++            _ => None,
++        })
++        .collect();
++
+     namespace.visit_mut(|ty: &mut TypeNode| {
+         let package_name = match &ty.ty {
+             Type::Enum {
+@@ -35,7 +52,11 @@
+         } else {
+             ty.ffi_converter_name = format!("_UniffiFfiConverter{}", ty.canonical_name);
+         }
+-        ty.type_name = type_name(&ty.ty);
++        ty.type_name = type_name(&ty.ty, &enum_value_aliases);
++    });
++    // The enum declaration itself must remain the runtime class name.
++    namespace.visit_mut(|e: &mut Enum| {
++        e.self_type.type_name = e.name.clone();
+     });
+     namespace.visit_mut(|return_ty: &mut ReturnType| {
+         return_ty.type_name = match &return_ty.ty {
+@@ -46,7 +67,7 @@
+     Ok(())
+ }
+ 
+-fn type_name(ty: &Type) -> String {
++fn type_name(ty: &Type, enum_value_aliases: &HashMap<String, bool>) -> String {
+     match ty {
+         Type::Boolean => "bool".to_string(),
+         Type::String => "str".to_string(),
+@@ -62,17 +83,12 @@
+         Type::Duration => "Duration".to_string(),
+         Type::Timestamp => "Timestamp".to_string(),
+         Type::Float32 | Type::Float64 => "float".to_string(),
+-        Type::Interface {
++        Type::Record {
+             external_package_name,
+             name,
+             ..
+         }
+-        | Type::Record {
+-            external_package_name,
+-            name,
+-            ..
+-        }
+-        | Type::Enum {
++        | Type::Interface {
+             external_package_name,
+             name,
+             ..
+@@ -90,15 +106,34 @@
+             None => name.clone(),
+             Some(package) => format!("{package}.{name}"),
+         },
++        Type::Enum {
++            external_package_name,
++            name,
++            ..
++        } => {
++            let name = if enum_value_aliases.contains_key(name) {
++                format!("{name}Value")
++            } else {
++                name.clone()
++            };
++            match external_package_name {
++                None => name,
++                Some(package) => format!("{package}.{name}"),
++            }
++        }
+         Type::Optional { inner_type } => {
+-            format!("typing.Optional[{}]", type_name(inner_type))
++            format!("typing.Optional[{}]", type_name(inner_type, enum_value_aliases))
+         }
+         Type::Sequence { inner_type } => {
+-            format!("typing.List[{}]", type_name(inner_type))
++            format!("typing.List[{}]", type_name(inner_type, enum_value_aliases))
+         }
+         Type::Map {
+             key_type,
+             value_type,
+-        } => format!("dict[{}, {}]", type_name(key_type), type_name(value_type)),
++        } => format!(
++            "dict[{}, {}]",
++            type_name(key_type, enum_value_aliases),
++            type_name(value_type, enum_value_aliases)
++        ),
+     }
+ }
+--- a/src/bindings/python/pipeline/modules.rs
++++ b/src/bindings/python/pipeline/modules.rs
+@@ -30,7 +30,12 @@
+         namespace.imports.extend(module_imports);
+ 
+         let mut exported_names = vec!["InternalError".to_string()];
+-        namespace.visit(|e: &Enum| exported_names.push(e.name.clone()));
++        namespace.visit(|e: &Enum| {
++            exported_names.push(e.name.clone());
++            if !e.is_flat && matches!(e.shape, EnumShape::Enum) {
++                exported_names.push(format!("{}Value", e.name));
++            }
++        });
+         namespace.visit(|r: &Record| exported_names.push(r.name.clone()));
+         namespace.visit(|f: &Function| exported_names.push(f.callable.name.clone()));
+         namespace.visit(|i: &Interface| {
+--- a/src/bindings/python/templates/EnumTemplate.py
++++ b/src/bindings/python/templates/EnumTemplate.py
+@@ -139,9 +139,18 @@
+ # Now, a little trick - we make each nested variant class be a subclass of the main
+ # enum class, so that method calls and instance checks etc will work intuitively.
+ # We might be able to do this a little more neatly with a metaclass, but this'll do.
+-{% for variant in e.variants -%}
+-{{ type_name }}.{{ variant.name }} = type("{{ type_name }}.{{ variant.name }}", ({{ type_name }}.{{variant.name}}, {{ type_name }},), {})  # type: ignore
++if not typing.TYPE_CHECKING:
++{% for variant in e.variants %}
++    {{ type_name }}.{{ variant.name }} = type("{{ type_name }}.{{ variant.name }}", ({{ type_name }}.{{variant.name}}, {{ type_name }},), {})  # type: ignore  # pyright: ignore
+ {% endfor %}
++
++# Static type checkers cannot model the dynamic nested-class reassignment above.
++# Keep the public nested-variant API while exposing the exact data-carrying union.
++{{ type_name }}Value = typing.Union[
++{% for variant in e.variants %}
++    {{ type_name }}.{{ variant.name }}{% if !loop.last %},{% endif %}
++{% endfor %}
++]
+ 
+ {% endif %}
+ 
