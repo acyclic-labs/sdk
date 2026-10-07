@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { dirname, resolve, sep } from "node:path";
+import { delimiter, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -293,11 +293,14 @@ process.exit(result.status ?? 1);
 `;
 }
 
-export async function createRustcInvocationCapture() {
-  const directory = await mkdtemp(resolve(tmpdir(), "acyclic-stream-rustc-capture-"));
-  const invocations = resolve(directory, "invocations");
-  await mkdir(invocations);
+export async function createRustcInvocationCapture(target = "test") {
+  // Keep the wrapper identity stable for Cargo's crate disambiguation. The
+  // capture records remain run-specific and live outside the wrapper
+  // directory, so their temporary path cannot affect the native artifact.
+  const directory = await mkdtemp(resolve(tmpdir(), "acyclic-stream-rustc-wrapper-"));
+  const invocations = await mkdtemp(resolve(tmpdir(), "acyclic-stream-rustc-invocations-"));
   const delegate = envValue("RUSTC_WORKSPACE_WRAPPER");
+  const priorPath = envValue("PATH");
   const source = resolve(directory, process.platform === "win32" ? "capture.mjs" : "capture");
   await writeFile(source, captureWrapperSource(delegate, invocations), { mode: 0o700 });
   let wrapper = source;
@@ -308,7 +311,9 @@ export async function createRustcInvocationCapture() {
     await writeFile(source, `#!/usr/bin/env node\n${captureWrapperSource(delegate, invocations)}`, { mode: 0o700 });
     await chmod(source, 0o700);
   }
-  process.env.RUSTC_WORKSPACE_WRAPPER = wrapper;
+  const wrapperIdentity = process.platform === "win32" ? "capture.cmd" : "capture";
+  process.env.PATH = priorPath === null ? directory : `${directory}${delimiter}${priorPath}`;
+  process.env.RUSTC_WORKSPACE_WRAPPER = wrapperIdentity;
   return {
     wrapper,
     async read(target) {
@@ -335,7 +340,10 @@ export async function createRustcInvocationCapture() {
     async close() {
       if (delegate === null) delete process.env.RUSTC_WORKSPACE_WRAPPER;
       else process.env.RUSTC_WORKSPACE_WRAPPER = delegate;
+      if (priorPath === null) delete process.env.PATH;
+      else process.env.PATH = priorPath;
       await rm(directory, { recursive: true, force: true });
+      await rm(invocations, { recursive: true, force: true });
     },
   };
 }

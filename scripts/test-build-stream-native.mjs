@@ -322,6 +322,7 @@ test("native qualification records explicit and implicit rustc linkers through a
   const delegateSource = resolve(directory, "delegate.mjs");
   const delegateCommand = resolve(directory, windows ? "delegate.cmd" : "delegate");
   const priorWrapper = process.env.RUSTC_WORKSPACE_WRAPPER;
+  const priorPath = process.env.PATH;
   const invoke = (wrapper, args) => windows
     ? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "call", wrapper, ...args], { stdio: "inherit" })
     : execFileSync(wrapper, args, { stdio: "inherit" });
@@ -341,6 +342,8 @@ test("native qualification records explicit and implicit rustc linkers through a
     process.env.RUSTC_WORKSPACE_WRAPPER = delegateCommand;
     const capture = await createRustcInvocationCapture();
     try {
+      assert.equal(process.env.RUSTC_WORKSPACE_WRAPPER, windows ? "capture.cmd" : "capture");
+      assert.notEqual(process.env.PATH, priorPath);
       const remapFlag = "--remap-path-prefix=C:/checkout=$ROOT";
       invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", remapFlag, "-C", "linker=C:/fake/lld-link.exe", "-Clinker=C:/fake/effective-link.exe"]);
       const explicit = await capture.read("x86_64-pc-windows-msvc");
@@ -362,6 +365,7 @@ test("native qualification records explicit and implicit rustc linkers through a
   } finally {
     if (priorWrapper === undefined) delete process.env.RUSTC_WORKSPACE_WRAPPER;
     else process.env.RUSTC_WORKSPACE_WRAPPER = priorWrapper;
+    assert.equal(process.env.PATH, priorPath);
     await rm(directory, { recursive: true, force: true });
   }
 });
