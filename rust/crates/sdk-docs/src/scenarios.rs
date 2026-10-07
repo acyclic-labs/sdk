@@ -39,6 +39,8 @@ pub enum ScenarioKind {
     WorkersTypescriptConsumer,
     ObjectsTypescriptConsumer,
     InferenceContractDefaults,
+    PluginCliHelp,
+    NativeRuntimePositionalIo,
     HarnessAuthorityIdContract,
     HarnessChildPageContract,
     HarnessComponentLabelContract,
@@ -173,6 +175,28 @@ pub const SCENARIOS: &[Scenario] = &[
         source_path: "rust/crates/inference/examples/inference-typescript-consumer.rs",
         operation: "contract-defaults",
         kind: ScenarioKind::InferenceContractDefaults,
+        mode: ScenarioMode::ExecuteLocal,
+        features: &[],
+    },
+    Scenario {
+        id: "plugin/cli-help",
+        family: "plugin",
+        package: "acyclic-plugin",
+        example: "acyclic",
+        source_path: "plugin/src/main.rs",
+        operation: "cli-help",
+        kind: ScenarioKind::PluginCliHelp,
+        mode: ScenarioMode::ExecuteLocal,
+        features: &[],
+    },
+    Scenario {
+        id: "native-runtime/positional-io",
+        family: "native-runtime",
+        package: "acyclic-native-runtime",
+        example: "native-runtime-positional-io",
+        source_path: "rust/crates/native-runtime/examples/native-runtime-positional-io.rs",
+        operation: "positional-read-write",
+        kind: ScenarioKind::NativeRuntimePositionalIo,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
     },
@@ -418,8 +442,12 @@ pub fn compile_all(
         command
             .current_dir(root)
             .args(["check", "--quiet", "--locked", "--manifest-path"])
-            .arg(&manifest)
-            .args(["--example", source.scenario.example]);
+            .arg(&manifest);
+        if source.scenario.family == "plugin" {
+            command.args(["--bin", source.scenario.example]);
+        } else {
+            command.args(["--example", source.scenario.example]);
+        }
         if !source.scenario.features.is_empty() {
             command
                 .arg("--features")
@@ -461,8 +489,12 @@ pub fn execute_local(
         command
             .current_dir(root)
             .args(["run", "--quiet", "--locked", "--manifest-path"])
-            .arg(&manifest)
-            .args(["--example", source.scenario.example]);
+            .arg(&manifest);
+        if source.scenario.family == "plugin" {
+            command.args(["--bin", source.scenario.example, "--", "--help"]);
+        } else {
+            command.args(["--example", source.scenario.example]);
+        }
         if !source.scenario.features.is_empty() {
             command
                 .arg("--features")
@@ -612,7 +644,7 @@ fn render_stream_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ StreamClient, idempotencyKey }} from \"@acyclic-labs/stream\";\n\nconst path = {path:?};\nconst values = [{values_literal}].map(value => Uint8Array.from(value));\nconst retry = idempotencyKey(Uint8Array.from({idempotency_literal}));\nconst stream = StreamClient.memory().bytes(path);\nconst append = await stream.appendBatch(values, {{ idempotencyKey: retry }});\nif (!append.ok || append.tail !== BigInt(\"{append_tail}\")) throw new Error(\"Rust append receipt parity failed\");\nconst tail = await stream.tail();\nif (tail !== BigInt(\"{tail}\")) throw new Error(\"Rust tail parity failed\");\nconst records = [];\nfor await (const record of stream.read({{ from: 0n, limit: {read_limit} }})) records.push(record.value);\nconst expected = [{record_values}].map(value => Uint8Array.from(value));\nif (records.length !== expected.length || records.some((record, index) => record.some((byte, offset) => byte !== expected[index][offset]))) throw new Error(\"Rust read parity failed\");\nconsole.log(JSON.stringify({{ tail: tail.toString(), records: records.length }}));\n",
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ StreamClient, idempotencyKey }} from \"@acyclic-labs/stream\";\n\nconst path = {path:?};\nconst values = [{values_literal}].map(value => Uint8Array.from(value));\nconst retry = idempotencyKey(Uint8Array.from({idempotency_literal}));\nconst stream = StreamClient.memory().bytes(path);\nconst append = await stream.appendBatch(values, {{ idempotencyKey: retry }});\nif (!append.ok || append.tail !== BigInt(\"{append_tail}\")) throw new Error(\"Rust append receipt parity failed\");\nconst tail = await stream.tail();\nif (tail !== BigInt(\"{tail}\")) throw new Error(\"Rust tail parity failed\");\nconst records = [];\nfor await (const record of stream.read({{ from: 0n, limit: {read_limit} }})) records.push(record.value);\nconst expected = [{record_values}].map(value => Uint8Array.from(value));\nconst recordsDiffer = records.some((record, index) => {{\n  const expectedRecord = expected[index];\n  return expectedRecord === undefined || record.length !== expectedRecord.length || record.some((byte, offset) => byte !== expectedRecord[offset]);\n}});\nif (records.length !== expected.length || recordsDiffer) throw new Error(\"Rust read parity failed\");\nconsole.log(JSON.stringify({{ tail: tail.toString(), records: records.length }}));\n",
         execution.scenario.id, execution.stdout_sha256,
     );
     Ok(TypeScriptSnippet {
@@ -779,7 +811,7 @@ fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScrip
         serde_json::to_string(&format!("registry.example/generated@sha256:{image_hex}"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
     let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ SimulatedMachines, idempotencyKey, managedOci, type CreateMachine }} from \"@acyclic-labs/machines\";\n\nconst request = {{\n  idempotencyKey: idempotencyKey({idempotency_literal}),\n  image: managedOci({image_literal}),\n  compatibility: {{ kind: \"{compatibility}\" }},\n  suspension: {{ kind: \"{suspension_kind}\", milliseconds: {milliseconds} }},\n  expiration: {{ kind: \"{expiration}\" }},\n  networkPolicyDigestHex: \"{network_hex}\",\n  budgets: {{ spendMicros: BigInt(\"{spend_micros}\"), concurrency: {concurrency} }},\n}} satisfies CreateMachine;\n\nconst provider = new SimulatedMachines();\nconst outcome = await provider.create(request);\nif (outcome.kind !== \"created\") throw new Error(`expected created outcome, received ${{outcome.kind}}`);\nconst page = await provider.listMachines(null, {page_limit});\nif (page.machines.length !== {page_size} || page.machines[0].contract.suspension.kind !== \"{page_suspension}\") throw new Error(\"Rust scenario parity failed\");\nconsole.log(JSON.stringify({{ kind: outcome.kind, pageSize: page.machines.length, suspension: page.machines[0].contract.suspension.kind }}));\n",
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ SimulatedMachines, idempotencyKey, managedOci, type CreateMachine }} from \"@acyclic-labs/machines\";\n\nconst request = {{\n  idempotencyKey: idempotencyKey({idempotency_literal}),\n  image: managedOci({image_literal}),\n  compatibility: {{ kind: \"{compatibility}\" }},\n  suspension: {{ kind: \"{suspension_kind}\", milliseconds: {milliseconds} }},\n  expiration: {{ kind: \"{expiration}\" }},\n  networkPolicyDigestHex: \"{network_hex}\",\n  budgets: {{ spendMicros: BigInt(\"{spend_micros}\"), concurrency: {concurrency} }},\n}} satisfies CreateMachine;\n\nconst provider = new SimulatedMachines();\nconst outcome = await provider.create(request);\nif (outcome.kind !== \"created\") throw new Error(`expected created outcome, received ${{outcome.kind}}`);\nconst page = await provider.listMachines(null, {page_limit});\nconst firstMachine = page.machines[0];\nif (page.machines.length !== {page_size} || firstMachine === undefined || firstMachine.contract.suspension.kind !== \"{page_suspension}\") throw new Error(\"Rust scenario parity failed\");\nconsole.log(JSON.stringify({{ kind: outcome.kind, pageSize: page.machines.length, suspension: firstMachine.contract.suspension.kind }}));\n",
         execution.scenario.id, execution.stdout_sha256,
     );
     Ok(TypeScriptSnippet {
@@ -812,13 +844,15 @@ fn render_workers_typescript(execution: &ScenarioExecution) -> Result<TypeScript
     let digest_literal = array_literal(digest)?;
     let input_literal = array_literal(input)?;
     let alias = string_field(&value, "alias")?;
+    let publish_idempotency = string_field(&value, "publish_idempotency")?;
+    let job_idempotency = string_field(&value, "job_idempotency")?;
     let max_attempts = number_field(&value, "max_attempts")?;
     let timeout = number_field(&value, "timeout_millis")?;
     let memory = number_field(&value, "memory_bytes")?;
     let output = number_field(&value, "output_bytes")?;
     let backoff = number_field(&value, "backoff_millis")?;
     let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\nimport {{ JobLimitsSchema, JobTargetSchema, PayloadSchema, PublishVersionRequestSchema, RetryPolicySchema, SubmitJobRequestSchema }} from \"@acyclic-labs/workers/proto\";\n\nconst module = Uint8Array.from({module_literal});\nconst digest = Uint8Array.from({digest_literal});\nconst publication = create(PublishVersionRequestSchema, {{ javascriptModule: module, expectedSha256: digest, idempotencyKey: \"publish-example\" }});\nconst submission = create(SubmitJobRequestSchema, {{\n  target: create(JobTargetSchema, {{ target: {{ case: \"deploymentAlias\", value: {alias:?} }} }}),\n  input: create(PayloadSchema, {{ source: {{ case: \"inlineBytes\", value: Uint8Array.from({input_literal}) }} }}),\n  limits: create(JobLimitsSchema, {{ timeoutMillis: BigInt(\"{timeout}\"), memoryBytes: BigInt(\"{memory}\"), outputBytes: BigInt(\"{output}\") }}),\n  retry: create(RetryPolicySchema, {{ maxAttempts: {max_attempts}, backoffMillis: BigInt(\"{backoff}\") }}),\n  idempotencyKey: \"job-example\",\n}});\nif (toBinary(PublishVersionRequestSchema, publication).length === 0 || toBinary(SubmitJobRequestSchema, submission).length === 0) throw new Error(\"Workers request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ validated: true, moduleBytes: module.length, attempts: submission.retry?.maxAttempts }}));\n",
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\nimport {{ JobLimitsSchema, JobTargetSchema, PayloadSchema, PublishVersionRequestSchema, RetryPolicySchema, SubmitJobRequestSchema }} from \"@acyclic-labs/workers/proto\";\n\nconst module = Uint8Array.from({module_literal});\nconst digest = Uint8Array.from({digest_literal});\nconst publication = create(PublishVersionRequestSchema, {{ javascriptModule: module, expectedSha256: digest, idempotencyKey: {publish_idempotency:?} }});\nconst submission = create(SubmitJobRequestSchema, {{\n  target: create(JobTargetSchema, {{ target: {{ case: \"deploymentAlias\", value: {alias:?} }} }}),\n  input: create(PayloadSchema, {{ source: {{ case: \"inlineBytes\", value: Uint8Array.from({input_literal}) }} }}),\n  limits: create(JobLimitsSchema, {{ timeoutMillis: BigInt(\"{timeout}\"), memoryBytes: BigInt(\"{memory}\"), outputBytes: BigInt(\"{output}\") }}),\n  retry: create(RetryPolicySchema, {{ maxAttempts: {max_attempts}, backoffMillis: BigInt(\"{backoff}\") }}),\n  idempotencyKey: {job_idempotency:?},\n}});\nif (toBinary(PublishVersionRequestSchema, publication).length === 0 || toBinary(SubmitJobRequestSchema, submission).length === 0) throw new Error(\"Workers request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ validated: true, moduleBytes: module.length, attempts: submission.retry?.maxAttempts }}));\n",
         execution.scenario.id, execution.stdout_sha256,
     );
     Ok(TypeScriptSnippet {
@@ -868,7 +902,7 @@ fn render_inference_typescript(execution: &ScenarioExecution) -> Result<TypeScri
     let message = number_field(&value, "maximum_message_bytes")?;
     let http = number_field(&value, "maximum_http_json_bytes")?;
     let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ create }} from \"@bufbuild/protobuf\";\nimport {{ RequestIdentitySchema }} from \"@acyclic-labs/inference/proto\";\n\nconst identity = create(RequestIdentitySchema);\nif (identity.requestId !== \"\" || {message} !== 8388608 || {http} !== 16777216) throw new Error(\"Rust Inference contract defaults changed\");\nconsole.log(JSON.stringify({{ maximumMessageBytes: {message}, maximumHttpJsonBytes: {http} }}));\n",
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ create }} from \"@bufbuild/protobuf\";\nimport {{ RequestIdentitySchema }} from \"@acyclic-labs/inference/proto\";\n\nconst identity = create(RequestIdentitySchema);\nif (identity.requestId.byteLength !== 0) throw new Error(\"generated identity default changed\");\nconst maximumMessageBytes = {message};\nconst maximumHttpJsonBytes = {http};\nconsole.log(JSON.stringify({{ maximumMessageBytes, maximumHttpJsonBytes }}));\n",
         execution.scenario.id, execution.stdout_sha256,
     );
     Ok(TypeScriptSnippet {
@@ -1084,6 +1118,7 @@ fn package_directory(scenario: &Scenario) -> &'static str {
         "actors" => "actors",
         "stream" => "stream",
         "filesystem" => "filesystem",
+        "plugin" => "../../plugin",
         family => family,
     }
 }
@@ -1112,7 +1147,7 @@ mod tests {
 
     #[test]
     fn registry_contains_requested_consumer_families() {
-        assert_eq!(SCENARIOS.len(), 17);
+        assert_eq!(SCENARIOS.len(), 19);
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "actors/typescript-consumer"));
@@ -1131,6 +1166,12 @@ mod tests {
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "inference/typescript-consumer"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "plugin/cli-help"));
+        assert!(SCENARIOS
+            .iter()
+            .any(|scenario| scenario.id == "native-runtime/positional-io"));
         assert_eq!(
             SCENARIOS
                 .iter()
@@ -1163,5 +1204,32 @@ mod tests {
         let catalog = execution_catalog(&[execution]);
         assert_eq!(catalog[0].id, "actors/typescript-consumer");
         assert_eq!(catalog[0].source_sha256, "sha256:source");
+    }
+
+    #[test]
+    fn rendered_projection_changes_when_rust_scenario_output_changes() {
+        let scenario = SCENARIOS
+            .iter()
+            .find(|scenario| scenario.id == "workers/typescript-consumer")
+            .copied()
+            .expect("Workers TypeScript scenario is registered");
+        let stdout = r#"{"validated":true,"module":[1],"digest":[2],"alias":"current","publish_idempotency":"publish-example","job_idempotency":"job-example","input":[3],"max_attempts":2,"timeout_millis":1000,"memory_bytes":4194304,"output_bytes":4096,"backoff_millis":25}"#;
+        let changed_stdout = stdout.replace("current", "canary");
+        let execution = |stdout: String| ScenarioExecution {
+            stdout_sha256: digest_bytes(stdout.as_bytes()),
+            stdout,
+            scenario,
+            source_sha256: "sha256:source".into(),
+            stderr_sha256: digest_bytes(&[]),
+        };
+        let original = render_typescript(&[execution(stdout.into())])
+            .expect("Rust scenario output should render")
+            .remove(0);
+        let changed = render_typescript(&[execution(changed_stdout)])
+            .expect("mutated Rust scenario output should render")
+            .remove(0);
+        assert_ne!(original.rust_output_sha256, changed.rust_output_sha256);
+        assert_ne!(original.source, changed.source);
+        assert!(changed.source.contains("canary"));
     }
 }

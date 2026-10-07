@@ -43,6 +43,8 @@ fn main() {
             "module": module.to_vec(),
             "digest": digest,
             "alias": "current",
+            "publish_idempotency": "publish-example",
+            "job_idempotency": "job-example",
             "input": [1, 2, 3],
             "max_attempts": 2,
             "timeout_millis": 1000,

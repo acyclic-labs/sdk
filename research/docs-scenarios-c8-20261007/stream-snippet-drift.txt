@@ -1,7 +1,0 @@
-checkout=c8bef0be476cbfd5d4fa30d1f8d017fa5336d964
-scenario=stream/typescript-consumer
-source_path=rust/crates/stream/examples/stream-typescript-consumer.rs
-mutation=typescript/events -> typescript/other
-normal_output_sha256=A57089EDA97464FB3AEBE5075BB90DD9E7A83B38C4DF40A51D47B854E0CD29C1
-mutated_output_sha256=E54B9CC5225382A0286C52A191D293479E84B8103F5C08C824B56CBE3DC41201
-source_restored=True
