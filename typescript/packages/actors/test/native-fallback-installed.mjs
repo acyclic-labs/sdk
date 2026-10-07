@@ -126,7 +126,7 @@ await withMutations(async ({ bytes }) => {
     bytes.set(path, await readFile(path));
     await writeFile(path, Buffer.from("malformed native artifact"));
   }
-  assertFatal(process.execPath, "Node malformed-native");
+  for (const executable of executables) assertFatal(executable.command, `${executable.name} malformed-native`);
 });
 
 // A missing dependency from inside a companion is fatal even when its name
@@ -139,7 +139,7 @@ await withMutations(async ({ move, create }) => {
     await create(join(packagePath, "package.json"), '{"type":"commonjs"}');
     await create(join(packagePath, "index.js"), "module.exports = require('@acyclic-labs/actors-transitive-spoof');\n");
   }
-  assertFatal(process.execPath, "Node nested-companion-dependency");
+  for (const executable of executables) assertFatal(executable.command, `${executable.name} nested-companion-dependency`);
 });
 
 console.log(JSON.stringify({ status: "passed", packageRoot, bun: bunAvailable }));
