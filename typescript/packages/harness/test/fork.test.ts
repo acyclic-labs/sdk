@@ -30,6 +30,22 @@ const childProject: ResourceRevision = {
     generation: { kind: "generation", provider: filesystem, key: [2], version: null },
   },
 };
+const parentScratch: ResourceRevision = {
+  kind: "private_volume", reference: {
+    volume: { ...privateVolume, id: "parent-private", owner: {
+      kind: "agent", id: "11111111-1111-1111-1111-111111111111" as AgentId,
+    } },
+    generation: { kind: "generation", provider: filesystem, key: [4], version: null },
+    paths: [],
+  },
+};
+const childScratch: ResourceRevision = {
+  kind: "private_volume", reference: {
+    volume: privateVolume,
+    generation: { kind: "generation", provider: filesystem, key: [5], version: null },
+    paths: [],
+  },
+};
 
 test("Rust-owned fork ceilings preserve public bigint and number semantics", () => {
   expect(typeof MAX_FORK_AGENTS).toBe("number");
@@ -118,12 +134,14 @@ function report(): ForkReport {
       selections: [
         { required: true, revision: history },
         { required: true, revision: parentProject },
+        { required: true, revision: parentScratch },
       ],
       boundary: null,
     },
     captures: [
       { kind: "captured", value: { source: history, revision: history } },
       { kind: "captured", value: { source: parentProject, revision: childProject } },
+      { kind: "captured", value: { source: parentScratch, revision: childScratch } },
     ],
     child_private_volume: privateVolume,
     child_private_generation: { kind: "generation", provider: filesystem, key: [3], version: null },
@@ -183,7 +201,8 @@ test("parent publication reconciles one exact child after a lost acknowledgement
 
 test("parent-controlled fork seed pins exact history and isolates project/private volumes", async () => {
   const seed = await forkSeed(report());
-  expect(seed.resources).toHaveLength(2);
+  expect(seed.resources).toHaveLength(3);
+  expect(seed.resources[2]).toEqual({ source: parentScratch, revision: childScratch });
   expect(seed.omissions).toHaveLength(0);
   expect(seed.child_private_volume.owner).toEqual({ kind: "agent", id: agent });
   expect(seed.child_private_generation).toEqual(report().child_private_generation);
@@ -227,7 +246,7 @@ test("fork preparation pins child allocation and bounded context before capture"
           generation: { kind: "generation", provider: filesystem, key: [2], version: null },
         } },
       },
-    }],
+    }, prepared.captures[2]!],
   })).rejects.toThrow();
   await expect(validateForkReport({
     ...prepared,
@@ -240,7 +259,7 @@ test("fork preparation pins child allocation and bounded context before capture"
 
 test("required capture failure never publishes a child; optional failures remain visible", async () => {
   const required = report();
-  await expect(forkSeed({ ...required, captures: [{ kind: "unsupported", value: "not available" }, required.captures[1]!] }))
+  await expect(forkSeed({ ...required, captures: [{ kind: "unsupported", value: "not available" }, ...required.captures.slice(1)] }))
     .rejects.toThrow();
   const optional: ForkReport = {
     ...required,
@@ -266,7 +285,7 @@ test("required capture failure never publishes a child; optional failures remain
 
 test("project capture cannot retain the parent's project volume", async () => {
   const invalid = report();
-  await expect(forkSeed({ ...invalid, captures: [invalid.captures[0]!, { kind: "captured", value: { source: parentProject, revision: parentProject } }] }))
+  await expect(forkSeed({ ...invalid, captures: [invalid.captures[0]!, { kind: "captured", value: { source: parentProject, revision: parentProject } }, invalid.captures[2]!] }))
     .rejects.toThrow();
 });
 
