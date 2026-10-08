@@ -32,6 +32,20 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Stable classification for tracing's `error.kind`.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::Transport(_) => "transport",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::MalformedResponse => "malformed_response",
+            Self::Service { .. } => "service",
+        }
+    }
+}
+
 /// Plain HTTP is admitted only for `localhost` and loopback IP literals.
 fn loopback(endpoint: &Url) -> bool {
     endpoint.host_str().is_some_and(|host| {
@@ -91,6 +105,53 @@ impl Client {
 
     async fn call<I: Message, O: Message + Default>(
         &self,
+        route: &'static str,
+        input: &str,
+        output: &str,
+        request: &I,
+    ) -> Result<O, Error> {
+        self.call_at(route, route, input, output, request).await
+    }
+
+    /// Calls `route`, an instance of the static `template` that spans record.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.workers.http.call",
+            level = "info",
+            skip_all,
+            fields(
+                route = template,
+                http.status = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+                error.kind = tracing::field::Empty,
+            )
+        )
+    )]
+    async fn call_at<I: Message, O: Message + Default>(
+        &self,
+        template: &'static str,
+        route: &str,
+        input: &str,
+        output: &str,
+        request: &I,
+    ) -> Result<O, Error> {
+        let result = self.exchange(route, input, output, request).await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let span = tracing::Span::current();
+            match &result {
+                Ok(_) => span.record("outcome", "ok"),
+                Err(error) => span
+                    .record("outcome", "err")
+                    .record("error.kind", error.kind()),
+            };
+        }
+        result
+    }
+
+    async fn exchange<I: Message, O: Message + Default>(
+        &self,
         route: &str,
         input: &str,
         output: &str,
@@ -116,6 +177,8 @@ impl Client {
             .send()
             .await?;
         let status = response.status();
+        #[cfg(not(target_arch = "wasm32"))]
+        tracing::Span::current().record("http.status", status.as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -258,13 +321,10 @@ impl Client {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let route = HTTP_ROUTES
-            .get(5)
-            .ok_or(Error::InvalidArgument)?
-            .1
-            .replace("{sha256hex}", &digest);
-        self.call(
-            &route,
+        let template = HTTP_ROUTES.get(5).ok_or(Error::InvalidArgument)?.1;
+        self.call_at(
+            template,
+            &template.replace("{sha256hex}", &digest),
             "acyclic.workers.v1.InvokeVersionRequest",
             "acyclic.workers.v1.InvokeResponse",
             request,
@@ -291,13 +351,10 @@ impl Client {
         {
             return Err(Error::InvalidArgument);
         }
-        let route = HTTP_ROUTES
-            .get(6)
-            .ok_or(Error::InvalidArgument)?
-            .1
-            .replace("{alias}", &request.alias);
-        self.call(
-            &route,
+        let template = HTTP_ROUTES.get(6).ok_or(Error::InvalidArgument)?.1;
+        self.call_at(
+            template,
+            &template.replace("{alias}", &request.alias),
             "acyclic.workers.v1.InvokeDeploymentRequest",
             "acyclic.workers.v1.InvokeResponse",
             request,
