@@ -1,6 +1,6 @@
 use super::{Error, MemoryObjects, MemoryOptions, ObjectsProvider, grpc::GrpcObjects, wire};
 use bytes::{Bytes, BytesMut};
-use futures::stream;
+use futures::{StreamExt, stream};
 use prost::Message;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{
@@ -40,8 +40,12 @@ impl wire::buckets_service_server::BucketsService for Fixture {
         &self,
         request: Request<wire::CreateBucketRequest>,
     ) -> Result<Response<wire::Bucket>, Status> {
+        let query = authenticated(request)?;
+        if query.name == "deadline.metadata" {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        }
         self.0
-            .create_bucket(authenticated(request)?)
+            .create_bucket(query)
             .await
             .map(Response::new)
             .map_err(status)
@@ -104,8 +108,7 @@ impl wire::objects_service_server::ObjectsService for Fixture {
             .map(Response::new)
             .map_err(status)
     }
-    type GetObjectStream =
-        stream::Iter<std::vec::IntoIter<Result<wire::GetObjectResponse, Status>>>;
+    type GetObjectStream = stream::BoxStream<'static, Result<wire::GetObjectResponse, Status>>;
     async fn get_object(
         &self,
         request: Request<wire::GetObjectRequest>,
@@ -113,6 +116,7 @@ impl wire::objects_service_server::ObjectsService for Fixture {
         let query = authenticated(request)?;
         let malformed = query.object_key == "malformed";
         let terminal_error = query.object_key == "terminal-error";
+        let delayed = query.object_key == "delayed-body";
         let selected = self.0.get(query, 8 * 1024 * 1024).await.map_err(status)?;
         let mut frames = vec![Ok(wire::GetObjectResponse {
             frame: Some(wire::get_object_response::Frame::Header(
@@ -146,7 +150,23 @@ impl wire::objects_service_server::ObjectsService for Fixture {
                 frame: Some(wire::get_object_response::Frame::Body(body)),
             }));
         }
-        Ok(Response::new(stream::iter(frames)))
+        Ok(Response::new(
+            stream::iter(frames)
+                .then(move |frame| async move {
+                    if delayed
+                        && matches!(
+                            &frame,
+                            Ok(wire::GetObjectResponse {
+                                frame: Some(wire::get_object_response::Frame::Body(_))
+                            })
+                        )
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    frame
+                })
+                .boxed(),
+        ))
     }
     async fn head_object(
         &self,
@@ -315,8 +335,154 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
+    exercise_transfer_deadlines(&client).await?;
     let _ = shutdown_tx.send(());
     server.await??;
+    Ok(())
+}
+
+async fn exercise_transfer_deadlines(
+    client: &GrpcObjects,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
+    assert!(
+        client
+            .clone()
+            .with_transfer_timeout(Duration::ZERO)
+            .is_err()
+    );
+    assert!(
+        client
+            .clone()
+            .with_transfer_timeout(Duration::from_secs(1801))
+            .is_err()
+    );
+    let short = client
+        .clone()
+        .with_transfer_timeout(Duration::from_millis(80))?;
+    // The fixture delays this metadata reply longer than the transfer budget.
+    // It must still succeed using the independent ordinary request deadline.
+    let bucket = short
+        .create_bucket(wire::CreateBucketRequest {
+            name: "deadline.metadata".into(),
+            mutation: None,
+        })
+        .await?;
+    let bucket = bucket.bucket.ok_or("missing deadline bucket")?;
+    let long = client
+        .clone()
+        .with_transfer_timeout(Duration::from_secs(2))?;
+    let header = |key: &str| wire::PutObjectHeader {
+        bucket: Some(bucket.clone()),
+        object_key: key.into(),
+        mutation: None,
+        ..Default::default()
+    };
+    let delayed_upload = || {
+        stream::once(async {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            Ok(Bytes::from_static(b"complete-source"))
+        })
+        .boxed()
+    };
+    let ack = long
+        .put_stream(header("delayed-upload"), delayed_upload())
+        .await?;
+    assert_eq!(ack.size, 15);
+    // This crosses the old channel's fixed 30-second ceiling, using the public
+    // client and the same authenticated TLS RPC rather than a mock channel.
+    let extended = client
+        .clone()
+        .with_transfer_timeout(Duration::from_secs(45))?;
+    let ack = extended
+        .put_stream(
+            header("beyond-default-budget"),
+            stream::once(async {
+                tokio::time::sleep(Duration::from_secs(31)).await;
+                Ok(Bytes::from_static(b"complete-source"))
+            })
+            .boxed(),
+        )
+        .await?;
+    assert_eq!(ack.size, 15);
+    assert_eq!(
+        short
+            .put_stream(header("cancelled-upload"), delayed_upload())
+            .await
+            .err()
+            .ok_or("short transfer did not refuse delayed upload")?
+            .code,
+        wire::ErrorCode::Unavailable
+    );
+    assert_eq!(
+        long.head(wire::HeadObjectRequest {
+            bucket: Some(bucket.clone()),
+            object_key: "cancelled-upload".into(),
+            ..Default::default()
+        })
+        .await
+        .err()
+        .ok_or("cancelled upload published an object")?
+        .code,
+        wire::ErrorCode::NotFound
+    );
+    exercise_download_deadline(client, bucket).await
+}
+
+async fn exercise_download_deadline(
+    client: &GrpcObjects,
+    bucket: wire::BucketRef,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
+    let long = client
+        .clone()
+        .with_transfer_timeout(Duration::from_secs(2))?;
+    // Three body frames each arrive within 250ms. A 400ms *total* deadline
+    // accepts the first frame and refuses the second; it cannot reset per frame.
+    let bytes = Bytes::from(vec![41; 2 * 65536 + 1]);
+    let info = long
+        .put(
+            wire::PutObjectHeader {
+                bucket: Some(bucket.clone()),
+                object_key: "delayed-body".into(),
+                mutation: None,
+                ..Default::default()
+            },
+            bytes.clone(),
+        )
+        .await?;
+    let query = || wire::GetObjectRequest {
+        bucket: Some(bucket.clone()),
+        object_key: "delayed-body".into(),
+        ..Default::default()
+    };
+    let complete = long.get(query(), bytes.len() as u64).await?;
+    assert_eq!(complete.body, bytes);
+    let bounded = client
+        .clone()
+        .with_transfer_timeout(Duration::from_millis(400))?;
+    let mut download = bounded.get_stream(query(), info.size).await?;
+    assert_eq!(download.header.object.as_ref(), Some(&info));
+    assert_eq!(
+        download
+            .body
+            .next()
+            .await
+            .ok_or("missing first frame")??
+            .len(),
+        65536
+    );
+    assert_eq!(
+        download
+            .body
+            .next()
+            .await
+            .ok_or("missing deadline refusal")?
+            .err()
+            .ok_or("download exceeded its total deadline")?
+            .code,
+        wire::ErrorCode::Unavailable
+    );
     Ok(())
 }
 
