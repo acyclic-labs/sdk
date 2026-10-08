@@ -192,7 +192,8 @@ export function retainedArtifact(runId, prefix, attempt, sourceCommit, query = g
 
 // Main cannot restore PR-scoped cache markers. Reuse only direct, successful
 // PR jobs with identical existing input keys; current commit preflight is
-// independent. Missing donor objects/API evidence conservatively run lanes.
+// independent. Deleted squash branches need a bounded Git tree API lookup;
+// missing or truncated API evidence conservatively runs lanes.
 // The merged PR identifies the donor source, not its run's PR number: GitHub
 // can clear run.pull_requests after merging. Core commands are event-invariant.
 export function mergedPullRequestMarkers(lanes, repository, head, {
@@ -208,7 +209,10 @@ export function mergedPullRequestMarkers(lanes, repository, head, {
   const donor = candidates[0].head.sha;
   if (!/^[0-9a-f]{40}$/.test(donor)) return decline("invalid donor head");
   const currentKeys = laneKeys(lanes, treeAt(head), "core");
-  const donorKeys = laneKeys(lanes, treeAt(donor), "core");
+  let donorTree;
+  try { donorTree = treeAt(donor); }
+  catch { donorTree = remoteTreeEntries(query(`repos/${repository}/git/trees/${donor}?recursive=1`), donor); }
+  const donorKeys = laneKeys(lanes, donorTree, "core");
   const eligible = lanes.filter(lane => reusableCore(lane) && currentKeys[lane.lane] === donorKeys[lane.lane]);
   if (!eligible.length) return decline("no matching core input keys");
   const workflow = query(`repos/${repository}/actions/workflows/qualification.yml`);
@@ -237,6 +241,35 @@ export function mergedPullRequestMarkers(lanes, repository, head, {
     if (eligible.every(lane => markers[lane.lane])) break;
   }
   return Object.keys(markers).length ? markers : decline("no directly executed successful attempt with retained artifacts");
+}
+
+// Match `git ls-tree -r -z --full-tree`: tree directories are not records,
+// paths are unquoted, and recursive entries have bytewise Git path order.
+export function remoteTreeEntries(response, sourceCommit) {
+  if (response.sha !== sourceCommit || response.truncated !== false || !Array.isArray(response.tree)) {
+    throw new Error("donor Git tree is incomplete or belongs to another source");
+  }
+  const entries = response.tree;
+  const paths = new Set();
+  for (const entry of entries) {
+    if (!/^[0-9a-f]{40}$/.test(entry.sha) ||
+      !((entry.type === "blob" && ["100644", "100755", "120000"].includes(entry.mode)) || (entry.type === "commit" && entry.mode === "160000") || (entry.type === "tree" && entry.mode === "040000")) ||
+      typeof entry.path !== "string" || /[\0\uFFFD\uD800-\uDFFF]/u.test(entry.path) ||
+      entry.path.split("/").some(part => !part || part === "." || part === "..") || paths.has(entry.path)) {
+      throw new Error("donor Git tree has an invalid entry");
+    }
+    paths.add(entry.path);
+  }
+  const leaves = entries.filter(entry => entry.type !== "tree");
+  const leafPaths = new Set(leaves.map(entry => entry.path));
+  for (const entry of entries) {
+    const parts = entry.path.split("/");
+    for (let index = 1; index < parts.length; index++) {
+      if (leafPaths.has(parts.slice(0, index).join("/"))) throw new Error("donor Git tree has an invalid entry prefix");
+    }
+  }
+  return leaves.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)))
+    .map(entry => `${entry.mode} ${entry.type} ${entry.sha}\t${entry.path}`);
 }
 
 function recordedMarker(lane) {

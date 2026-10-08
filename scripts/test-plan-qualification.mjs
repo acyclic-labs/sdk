@@ -15,6 +15,7 @@ import {
   qualificationEventKinds,
   requiresFullQualification,
   retainedArtifact,
+  remoteTreeEntries,
 } from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
@@ -159,7 +160,41 @@ test("merged PR proof reuses only executed core jobs for identical consumer inpu
   assert.deepEqual(exercise(undefined, changed(".github/workflows/qualification.yml")), {});
   assert.deepEqual(Object.keys(exercise(undefined, changed("README.md"))).sort(), Object.keys(markers).sort());
   assert.equal(exercise(undefined, tree, lanes.map(lane => lane.lane === "gate" ? { ...lane, source_bound: true } : lane)).gate, undefined);
-  assert.throws(() => mergedPullRequestMarkers(lanes, repository, head, { query: () => baseline.pr, treeAt: sha => { if (sha === donor) throw new Error("missing donor object"); return tree; } }), /missing donor object/);
+  assert.throws(() => mergedPullRequestMarkers(lanes, repository, head, { query: () => baseline.pr, treeAt: sha => { if (sha === donor) throw new Error("missing donor object"); return tree; } }), /donor Git tree is incomplete/);
+});
+
+test("remote donor trees preserve real Git records and reject incomplete identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdk-remote-tree-"));
+  try {
+    const git = (args, input) => {
+      const result = spawnSync("git", args, { cwd: root, input, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout;
+    };
+    git(["init", "--quiet"]);
+    const sha = git(["hash-object", "-w", "--stdin"], "fixture").trim();
+    const entries = [
+      ["100644", "a.c"], ["100644", "a/file"], ["100644", "a0"], ["100755", "executable"],
+      ["120000", "symlink"], ["160000", "submodule"], ["100644", "tab\tname"],
+      ["100644", "é"], ["100644", "中"], ["100644", "\uE000"], ["100644", "\u{10000}"], ["100644", "line\nname"],
+    ].map(([mode, path]) => ({ mode, path, sha, type: mode === "160000" ? "commit" : "blob" }));
+    // Index-only fixture: permit Git's portable path bytes without creating
+    // tab/newline names that Windows cannot materialize in a checkout.
+    for (const entry of entries) git(["-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", `${entry.mode},${sha},${entry.path}`]);
+    const treeSha = git(["write-tree"]).trim();
+    const expected = git(["ls-tree", "-r", "-z", "--full-tree", treeSha]).split("\0").filter(Boolean);
+    const response = { sha: treeSha, truncated: false, tree: [...entries.reverse(), { type: "tree", mode: "040000", path: "a", sha }] };
+    assert.deepEqual(remoteTreeEntries(response, treeSha), expected);
+    assert.deepEqual(laneKeys(lanes, remoteTreeEntries(response, treeSha)), laneKeys(lanes, expected));
+    for (const replacement of [{ sha: "b".repeat(40) }, { truncated: true }, { tree: null }]) {
+      assert.throws(() => remoteTreeEntries({ ...response, ...replacement }, treeSha), /incomplete or belongs/);
+    }
+    for (const replacement of [{ sha: "invalid" }, { mode: "100600" }, { type: "tree-invalid" }, { type: "tree", mode: "100644" }, { path: "" }, { path: "null\0path" }, { path: "/absolute" }, { path: "../parent" }, { path: "a//b" }, { path: "a/./b" }, { path: "\uFFFD" }, { path: "\uD800" }]) {
+      assert.throws(() => remoteTreeEntries({ ...response, tree: [{ ...entries[0], ...replacement }] }, treeSha), /invalid entry/);
+    }
+    assert.throws(() => remoteTreeEntries({ ...response, tree: [entries[0], entries[0]] }, treeSha), /invalid entry/);
+    assert.throws(() => remoteTreeEntries({ ...response, tree: [{ ...entries[0], path: "a" }, { ...entries[0], path: "a/b" }] }, treeSha), /invalid entry prefix/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("retained proof artifacts belong to the exact source run and attempt", () => {
@@ -197,11 +232,23 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     const commit = message => git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", message]);
     commit("donor");
     const donor = git(["rev-parse", "HEAD"]);
+    const donorEntries = git(["ls-tree", "-r", "-z", "--full-tree", donor]).split("\0").filter(Boolean).map(record => {
+      const [mode, type, sha] = record.slice(0, record.indexOf("\t")).split(" ");
+      return { mode, type, sha, path: record.slice(record.indexOf("\t") + 1) };
+    });
+    const donorBranch = git(["branch", "--show-current"]);
+    git(["checkout", "--orphan", "landed", "--quiet"]);
     commit("landed");
     const head = git(["rev-parse", "HEAD"]);
+    git(["branch", "-D", donorBranch]);
+    git(["reflog", "expire", "--expire=now", "--all"]);
+    git(["gc", "--prune=now", "--quiet"]);
+    assert.notEqual(spawnSync("git", ["cat-file", "-e", donor], { cwd: root }).status, 0, "squash donor must actually be absent");
     const repo = { full_name: repository }, path = ".github/workflows/qualification.yml";
+    const donorResponse = { sha: donor, truncated: false, tree: donorEntries };
     const api = {
       [`repos/${repository}/commits/${head}/pulls`]: [{ merged_at: "today", merge_commit_sha: head, base: { ref: "main", repo }, head: { sha: donor, repo } }],
+      [`repos/${repository}/git/trees/${donor}?recursive=1`]: donorResponse,
       [`repos/${repository}/actions/workflows/qualification.yml`]: { id: 9, path },
       [`repos/${repository}/actions/workflows/9/runs?event=pull_request&head_sha=${donor}&status=success&per_page=5`]: { workflow_runs: [{ id: 7, run_attempt: 2, workflow_id: 9, path, event: "pull_request", head_sha: donor, head_repository: repo, status: "completed", conclusion: "success" }] },
       [`repos/${repository}/actions/runs/7/attempts/2/jobs?per_page=100`]: { total_count: 4, jobs: ["plan", "gate", "typescript", "policy"].map(name => ({ name, head_sha: donor, run_id: 7, run_attempt: 2, runner_id: 1, status: "completed", conclusion: "success", steps: [{ name: name === "plan" ? "Verify commit signatures and secrets" : "Run qualification lane", status: "completed", conclusion: "success" }] })) },
@@ -223,6 +270,11 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     };
     const selected = run("select");
     assert.deepEqual(selected.matrix, []);
+    donorResponse.truncated = true;
+    put("api.json", JSON.stringify(api));
+    assert.deepEqual(named(run("select").matrix), ["gate", "policy", "typescript"]);
+    donorResponse.truncated = false;
+    put("api.json", JSON.stringify(api));
     env.REUSED = JSON.stringify(selected.reused);
     assert.deepEqual(run("record").recorded.sort(), ["gate", "policy", "typescript"]);
     assert.deepEqual(JSON.parse(readFileSync(join(root, ".qualification/gate.json"), "utf8")), { run_id: 7, run_attempt: 2, source_commit: donor });
