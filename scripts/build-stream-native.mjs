@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, rename, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -216,7 +217,7 @@ function splitRustflags(value) {
   return flags;
 }
 
-export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
+export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null, darwinLinker?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS, darwinLinker = null } = {}) {
   const prior = encoded !== null && typeof encoded === "string"
     ? (encoded.length === 0 ? [] : encoded.split("\x1f"))
     : plain !== null && typeof plain === "string" ? splitRustflags(plain) : [];
@@ -226,7 +227,46 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     `--remap-path-prefix=${resolve(targetDir).replaceAll("\\", "/")}=/__acyclic_stream_target`,
   ];
   if (typeof target === "string" && target.endsWith("-pc-windows-msvc")) flags.push("-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro");
+  if (typeof target === "string" && target.endsWith("-apple-darwin")) {
+    // NAPI-RS emits a dylib-backed addon on Darwin. Apple's maintained ld is
+    // used with ad hoc signing disabled; the finished addon is signed once,
+    // deterministically, after NAPI's copy step.
+    flags.push("-C", `link-arg=-fuse-ld=${darwinLinker ?? "/usr/bin/ld"}`, "-C", "link-arg=-Wl,-no_adhoc_codesign", "-C", "link-arg=-Wl,-reproducible", "-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-Wl,-final_output,/__acyclic_stream_output/libacyclic_stream_napi.dylib");
+  }
   return flags.join("\x1f");
+}
+
+/** Return the maintained Apple linker used for reproducible Darwin addons. */
+export function darwinAppleLdPaths(target, sdkRoot = null) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  const sdk = sdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  if (typeof sdk !== "string" || sdk.length === 0) throw new Error("Darwin Apple ld requires a macOS SDK");
+  return {
+    linkerEnvironment: targetEnvName(target, "LINKER"),
+    linker: "/usr/bin/ld",
+    driver: "/usr/bin/clang",
+    sdkRoot: sdk,
+  };
+}
+
+export function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: suppliedDriver, linkerExists = existsSync } = {}) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return () => {};
+  const paths = darwinAppleLdPaths(target, suppliedSdkRoot);
+  if (!linkerExists(paths.linker)) throw new Error(`Apple ld is unavailable at ${paths.linker}`);
+  const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const driver = suppliedDriver ?? commandOutput("xcrun", ["--find", "clang"]);
+  const priorTargetLinker = envValue(paths.linkerEnvironment);
+  const priorSdkRoot = envValue("SDKROOT");
+  process.env[paths.linkerEnvironment] = driver;
+  process.env.SDKROOT = sdkRoot;
+  const restore = () => {
+    if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
+    else process.env[paths.linkerEnvironment] = priorTargetLinker;
+    if (priorSdkRoot === null) delete process.env.SDKROOT;
+    else process.env.SDKROOT = priorSdkRoot;
+  };
+  restore.linkerPath = paths.linker;
+  return restore;
 }
 
 export async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
@@ -234,10 +274,11 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
   const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
   const priorCargoIncremental = envValue("CARGO_INCREMENTAL");
   const priorReleaseIncremental = envValue("CARGO_PROFILE_RELEASE_INCREMENTAL");
+  const restoreDarwinAppleLd = configureDarwinAppleLd(target);
   try {
     process.env.CARGO_INCREMENTAL = "0";
     process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "false";
-    process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
+    process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags, darwinLinker: restoreDarwinAppleLd.linkerPath ?? null });
     delete process.env.RUSTFLAGS;
     return await operation();
   } finally {
@@ -249,6 +290,7 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
     else process.env.CARGO_INCREMENTAL = priorCargoIncremental;
     if (priorReleaseIncremental === null) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
     else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
+    restoreDarwinAppleLd();
   }
 }
 
@@ -268,6 +310,8 @@ export function linkerInputs(target, environment = process.env) {
       CC: envValue("CC", environment),
       AR: envValue("AR", environment),
       RUSTC_LINKER: envValue("RUSTC_LINKER", environment),
+      DYLD_LIBRARY_PATH: envValue("DYLD_LIBRARY_PATH", environment),
+      SDKROOT: envValue("SDKROOT", environment),
       VCINSTALLDIR: envValue("VCINSTALLDIR", environment),
       VCToolsInstallDir: envValue("VCToolsInstallDir", environment),
       WindowsSdkDir: envValue("WindowsSdkDir", environment),
@@ -468,6 +512,12 @@ function normalizeToolPath(value, context) {
   return `<toolchain-path>/${parts.slice(-3).join("/")}`;
 }
 
+function normalizeToolPathList(value, context) {
+  if (typeof value !== "string") return value;
+  const separator = process.platform === "win32" ? ";" : ":";
+  return value.split(separator).map(item => normalizeToolPath(item, context)).join(separator);
+}
+
 function normalizeFlagValue(value, context) {
   if (typeof value !== "string") return value;
   const normalizeSegment = (segment, encoded) => {
@@ -508,6 +558,8 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
   });
   normalized.linker.configured.target = normalizeToolPath(value.linker.configured.target, context);
   for (const field of ["LINK", "CC", "AR", "RUSTC_LINKER"]) normalized.linker.environment[field] = normalizeToolPath(value.linker.environment[field], context);
+  normalized.linker.environment.DYLD_LIBRARY_PATH = normalizeToolPathList(value.linker.environment.DYLD_LIBRARY_PATH, context);
+  normalized.linker.environment.SDKROOT = normalizeToolPath(value.linker.environment.SDKROOT, context);
   for (const field of ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]) normalized.environment[field] = normalizeFlagValue(value.environment[field], context);
   return normalized;
 }
@@ -653,11 +705,17 @@ export function assertBuildInputs(value) {
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
   const linker = assertObject(value.linker, "linker");
   assertNullableStringFields(linker.configured, ["target"], "linker.configured");
-  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
+  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "DYLD_LIBRARY_PATH", "SDKROOT", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
   const actualLinker = assertStringFields(linker.actual, ["source", "rustc", "target"], "linker.actual");
   if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
   if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");
   assertStringArray(actualLinker.args, "linker.actual.args");
+  if (value.target.endsWith("-apple-darwin")) {
+    const signing = assertStringFields(value.signing, ["command", "output"], "signing");
+    assertStringArray(signing.args, "signing.args");
+    if (signing.command !== "codesign") throw new Error("native signing command is unsupported");
+    if (!signing.args.includes("--timestamp=none") || !signing.args.includes("acyclic.stream.napi")) throw new Error("native signing policy is invalid");
+  }
   return value;
 }
 
@@ -729,6 +787,25 @@ async function bundleArtifacts(output) {
     artifacts.push({ path: relativeArtifactPath(name), sha256: digest(bytes), bytes: bytes.length });
   }
   return { artifacts, node: artifacts.find(item => item.path.endsWith(".node")) };
+}
+
+function signDarwinAddon(output, target) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  const name = readdir(output).then(entries => entries.find(entry => entry.endsWith(".node")));
+  return name.then(async artifactName => {
+    if (artifactName === undefined) throw new Error(`native bundle ${output} has no Darwin addon to sign`);
+    const artifact = resolve(output, artifactName);
+    const args = ["--force", "--sign", "-", "--identifier", "acyclic.stream.napi", "--timestamp=none", artifact];
+    execFileSync("codesign", args, { stdio: "inherit" });
+    const observed = spawnSync("codesign", ["-dvv", artifact], { encoding: "utf8" });
+    const details = `${observed.stdout ?? ""}${observed.stderr ?? ""}`;
+    if (observed.status !== 0) throw new Error(`codesign verification failed: ${details.trim()}`);
+    return {
+      command: "codesign",
+      args: args.map(value => value === artifact ? "<artifact>" : value),
+      output: details.replaceAll(artifact, "<artifact>").trim(),
+    };
+  });
 }
 
 function pathFromArtifact(output, artifactPath) {
@@ -873,10 +950,6 @@ async function build(options) {
     };
     let rustcCapture = await createRustcInvocationCapture();
     try {
-      // Record the stable workspace-wrapper identity that Cargo actually
-      // invokes. buildInputs() runs before capture setup and only sees the
-      // ambient process environment.
-      attestedInputs.environment.RUSTC_WORKSPACE_WRAPPER = process.env.RUSTC_WORKSPACE_WRAPPER ?? null;
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
       await rm(resolve(buildOutput, generationManifestName), { force: true });
@@ -903,6 +976,8 @@ async function build(options) {
   });
   await assertSourceSnapshot(source);
   if (sourceRevision() !== revision) throw new Error("Stream native source changed during native build");
+  const signing = await signDarwinAddon(buildOutput, options.target);
+  if (signing !== null) attestedInputs.signing = signing;
   const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: buildOutput });
   const receipt = buildInputsReceipt(attestedInputs, publishedInputs);
   // Keep host-specific compiler paths and argv in the Cargo target directory;
