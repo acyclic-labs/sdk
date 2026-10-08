@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinRustLld, createRustcInvocationCapture, darwinRustLldPaths, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -153,7 +153,7 @@ function validBuildInputs() {
     },
     linker: {
       configured: { target: null },
-      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
+      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, DYLD_LIBRARY_PATH: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
       actual: {
         source: "rustc-invocation",
         rustc: "C:/Rust/bin/rustc.exe",
@@ -210,6 +210,13 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
   assert.ok(darwin.includes("-C"));
   assert.ok(darwin.includes("link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib"));
   assert.ok(darwin.includes("link-arg=-Wl,-final_output,libacyclic_stream_napi.dylib"));
+  const lldPaths = darwinRustLldPaths("aarch64-apple-darwin", "/rust/sysroot");
+  assert.deepEqual(lldPaths, {
+    linkerEnvironment: "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+    linker: resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "rust-lld"),
+    loaderPath: resolve("/rust/sysroot", "lib"),
+  });
+  assert.equal(darwinRustLldPaths("x86_64-pc-windows-msvc", "/rust/sysroot"), null);
 });
 
 test("native qualification rejects build input identity mutations", () => {
@@ -246,6 +253,13 @@ test("native qualification rejects build input identity mutations", () => {
     RUSTC_LINKER: "C:/ambient/lld-link.exe",
   });
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
+
+  const darwinLinker = linkerInputs("aarch64-apple-darwin", {
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld",
+    DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
+  });
+  assert.equal(darwinLinker.configured.target, "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld");
+  assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
 });
 
 test("native qualification normalizes host paths in published build inputs", () => {
@@ -400,6 +414,37 @@ test("native qualification restores Rustflags when setup fails", async () => {
   else process.env.CARGO_INCREMENTAL = priorIncremental;
   if (priorReleaseIncremental === undefined) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
   else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
+});
+
+test("native qualification restores Darwin rust-lld linker and loader environment", () => {
+  const linkerEnvironment = "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER";
+  const priorLinker = process.env[linkerEnvironment];
+  const priorLoader = process.env.DYLD_LIBRARY_PATH;
+  process.env[linkerEnvironment] = "ambient-linker";
+  process.env.DYLD_LIBRARY_PATH = "ambient-loader";
+  let restore;
+  try {
+    restore = configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", linkerExists: () => true });
+    assert.equal(process.env[linkerEnvironment], resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "rust-lld"));
+    assert.equal(process.env.DYLD_LIBRARY_PATH, `${resolve("/rust/sysroot", "lib")}${process.platform === "win32" ? ";" : ":"}ambient-loader`);
+    restore();
+    restore = undefined;
+    assert.equal(process.env[linkerEnvironment], "ambient-linker");
+    assert.equal(process.env.DYLD_LIBRARY_PATH, "ambient-loader");
+  } finally {
+    restore?.();
+    if (priorLinker === undefined) delete process.env[linkerEnvironment];
+    else process.env[linkerEnvironment] = priorLinker;
+    if (priorLoader === undefined) delete process.env.DYLD_LIBRARY_PATH;
+    else process.env.DYLD_LIBRARY_PATH = priorLoader;
+  }
+});
+
+test("native qualification refuses a Darwin toolchain without rust-lld", () => {
+  assert.throws(
+    () => configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", linkerExists: () => false }),
+    /Rust toolchain rust-lld is unavailable/u,
+  );
 });
 
 test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {

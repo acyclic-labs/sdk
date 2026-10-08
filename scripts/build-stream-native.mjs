@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, rename, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -235,11 +236,44 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
   return flags.join("\x1f");
 }
 
+/**
+ * Return the toolchain-owned Darwin linker and loader paths. rust-lld is used
+ * deliberately: Apple's ld hashes its producer-specific output path into the
+ * Mach-O UUID even when Cargo path remapping is enabled.
+ */
+export function darwinRustLldPaths(target, sysroot) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  if (typeof sysroot !== "string" || sysroot.length === 0) throw new Error("Darwin rust-lld requires a Rust sysroot");
+  return {
+    linkerEnvironment: targetEnvName(target, "LINKER"),
+    linker: resolve(sysroot, "lib", "rustlib", target, "bin", "rust-lld"),
+    loaderPath: resolve(sysroot, "lib"),
+  };
+}
+
+export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, linkerExists = existsSync } = {}) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return () => {};
+  const sysroot = suppliedSysroot ?? commandOutput("rustc", ["--print", "sysroot"]);
+  const paths = darwinRustLldPaths(target, sysroot);
+  if (!linkerExists(paths.linker)) throw new Error(`Rust toolchain rust-lld is unavailable at ${paths.linker}`);
+  const priorTargetLinker = envValue(paths.linkerEnvironment);
+  const priorDyldLibraryPath = envValue("DYLD_LIBRARY_PATH");
+  process.env[paths.linkerEnvironment] = paths.linker;
+  process.env.DYLD_LIBRARY_PATH = [paths.loaderPath, priorDyldLibraryPath].filter(value => typeof value === "string" && value.length > 0).join(delimiter);
+  return () => {
+    if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
+    else process.env[paths.linkerEnvironment] = priorTargetLinker;
+    if (priorDyldLibraryPath === null) delete process.env.DYLD_LIBRARY_PATH;
+    else process.env.DYLD_LIBRARY_PATH = priorDyldLibraryPath;
+  };
+}
+
 export async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
   const priorRustflags = envValue("RUSTFLAGS");
   const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
   const priorCargoIncremental = envValue("CARGO_INCREMENTAL");
   const priorReleaseIncremental = envValue("CARGO_PROFILE_RELEASE_INCREMENTAL");
+  const restoreDarwinRustLld = configureDarwinRustLld(target);
   try {
     process.env.CARGO_INCREMENTAL = "0";
     process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "false";
@@ -255,6 +289,7 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
     else process.env.CARGO_INCREMENTAL = priorCargoIncremental;
     if (priorReleaseIncremental === null) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
     else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
+    restoreDarwinRustLld();
   }
 }
 
@@ -274,6 +309,7 @@ export function linkerInputs(target, environment = process.env) {
       CC: envValue("CC", environment),
       AR: envValue("AR", environment),
       RUSTC_LINKER: envValue("RUSTC_LINKER", environment),
+      DYLD_LIBRARY_PATH: envValue("DYLD_LIBRARY_PATH", environment),
       VCINSTALLDIR: envValue("VCINSTALLDIR", environment),
       VCToolsInstallDir: envValue("VCToolsInstallDir", environment),
       WindowsSdkDir: envValue("WindowsSdkDir", environment),
@@ -474,6 +510,12 @@ function normalizeToolPath(value, context) {
   return `<toolchain-path>/${parts.slice(-3).join("/")}`;
 }
 
+function normalizeToolPathList(value, context) {
+  if (typeof value !== "string") return value;
+  const separator = process.platform === "win32" ? ";" : ":";
+  return value.split(separator).map(item => normalizeToolPath(item, context)).join(separator);
+}
+
 function normalizeFlagValue(value, context) {
   if (typeof value !== "string") return value;
   const normalizeSegment = (segment, encoded) => {
@@ -514,6 +556,7 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
   });
   normalized.linker.configured.target = normalizeToolPath(value.linker.configured.target, context);
   for (const field of ["LINK", "CC", "AR", "RUSTC_LINKER"]) normalized.linker.environment[field] = normalizeToolPath(value.linker.environment[field], context);
+  normalized.linker.environment.DYLD_LIBRARY_PATH = normalizeToolPathList(value.linker.environment.DYLD_LIBRARY_PATH, context);
   for (const field of ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]) normalized.environment[field] = normalizeFlagValue(value.environment[field], context);
   return normalized;
 }
@@ -659,7 +702,7 @@ export function assertBuildInputs(value) {
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
   const linker = assertObject(value.linker, "linker");
   assertNullableStringFields(linker.configured, ["target"], "linker.configured");
-  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
+  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "DYLD_LIBRARY_PATH", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
   const actualLinker = assertStringFields(linker.actual, ["source", "rustc", "target"], "linker.actual");
   if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
   if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");
