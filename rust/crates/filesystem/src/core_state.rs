@@ -1130,9 +1130,32 @@ logged!(LazyWorkspaceState, WorkspaceId, LazyWorkspace, |id| {
 });
 
 /// Complete after-images of the records one commit changes; `None` records
-/// an absence. Replaying a change is idempotent.
+/// an absence. Deserialization checks key/value types before replay.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<(RecordKey, Option<RecordValue>)>")]
 struct Change(Vec<(RecordKey, Option<RecordValue>)>);
+
+impl TryFrom<Vec<(RecordKey, Option<RecordValue>)>> for Change {
+    type Error = &'static str;
+
+    fn try_from(records: Vec<(RecordKey, Option<RecordValue>)>) -> Result<Self, Self::Error> {
+        for (key, value) in &records {
+            let Some(value) = value else { continue };
+            let compatible = match key {
+                RecordKey::Context(_) => WorkspaceContext::from_value(value).is_some(),
+                RecordKey::Children(_) => ContextChildren::from_value(value).is_some(),
+                RecordKey::ChildCount(_) => ContextChildCount::from_value(value).is_some(),
+                RecordKey::ChildIndex => ContextChildIndex::from_value(value).is_some(),
+                RecordKey::Lineage(_) => WorkspaceLineageRecord::from_value(value).is_some(),
+                RecordKey::LazyWorkspace(_) => LazyWorkspaceState::from_value(value).is_some(),
+            };
+            if !compatible {
+                return Err("core-state record value does not match its key");
+            }
+        }
+        Ok(Self(records))
+    }
+}
 
 impl Change {
     fn put<T: Logged>(&mut self, id: T::Id, value: Option<T>) {
@@ -3445,6 +3468,60 @@ mod tests {
         rewritten.push(b'\n');
         std::fs::write(&log, &rewritten).expect("rewrite core log");
         rewritten
+    }
+
+    #[tokio::test]
+    async fn intact_mismatched_frame_cannot_checkpoint_or_hide_context() {
+        for owned in [false, true] {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let context_id = WorkspaceContextId::from_bytes([41; 16]);
+            let store = LocalCoreStateStore::new(directory.path());
+            let context = workspace_context(
+                directory.path(),
+                context_id,
+                1,
+                WorkspaceContextState::Active,
+            );
+            assert!(
+                WorkspaceContextStore::compare_and_swap(&store, context_id, 0, context)
+                    .await
+                    .expect("persist context")
+            );
+            let namespace = store.namespace().expect("admitted namespace");
+            let context_path = context_paths(&namespace, context_id).current;
+            let log_path = core_log_paths(&namespace).current;
+            let before = std::fs::read(&context_path).expect("context bytes");
+            drop(namespace);
+            drop(store);
+            let writer = LocalCoreStateStore::open_owned(directory.path()).expect("writer");
+            assert!(
+                writer
+                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                    .await
+                    .expect("commit lazy workspace frame")
+            );
+            drop(writer);
+            let frame = rewrite_intact_frame(directory.path(), |frame| {
+                frame["change"][0][0] = serde_json::to_value(RecordKey::Context(context_id))
+                    .expect("context record key");
+            });
+            let reader = if owned {
+                LocalCoreStateStore::open_owned(directory.path()).expect("reader")
+            } else {
+                LocalCoreStateStore::new(directory.path())
+            };
+            let listed = WorkspaceContextStore::list(&reader).await;
+            let after = std::fs::read(&context_path).expect("context remains readable");
+            let after_frame = std::fs::read(log_path).expect("log bytes");
+            assert!(
+                matches!(listed.as_ref(), Err(LocalCoreStateStoreError::Corrupt(_)))
+                    && before == after
+                    && frame == after_frame,
+                "owned={owned}: reject before residency/checkpoint: list={listed:?}, context preserved={}, frame preserved={}",
+                before == after,
+                frame == after_frame
+            );
+        }
     }
 
     #[tokio::test]
