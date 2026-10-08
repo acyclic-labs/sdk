@@ -1,6 +1,6 @@
 //! Direct proofs of nominal admission and wire enum identities.
 
-use super::{ActorLimits, ActorState, DomainError, ErrorCode, PositiveU64, SubscriptionState};
+use super::{ActorLimits, ActorState, DomainError, ErrorCode, PositiveU64, SubscriptionStart, SubscriptionState};
 
 fn assert_subscription_state_mapping(raw: i32) {
     match SubscriptionState::try_from(raw) {
@@ -88,4 +88,35 @@ fn enum_numeric_mappings_are_inverse_and_lossless() {
 
     let error_raw: i32 = kani::any();
     assert_error_code_mapping(error_raw);
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
+fn subscription_start_ingress_and_payload_are_lossless() {
+    let selector: u8 = kani::any();
+    kani::assume(selector < 4);
+    let cursor: u64 = kani::any();
+    let start = match selector {
+        0 => None,
+        1 => Some(crate::wire::subscription_start::Start::Cursor(cursor)),
+        2 => Some(crate::wire::subscription_start::Start::CurrentHead(false)),
+        _ => Some(crate::wire::subscription_start::Start::CurrentHead(true)),
+    };
+    let result = SubscriptionStart::try_from(crate::wire::SubscriptionStart { start });
+    match result {
+        Ok(value) => {
+            assert!(selector == 1 || selector == 3);
+            if selector == 1 {
+                assert_eq!(value.cursor_value(), Some(cursor));
+                assert_eq!(value.current_head_value(), None);
+            } else {
+                assert_eq!(value.cursor_value(), None);
+                assert_eq!(value.current_head_value(), Some(true));
+            }
+        }
+        Err(error) => {
+            assert!(selector == 0 || selector == 2);
+            assert_eq!(error, DomainError::InvalidSubscription);
+        }
+    }
 }

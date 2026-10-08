@@ -84,7 +84,7 @@ pub fn current_head_marker(
 }
 
 fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, JsValue> {
-    T::decode(bytes).map_err(|error| js_error("invalid-request", error))
+    T::decode(bytes).map_err(|error| js_error("invalid_argument", error))
 }
 
 fn decode_semantic<T, D>(bytes: &[u8]) -> Result<D, JsValue>
@@ -93,7 +93,7 @@ where
     D: TryFrom<T>,
     D::Error: std::fmt::Display,
 {
-    D::try_from(decode::<T>(bytes)?).map_err(|error| js_error("invalid-request", error))
+    D::try_from(decode::<T>(bytes)?).map_err(|error| js_error("invalid_argument", error))
 }
 
 #[allow(

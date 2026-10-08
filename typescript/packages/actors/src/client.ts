@@ -195,9 +195,9 @@ function nativeBinding(): ActorsRustBinding {
       const cancellation = nativeCancellation(module, signal);
       let inner: NativeActorsClient;
       try {
-        inner = caCertificate === undefined
-          ? await Client.connect(endpoint, token, cancellation?.handle)
-          : await Client.connectWithCa(endpoint, token, Buffer.from(caCertificate), cancellation?.handle);
+        inner = await nativeResult(caCertificate === undefined
+          ? Client.connectResult(endpoint, token, cancellation?.handle)
+          : Client.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation?.handle), "client");
       } finally {
         cancellation?.cleanup();
       }
@@ -215,13 +215,14 @@ function nativeBinding(): ActorsRustBinding {
   };
 }
 
-interface NativeActorsOperationResult {
-  readonly value?: Uint8Array | null;
+interface NativeActorsResult<T> {
+  readonly value?: T | null;
+  readonly client?: T | null;
   readonly error?: { readonly code?: string; readonly message?: string } | null;
 }
 
 type NativeActorsMethods = {
-  readonly [K in Operation as `${K}Result`]: (request: Uint8Array, cancellation?: { cancel(): void }) => Promise<NativeActorsOperationResult>;
+  readonly [K in Operation as `${K}Result`]: (request: Uint8Array, cancellation?: { cancel(): void }) => Promise<NativeActorsResult<Uint8Array>>;
 };
 
 interface NativeActorsClient extends NativeActorsMethods {
@@ -230,13 +231,13 @@ interface NativeActorsClient extends NativeActorsMethods {
 
 interface NativeActorsModule extends Partial<ActorsNominalBinding> {
   readonly NativeActorsClient?: {
-    connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
-    connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+    connectResult(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
+    connectWithCaResult(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
   };
   readonly NativeActorsCancellation?: new () => { cancel(): void };
   readonly default?: Partial<ActorsNominalBinding> & { readonly NativeActorsClient?: {
-    connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
-    connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+    connectResult(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
+    connectWithCaResult(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsResult<NativeActorsClient>>;
   }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
 }
 
@@ -269,9 +270,10 @@ function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): {
   return { handle: cancellation, cleanup: () => signal.removeEventListener("abort", onAbort) };
 }
 
-async function nativeResult(result: Promise<NativeActorsOperationResult>): Promise<Uint8Array> {
+async function nativeResult<T>(result: Promise<NativeActorsResult<T>>, key: "value" | "client" = "value"): Promise<T> {
   const outcome = await result;
-  if (outcome.value !== undefined && outcome.value !== null) return outcome.value;
+  const value = outcome[key];
+  if (value !== undefined && value !== null) return value;
   const error = outcome.error;
   throw new ActorsTransportError(error?.message ?? "Actors operation failed", error?.code ?? "actors_error");
 }
