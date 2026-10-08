@@ -233,7 +233,7 @@ impl From<CodeSha256> for protify::Bytes {
 }
 
 /// A lossless invocation header.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Header.ts")]
@@ -262,7 +262,7 @@ impl Header {
 }
 
 /// Resource binding admitted by the canonical create/update validators.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE, post_from_proto = Binding::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
@@ -328,7 +328,7 @@ impl Binding {
 
 
 /// Positive limits admitted by the canonical create/update validators.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
@@ -381,7 +381,7 @@ impl ActorLimits {
 /// The published subscription-start message owns its oneof declaration.
 /// Protify generates the wire shadow and fallible ingress from this semantic
 /// declaration, preserving cursor zero and the current-head boolean payload.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
@@ -452,7 +452,7 @@ pub mod subscription_start {
 
 
     /// The semantic oneof for [`super::SubscriptionStart`].
-    #[proto_oneof(proxied, fallible = DomainError)]
+    #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = DomainError)]
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
     pub enum Start {
         /// Start at the exact stream cursor, including cursor zero.
@@ -507,7 +507,7 @@ impl SubscriptionStart {
 
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE, post_from_proto = SubscriptionSpec::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
@@ -592,7 +592,7 @@ impl SubscriptionSpec {
 
 /// Known subscription states. Unknown protobuf integers are rejected rather
 /// than normalized to `Unspecified`.
-#[proto_enum(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
+#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
 #[proto(file = ACTORS_FILE)]
 #[derive(TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
@@ -608,7 +608,7 @@ pub enum SubscriptionState {
 
 
 /// Known Actor states. Unknown protobuf integers remain observable errors.
-#[proto_enum(error = DomainError, unknown = DomainError::UnknownActorState)]
+#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownActorState)]
 #[proto(file = ACTORS_FILE)]
 #[derive(TS)]
 #[ts(export_to = "actors/ActorState.ts")]
@@ -626,7 +626,7 @@ pub enum ActorState {
 
 /// Published service error codes. Unknown numeric values stay visible through
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
-#[proto_enum(error = DomainError, unknown = DomainError::UnknownErrorCode)]
+#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownErrorCode)]
 #[proto(file = ACTORS_FILE)]
 #[derive(TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
@@ -658,7 +658,7 @@ pub enum ErrorCode {
 
 
 /// A service error with a typed known code and lossless message.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
@@ -699,7 +699,7 @@ impl ServiceError {
 
 
 /// Lossless semantic view of a subscription observation.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionObservation.ts")]
@@ -770,7 +770,7 @@ impl SubscriptionObservation {
 
 
 /// Lossless semantic view of a server Actor observation.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorObservation.ts")]
@@ -831,7 +831,7 @@ impl ActorObservation {
 
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
-	        #[proto_message(proxied, fallible = DomainError)]
+	        #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 	        #[proto(file = ACTORS_FILE)]
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
         #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
@@ -862,7 +862,7 @@ actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
 actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 
 /// Create request after the canonical admission validator has run.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(
     file = ACTORS_FILE,
     post_from_proto = CreateActorRequest::validate_from_proto
@@ -942,7 +942,7 @@ impl CreateActorRequest {
 
 
 /// Update request after the canonical admission validator has run.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(
     file = ACTORS_FILE,
     post_from_proto = UpdateActorRequest::validate_from_proto
@@ -1023,7 +1023,7 @@ impl UpdateActorRequest {
 
 /// Inspect currently has no additional wire validator; only the semantic
 /// Actor identity rule is applied by this conversion.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/InspectActorRequest.ts")]
@@ -1048,7 +1048,7 @@ impl InspectActorRequest {
 
 
 /// Add subscription request after the canonical admission validator has run.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(
     file = ACTORS_FILE,
     post_from_proto = AddSubscriptionRequest::validate_from_proto
@@ -1105,7 +1105,7 @@ impl AddSubscriptionRequest {
 
 /// Removal has no canonical validator yet, so subscription and idempotency
 /// strings remain unbranded and are carried exactly as received.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
@@ -1146,7 +1146,7 @@ impl RemoveSubscriptionRequest {
 
 
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
@@ -1188,7 +1188,7 @@ impl ResumeSubscriptionRequest {
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 /// applied and the idempotency key remains an ordinary string.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CheckpointActorRequest.ts")]
@@ -1224,7 +1224,7 @@ impl CheckpointActorRequest {
 
 /// Typed invocation request. Method, URL, headers, and body preserve the
 /// existing wire contract without adding new validation rules.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorRequest.ts")]
@@ -1284,7 +1284,7 @@ impl InvokeActorRequest {
 
 
 /// Typed invocation response with byte-preserving body and headers.
-#[proto_message(proxied, fallible = DomainError)]
+#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]

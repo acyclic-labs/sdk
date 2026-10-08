@@ -82,10 +82,10 @@ impl ProtoConversions<'_> {
 		let error = fallible_error.expect("fallible conversion requires an error type");
 		let custom_from_proto = container_attrs.custom_from_proto_expr();
 
-		let tokens = fields.iter().filter_map(|d| match d {
-			FieldDataKind::Ignored { ident, .. } => Some(quote_spanned! {ident.span()=>
+		let tokens = fields.iter().map(|d| match d {
+			FieldDataKind::Ignored { ident, .. } => quote_spanned! {ident.span()=>
 				#ident: Default::default()
-			}),
+			},
 			FieldDataKind::Normal(field_data) => {
 				let ident = &field_data.ident;
 				let span = ident.span();
@@ -97,7 +97,7 @@ impl ProtoConversions<'_> {
 						.proto_field
 						.fallible_from_proto(&quote_spanned! {span=> value.#ident}, error)
 				};
-				Some(quote_spanned! {span=> #ident: #conversion })
+				quote_spanned! {span=> #ident: #conversion }
 			}
 		});
 

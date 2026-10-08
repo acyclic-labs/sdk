@@ -15,7 +15,7 @@ function fail(message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", ...options });
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
   if (result.error) throw result.error;
   return result;
 }
@@ -24,10 +24,22 @@ function metadata(releaseVersion) {
   const result = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
   if (result.status !== 0) fail(result.stderr || "cargo metadata failed");
   const packages = JSON.parse(result.stdout).packages;
-  const publishable = packages.filter(item => item.publish === null || item.publish.includes("crates-io"));
+  const known = new Set(packages.map(item => item.name));
+  for (const item of packages) {
+    for (const dependency of item.dependencies) {
+      if (!dependency.path || !dependency.name.startsWith("acyclic-") || known.has(dependency.name)) continue;
+      const local = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1",
+        "--manifest-path", join(dependency.path, "Cargo.toml")]);
+      if (local.status !== 0) fail(local.stderr || "local Cargo metadata failed");
+      for (const candidate of JSON.parse(local.stdout).packages) {
+        if (!known.has(candidate.name)) { known.add(candidate.name); packages.push(candidate); }
+      }
+    }
+  }
+  const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
   const byName = new Map(publishable.map(item => [item.name, item]));
   if (new Set(order).size !== order.length || order.some(name => !byName.has(name)) || byName.size !== order.length) {
-    fail("release/cargo-crates.json must contain every publishable workspace crate exactly once");
+    fail("release/cargo-crates.json must contain every publishable local crate exactly once");
   }
   const position = new Map(order.map((name, index) => [name, index]));
   for (const item of publishable) {
@@ -52,14 +64,14 @@ async function registryVersion(name, version) {
   return payload.versions.find(item => item.num === version) ?? null;
 }
 
-function archiveChecksum(name, version) {
+function archiveChecksum(name, version, item) {
   const archive = join(root, "target", "package", `${name}-${version}.crate`);
   try {
     unlinkSync(archive);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const packaged = run("cargo", ["package", "--locked", "--no-verify", "-p", name], { stdio: "inherit" });
+  const packaged = run("cargo", ["package", "--locked", "--no-verify", "--manifest-path", item.manifest_path, "--target-dir", join(root, "target")], { stdio: "inherit" });
   if (packaged.status !== 0) fail(`cargo package failed for ${name}`);
   return createHash("sha256").update(readFileSync(archive)).digest("hex");
 }
@@ -112,7 +124,7 @@ async function publish(sourceSha, releaseVersion) {
 
   for (const name of order) {
     const item = packages.get(name);
-    const checksum = archiveChecksum(name, releaseVersion);
+    const checksum = archiveChecksum(name, releaseVersion, item);
     const observed = await registryVersion(name, releaseVersion);
     if (observed) {
       if (observed.yanked) fail(`${name}@${releaseVersion} is yanked`);
@@ -121,7 +133,7 @@ async function publish(sourceSha, releaseVersion) {
       console.log(`Already published ${match} crate: ${name}@${releaseVersion}`);
       continue;
     }
-    const result = run("cargo", ["publish", "--locked", "--no-verify", "-p", name], { stdio: "inherit" });
+    const result = run("cargo", ["publish", "--locked", "--no-verify", "--manifest-path", item.manifest_path], { stdio: "inherit" });
     if (result.status !== 0) {
       const raced = await registryVersion(name, releaseVersion);
       if (!raced || raced.yanked || !registryArchiveMatches(name, releaseVersion, raced, checksum, sourceSha, item)) {

@@ -10,6 +10,7 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
 http-body = "1.1.0"
 prost.workspace = true
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }
@@ -32,12 +33,13 @@ tonic-web-wasm-client = "=0.9.2"
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-workers = { path = "../workers" }
+acyclic-workers = { path = "../workers", version = "=0.2.0" }
 tokio.workspace = true
 rcgen = "0.14.10"
 tracing-subscriber.workspace = true
 
 [build-dependencies]
+acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
 prost = "=0.14.4"
 protoc-bin-vendored = "=3.3.0"
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }

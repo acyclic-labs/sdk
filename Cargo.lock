@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-protify-proc-macro",
  "acyclic-workers",
  "http-body",
  "prost",
@@ -441,6 +442,21 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "acyclic-protify-proc-macro"
+version = "0.2.0"
+dependencies = [
+ "bool-enum",
+ "bytes",
+ "convert_case 0.10.0",
+ "paste",
+ "proc-macro2",
+ "proto-types",
+ "quote",
+ "syn 2.0.119",
+ "syn-utils",
 ]
 
 [[package]]
@@ -3552,6 +3568,8 @@ dependencies = [
 [[package]]
 name = "protify-proc-macro"
 version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6927c26f755f73a592d4cf2e1a287b21bd977a8b837e80afad2e3c8e3effcf5"
 dependencies = [
  "bool-enum",
  "bytes",

@@ -127,7 +127,7 @@ fn extract_enum_data(item: &mut ItemEnum) -> syn::Result<EnumData> {
 	})
 }
 
-pub fn enum_proc_macro(mut item: ItemEnum, macro_args: EnumMacroArgs) -> TokenStream2 {
+pub fn enum_proc_macro(mut item: ItemEnum, macro_args: &EnumMacroArgs) -> TokenStream2 {
 	let mut error: Option<TokenStream2> = None;
 
 	let EnumData {
