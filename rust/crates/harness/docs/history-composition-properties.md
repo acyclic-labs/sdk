@@ -145,3 +145,42 @@ with no failures or ignored tests. Production transformations cover repeated
 compaction, trailing tool results, prepended/appended User-role facts and marker
 removal/range negatives. Generated/WASM consumers and remaining composition
 mechanisms are still unqualified.
+
+An isolated WASM build at `6387d3dbf0` passed in
+`target-b-wasm-input-marker.log`. Its first generated declaration made the marker
+required; the Rust `tsify(optional)` annotation corrected that exported shape.
+The rebuilt declaration in `target/b-context-wasm` contains
+`current_input_index?: number`; `target-b-wasm-input-marker-optional.log` passes.
+Shared generated consumer files have not been replaced by this isolated check.
+
+The next source freezes each response projection before any model dispatch in
+the existing execution journal's `ContextPrepared` observation. Its private
+artifact retains the full context (including the input marker and metadata).
+The existing Started composition pins model/tools/options, so the artifact does
+not duplicate those fields or message bodies. Reattachment before `ModelStarted`
+loads that artifact, and admitted/reconciled model requests retain their existing exact
+request path. The existing owner classifies context publication as a fresh write;
+the journal rejects duplicate preparation and preparation after response dispatch.
+This is a prerequisite for resuming an automatic summary without rereading mutable
+context sources, not an implementation claim for automatic thresholds.
+`target-b-clippy-prepared-context-fixed.log` passes native all-target strict lint
+before the final duplicate-preparation negative. The first lint receipt retains
+the corrected match-arm duplication failure. The current source hashes are in
+`target/b-prepared-context-source-hashes.json`; native tests in
+`target-b-native-prepared-context.log` passed 243 tests and failed two: an old
+record-count assertion, and a payload-bound regression caused by duplicating
+messages in the first capture format. The duplicate representation was removed
+and the count assertion updated; corrected hashes are in
+`target/b-prepared-context-fixed-source-hashes.json`. Corrected native execution,
+final strict lint, generated consumption and default capacity/counting remain open.
+The corrected native all-target strict lint passes in
+`target-b-clippy-prepared-context-compact.log`; the corrected full native suite
+passes all 245 tests, with no failures or ignored tests, in
+`target-b-native-prepared-context-compact.log`. All four recorded production
+source hashes match the tested source. The mutable-source recovery fixture
+captures before dispatch, reattaches, then interrupts/reconciles the model with
+one source read, one generation and one reconciliation. The bounded native
+storage fixture passes with its existing payload allowance. Context lookup by
+operation already uses `operation_intents`; no additional selection index was
+needed. This checkpoint does not close default compaction/fork, cold hydration,
+total refresh work, generated/current consumers or final qualification.

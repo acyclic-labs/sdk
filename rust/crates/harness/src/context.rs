@@ -718,6 +718,7 @@ pub struct Context {
     pub metadata: BTreeMap<String, FileRef>,
     /// Position of the active turn input. Absent for standalone source projections.
     /// Transformations must preserve this marker when they reorder or replace messages.
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub current_input_index: Option<u32>,
 }
 

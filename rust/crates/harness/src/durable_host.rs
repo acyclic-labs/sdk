@@ -330,9 +330,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 step: *step,
                 request_digest: *request_digest,
             },
-            ExecutionEvent::Started { .. } | ExecutionEvent::ToolStarted { .. } => {
-                JournalWrite::Fresh
-            }
+            ExecutionEvent::Started { .. }
+            | ExecutionEvent::ContextPrepared { .. }
+            | ExecutionEvent::ToolStarted { .. } => JournalWrite::Fresh,
             ExecutionEvent::Model { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,

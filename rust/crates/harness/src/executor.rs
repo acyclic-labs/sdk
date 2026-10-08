@@ -142,6 +142,13 @@ pub enum ExecutionEvent {
         /// Digest of the input, stock executor version, model, stages, and tools.
         request_digest: [u8; 32],
     },
+    /// Pins a response projection before any summary or response model admission.
+    ContextPrepared {
+        /// Zero-based response step.
+        step: u32,
+        /// Exact context; model/tools/options are pinned by the Started composition.
+        projection: FileRef,
+    },
     /// A model request identity committed before provider dispatch.
     ModelStarted {
         /// Zero-based executor step.
@@ -1011,7 +1018,20 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
-        let context = self
+        let projection = self.prepare_projection(input, step, prior_messages).await?;
+        crate::model::PreparedModelRequest::prepare(
+            self.request_from_context(&projection)?,
+            self.limits,
+        )
+    }
+
+    async fn prepare_projection(
+        &self,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<crate::context::Context> {
+        let mut context = self
             .context
             .run_bounded(
                 &ContextInput {
@@ -1023,9 +1043,38 @@ impl StockExecutor {
                 self.limits,
             )
             .await?;
-        let request = ModelRequest {
+        let request = self.request_from_context(&context)?;
+        let prepared = if let Some((prefix, verifier)) = &self.inherited_prefix {
+            crate::model::PreparedModelRequest::inherit(
+                request,
+                prefix,
+                verifier.as_ref(),
+                self.limits,
+            )
+            .await?
+        } else {
+            crate::model::PreparedModelRequest::prepare(request, self.limits)?
+        };
+        let prefix_count = prepared.request().messages.len() - context.messages.len();
+        if let Some(index) = context.current_input_index {
+            context.current_input_index = Some(
+                u32::try_from(prefix_count)
+                    .ok()
+                    .and_then(|count| index.checked_add(count))
+                    .ok_or_else(|| {
+                        Error::Invalid("inherited input position exceeds portable count".into())
+                    })?,
+            );
+        }
+        context.messages.clone_from(&prepared.request().messages);
+        crate::context::validate_projected_context(&context, self.limits)?;
+        Ok(context)
+    }
+
+    fn request_from_context(&self, context: &crate::context::Context) -> Result<ModelRequest> {
+        Ok(ModelRequest {
             model: self.model.clone(),
-            messages: context.messages,
+            messages: context.messages.clone(),
             tools: self
                 .tools
                 .definitions()?
@@ -1037,18 +1086,73 @@ impl StockExecutor {
                 })
                 .collect(),
             max_output_tokens: self.max_output_tokens,
+        })
+    }
+
+    async fn prepared_response(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let (tail, records) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+            .await?;
+        let retained = records
+            .iter()
+            .filter_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared {
+                    step: recorded,
+                    projection,
+                } if *recorded == step => Some(projection),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let projection = match retained.as_slice() {
+            [] => {
+                let projection = self.prepare_projection(input, step, prior_messages).await?;
+                let reference = stage_json(
+                    journal,
+                    input.operation_id,
+                    &format!("context:{step}"),
+                    &projection,
+                )
+                .await?;
+                self.verify_execution_owner().await?;
+                if !journal
+                    .append_if_tail(
+                        input.operation_id,
+                        tail,
+                        format!("context:{step}:prepared"),
+                        ExecutionEvent::ContextPrepared {
+                            step,
+                            projection: reference,
+                        },
+                    )
+                    .await?
+                {
+                    return Err(Error::Indeterminate(input.operation_id));
+                }
+                projection
+            }
+            [reference] => load_json::<crate::context::Context>(journal, reference).await?,
+            _ => {
+                return Err(Error::Storage(
+                    "response projection was prepared more than once".into(),
+                ));
+            }
         };
-        if let Some((prefix, verifier)) = &self.inherited_prefix {
-            crate::model::PreparedModelRequest::inherit(
-                request,
-                prefix,
-                verifier.as_ref(),
-                self.limits,
-            )
-            .await
-        } else {
-            crate::model::PreparedModelRequest::prepare(request, self.limits)
+        crate::context::validate_projected_context(&projection, self.limits)?;
+        if projection.current_input_index.is_none() {
+            return Err(Error::Storage(
+                "prepared response projection differs from its request".into(),
+            ));
         }
+        crate::model::PreparedModelRequest::prepare(
+            self.request_from_context(&projection)?,
+            self.limits,
+        )
     }
 
     /// Resolves one model step's events, replaying an already completed or started attempt
@@ -1089,7 +1193,13 @@ impl StockExecutor {
             }
             recorded
         } else {
-            self.prepare_request(input, step, prior_messages).await?
+            match purpose {
+                ModelPurpose::Response => {
+                    self.prepared_response(journal, input, step, prior_messages)
+                        .await?
+                }
+                ModelPurpose::Summary => self.prepare_request(input, step, prior_messages).await?,
+            }
         };
         self.verify_model_request_content(journal, &request).await?;
         let request_digest = request.manifest().request_digest;
@@ -1234,7 +1344,7 @@ impl StockExecutor {
             .limits
             .model_events_per_step
             .saturating_add(self.limits.tool_calls_per_step.saturating_mul(3))
-            .saturating_add(2);
+            .saturating_add(3);
         let (_, records) = replay_execution(journal, operation_id, maximum, |event| match event {
             ExecutionEvent::Started { .. } => true,
             ExecutionEvent::ModelStarted {
@@ -1249,7 +1359,8 @@ impl StockExecutor {
             }
             | ExecutionEvent::ToolStarted { step: recorded, .. }
             | ExecutionEvent::ToolCompleted { step: recorded, .. }
-            | ExecutionEvent::ToolFailed { step: recorded, .. } => *recorded == step,
+            | ExecutionEvent::ToolFailed { step: recorded, .. }
+            | ExecutionEvent::ContextPrepared { step: recorded, .. } => *recorded == step,
             ExecutionEvent::ModelStarted { .. } | ExecutionEvent::Model { .. } => false,
         })
         .await?;
@@ -1266,12 +1377,14 @@ impl StockExecutor {
         replay_execution(
             journal,
             operation_id,
-            self.limits.model_events_per_step.saturating_add(1),
+            self.limits.model_events_per_step.saturating_add(2),
             |event| {
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::Model { step: event_step, purpose: event_purpose, .. }
                 if *event_step == step && *event_purpose == purpose)
+                    || matches!(event, ExecutionEvent::ContextPrepared { step: event_step, .. }
+                    if *event_step == step && purpose == ModelPurpose::Response)
             },
         )
         .await
@@ -2862,6 +2975,74 @@ mod tests {
         AtomicUsize,
     );
 
+    struct ChangingContextSource(AtomicUsize);
+
+    impl crate::context::ContextSource for ChangingContextSource {
+        fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            let read = self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!("source revision {read}")),
+                }])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()> {
+        let journal = Journal::default();
+        let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
+        let provider = Arc::new(RecoverableModel {
+            generate_calls: AtomicUsize::new(0),
+            reconcile_calls: AtomicUsize::new(0),
+            dispatches: Mutex::new(Vec::new()),
+        });
+        let executor = StockExecutor::new(
+            Model::new("test", "model", "1", json!({}))?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "changing-source",
+                "1",
+                source.clone(),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::new(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor.ensure_started(&journal, &input).await?;
+        let original = executor.prepared_response(&journal, &input, 0, &[]).await?;
+        assert_eq!(source.0.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 0);
+        // Reattach between context publication and the first model admission.
+        let reopened = executor.clone();
+        let recovered = reopened.prepared_response(&journal, &input, 0, &[]).await?;
+        assert_eq!(original.bytes(), recovered.bytes());
+        assert_eq!(source.0.load(Ordering::SeqCst), 1);
+        assert!(reopened.model_step(&journal, &input, 0, &[]).await.is_err());
+        let events = reopened.model_step(&journal, &input, 0, &[]).await?;
+        assert_eq!(events.len(), 72);
+        assert_eq!(source.0.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ContextPrepared { .. }))
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<()> {
         let journal = Journal::default();
@@ -4238,8 +4419,8 @@ mod tests {
         assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
         assert_eq!(host.claims.load(Ordering::SeqCst), 1);
         assert_eq!(journal.replay(input.operation_id, 0, 64).await?.len(), 64);
-        assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 10);
-        assert!(journal.replay(input.operation_id, 74, 64).await?.is_empty());
+        assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 11);
+        assert!(journal.replay(input.operation_id, 75, 64).await?.is_empty());
         host.owned.store(false, Ordering::SeqCst);
         let records_before = journal.0.lock().unwrap().len();
         let artifacts_before = journal.1.lock().unwrap().len();

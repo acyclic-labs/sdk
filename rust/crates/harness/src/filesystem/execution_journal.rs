@@ -39,6 +39,7 @@ use std::{
 struct ExecutionSummary {
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
+    prepared_contexts: HashSet<u32>,
     // None is a completed dispatch. Its event/call bodies are no longer needed.
     models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
@@ -49,6 +50,13 @@ impl ExecutionSummary {
         let valid = match event {
             ExecutionEvent::Started { request_digest } => {
                 self.tail == 0 && *request_digest != [0; 32]
+            }
+            ExecutionEvent::ContextPrepared { step, .. } => {
+                self.tail > 0
+                    && !self.prepared_contexts.contains(step)
+                    && !self
+                        .models
+                        .contains_key(&(*step, crate::executor::ModelPurpose::Response))
             }
             ExecutionEvent::ModelStarted {
                 step,
@@ -125,6 +133,9 @@ impl ExecutionSummary {
         self.validate_next(&record.event, model, limits)?;
         let digest = crate::contract::canonical_json_digest(&record.event)?;
         match &record.event {
+            ExecutionEvent::ContextPrepared { step, .. } => {
+                self.prepared_contexts.insert(*step);
+            }
             ExecutionEvent::ModelStarted { step, purpose, .. } => {
                 self.models
                     .insert((*step, *purpose), Some(ModelEventAdmission::default()));
@@ -781,6 +792,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         O: AsyncObjectStore + 'static,
     {
         let refs: Vec<&FileRef> = match event {
+            ExecutionEvent::ContextPrepared { projection, .. } => vec![projection],
             ExecutionEvent::ModelStarted { request, .. } => vec![request],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
@@ -1316,6 +1328,21 @@ mod tests {
                     None,
                     limits,
                 )?;
+                let prepared = ExecutionEvent::ContextPrepared {
+                    step: 0,
+                    projection: file.clone(),
+                };
+                state.accept(
+                    &ExecutionRecord {
+                        operation_id: operation,
+                        sequence: state.tail + 1,
+                        idempotency_key: "context-prepared".into(),
+                        event: prepared.clone(),
+                    },
+                    None,
+                    limits,
+                )?;
+                assert!(state.require_next(&prepared).is_err());
                 for purpose in [first_start, other(first_start)] {
                     let start = ExecutionEvent::ModelStarted {
                         step: 0,
