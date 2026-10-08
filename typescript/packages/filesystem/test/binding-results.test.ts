@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { copyBatchLookupEntries, copyBindingChange, copyDirectoryPage, copyDirectoryRecordPage,
   copyFileRecord, copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "../src/binding-results.js";
+import { copyBytes, ownBytes } from "../src/binding-values.js";
 import type { WorkCounters } from "../src/contracts.js";
 
 const id = (byte: number) => Buffer.alloc(16, byte);
@@ -111,5 +112,18 @@ describe("filesystem binding byte results", () => {
     records.entries[0]!.record.metadataObject[0] = 9;
     expect([fileId[0], name[0], metadataBytes[0], record.metadataObject[0]])
       .toEqual([1, 2, 3, 4]);
+  });
+  test("bulk bytes are owned without a second copy, other views are copied", () => {
+    const whole = Buffer.from(new Uint8Array([1, 2, 3]).buffer);
+    const owned = ownBytes(whole);
+    expect(Object.getPrototypeOf(owned)).toBe(Uint8Array.prototype);
+    expect(owned.buffer).toBe(whole.buffer);
+    const part = new Uint8Array([0, 1, 2, 3]).subarray(1);
+    for (const copied of [ownBytes(part), copyBytes(whole)]) {
+      expect(Object.getPrototypeOf(copied)).toBe(Uint8Array.prototype);
+      expect(copied).toEqual(new Uint8Array([1, 2, 3]));
+      copied[0] = 9;
+    }
+    expect([part[0], whole[0]]).toEqual([1, 1]);
   });
 });
