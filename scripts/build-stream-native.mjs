@@ -233,7 +233,7 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     // Keep the final linker identity stable while Cargo builds in its own path.
     // rust-lld is invoked directly by rustc, so pass Darwin options directly;
     // the -Wl, prefix is only valid when the driver is Apple's ld wrapper.
-    flags.push("-C", `link-arg=-fuse-ld=${darwinLinker ?? "ld64.lld"}`, "-C", "link-arg=-install_name", "-C", "link-arg=@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-final_output", "-C", "link-arg=libacyclic_stream_napi.dylib");
+    flags.push("-C", `link-arg=-fuse-ld=${darwinLinker ?? "ld64.lld"}`, "-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-Wl,-final_output,libacyclic_stream_napi.dylib");
   }
   return flags.join("\x1f");
 }
