@@ -493,6 +493,12 @@ fn registry_version_optional(
         "--silent",
         "--show-error",
         "--location",
+        "--user-agent",
+        concat!(
+            "acyclic-sdk-docs/",
+            env!("CARGO_PKG_VERSION"),
+            " (https://github.com/acyclic-labs/sdk)"
+        ),
         "--max-time",
         "60",
         "--write-out",

@@ -1255,7 +1255,7 @@ fn write_registry_transport(support: &Path, archive: &Path) {
     let curl_source = support.join("fixture-curl.rs");
     fs::write(
         &curl_source,
-        format!("fn main() {{ print!(\"{{}}\\n200\", {response:?}); }}"),
+        format!("fn main() {{ let args: Vec<_> = std::env::args().collect(); assert!(args.windows(2).any(|pair| pair[0] == \"--user-agent\" && pair[1].starts_with(\"acyclic-sdk-docs/\") && pair[1].contains(\"https://github.com/acyclic-labs/sdk\"))); print!(\"{{}}\\n200\", {response:?}); }}"),
     )
     .unwrap();
     let curl = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
