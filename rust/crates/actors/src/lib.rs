@@ -45,10 +45,15 @@ pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.
 pub const MAX_BINDINGS: usize = 64;
 
-/// Bearer credentials are nonblank, bounded, and free of HTTP controls.
+/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
+pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+
+/// Bearer credentials must be nonblank and at most [`MAX_BEARER_TOKEN_BYTES`]; the HTTP and gRPC
+/// header parsers additionally reject control characters such as CR, LF, and NUL.
 pub(crate) fn valid_token(token: &str) -> bool {
     !token.trim().is_empty()
-        && token.len() <= 8192
+        && token.len() <= MAX_BEARER_TOKEN_BYTES
         && !token
             .chars()
             .any(|character| matches!(character, '\r' | '\n' | '\0'))
@@ -239,5 +244,30 @@ mod tests {
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
+    }
+    #[test]
+    fn clients_share_endpoint_and_credential_policy() {
+        let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
+        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+            assert!(matches!(
+                http::Client::new("https://example.test", token, 1),
+                Err(http::Error::InvalidArgument)
+            ));
+        }
+        for endpoint in [
+            "http://localhost:1",
+            "http://127.0.0.2:1",
+            "http://[::1]:1",
+            "https://example.test",
+        ] {
+            assert!(http::Client::new(endpoint, &"t".repeat(8192), 1).is_ok());
+        }
+        for endpoint in [
+            "http://example.test",
+            "http://10.0.0.1",
+            "https://u@example.test",
+        ] {
+            assert!(http::Client::new(endpoint, "t", 1).is_err());
+        }
     }
 }

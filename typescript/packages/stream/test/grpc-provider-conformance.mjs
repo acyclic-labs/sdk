@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { zstdCompressSync } from "node:zlib";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { ConnectError, Code } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
@@ -9,7 +10,7 @@ import { GrpcStreamProvider } from "../dist/grpc.js";
 import { idempotencyKey, commitId, StreamError } from "../dist/types.js";
 import { ensureStreamWasm } from "../dist/contract.js";
 import { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
+import { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } from "../generated/proto/stream/v2/stream_pb.js";
 
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -34,6 +35,11 @@ if (process.argv.includes("--client")) {
   const records = [];
   for await (const record of provider.read(path, { from: 0n, limit: 2 })) records.push(record);
   assert.deepEqual(records.map(item => new TextDecoder().decode(item.value)), ["one", "two"]);
+  const mixedPath = `mixed/${prefix}`;
+  await provider.append(mixedPath, ["one", "two", "three", "four", "five"].map(body), { ifTail: 0n });
+  const mixed = [];
+  for await (const record of provider.read(mixedPath, { from: 1n, limit: 4 })) mixed.push(record);
+  assert.deepEqual(mixed.map(item => [item.sequence, new TextDecoder().decode(item.value)]), [[1n, "two"], [2n, "three"], [3n, "four"], [4n, "five"]]);
   const controller = new AbortController();
   let followed = 0;
   for await (const record of provider.follow(path, { from: 0n, signal: controller.signal })) {
@@ -68,6 +74,11 @@ const memory = new WasmStream();
 const identity = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
 assert.equal(identity.status, 0, identity.stderr);
 const tls = JSON.parse(identity.stdout);
+// One Read frame per batch, optionally Zstandard-compressed.
+function readFrame(records, zstd) {
+  const data = toBinary(RecordBatchSchema, create(RecordBatchSchema, { records }));
+  return create(ReadResponseSchema, { codec: zstd ? Codec.ZSTD : Codec.NONE, data: zstd ? zstdCompressSync(data) : data, decodedLength: BigInt(data.length) });
+}
 const operation = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 function authenticate(context) { if (context.requestHeader.get("authorization") !== "Bearer conformance") throw new ConnectError("missing bearer", Code.Unauthenticated); }
 function canonicalError(error) {
@@ -82,7 +93,7 @@ const adapter = connectNodeAdapter({ routes(router) {
       implementation[method.localName] = async function* (request, context) {
         authenticate(context);
         if (request.path === "malformed" || request.path === "oversize") {
-          yield create(method.output, { record: { sequence: request.path === "malformed" ? 1n : 0n, value: new Uint8Array(request.path === "oversize" ? 256 : 1), commitId: new Uint8Array(32) } });
+          yield readFrame([{ sequence: request.path === "malformed" ? 1n : 0n, value: new Uint8Array(request.path === "oversize" ? 256 : 1), commitId: new Uint8Array(32) }], false);
           return;
         }
         if (method.localName === "follow") {
@@ -91,6 +102,14 @@ const adapter = connectNodeAdapter({ routes(router) {
           context.signal.addEventListener("abort", close, { once: true });
           try { for (;;) { const bytes = await handle.next(); if (bytes === null) return; yield fromBinary(method.output, bytes); } }
           finally { context.signal.removeEventListener("abort", close); handle.close(); handle.free(); }
+        } else if (method.localName === "read") {
+          // Regroup into one compressed batch followed by plain single-record frames.
+          let records;
+          try { records = (await memory.read(toBinary(method.input, request))).flatMap(bytes => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, bytes).data).records); }
+          catch (error) { throw canonicalError(error); }
+          const half = Math.ceil(records.length / 2);
+          if (half > 0) yield readFrame(records.slice(0, half), true);
+          for (const record of records.slice(half)) yield readFrame([record], false);
         } else {
           try { for (const bytes of await memory[method.localName](toBinary(method.input, request))) yield fromBinary(method.output, bytes); }
           catch (error) { throw canonicalError(error); }

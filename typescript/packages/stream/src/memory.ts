@@ -5,7 +5,7 @@ import {
   ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
 import { validateAppend } from "./client.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -47,11 +47,7 @@ class RustStreamProvider implements StreamProvider {
   async #read(request: Uint8Array): Promise<readonly EncodedRecord[]> {
     try {
       const values = await (await this.#inner).read(request);
-      return values.map(value => {
-        const response = fromBinary(ReadResponseSchema, value);
-        if (response.record === undefined) throw new StreamError("invalid_response", "Rust read response omitted its record");
-        return record(response.record);
-      });
+      return values.flatMap(value => readResponseRecords(fromBinary(ReadResponseSchema, value)).map(record));
     } catch (error) { throw streamError(error, "read"); }
   }
 
@@ -102,9 +98,7 @@ class RustStreamProvider implements StreamProvider {
         try { bytes = await handle.next(); }
         catch (error) { throw streamError(error, "follow"); }
         if (bytes === null || signal?.aborted) return;
-        const response = fromBinary(ReadResponseSchema, bytes);
-        if (response.record === undefined) throw new StreamError("invalid_response", "Rust follow response omitted its record");
-        yield record(response.record);
+        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield record(decoded);
       }
     } finally {
       signal?.removeEventListener("abort", close);

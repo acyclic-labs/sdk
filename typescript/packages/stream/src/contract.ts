@@ -1,13 +1,14 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AbsentConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
   ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
-  CreateTokenRequestSchema,
+  CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
+import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v2/stream_pb.js";
 import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
@@ -49,10 +50,22 @@ function initializeStreamWasmSync(): boolean {
   return true;
 }
 
-function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly __wbindgen_free: unknown }): void {
-  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.__wbindgen_free !== "function") {
+function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly __wbindgen_free: unknown }): void {
+  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.__wbindgen_free !== "function") {
     throw new StreamError("configuration", "stream WASM exports do not match the packaged contract");
   }
+}
+
+/**
+ * Decodes one Read or Follow frame to its records through the shared Rust decoder,
+ * which bounds the declared length before decompressing and checks it exactly.
+ */
+export function readResponseRecords(frame: ReadResponse): WireRecord[] {
+  let batch: Uint8Array;
+  try { batch = decodeReadResponse(frame.codec, frame.data, frame.decodedLength); }
+  catch { throw new StreamError("invalid_response", "stream read frame is oversized, malformed, or uses an unknown codec"); }
+  try { return fromBinary(RecordBatchSchema, batch).records; }
+  catch { throw new StreamError("invalid_response", "stream read frame does not hold a record batch"); }
 }
 
 /** Validates one path through the canonical Rust Stream parser. */

@@ -169,11 +169,16 @@ async fn operation(
                 } else {
                     65536
                 };
-                for bytes in selected.body.chunks(size) {
+                for (index, bytes) in selected.body.chunks(size).enumerate() {
+                    let body = if index % 2 == 1 && size == 65536 {
+                        super::response::zstd_body(bytes)
+                    } else {
+                        super::response::plain_body(bytes.to_vec())
+                    };
                     result.extend(framed(
                         output,
                         &wire::GetObjectResponse {
-                            frame: Some(wire::get_object_response::Frame::Body(bytes.to_vec())),
+                            frame: Some(wire::get_object_response::Frame::Body(body)),
                         },
                     )?);
                 }
@@ -414,7 +419,11 @@ fn customer_credentials_and_endpoint_configuration_are_bounded() {
     ] {
         assert!(HttpObjects::new(endpoint, "token", 1024).is_err());
     }
-    for token in [String::new(), "\nsecret".into(), "x".repeat(8193)] {
+    for token in [
+        String::new(),
+        "\nsecret".into(),
+        "x".repeat(super::MAX_BEARER_TOKEN_BYTES + 1),
+    ] {
         assert!(HttpObjects::new("https://example.com", &token, 1024).is_err());
     }
     assert!(

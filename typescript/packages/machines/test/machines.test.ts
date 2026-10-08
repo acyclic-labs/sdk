@@ -351,7 +351,7 @@ describe("Machines simulation", () => {
   });
 
   test("managed transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
-    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(12 * 1024 + 1)]) {
       expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
     }
     let redirect: RequestRedirect | undefined;

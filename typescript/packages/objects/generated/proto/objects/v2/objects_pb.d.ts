@@ -456,6 +456,40 @@ export declare type GetObjectHeader = Message<"acyclic.objects.v2.GetObjectHeade
 export declare const GetObjectHeaderSchema: GenMessage<GetObjectHeader>;
 
 /**
+ * One body frame. data decodes under codec to exactly decoded_length bytes, which
+ * follow the previous frame's bytes in the selected representation. Before it
+ * allocates or decompresses, a client rejects decoded_length above the bytes
+ * still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
+ * above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
+ * other decoded length and an unknown codec. A server chooses the codec
+ * independently for every frame.
+ *
+ * @generated from message acyclic.objects.v2.Body
+ */
+export declare type Body = Message<"acyclic.objects.v2.Body"> & {
+  /**
+   * @generated from field: acyclic.objects.v2.Codec codec = 1;
+   */
+  codec: Codec;
+
+  /**
+   * @generated from field: bytes data = 2;
+   */
+  data: Uint8Array;
+
+  /**
+   * @generated from field: uint64 decoded_length = 3;
+   */
+  decodedLength: bigint;
+};
+
+/**
+ * Describes the message acyclic.objects.v2.Body.
+ * Use `create(BodySchema)` to create a new message.
+ */
+export declare const BodySchema: GenMessage<Body>;
+
+/**
  * Exactly one metadata header first. The body belongs to that complete representation.
  * A terminal semantic error can follow the header when an HTTP stream is already open.
  *
@@ -473,9 +507,9 @@ export declare type GetObjectResponse = Message<"acyclic.objects.v2.GetObjectRes
     case: "header";
   } | {
     /**
-     * @generated from field: bytes body = 2;
+     * @generated from field: acyclic.objects.v2.Body body = 2;
      */
-    value: Uint8Array;
+    value: Body;
     case: "body";
   } | {
     /**
@@ -1036,12 +1070,45 @@ export enum ObjectsLimit {
    * @generated from enum value: OBJECTS_LIMIT_MAX_MULTIPART_PARTS = 10000;
    */
   MAX_MULTIPART_PARTS = 10000,
+
+  /**
+   * Bound on one compressed Body's decoded_length: one whole stored block.
+   *
+   * @generated from enum value: OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES = 8388608;
+   */
+  MAX_BODY_DECODED_BYTES = 8388608,
 }
 
 /**
  * Describes the enum acyclic.objects.v2.ObjectsLimit.
  */
 export declare const ObjectsLimitSchema: GenEnum<ObjectsLimit>;
+
+/**
+ * Encoding of one body frame's data.
+ *
+ * @generated from enum acyclic.objects.v2.Codec
+ */
+export enum Codec {
+  /**
+   * data is the decoded bytes themselves.
+   *
+   * @generated from enum value: CODEC_NONE = 0;
+   */
+  NONE = 0,
+
+  /**
+   * data is one or more complete Zstandard frames.
+   *
+   * @generated from enum value: CODEC_ZSTD = 1;
+   */
+  ZSTD = 1,
+}
+
+/**
+ * Describes the enum acyclic.objects.v2.Codec.
+ */
+export declare const CodecSchema: GenEnum<Codec>;
 
 /**
  * @generated from enum acyclic.objects.v2.ErrorCode

@@ -250,15 +250,8 @@ impl WasmStream {
         while let Some(record) = records.next().await {
             let record = record.map_err(js_error)?;
             output.push(
-                wire::ReadResponse {
-                    record: Some(wire::Record {
-                        sequence: record.sequence,
-                        value: record.value,
-                        commit_id: record.commit_id.as_bytes().to_vec().into(),
-                        committed_at_micros: record.committed_at_micros,
-                    }),
-                }
-                .encode_to_vec(),
+                wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                    .encode_to_vec(),
             );
         }
         Ok(bytes_array(output))
@@ -342,16 +335,9 @@ impl WasmFollow {
                     guard.replace(stream);
                 }
                 Ok(JsValue::from(Uint8Array::from(
-                    wire::ReadResponse {
-                        record: Some(wire::Record {
-                            sequence: record.sequence,
-                            value: record.value,
-                            commit_id: record.commit_id.as_bytes().to_vec().into(),
-                            committed_at_micros: record.committed_at_micros,
-                        }),
-                    }
-                    .encode_to_vec()
-                    .as_slice(),
+                    wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                        .encode_to_vec()
+                        .as_slice(),
                 )))
             }
             Either::Left((Some(Err(error)), _)) => Err(js_error(error)),
@@ -1167,4 +1153,24 @@ mod tests {
             "invalid_path"
         );
     }
+}
+
+/// Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
+///
+/// The shared Rust decoder bounds the declared length before decompressing and
+/// requires the decoded length to match it exactly.
+#[wasm_bindgen(js_name = decodeReadResponse)]
+pub fn decode_read_response(
+    codec: i32,
+    data: Vec<u8>,
+    decoded_length: u64,
+) -> Result<Vec<u8>, JsValue> {
+    let response = wire::ReadResponse {
+        codec,
+        data: data.into(),
+        decoded_length,
+    };
+    wire_codec::read_response_batch(response)
+        .map(|batch| batch.to_vec())
+        .map_err(js_error)
 }
