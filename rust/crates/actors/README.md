@@ -14,7 +14,9 @@ crate validates customer-authored requests and packages the versioned wire
 descriptor used to generate TypeScript bindings.
 
 `grpc::connect(endpoint, token)` exposes every generated Actors service RPC.
-Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
+It trusts the platform's roots (on Linux, those `SSL_CERT_FILE` and
+`SSL_CERT_DIR` select). Use `grpc::connect_with_ca_certificate` for a
+caller-supplied private CA; that CA is then the whole trust.
 `http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
 eight operations using canonical Protobuf JSON. Invocation carries request and
 response headers. HTTP mutations are not automatically retried.
