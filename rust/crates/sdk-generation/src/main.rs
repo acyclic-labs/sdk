@@ -817,6 +817,13 @@ fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), C
     let mut filenames = BTreeSet::new();
     collect_span_filenames(&value, &mut filenames);
     let retained_root = root.join("target/sdk-generation-generated-sources/retained");
+    let index_path = retained_root.join("aliases.json");
+    let mut aliases = if index_path.is_file() {
+        serde_json::from_slice::<BTreeMap<String, String>>(&fs::read(&index_path).map_err(io_error)?)
+            .map_err(|error| CliError(format!("invalid retained Rustdoc source index: {error}")))?
+    } else {
+        BTreeMap::new()
+    };
     for filename in filenames {
         let source = PathBuf::from(&filename);
         if !source.is_absolute() || source.starts_with(root) || !source.is_file() {
@@ -825,20 +832,25 @@ fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), C
         let basename = source.file_name().and_then(OsStr::to_str).ok_or_else(|| {
             CliError(format!("Rustdoc generated source has invalid filename {filename}"))
         })?;
-        let retained = retained_root.join(basename);
+        let bytes = fs::read(&source).map_err(io_error)?;
+        let digest = sha256_bytes(&bytes).trim_start_matches("sha256:");
+        let retained = retained_root.join(format!("{digest}-{basename}"));
         if let Some(parent) = retained.parent() {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
-        if retained.is_file() {
-            if fs::read(&retained).map_err(io_error)? != fs::read(&source).map_err(io_error)? {
-                return Err(CliError(format!(
-                    "generated source basename is reused with different bytes: {basename}"
-                )));
-            }
-        } else {
-            fs::copy(&source, &retained).map_err(io_error)?;
+        if !retained.is_file() {
+            fs::write(&retained, bytes).map_err(io_error)?;
         }
+        let relative = retained
+            .strip_prefix(root)
+            .map(path_string)
+            .map_err(|_| CliError("retained generated source escaped repository root".into()))?;
+        aliases.insert(filename, relative);
     }
+    fs::write(&index_path, serde_json::to_vec(&aliases).map_err(|error| {
+        CliError(format!("cannot serialize retained Rustdoc source index: {error}"))
+    })?)
+    .map_err(io_error)?;
     Ok(())
 }
 
@@ -1101,6 +1113,16 @@ fn materialize_generated_sources(
     for matches in candidates.values_mut() {
         matches.retain(|candidate| !candidate.starts_with(&staging_root));
     }
+    let retained_aliases = root
+        .join("target/sdk-generation-generated-sources/retained/aliases.json");
+    let retained_aliases = if retained_aliases.is_file() {
+        serde_json::from_slice::<BTreeMap<String, String>>(
+            &fs::read(&retained_aliases).map_err(io_error)?,
+        )
+        .map_err(|error| CliError(format!("invalid retained Rustdoc source index: {error}")))?
+    } else {
+        BTreeMap::new()
+    };
     let mut result = BTreeMap::<PathBuf, GeneratedSource>::new();
     for filename in filenames {
         let physical = PathBuf::from(&filename);
@@ -1137,7 +1159,10 @@ fn materialize_generated_sources(
                 .file_name()
                 .and_then(OsStr::to_str)
                 .ok_or_else(|| CliError(format!("Rustdoc span has invalid filename {filename}")))?;
-            let matches = candidates.get(basename).cloned().unwrap_or_default();
+            let matches = retained_aliases
+                .get(&filename)
+                .map(|relative| vec![root.join(relative)])
+                .unwrap_or_else(|| candidates.get(basename).cloned().unwrap_or_default());
             let [candidate] = matches.as_slice() else {
                 if matches.is_empty() {
                     return Err(CliError(format!(
