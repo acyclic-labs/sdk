@@ -292,10 +292,10 @@ export function darwinAppleLdPaths(target, sdkRoot = null) {
 
 /**
  * @param {string} target
- * @param {{sdkRoot?: string|null, driver?: string, linkerExists?: (path: string) => boolean}} options
+ * @param {{sdkRoot?: string|null, driver?: string, rustSysroot?: string, linkerExists?: (path: string) => boolean}} options
  * @returns {(() => void) & {linkerPath?: string|null}}
  */
-export function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: suppliedDriver, linkerExists = existsSync } = {}) {
+export function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: suppliedDriver, rustSysroot: suppliedRustSysroot, linkerExists = existsSync } = {}) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) {
     /** @type {(() => void) & {linkerPath?: string|null}} */
     const restore = () => {};
@@ -308,15 +308,22 @@ export function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, drive
   const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   const sdkSelector = sdkRoot ?? "macosx";
   const driver = suppliedDriver ?? commandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"]);
+  // Rust's objcopy loads libLLVM from the selected toolchain's sysroot,
+  // outside its own bin/../lib search path on Darwin.
+  const rustLibraryPath = resolve(suppliedRustSysroot ?? commandOutput("rustc", ["--print", "sysroot"]), "lib");
   const priorTargetLinker = envValue(paths.linkerEnvironment);
   const priorSdkRoot = envValue("SDKROOT");
+  const priorLoader = envValue("DYLD_LIBRARY_PATH");
   process.env[paths.linkerEnvironment] = driver;
   process.env.SDKROOT = sdkRoot;
+  process.env.DYLD_LIBRARY_PATH = rustLibraryPath;
   const restore = () => {
     if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
     else process.env[paths.linkerEnvironment] = priorTargetLinker;
     if (priorSdkRoot === null) delete process.env.SDKROOT;
     else process.env.SDKROOT = priorSdkRoot;
+    if (priorLoader === null) delete process.env.DYLD_LIBRARY_PATH;
+    else process.env.DYLD_LIBRARY_PATH = priorLoader;
   };
   restore.linkerPath = paths.linker;
   return restore;

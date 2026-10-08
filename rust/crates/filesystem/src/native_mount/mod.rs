@@ -3073,15 +3073,17 @@ mod tests {
         Ok(())
     }
 
-    /// Renames `from` to `to`, trying again for a moment while another
-    /// process (a scanner reading a file just written) holds it without
-    /// sharing delete access, as any Windows program must.
-    fn rename_as_a_user_would(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    /// Drives host mutations through finite access/sharing-denial windows.
+    /// Only the fixture's host I/O is retried, never SDK capture or publication.
+    fn mutate_as_a_user_would(
+        mut operation: impl FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            match std::fs::rename(from, to) {
+            match operation() {
                 Err(error)
-                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                    if (error.kind() == std::io::ErrorKind::PermissionDenied
+                        || cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
                         && std::time::Instant::now() < deadline =>
                 {
                     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -3166,7 +3168,7 @@ mod tests {
 
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("view");
-        std::fs::create_dir(&destination)?;
+        mutate_as_a_user_would(|| std::fs::create_dir(&destination))?;
         let materialized = materialize_checkout(
             &mut checkout,
             &MaterializeOptions {
@@ -3229,7 +3231,7 @@ mod tests {
                 .any(|span| matches!(span.kind, crate::kernel::ExtentKind::Hole))
         );
 
-        std::fs::write(&host_file, b"captured")
+        mutate_as_a_user_would(|| std::fs::write(&host_file, b"captured"))
             .map_err(|error| std::io::Error::other(format!("host rewrite: {error}")))?;
         let captured = capture_paths(
             &mut checkout,
@@ -3272,7 +3274,7 @@ mod tests {
             )?],
             limits,
         )?;
-        rename_as_a_user_would(&host_file, &destination.join("renamed.bin"))
+        mutate_as_a_user_would(|| std::fs::rename(&host_file, destination.join("renamed.bin")))
             .map_err(|error| std::io::Error::other(format!("host rename: {error}")))?;
         let watch = capture_watch_batch(
             &mut checkout,
@@ -3316,12 +3318,15 @@ mod tests {
             )?],
             limits,
         )?;
-        rename_as_a_user_would(
-            &destination.join("renamed.bin"),
-            &destination.join("moved.bin"),
-        )
+        mutate_as_a_user_would(|| {
+            std::fs::rename(
+                destination.join("renamed.bin"),
+                destination.join("moved.bin"),
+            )
+        })
         .map_err(|error| std::io::Error::other(format!("second host rename: {error}")))?;
-        std::fs::write(destination.join("renamed.bin"), b"replacement")?;
+        mutate_as_a_user_would(|| std::fs::write(destination.join("renamed.bin"), b"replacement"))
+            .map_err(|error| std::io::Error::other(format!("host replacement create: {error}")))?;
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
@@ -3373,7 +3378,10 @@ mod tests {
             .await?;
         assert_eq!(replacement.value.bytes.as_ref(), b"replacement");
 
-        std::fs::write(destination.join("renamed.bin"), b"replaced-again")?;
+        mutate_as_a_user_would(|| {
+            std::fs::write(destination.join("renamed.bin"), b"replaced-again")
+        })
+        .map_err(|error| std::io::Error::other(format!("host replacement rewrite: {error}")))?;
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
@@ -3400,7 +3408,10 @@ mod tests {
             .ok_or("standalone create replacement disappeared")?;
         assert_ne!(replaced_again.file_id, replacement_record.file_id);
 
-        std::fs::write(destination.join("renamed.bin"), b"compound-replacement")?;
+        mutate_as_a_user_would(|| {
+            std::fs::write(destination.join("renamed.bin"), b"compound-replacement")
+        })
+        .map_err(|error| std::io::Error::other(format!("host compound rewrite: {error}")))?;
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
@@ -3455,10 +3466,16 @@ mod tests {
         )
         .await?;
 
-        std::fs::remove_file(destination.join("renamed.bin"))?;
-        std::fs::remove_file(destination.join("moved.bin"))?;
-        std::fs::create_dir(destination.join("nested"))?;
-        std::fs::write(destination.join("nested").join("new.txt"), b"baseline")?;
+        mutate_as_a_user_would(|| std::fs::remove_file(destination.join("renamed.bin")))
+            .map_err(|error| std::io::Error::other(format!("host replacement removal: {error}")))?;
+        mutate_as_a_user_would(|| std::fs::remove_file(destination.join("moved.bin")))
+            .map_err(|error| std::io::Error::other(format!("host moved removal: {error}")))?;
+        mutate_as_a_user_would(|| std::fs::create_dir(destination.join("nested")))
+            .map_err(|error| std::io::Error::other(format!("host nested directory: {error}")))?;
+        mutate_as_a_user_would(|| {
+            std::fs::write(destination.join("nested").join("new.txt"), b"baseline")
+        })
+        .map_err(|error| std::io::Error::other(format!("host baseline write: {error}")))?;
         let baseline = capture_baseline(
             &mut checkout,
             &CaptureOptions {
