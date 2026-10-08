@@ -524,12 +524,29 @@ mod tests {
         command
     }
 
-    pub(super) fn ready(root: &std::path::Path, name: &str) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !root.join(name).exists() && Instant::now() < deadline {
+    /// Waits for a helper's readiness marker. Helper start-up has no useful
+    /// bound under load, so this waits for the marker itself and fails only
+    /// once the helper has `exited` without writing it.
+    pub(super) fn ready(root: &std::path::Path, name: &str, mut exited: impl FnMut() -> bool) {
+        while !root.join(name).exists() {
+            assert!(
+                !exited() || root.join(name).exists(),
+                "helper exited before it was ready"
+            );
             thread::sleep(Duration::from_millis(5));
         }
-        assert!(root.join(name).exists(), "helper readiness timed out");
+    }
+
+    fn tree_exited(tree: &mut ProcessTree) -> bool {
+        tree.try_wait().map_or(true, |status| status.is_some())
+    }
+
+    /// Asks any descendant that outlived its tree's cleanup to mark its
+    /// escape, then checks that none did.
+    pub(super) fn assert_no_escape(root: &std::path::Path) {
+        fs::write(root.join("probe"), b"probe").expect("escape probe");
+        thread::sleep(Duration::from_millis(500));
+        assert!(!root.join("escaped").exists());
     }
 
     #[test]
@@ -545,14 +562,26 @@ mod tests {
         match mode.as_str() {
             "grandchild" => {
                 fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
-                thread::sleep(Duration::from_millis(750));
-                fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
+                // Live until the probe written after cleanup, so the tree's
+                // lifetime never races the test; bounded so no escapee lingers.
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while !root.join("probe").exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                if root.join("probe").exists() {
+                    fs::write(root.join("escaped"), b"descendant survived")
+                        .expect("escaped marker");
+                }
             }
             "child" | "exit-parent" => {
                 let mut grandchild = command("grandchild", &root);
                 grandchild.stdout(Stdio::inherit()).stderr(Stdio::inherit());
                 let mut grandchild = grandchild.spawn().expect("spawn grandchild");
-                ready(&root, "grandchild-ready");
+                ready(&root, "grandchild-ready", || {
+                    grandchild
+                        .try_wait()
+                        .map_or(true, |status| status.is_some())
+                });
                 fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
                 if mode == "child" {
                     let _ = grandchild.wait();
@@ -617,15 +646,14 @@ mod tests {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let mut tree =
                 ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
-            ready(temporary.path(), "tree-ready");
+            ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
             if explicit {
                 tree.terminate().expect("terminate tree");
                 tree.terminate().expect("repeat termination");
                 assert!(tree.child.is_none());
             }
             drop(tree);
-            thread::sleep(Duration::from_secs(1));
-            assert!(!temporary.path().join("escaped").exists());
+            assert_no_escape(temporary.path());
         }
     }
 
@@ -661,7 +689,7 @@ mod tests {
             let mut tree =
                 ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
             if mode != "exit-code" {
-                ready(temporary.path(), "tree-ready");
+                ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
             }
             if mode != "child" {
                 tree.wait(Duration::from_secs(5))
@@ -674,8 +702,7 @@ mod tests {
                 assert_eq!(status.code(), Some(7));
             }
             assert!(tree.child.is_none());
-            thread::sleep(Duration::from_secs(1));
-            assert!(!temporary.path().join("escaped").exists());
+            assert_no_escape(temporary.path());
         }
     }
 
@@ -822,7 +849,7 @@ mod tests {
             let mut tree =
                 ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
             if mode == "child" {
-                ready(temporary.path(), "tree-ready");
+                ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
                 assert_eq!(
                     tree.wait(Duration::ZERO).expect_err("wait deadline").kind(),
                     std::io::ErrorKind::TimedOut
@@ -838,8 +865,7 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(7));
             assert!(tree.child.is_none());
             tree.terminate().expect("repeat cleanup");
-            thread::sleep(Duration::from_secs(1));
-            assert!(!temporary.path().join("escaped").exists());
+            assert_no_escape(temporary.path());
         }
     }
 
@@ -878,9 +904,8 @@ mod tests {
             .wait_with_output(Duration::from_secs(5), 4096)
             .expect("collect exited parent");
         assert!(output.status.success());
-        ready(temporary.path(), "tree-ready");
-        thread::sleep(Duration::from_secs(1));
-        assert!(!temporary.path().join("escaped").exists());
+        ready(temporary.path(), "tree-ready", || true);
+        assert_no_escape(temporary.path());
     }
 
     #[cfg(unix)]
@@ -1147,7 +1172,9 @@ mod platform {
         let mut tree =
             super::ProcessTree::spawn(&mut super::tests::command("child", temporary.path()))
                 .expect("spawn tree");
-        super::tests::ready(temporary.path(), "tree-ready");
+        super::tests::ready(temporary.path(), "tree-ready", || {
+            tree.try_wait().map_or(true, |status| status.is_some())
+        });
         let mut restricted = std::ptr::null_mut();
         // SAFETY: both source and target are this process; the duplicate has
         // zero access rights. Keep the original handle for mandatory cleanup.
@@ -1189,8 +1216,7 @@ mod platform {
                 .contains("already collected")
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        assert!(!temporary.path().join("escaped").exists());
+        super::tests::assert_no_escape(temporary.path());
     }
 
     #[test]
