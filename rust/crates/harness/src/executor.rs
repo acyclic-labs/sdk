@@ -1075,14 +1075,14 @@ impl StockExecutor {
             .await
     }
 
-    async fn run_model_step(
-        &self,
-        journal: &dyn ExecutionJournal,
-        input: &TurnInput,
+    fn run_model_step<'a>(
+        &'a self,
+        journal: &'a dyn ExecutionJournal,
+        input: &'a TurnInput,
         step: u32,
-        prior_messages: &[ModelMessage],
+        prior_messages: &'a [ModelMessage],
         purpose: ModelPurpose,
-    ) -> Result<Vec<ModelEvent>> {
+    ) -> BoxFuture<'a, Result<Vec<ModelEvent>>> {
         let span = obs_span!(
             "acyclic.harness.executor.model_step",
             step = step,
@@ -1094,7 +1094,6 @@ impl StockExecutor {
             span,
             self.dispatch_model_step(journal, input, step, prior_messages, purpose),
         )
-        .await
     }
 
     async fn prepare_request(
@@ -4441,7 +4440,7 @@ mod tests {
             executor: Arc::new(FakeTool(AtomicUsize::new(0))),
             projection: Arc::new(Projection),
         })?;
-        let executor = StockExecutor::new(
+        let executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
             Arc::new(FakeModel {
                 calls: AtomicUsize::new(0),

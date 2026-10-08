@@ -247,3 +247,17 @@ cancelled-owner checks. The corrected rerun is recorded in
 workflow tests passed, with zero failures or ignored tests. Strict native
 all-target lint passed in `target-b-clippy-default-compaction-workflow.log`.
 These receipts precede integration of main's observation-span changes.
+
+Main `b94284f885cfde8a5961d62e9a435b2e7d80d0cf` (#275) is now integrated.
+The model-step and execution wrappers retain observation spans while preserving
+purpose-specific summary/response admission and shared owner verification.
+The recursive model-step wrapper returns the existing platform boxed future,
+keeping native Send and browser future contracts intact. The new native journal
+span fixture selects Response explicitly; the unrelated span-only model fixture
+uses the existing disabled-policy test constructor. Fresh strict native
+all-target lint passed in `target-b-clippy-main275-compaction-fixed.log`.
+Integrated native execution is recorded separately in
+`target-b-native-main275-compaction.log`; earlier receipts do not qualify this
+integrated source. Default-policy replacement, malformed accounting, durable
+projection continuation, logical forks, cold checkpoints, generated consumption
+and final platform qualification remain open.

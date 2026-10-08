@@ -3219,6 +3219,7 @@ mod tests {
                     1,
                     "model".into(),
                     ExecutionEvent::ModelStarted {
+                        purpose: crate::executor::ModelPurpose::Response,
                         step: 0,
                         request_digest: [1; 32],
                         request
