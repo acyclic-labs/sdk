@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
+exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
@@ -21,6 +22,10 @@ required-features = ["filesystem"]
 [[example]]
 name = "approved-native-process"
 required-features = ["native-execution"]
+
+[[bench]]
+name = "harness"
+harness = false
 
 [features]
 wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
@@ -60,6 +65,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [dev-dependencies]
+divan.workspace = true
 async-trait.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }

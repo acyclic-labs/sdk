@@ -618,12 +618,29 @@ mod tests {
         command
     }
 
-    pub(super) fn ready(root: &std::path::Path, name: &str) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !root.join(name).exists() && Instant::now() < deadline {
+    /// Waits for a helper's readiness marker. Helper start-up has no useful
+    /// bound under load, so this waits for the marker itself and fails only
+    /// once the helper has `exited` without writing it.
+    pub(super) fn ready(root: &std::path::Path, name: &str, mut exited: impl FnMut() -> bool) {
+        while !root.join(name).exists() {
+            assert!(
+                !exited() || root.join(name).exists(),
+                "helper exited before it was ready"
+            );
             thread::sleep(Duration::from_millis(5));
         }
-        assert!(root.join(name).exists(), "helper readiness timed out");
+    }
+
+    fn tree_exited(tree: &mut ProcessTree) -> bool {
+        tree.try_wait().map_or(true, |status| status.is_some())
+    }
+
+    /// Asks any descendant that outlived its tree's cleanup to mark its
+    /// escape, then checks that none did.
+    pub(super) fn assert_no_escape(root: &std::path::Path) {
+        fs::write(root.join("probe"), b"probe").expect("escape probe");
+        thread::sleep(Duration::from_millis(500));
+        assert!(!root.join("escaped").exists());
     }
 
     #[test]
@@ -639,14 +656,26 @@ mod tests {
         match mode.as_str() {
             "grandchild" => {
                 fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
-                thread::sleep(Duration::from_millis(750));
-                fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
+                // Live until the probe written after cleanup, so the tree's
+                // lifetime never races the test; bounded so no escapee lingers.
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while !root.join("probe").exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                if root.join("probe").exists() {
+                    fs::write(root.join("escaped"), b"descendant survived")
+                        .expect("escaped marker");
+                }
             }
             "child" | "exit-parent" => {
                 let mut grandchild = command("grandchild", &root);
                 grandchild.stdout(Stdio::inherit()).stderr(Stdio::inherit());
                 let mut grandchild = grandchild.spawn().expect("spawn grandchild");
-                ready(&root, "grandchild-ready");
+                ready(&root, "grandchild-ready", || {
+                    grandchild
+                        .try_wait()
+                        .map_or(true, |status| status.is_some())
+                });
                 fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
                 if mode == "child" {
                     let _ = grandchild.wait();
@@ -723,15 +752,14 @@ mod tests {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let mut tree =
                 ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
-            ready(temporary.path(), "tree-ready");
+            ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
             if explicit {
                 tree.terminate().expect("terminate tree");
                 tree.terminate().expect("repeat termination");
                 assert!(tree.child.is_none());
             }
             drop(tree);
-            thread::sleep(Duration::from_secs(1));
-            assert!(!temporary.path().join("escaped").exists());
+            assert_no_escape(temporary.path());
         }
     }
 
@@ -793,7 +821,7 @@ mod tests {
             let mut tree =
                 ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
             if mode != "exit-code" {
-                ready(temporary.path(), "tree-ready");
+                ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
             }
             if mode != "child" {
                 tree.wait(Duration::from_secs(5))
@@ -806,8 +834,82 @@ mod tests {
                 assert_eq!(status.code(), Some(7));
             }
             assert!(tree.child.is_none());
-            thread::sleep(Duration::from_secs(1));
-            assert!(!temporary.path().join("escaped").exists());
+            assert_no_escape(temporary.path());
+        }
+    }
+
+    /// Native file operations and blocking tasks run on workers, which must
+    /// enter the caller's span so work nested in them keeps it.
+    fn native_operations_in_caller_span(dispatch: &tracing::Dispatch, root: &std::path::Path) {
+        fn block_on<F: std::future::Future>(future: F) -> F::Output {
+            let mut future = std::pin::pin!(future);
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            loop {
+                if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                    return output;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let nested = |name: &'static str| {
+            let dispatch = dispatch.clone();
+            move || {
+                tracing::dispatcher::with_default(&dispatch, || {
+                    drop(tracing::trace_span!("nested", name));
+                });
+            }
+        };
+        let file = crate::NativeFile::from_file(
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(root.join("native"))
+                .expect("open native file"),
+        )
+        .expect("native file");
+        tracing::info_span!("test.caller").in_scope(|| {
+            block_on(file.write_all_batch_async(vec![crate::OwnedWrite {
+                offset: 0,
+                bytes: bytes::Bytes::from_static(b"traced"),
+            }]))
+            .expect("write");
+            block_on(file.read_batch_async(vec![crate::OwnedRead {
+                offset: 1,
+                length: 5,
+            }]))
+            .expect("read");
+            block_on(file.sync_async(crate::Durability::Full)).expect("sync");
+            let control = nested("control");
+            block_on(file.control_async(move |_| {
+                control();
+                Ok(())
+            }))
+            .expect("control");
+            block_on(crate::run_blocking_io(nested("blocking"))).expect("blocking");
+        });
+    }
+
+    fn assert_native_operation_spans(has: &dyn Fn(&str, &str, &str) -> bool) {
+        for span in [
+            "write_batch",
+            "read_batch",
+            "sync",
+            "control",
+            "blocking_io",
+        ] {
+            let span = format!("acyclic.runtime.{span}");
+            assert!(has(&span, "parent", "test.caller"), "{span} parent");
+            assert!(has(&span, "outcome", "ok"), "{span} outcome");
+        }
+        for (span, field, value) in [
+            ("acyclic.runtime.write_batch", "bytes", "6"),
+            ("acyclic.runtime.read_batch", "bytes", "5"),
+            ("acyclic.runtime.read_batch", "batch_len", "1"),
+            ("nested", "parent", "acyclic.runtime.control"),
+            ("nested", "parent", "acyclic.runtime.blocking_io"),
+        ] {
+            assert!(has(span, field, value), "{span} {field}");
         }
     }
 
@@ -838,11 +940,15 @@ mod tests {
             fn on_new_span(
                 &self,
                 attributes: &tracing::span::Attributes<'_>,
-                _: &tracing::span::Id,
-                _: Context<'_, S>,
+                id: &tracing::span::Id,
+                context: Context<'_, S>,
             ) {
                 let name = attributes.metadata().name();
-                attributes.record(&mut Fields(name, &mut self.0.lock().unwrap()));
+                let mut seen = self.0.lock().unwrap();
+                if let Some(parent) = context.span(id).and_then(|span| span.parent()) {
+                    seen.push((name, "parent", parent.name().to_owned()));
+                }
+                attributes.record(&mut Fields(name, &mut seen));
             }
             fn on_record(
                 &self,
@@ -860,9 +966,9 @@ mod tests {
         // makes every callsite consult this test's subscriber too.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
-        let _default = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
-        );
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::registry().with(Capture(Arc::clone(&seen))));
+        let _default = tracing::dispatcher::set_default(&dispatch);
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut command = command("output", temporary.path());
         command.env("EXPLICIT_PROCESS_INPUT", "allowed");
@@ -870,6 +976,7 @@ mod tests {
             .expect("spawn tree")
             .wait_with_output(Duration::from_secs(5), 4096)
             .expect("collect output");
+        native_operations_in_caller_span(&dispatch, temporary.path());
         let seen = seen.lock().unwrap();
         let has = |span: &str, field: &str, value: &str| {
             seen.iter()
@@ -883,6 +990,7 @@ mod tests {
         assert!(has("acyclic.runtime.wait_with_output", "outcome", "ok"));
         assert!(has("acyclic.runtime.terminate", "outcome", "ok"));
         assert!(has("acyclic.runtime.spawn", "outcome", "ok"));
+        assert_native_operation_spans(&has);
         let program = std::env::current_exe().expect("test executable");
         let program = program.file_name().and_then(|name| name.to_str());
         assert!(has(
@@ -971,7 +1079,7 @@ mod tests {
             let mut tree =
                 ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
             if mode == "child" {
-                ready(temporary.path(), "tree-ready");
+                ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
                 assert_eq!(
                     tree.wait(Duration::ZERO).expect_err("wait deadline").kind(),
                     std::io::ErrorKind::TimedOut
@@ -992,8 +1100,7 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(7));
             assert!(tree.child.is_none());
             tree.terminate().expect("repeat cleanup");
-            thread::sleep(Duration::from_secs(1));
-            assert!(!temporary.path().join("escaped").exists());
+            assert_no_escape(temporary.path());
         }
     }
 
@@ -1032,9 +1139,8 @@ mod tests {
             .wait_with_output(Duration::from_secs(5), 4096)
             .expect("collect exited parent");
         assert!(output.status.success());
-        ready(temporary.path(), "tree-ready");
-        thread::sleep(Duration::from_secs(1));
-        assert!(!temporary.path().join("escaped").exists());
+        ready(temporary.path(), "tree-ready", || true);
+        assert_no_escape(temporary.path());
     }
 
     #[cfg(unix)]
@@ -1301,7 +1407,9 @@ mod platform {
         let mut tree =
             super::ProcessTree::spawn(&mut super::tests::command("child", temporary.path()))
                 .expect("spawn tree");
-        super::tests::ready(temporary.path(), "tree-ready");
+        super::tests::ready(temporary.path(), "tree-ready", || {
+            tree.try_wait().map_or(true, |status| status.is_some())
+        });
         let mut restricted = std::ptr::null_mut();
         // SAFETY: both source and target are this process; the duplicate has
         // zero access rights. Keep the original handle for mandatory cleanup.
@@ -1343,8 +1451,7 @@ mod platform {
                 .contains("already collected")
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        assert!(!temporary.path().join("escaped").exists());
+        super::tests::assert_no_escape(temporary.path());
     }
 
     #[test]

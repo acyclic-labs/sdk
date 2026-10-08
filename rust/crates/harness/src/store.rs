@@ -1541,58 +1541,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn execute_and_reopen_emit_spans_without_content_fields() -> Result<()> {
-        use std::sync::Mutex;
-        use tracing::{
-            field::{Field, Visit},
-            span,
-        };
-        use tracing_subscriber::{
-            Layer,
-            layer::{Context, SubscriberExt as _},
-            registry::LookupSpan,
-        };
-
-        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
-        struct Capture(Seen);
-        struct Fields<'a>(
-            &'static str,
-            &'a mut Vec<(&'static str, &'static str, String)>,
-        );
-        impl Visit for Fields<'_> {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                self.1.push((self.0, field.name(), value.to_owned()));
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                self.1.push((self.0, field.name(), format!("{value:?}")));
-            }
-        }
-        impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
-            fn on_new_span(&self, attrs: &span::Attributes<'_>, _: &span::Id, _: Context<'_, S>) {
-                let name = attrs.metadata().name();
-                let mut seen = self.0.lock().unwrap();
-                seen.extend(
-                    attrs
-                        .metadata()
-                        .fields()
-                        .iter()
-                        .map(|f| (name, f.name(), String::new())),
-                );
-                attrs.record(&mut Fields(name, &mut seen));
-            }
-            fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
-                let name = ctx.span(id).unwrap().name();
-                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
-            }
-        }
-
-        // With one live dispatcher, a callsite that a concurrent test reaches
-        // first caches only that thread's (absent) interest; a second one
-        // makes every callsite consult this test's subscriber too.
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-        let seen = Seen::default();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
-        );
+        use crate::obs::capture;
+        let (seen, _guard) = capture::install();
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let mut unbound =
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
@@ -1600,11 +1550,7 @@ mod tests {
         with_content(unbound).execute(command(1)?).await?;
         StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
 
-        let seen = seen.lock().unwrap();
-        let has = |span: &str, field: &str, value: &str| {
-            seen.iter()
-                .any(|(s, f, v)| *s == span && *f == field && v == value)
-        };
+        let has = |span, field, value| capture::has(&seen, span, field, value);
         assert!(has(
             "acyclic.harness.store.execute",
             "error.kind",
@@ -1615,17 +1561,12 @@ mod tests {
         assert!(has("acyclic.harness.reducer.plan", "outcome", "ok"));
         assert!(has("acyclic.harness.reducer.apply_committed", "rev", "1"));
         assert!(has("acyclic.harness.store.open", "items", "1"));
-        for (span, field, value) in seen.iter() {
-            assert!(span.starts_with("acyclic.harness."), "{span}");
-            assert!(
-                !["path", "token", "content", "body", "authorization"].contains(field),
-                "{span} records {field}"
-            );
-            assert!(
-                !value.contains("conversation-1") && !value.contains("hello"),
-                "{value}"
-            );
-        }
+        capture::assert_clean(&seen, &["conversation-1", "hello"]);
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .all(|(span, ..)| span.starts_with("acyclic.harness."))
+        );
         Ok(())
     }
 

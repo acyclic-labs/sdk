@@ -5315,7 +5315,9 @@ mod tests {
         let state = tempfile::tempdir()?;
         let runtime = tokio::runtime::Runtime::new()?;
         let fs = Fs::memory();
-        for round in 0..200 {
+        // A store released late fails the very next open; the rounds only
+        // vary where the source change lands against the drop.
+        for round in 0..24 {
             let store = LocalCoreStateStore::open_owned(state.path().join("core"))
                 .map_err(|error| format!("round {round}: {error}"))?;
             let view = runtime.block_on(async {

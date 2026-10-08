@@ -281,6 +281,7 @@ impl NativeFile {
             NativeUnitOperation::SetLen(size),
             Some(Arc::clone(&self.tail)),
             Some(Arc::clone(&self.uncertain)),
+            obs::file_span!(DEBUG, "acyclic.runtime.set_len"),
             #[cfg(windows)]
             self.overlapped,
         )
@@ -299,6 +300,7 @@ impl NativeFile {
             NativeUnitOperation::Control(Box::new(operation)),
             Some(Arc::clone(&self.tail)),
             Some(Arc::clone(&self.uncertain)),
+            obs::file_span!(DEBUG, "acyclic.runtime.control"),
             #[cfg(windows)]
             self.overlapped,
         )
@@ -312,6 +314,7 @@ impl NativeFile {
             reads,
             Some(Arc::clone(&self.tail)),
             Some(Arc::clone(&self.uncertain)),
+            obs::file_span!(DEBUG, "acyclic.runtime.read_batch"),
             #[cfg(windows)]
             self.overlapped,
         )
@@ -325,6 +328,7 @@ impl NativeFile {
             NativeUnitOperation::Write(writes),
             Some(Arc::clone(&self.tail)),
             Some(Arc::clone(&self.uncertain)),
+            obs::file_span!(DEBUG, "acyclic.runtime.write_batch"),
             #[cfg(windows)]
             self.overlapped,
         )
@@ -338,6 +342,7 @@ impl NativeFile {
             NativeUnitOperation::Sync(durability),
             Some(Arc::clone(&self.tail)),
             Some(Arc::clone(&self.uncertain)),
+            obs::file_span!(DEBUG, "acyclic.runtime.sync"),
             #[cfg(windows)]
             self.overlapped,
         )
@@ -712,6 +717,7 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
                 reads,
                 Some(tail),
                 Some(uncertain),
+                obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
                 #[cfg(windows)]
                 false,
             ),
@@ -719,7 +725,13 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
         }
     }
     #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    ReadBatch::submit(file, reads, None, None)
+    ReadBatch::submit(
+        file,
+        reads,
+        None,
+        None,
+        obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
+    )
 }
 
 /// Submits an owned write batch to the shared native completion workers.
@@ -736,6 +748,7 @@ pub fn write_all_batch_async(file: File, writes: Vec<OwnedWrite>) -> UnitComplet
                 NativeUnitOperation::Write(writes),
                 Some(tail),
                 Some(uncertain),
+                obs::file_span!(TRACE, "acyclic.runtime.write_batch"),
                 #[cfg(windows)]
                 false,
             ),
@@ -743,7 +756,13 @@ pub fn write_all_batch_async(file: File, writes: Vec<OwnedWrite>) -> UnitComplet
         }
     }
     #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    UnitCompletion::submit(file, NativeUnitOperation::Write(writes), None, None)
+    UnitCompletion::submit(
+        file,
+        NativeUnitOperation::Write(writes),
+        None,
+        None,
+        obs::file_span!(TRACE, "acyclic.runtime.write_batch"),
+    )
 }
 
 /// The argument that tells a service started by [`spawn_service_process`]
@@ -1013,10 +1032,17 @@ pub fn run_blocking_io<T: Send + 'static>(
         waker: None,
     }));
     let completion = Arc::clone(&state);
+    let obs::OperationSpan { span, context } = obs::OperationSpan::new(tracing::debug_span!(
+        "acyclic.runtime.blocking_io",
+        outcome = obs::Empty,
+        error.kind = obs::Empty,
+    ));
     BlockingIoTask {
         pending: Some(NativeJob::Task(Box::new(move || {
+            let _entered = context.enter();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
                 .map_err(|_| io::Error::other("native blocking I/O task panicked"));
+            obs::record(&span, &result);
             finish_job(&completion, result, None)
         }))),
         state,
@@ -1133,6 +1159,7 @@ struct FileCompletion<T> {
     uncertain: Option<Arc<AtomicBool>>,
     _tail: Option<FileSequencer>,
     file: Option<Arc<File>>,
+    span: tracing::Span,
     finished: bool,
 }
 
@@ -1149,6 +1176,7 @@ impl<T> FileCompletion<T> {
             uncertain,
             _tail: tail,
             file: None,
+            span: tracing::Span::none(),
             finished: false,
         }
     }
@@ -1158,7 +1186,13 @@ impl<T> FileCompletion<T> {
         self
     }
 
+    fn in_span(mut self, span: tracing::Span) -> Self {
+        self.span = span;
+        self
+    }
+
     fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
+        obs::record(&self.span, &result);
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         if result.as_ref().err().is_some_and(is_uncertain_io_error)
             && let (Some(file), Some(uncertain)) = (&self.file, &self.uncertain)
@@ -1221,6 +1255,7 @@ enum NativeJob {
     Read {
         file: Arc<File>,
         reads: Vec<OwnedRead>,
+        span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
         tail: Option<FileSequencer>,
@@ -1231,6 +1266,7 @@ enum NativeJob {
     Unit {
         file: Arc<File>,
         operation: NativeUnitOperation,
+        span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
         tail: Option<FileSequencer>,
@@ -1286,25 +1322,33 @@ impl NativeJob {
             Self::Read {
                 file,
                 reads,
-                overlapped: true,
-                tail,
-                uncertain,
-                state,
-                completion,
-            } => FileCompletion::new(state, completion, uncertain, tail)
-                .for_file(Arc::clone(&file))
-                .finish(windows::read_batch_in_place(&file, &reads)),
-            Self::Unit {
-                file,
-                operation: NativeUnitOperation::Write(writes),
+                span: obs::OperationSpan { span, context },
                 overlapped: true,
                 tail,
                 uncertain,
                 state,
                 completion,
             } => {
+                let _entered = context.enter();
+                FileCompletion::new(state, completion, uncertain, tail)
+                    .for_file(Arc::clone(&file))
+                    .in_span(span)
+                    .finish(windows::read_batch_in_place(&file, &reads))
+            }
+            Self::Unit {
+                file,
+                operation: NativeUnitOperation::Write(writes),
+                span: obs::OperationSpan { span, context },
+                overlapped: true,
+                tail,
+                uncertain,
+                state,
+                completion,
+            } => {
+                let _entered = context.enter();
                 let finish = FileCompletion::new(state, completion, uncertain, tail)
-                    .for_file(Arc::clone(&file));
+                    .for_file(Arc::clone(&file))
+                    .in_span(span);
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
                 finish.finish(result)
@@ -1318,6 +1362,7 @@ impl NativeJob {
             Self::Read {
                 file,
                 reads,
+                span: obs::OperationSpan { span, context },
                 #[cfg(windows)]
                 overlapped,
                 tail,
@@ -1325,8 +1370,10 @@ impl NativeJob {
                 state,
                 completion,
             } => {
+                let _entered = context.enter();
                 let finish = FileCompletion::new(state, completion, uncertain, tail)
-                    .for_file(Arc::clone(&file));
+                    .for_file(Arc::clone(&file))
+                    .in_span(span);
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
                     linux::submit_read(file, reads, callback)
@@ -1351,6 +1398,7 @@ impl NativeJob {
             Self::Unit {
                 file,
                 operation,
+                span: obs::OperationSpan { span, context },
                 #[cfg(windows)]
                 overlapped,
                 tail,
@@ -1358,8 +1406,10 @@ impl NativeJob {
                 state,
                 completion,
             } => {
+                let _entered = context.enter();
                 let finish = FileCompletion::new(state, completion, uncertain, tail.clone())
-                    .for_file(Arc::clone(&file));
+                    .for_file(Arc::clone(&file))
+                    .in_span(span);
                 #[cfg(any(windows, target_os = "linux"))]
                 let operation = match operation {
                     NativeUnitOperation::Write(writes) => {
@@ -1466,8 +1516,11 @@ impl NativeCompletion<Vec<Bytes>> {
         reads: Vec<OwnedRead>,
         sequencer: Option<FileSequencer>,
         uncertain: Option<Arc<AtomicBool>>,
+        span: tracing::Span,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
+        let span = obs::OperationSpan::new(span)
+            .sized(reads.len(), || reads.iter().map(|read| read.length).sum());
         let state = Arc::new(Mutex::new(CompletionState {
             result: None,
             waker: None,
@@ -1476,6 +1529,7 @@ impl NativeCompletion<Vec<Bytes>> {
             pending: Some(NativeJob::Read {
                 file,
                 reads,
+                span,
                 #[cfg(windows)]
                 overlapped,
                 tail: sequencer.clone(),
@@ -1519,8 +1573,15 @@ impl NativeCompletion<()> {
         operation: NativeUnitOperation,
         sequencer: Option<FileSequencer>,
         uncertain: Option<Arc<AtomicBool>>,
+        span: tracing::Span,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
+        let mut span = obs::OperationSpan::new(span);
+        if let NativeUnitOperation::Write(writes) = &operation {
+            span = span.sized(writes.len(), || {
+                writes.iter().map(|write| write.bytes.len()).sum()
+            });
+        }
         let state = Arc::new(Mutex::new(CompletionState {
             result: None,
             waker: None,
@@ -1529,6 +1590,7 @@ impl NativeCompletion<()> {
             pending: Some(NativeJob::Unit {
                 file,
                 operation,
+                span,
                 #[cfg(windows)]
                 overlapped,
                 tail: sequencer.clone(),
@@ -3796,6 +3858,7 @@ mod tests {
                     offset: 0,
                     length: 1,
                 }],
+                span: obs::OperationSpan::new(tracing::Span::none()),
                 #[cfg(windows)]
                 overlapped: false,
                 tail: None,

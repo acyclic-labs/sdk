@@ -1297,23 +1297,8 @@ fn checked_js_string(value: JsValue, field: &str) -> Result<String, JsValue> {
     let js_value: js_sys::JsString = value
         .dyn_into()
         .map_err(|_| JsValue::from_str(&format!("{field} must be a string")))?;
-    let length = js_value.length();
-    let mut index = 0;
-    while index < length {
-        let code_unit = js_value.char_code_at(index);
-        if (f64::from(0xd800)..=f64::from(0xdbff)).contains(&code_unit) {
-            let next = index + 1;
-            if next >= length
-                || !(f64::from(0xdc00)..=f64::from(0xdfff)).contains(&js_value.char_code_at(next))
-            {
-                return Err(JsValue::from_str(&format!("{field} is invalid")));
-            }
-            index += 2;
-        } else if (f64::from(0xdc00)..=f64::from(0xdfff)).contains(&code_unit) {
-            return Err(JsValue::from_str(&format!("{field} is invalid")));
-        } else {
-            index += 1;
-        }
+    if !js_value.is_valid_utf16() {
+        return Err(JsValue::from_str(&format!("{field} is invalid")));
     }
     js_value
         .as_string()

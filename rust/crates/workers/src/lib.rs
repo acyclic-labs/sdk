@@ -311,13 +311,90 @@ mod tests {
         }
     }
 
+    /// Serves one RPC whose OK headers precede a 50 ms body ending in an UNAVAILABLE trailer.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn slow_status_server() -> std::io::Result<std::net::SocketAddr> {
+        use std::{future::Future as _, pin::Pin, task::Poll};
+
+        #[derive(Clone)]
+        struct SlowStatus;
+        impl tonic::server::NamedService for SlowStatus {
+            const NAME: &'static str = "acyclic.workers.v1.WorkersService";
+        }
+        impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for SlowStatus {
+            type Response = tonic::codegen::http::Response<tonic::body::Body>;
+            type Error = std::convert::Infallible;
+            type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+            fn poll_ready(
+                &mut self,
+                _: &mut std::task::Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+            fn call(
+                &mut self,
+                _: tonic::codegen::http::Request<tonic::body::Body>,
+            ) -> Self::Future {
+                let sleep = tokio::time::sleep(std::time::Duration::from_millis(50));
+                let body = tonic::body::Body::new(Trailers(Some(Box::pin(sleep))));
+                std::future::ready(Ok(tonic::codegen::http::Response::new(body)))
+            }
+        }
+        struct Trailers(Option<Pin<Box<tokio::time::Sleep>>>);
+        impl http_body::Body for Trailers {
+            type Data = tonic::codegen::Bytes;
+            type Error = std::convert::Infallible;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                let Some(sleep) = self.0.as_mut() else {
+                    return Poll::Ready(None);
+                };
+                std::task::ready!(sleep.as_mut().poll(cx));
+                self.0 = None;
+                let mut trailers = tonic::codegen::http::HeaderMap::new();
+                trailers.insert("grpc-status", 14.into());
+                Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+            }
+        }
+        let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
+        let address = incoming.local_addr()?;
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(SlowStatus)
+                .serve_with_incoming(incoming),
+        );
+        Ok(address)
+    }
+
+    /// Sends one empty request through a fresh [`grpc::TracedChannel`].
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn traced_call(
+        address: std::net::SocketAddr,
+        rpc: &str,
+    ) -> Result<tonic::codegen::http::Response<tonic::body::Body>, Box<dyn std::error::Error>> {
+        use tonic::codegen::Service as _;
+        let mut channel = grpc::TracedChannel(
+            tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
+        );
+        std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
+        let request = tonic::codegen::http::Request::builder()
+            .uri(format!(
+                "http://{address}/acyclic.workers.v1.WorkersService/{rpc}"
+            ))
+            .body(tonic::body::Body::empty())?;
+        Ok(channel.call(request).await?)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn client_calls_emit_spans_without_credentials() -> Result<(), Box<dyn std::error::Error>>
     {
+        use http_body::Body as _;
+        use std::pin::Pin;
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        use tonic::codegen::Service as _;
         use tracing_subscriber::layer::{Context, SubscriberExt as _};
 
         type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
@@ -349,6 +426,10 @@ mod tests {
             ) {
                 values.record(&mut Fields(ctx.span(id).unwrap().name(), &self.0));
             }
+            fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
+                let name = ctx.span(&id).unwrap().name();
+                self.0.lock().unwrap().push((name, "closed", String::new()));
+            }
         }
         // A second live dispatcher keeps callsites consulting this test's subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
@@ -375,16 +456,22 @@ mod tests {
             client.submit_job(&wire::SubmitJobRequest::default()).await,
             Err(http::Error::Service { status: 503, .. })
         ));
-        let mut channel = grpc::TracedChannel(
-            tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
-        );
-        std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
-        let request = tonic::codegen::http::Request::builder()
-            .uri(format!(
-                "http://{address}/acyclic.workers.v1.WorkersService/SubmitJob"
-            ))
-            .body(tonic::body::Body::empty())?;
-        assert!(channel.call(request).await.is_err());
+        assert!(traced_call(address, "SubmitJob").await.is_err());
+
+        // The span stays open while a slow body runs and records a status sent in trailers.
+        let address = slow_status_server().await?;
+        let mut body = traced_call(address, "GetJob").await?.into_body();
+        let grpc_closed = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, f, _)| (*s, *f) == ("acyclic.workers.grpc.call", "closed"))
+                .count()
+        };
+        assert_eq!(grpc_closed(), 1);
+        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+        assert!(frame.is_some_and(|frame| frame.is_ok_and(|frame| frame.is_trailers())));
+        assert_eq!(grpc_closed(), 2);
 
         let seen = seen.lock().unwrap();
         for expected in [
@@ -397,6 +484,8 @@ mod tests {
             ("acyclic.workers.http.call", "error.kind", "service"),
             ("acyclic.workers.grpc.call", "rpc", "SubmitJob"),
             ("acyclic.workers.grpc.call", "error.kind", "transport"),
+            ("acyclic.workers.grpc.call", "rpc.code", "14"),
+            ("acyclic.workers.grpc.call", "error.kind", "status"),
         ] {
             assert!(
                 seen.iter()

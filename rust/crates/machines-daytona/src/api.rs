@@ -282,18 +282,20 @@ impl DaytonaApi {
         self.authorized(self.http.request(method, format!("{}{path}", self.base)))
     }
 
-    /// Sends one Daytona call, `op` naming it in its `acyclic.machines.daytona.call` span.
+    /// Sends one Daytona call, `op` naming it in its `acyclic.machines.daytona.call` span,
+    /// which records the result after `decode` reads a successful body.
     #[tracing::instrument(
         name = "acyclic.machines.daytona.call",
         level = "info",
         skip_all,
         fields(op = op, http.status = Empty, outcome = Empty, error.kind = Empty)
     )]
-    async fn send(
+    async fn send<T>(
         &self,
         op: &'static str,
         builder: RequestBuilder,
-    ) -> Result<Vec<u8>, ProviderError> {
+        decode: impl FnOnce(Vec<u8>) -> Result<T, ProviderError> + Send,
+    ) -> Result<T, ProviderError> {
         let result = async {
             let response = builder
                 .send()
@@ -306,7 +308,7 @@ impl DaytonaApi {
                 .await
                 .map_err(|error| transport_error(&error))?;
             if status.is_success() {
-                Ok(body.into())
+                decode(body.into())
             } else {
                 Err(status_error(status, &String::from_utf8_lossy(&body)))
             }
@@ -327,19 +329,21 @@ impl DaytonaApi {
         op: &'static str,
         builder: RequestBuilder,
     ) -> Result<T, ProviderError> {
-        let body = self.send(op, builder).await?;
-        serde_json::from_slice(&body).map_err(|error| {
-            tracing::warn!(
-                op,
-                body_len = body.len(),
-                "Daytona response did not match the expected shape"
-            );
-            ProviderError::Rejected(format!("Daytona response shape: {error}"))
+        self.send(op, builder, |body| {
+            serde_json::from_slice(&body).map_err(|error| {
+                tracing::warn!(
+                    op,
+                    body_len = body.len(),
+                    "Daytona response did not match the expected shape"
+                );
+                ProviderError::Rejected(format!("Daytona response shape: {error}"))
+            })
         })
+        .await
     }
 
     async fn empty(&self, op: &'static str, builder: RequestBuilder) -> Result<(), ProviderError> {
-        self.send(op, builder).await.map(|_| ())
+        self.send(op, builder, |_| Ok(())).await
     }
 
     /// Creates a sandbox: `POST /sandbox` with a [`CreateSandboxRequest`]. Live-verified.
@@ -624,7 +628,7 @@ impl DaytonaApi {
     ) -> Result<Vec<u8>, ProviderError> {
         let url = self.toolbox_url(sandbox_id, "files/download").await?;
         let request = self.authorized(self.http.get(url).query(&[("path", path)]));
-        self.send("download_file", request).await
+        self.send("download_file", request, Ok).await
     }
 
     /// Writes one file through a sandbox's toolbox proxy:
