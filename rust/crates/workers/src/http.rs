@@ -27,8 +27,10 @@ pub enum Error {
     Service {
         /// HTTP response status.
         status: u16,
-        /// Canonical semantic error detail.
+        /// Decoded wire error, including service codes unknown to this SDK.
         detail: Option<wire::Error>,
+        /// Exact response body, including empty or malformed error payloads.
+        raw_details: Vec<u8>,
     },
 }
 
@@ -196,13 +198,11 @@ impl Client {
             let detail = self
                 .decode::<wire::Error>("acyclic.workers.v1.Error", &bytes)
                 .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
+                .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
             return Err(Error::Service {
                 status: status.as_u16(),
                 detail,
+                raw_details: bytes,
             });
         }
         self.decode(output, &bytes)

@@ -72,6 +72,104 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
+    fn grpc_service_details_retain_future_codes_and_original_status() {
+        use prost::Message as _;
+        for code in [1, 99, -7] {
+            let detail = wire::Error {
+                code,
+                message: "quota 100%: caf\u{e9} / %25".into(),
+            };
+            let bytes = detail.encode_to_vec();
+            let status = tonic::Status::with_details(
+                tonic::Code::PermissionDenied,
+                "denied 100%: caf\u{e9} %25",
+                bytes.clone().into(),
+            );
+            assert_eq!(grpc::error_detail(&status), Some(detail));
+            assert_eq!(status.message(), "denied 100%: caf\u{e9} %25");
+            assert_eq!(status.details(), bytes);
+            assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        }
+        for bytes in [
+            Vec::new(),
+            vec![255],
+            wire::Error {
+                code: 0,
+                message: "unspecified".into(),
+            }
+            .encode_to_vec(),
+        ] {
+            let status =
+                tonic::Status::with_details(tonic::Code::Unknown, "original", bytes.clone().into());
+            assert_eq!(grpc::error_detail(&status), None);
+            assert_eq!(status.details(), bytes);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn http_service_details_retain_body_codes_and_bounds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let message = "quota 100%: caf\u{e9} / %25";
+        let mut cases = vec![
+            (Vec::new(), None),
+            (b"not JSON %25".to_vec(), None),
+            (vec![255], None),
+            (br#"{"code":0,"message":"unspecified"}"#.to_vec(), None),
+        ];
+        for code in [1, 99, -7] {
+            cases.push((
+                serde_json::to_vec(&serde_json::json!({ "code": code, "message": message }))?,
+                Some(code),
+            ));
+        }
+        for (body, expected_code) in cases {
+            for maximum in [body.len().max(1), 1] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+                let address = listener.local_addr()?;
+                let sent = body.clone();
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await?;
+                    let mut request = [0; 4096];
+                    stream.read(&mut request).await?;
+                    let mut response = format!("HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", sent.len()).into_bytes();
+                    response.extend_from_slice(&sent);
+                    stream.write_all(&response).await?;
+                    Ok::<_, std::io::Error>(())
+                });
+                let client = http::Client::new(&format!("http://{address}"), "secret", maximum)?;
+                let error = client
+                    .inspect_job(&wire::InspectJobRequest {
+                        job_id: "job".into(),
+                    })
+                    .await
+                    .unwrap_err();
+                server.await??;
+                if body.len() > maximum {
+                    assert!(matches!(error, http::Error::ResponseTooLarge));
+                } else {
+                    let http::Error::Service {
+                        status,
+                        detail,
+                        raw_details,
+                    } = error
+                    else {
+                        panic!("expected service error")
+                    };
+                    assert_eq!(status, 503);
+                    assert_eq!(raw_details, body);
+                    assert_eq!(detail.as_ref().map(|value| value.code), expected_code);
+                    if let Some(detail) = detail {
+                        assert_eq!(detail.message, message);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn alias_selection_requires_positive_revision_when_present() {
         let mut request = wire::SelectDeploymentRequest {
             alias: "current".into(),

@@ -221,9 +221,9 @@ pub async fn connect_with_ca_certificate(
     )
 }
 
-/// Decode the canonical semantic error carried in gRPC status details.
+/// Decode the wire error carried in gRPC status details, retaining unknown codes.
 #[must_use]
 pub fn error_detail(status: &Status) -> Option<wire::Error> {
     let detail = wire::Error::decode(status.details()).ok()?;
-    (wire::ErrorCode::try_from(detail.code).ok()? != wire::ErrorCode::Unspecified).then_some(detail)
+    (detail.code != wire::ErrorCode::Unspecified as i32).then_some(detail)
 }
