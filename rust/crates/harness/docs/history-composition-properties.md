@@ -571,3 +571,67 @@ test type checks passed. Generated consumers passed 25 tests/195 expectations in
 `target-b-browser-default-complete-history.log`. The new main commit
 `0db1466cd0f2aef5327d3a81c0bae7cdad22a6bd` was fetched after these source pins;
 these receipts do not qualify that upcoming merge.
+
+
+## Native default canonical continuation
+
+The native memory composition now materializes its latest committed canonical
+checkpoint and selects the exact indexed delta. The pointer is maintained by
+replay of existing selection events. First-step response capture stages its raw
+canonical base independently from ordered stage transformations. Under pressure,
+Stock v6 summarizes that base through the existing admitted summary path, stages
+its retained base/proof envelope, reruns the stages, validates final capacity and
+pins the exact transformed request/accounting. Existing prepared/compacted event
+schemas are unchanged; their private projection payload separates these values.
+No historical payload adapter is added. Already admitted supported requests still
+recover their exact retained bytes.
+
+After successful execution, the memory owner publishes the pin through its
+existing selection action before the assistant closes the turn. Lost publication
+acknowledgements compare the exact committed selection; retries of old operations
+do not republish an older pin. Public journal-mediated lookup/materialization
+functions expose the same mechanism to custom callers. Materialization verifies
+committed execution publication, source/retained compaction proof and current
+read admission for all retained file and metadata payloads. It loads only the
+current envelope and bounded payloads, not the lifetime checkpoint chain.
+
+The real default-path fixture executes ten turns while the message bound is
+eight. Its arbitrary reordering/input-dependent stage contributes one fresh
+instruction per response, explicit instruction reload applies to future turns,
+and source/retained bases contain no stage instructions. Exact retry calls
+neither the model nor stages. A separate real-journal fault fixture commits
+compaction then loses its acknowledgement: the next turn remains blocked,
+recovery admits one response with one summary and no recount/stage replay,
+and normal continuation succeeds afterward. It also rejects a denied retained
+payload read and an unpublished envelope. These fixtures qualify the described
+native default path; they are not cold-restoration, 10,000-turn performance,
+constant-memory or automatic browser-model qualifications.
+
+Final strict native lint passed in
+`target-b-clippy-default-canonical-continuation-owner-negatives.log`; final strict
+WASM lint passed in
+`target-b-clippy-default-canonical-continuation-grants-wasm.log`. The final library
+and fork run passed 272 plus two tests in
+`target-b-native-default-canonical-continuation-grants.log`; all seven continuation
+tests, including owner-read/publication negatives, passed in
+`target-b-native-default-canonical-continuation-owner-negatives.log`. Fresh isolated
+generation passed in `target-b-wasm-default-canonical-continuation-grants.log`,
+and four installed artifact hashes are recorded in
+`target/b-default-canonical-continuation-artifact-hashes.json`. Package and test
+types passed in `target-b-types-default-canonical-continuation.log`; the complete
+Harness Bun suite passed 248 tests/1347 expectations in
+`target-b-bun-default-canonical-continuation.log`. Chromium passed the wire page
+and 54 pure compaction checks in
+`target-b-browser-default-canonical-continuation.log`.
+
+Qualification remains incomplete. In addition to browser default integration,
+bounded cold hydration, fork policies, 10,000-turn performance and full release
+gates, arbitrary custom checkpoint publication needs a stronger admission audit
+binding the canonical source to its committed selection and prior covered base.
+The healthy default producer already constructs that source through verified
+selection/materialization; metadata-only publication membership is not itself
+proof against an independently fabricated source/coverage claim. Do not treat
+these passing fixtures as closure of that owner-admission requirement. Private
+checkpoint JSON currently loads through the journal's own volume binding;
+portable direct-parent checkpoint reads require the appropriate owner-mediated
+content path rather than weakening that boundary.

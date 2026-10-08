@@ -512,11 +512,46 @@ pub struct StockExecutor {
     compaction: crate::context::CompactionPolicy,
 }
 
+/// Journal payload separating canonical history from the exact transformed request.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResponseProjection {
+    context: crate::context::Context,
+    canonical: Option<FileRef>,
+    checkpoint: Option<FileRef>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextAccounting {
     capacity: crate::context::ModelContextCapacity,
     count: crate::context::ModelTokenCount,
+}
+
+fn checked_compaction_budget(
+    policy: &crate::context::ThresholdCompaction,
+    context: &crate::context::Context,
+    count: &crate::context::ModelTokenCount,
+    capacity: crate::context::ModelContextCapacity,
+) -> Result<(usize, usize)> {
+    let (through, maximum) = policy.projection_budget(context, count)?;
+    let mandatory_tokens = crate::context::mandatory_positions(context, through, &policy.retention)
+        .iter()
+        .try_fold(u64::from(count.fixed_tokens), |total, position| {
+            let tokens = count
+                .message_tokens
+                .get(*position)
+                .ok_or_else(|| Error::Invalid("mandatory token position is missing".into()))?;
+            total
+                .checked_add(u64::from(*tokens))
+                .ok_or_else(|| Error::Invalid("mandatory token count overflows".into()))
+        })?;
+    if policy.needs_compaction(capacity, mandatory_tokens)? {
+        return Err(Error::Invalid(
+            "mandatory content exceeds selected model capacity".into(),
+        ));
+    }
+    Ok((through, maximum))
 }
 
 impl StockExecutor {
@@ -973,7 +1008,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         let mut request = json!({
-            "executor": "acyclic.stock.v5",
+            "executor": "acyclic.stock.v6",
             "input": input,
             "model": self.model,
             "max_output_tokens": self.max_output_tokens,
@@ -1139,17 +1174,67 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::context::Context> {
+        let context_input = ContextInput {
+            input: input.input.clone(),
+            selected_context: input.selected_context.clone(),
+            step,
+            prior_messages: prior_messages.to_vec(),
+        };
+        let base = ContextPipeline::base_context(&context_input, self.limits)?;
+        self.transform_projection(&context_input, base).await
+    }
+
+    async fn canonical_base(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<crate::context::Context> {
+        let mut context_input = ContextInput {
+            input: input.input.clone(),
+            selected_context: input.selected_context.clone(),
+            step,
+            prior_messages: prior_messages.to_vec(),
+        };
+        let checkpoint = context_input
+            .selected_context
+            .as_mut()
+            .and_then(|selected| selected.selection.checkpoint.take());
+        let delta = ContextPipeline::base_context(&context_input, self.limits)?;
+        let Some(reference) = checkpoint else {
+            return Ok(delta);
+        };
+        let (envelope, mut retained) =
+            load_canonical_checkpoint(journal, &reference, self.limits).await?;
+        let selected = input
+            .selected_context
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("checkpoint has no canonical delta".into()))?;
+        if selected.selection.conversation_revision <= envelope.selection.conversation_revision {
+            return Err(Error::Conflict(
+                "checkpoint covers the new turn input".into(),
+            ));
+        }
+        let prefix = u32::try_from(retained.messages.len()).map_err(|_| {
+            Error::Invalid("checkpoint message count exceeds portable index".into())
+        })?;
+        retained.current_input_index = delta
+            .current_input_index
+            .and_then(|index| prefix.checked_add(index));
+        retained.messages.extend(delta.messages);
+        crate::context::validate_projected_context(&retained, self.limits)?;
+        Ok(retained)
+    }
+
+    async fn transform_projection(
+        &self,
+        input: &ContextInput,
+        base: crate::context::Context,
+    ) -> Result<crate::context::Context> {
         let mut context = self
             .context
-            .run_bounded(
-                &ContextInput {
-                    input: input.input.clone(),
-                    selected_context: input.selected_context.clone(),
-                    step,
-                    prior_messages: prior_messages.to_vec(),
-                },
-                self.limits,
-            )
+            .transform_bounded(input, base, self.limits)
             .await?;
         let request = self.request_from_context(&context)?;
         let prepared = if let Some((prefix, verifier)) = &self.inherited_prefix {
@@ -1204,8 +1289,26 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
         tail: u64,
-    ) -> Result<(crate::context::Context, Option<ContextAccounting>)> {
-        let projection = self.prepare_projection(input, step, prior_messages).await?;
+    ) -> Result<(ResponseProjection, Option<ContextAccounting>)> {
+        let base = self
+            .canonical_base(journal, input, step, prior_messages)
+            .await?;
+        let canonical = if step == 0 && input.selected_context.is_some() {
+            Some(stage_json(journal, input.operation_id, "context:0:canonical", &base).await?)
+        } else {
+            None
+        };
+        let projection = self
+            .transform_projection(
+                &ContextInput {
+                    input: input.input.clone(),
+                    selected_context: input.selected_context.clone(),
+                    step,
+                    prior_messages: prior_messages.to_vec(),
+                },
+                base,
+            )
+            .await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
             let prepared = crate::model::PreparedModelRequest::prepare(
                 self.request_from_context(&projection)?,
@@ -1216,6 +1319,11 @@ impl StockExecutor {
             Some(ContextAccounting { capacity, count })
         } else {
             None
+        };
+        let projection = ResponseProjection {
+            context: projection,
+            canonical,
+            checkpoint: None,
         };
         let reference = stage_json(
             journal,
@@ -1283,7 +1391,7 @@ impl StockExecutor {
                     .await?
             }
             [(reference, accounting)] => (
-                load_json::<crate::context::Context>(journal, reference).await?,
+                load_json::<ResponseProjection>(journal, reference).await?,
                 match accounting {
                     Some(reference) => {
                         Some(load_json::<ContextAccounting>(journal, reference).await?)
@@ -1297,14 +1405,19 @@ impl StockExecutor {
                 ));
             }
         };
-        crate::context::validate_projected_context(&projection, self.limits)?;
-        if projection.current_input_index.is_none() {
+        crate::context::validate_projected_context(&projection.context, self.limits)?;
+        if projection.checkpoint.is_some() {
+            return Err(Error::Storage(
+                "prepared context contains a later checkpoint".into(),
+            ));
+        }
+        if projection.context.current_input_index.is_none() {
             return Err(Error::Storage(
                 "prepared response projection differs from its request".into(),
             ));
         }
         let prepared = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(&projection)?,
+            self.request_from_context(&projection.context)?,
             self.limits,
         )?;
         match (&self.compaction, accounting) {
@@ -1339,7 +1452,7 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        projection: &crate::context::Context,
+        projection: &ResponseProjection,
         records: &[ExecutionRecord],
     ) -> Result<Option<crate::model::PreparedModelRequest>> {
         let compacted = records
@@ -1355,12 +1468,47 @@ impl StockExecutor {
             })
             .collect::<Vec<_>>();
         if let [(retained, proof, final_accounting)] = compacted.as_slice() {
-            let retained = load_json::<crate::context::Context>(journal, retained).await?;
+            let retained = load_json::<ResponseProjection>(journal, retained).await?;
             let proof = load_json::<crate::context::CompactionReference>(journal, proof).await?;
             let final_accounting =
                 load_json::<ContextAccounting>(journal, final_accounting).await?;
-            crate::context::validate_projected_context(&retained, self.limits)?;
-            crate::context::validate_compaction(&proof, projection, &retained)?;
+            crate::context::validate_projected_context(&retained.context, self.limits)?;
+            if retained.canonical != projection.canonical {
+                return Err(Error::Storage("compacted canonical source changed".into()));
+            }
+            if let Some(checkpoint) = &retained.checkpoint {
+                let envelope =
+                    load_json::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint)
+                        .await?;
+                envelope.validate(self.limits)?;
+                let source =
+                    load_json::<crate::context::Context>(journal, &envelope.source).await?;
+                let base =
+                    load_json::<crate::context::Context>(journal, &envelope.retained).await?;
+                envelope.validate_projection(&source, &base, &proof, self.limits)?;
+                if projection.canonical.as_ref() != Some(&envelope.source)
+                    || envelope.operation_id != input.operation_id
+                    || input
+                        .selected_context
+                        .as_ref()
+                        .is_none_or(|selected| selected.selection != envelope.selection)
+                {
+                    return Err(Error::Storage(
+                        "canonical checkpoint differs from captured selection".into(),
+                    ));
+                }
+            } else {
+                if projection.canonical.is_some() {
+                    return Err(Error::Storage(
+                        "compacted canonical source has no checkpoint".into(),
+                    ));
+                }
+                crate::context::validate_compaction(
+                    &proof,
+                    &projection.context,
+                    &retained.context,
+                )?;
+            }
             let crate::context::CompactionPolicy::Threshold(policy) = &self.compaction else {
                 return Err(Error::Storage(
                     "compacted context requires threshold policy".into(),
@@ -1377,7 +1525,7 @@ impl StockExecutor {
                 ));
             }
             let request = crate::model::PreparedModelRequest::prepare(
-                self.request_from_context(&retained)?,
+                self.request_from_context(&retained.context)?,
                 self.limits,
             )?;
             if policy.needs_compaction(
@@ -1403,37 +1551,28 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        context: crate::context::Context,
+        projection: ResponseProjection,
         accounting: ContextAccounting,
     ) -> Result<crate::model::PreparedModelRequest> {
         let crate::context::CompactionPolicy::Threshold(policy) = &self.compaction else {
             return Err(Error::Invalid("automatic compaction is disabled".into()));
         };
-        let (through, maximum) = policy.projection_budget(&context, &accounting.count)?;
-        let mandatory_tokens =
-            crate::context::mandatory_positions(&context, through, &policy.retention)
-                .iter()
-                .try_fold(
-                    u64::from(accounting.count.fixed_tokens),
-                    |total, position| {
-                        let tokens =
-                            accounting
-                                .count
-                                .message_tokens
-                                .get(*position)
-                                .ok_or_else(|| {
-                                    Error::Invalid("mandatory token position is missing".into())
-                                })?;
-                        total
-                            .checked_add(u64::from(*tokens))
-                            .ok_or_else(|| Error::Invalid("mandatory token count overflows".into()))
-                    },
-                )?;
-        if policy.needs_compaction(accounting.capacity, mandatory_tokens)? {
-            return Err(Error::Invalid(
-                "mandatory content exceeds selected model capacity".into(),
-            ));
-        }
+        let context = match &projection.canonical {
+            Some(reference) => load_json::<crate::context::Context>(journal, reference).await?,
+            None => projection.context.clone(),
+        };
+        let canonical_request = crate::model::PreparedModelRequest::prepare(
+            self.request_from_context(&context)?,
+            self.limits,
+        )?;
+        let count = if projection.canonical.is_some() {
+            self.provider.count_tokens(&canonical_request)?
+        } else {
+            accounting.count.clone()
+        };
+        count.validate(&canonical_request)?;
+        let (through, maximum) =
+            checked_compaction_budget(policy, &context, &count, accounting.capacity)?;
         let mut source = context.clone();
         source.messages.truncate(through);
         source.current_input_index = source
@@ -1456,8 +1595,37 @@ impl StockExecutor {
             &reference,
         )
         .await?;
+        let checkpoint = self
+            .stage_canonical_checkpoint(
+                journal,
+                input,
+                projection.canonical.as_ref(),
+                &context,
+                &compacted,
+                &compaction,
+            )
+            .await?;
+        let compacted = if checkpoint.is_some() {
+            self.transform_projection(
+                &ContextInput {
+                    input: input.input.clone(),
+                    selected_context: input.selected_context.clone(),
+                    step,
+                    prior_messages: Vec::new(),
+                },
+                compacted,
+            )
+            .await?
+        } else {
+            compacted
+        };
+        let compacted = ResponseProjection {
+            context: compacted,
+            canonical: projection.canonical,
+            checkpoint,
+        };
         let request = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(&compacted)?,
+            self.request_from_context(&compacted.context)?,
             self.limits,
         )?;
         let count = self.provider.count_tokens(&request)?;
@@ -1482,12 +1650,57 @@ impl StockExecutor {
         Ok(request)
     }
 
+    async fn stage_canonical_checkpoint(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        source: Option<&FileRef>,
+        context: &crate::context::Context,
+        compacted: &crate::context::Context,
+        compaction: &FileRef,
+    ) -> Result<Option<FileRef>> {
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        let selection = input
+            .selected_context
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("canonical compaction has no selected history".into()))?
+            .selection
+            .clone();
+        let retained = stage_json(
+            journal,
+            input.operation_id,
+            "context:0:canonical-retained",
+            compacted,
+        )
+        .await?;
+        let envelope = crate::context::CanonicalContextCheckpoint {
+            operation_id: input.operation_id,
+            selection,
+            source: source.clone(),
+            retained,
+            compaction: compaction.clone(),
+        };
+        let proof = load_json::<crate::context::CompactionReference>(journal, compaction).await?;
+        envelope.validate_projection(context, compacted, &proof, self.limits)?;
+        Ok(Some(
+            stage_json(
+                journal,
+                input.operation_id,
+                "context:0:checkpoint",
+                &envelope,
+            )
+            .await?,
+        ))
+    }
+
     async fn publish_compacted_context(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        compacted: &crate::context::Context,
+        compacted: &ResponseProjection,
         compaction: FileRef,
         accounting: &ContextAccounting,
     ) -> Result<()> {
@@ -2631,6 +2844,105 @@ fn validate_model_content_scope(
         }
     }
     Ok(())
+}
+
+/// Finds the canonical base published by this execution's first response step.
+/// The existing journal owns temporal admission; this checks the payload bindings.
+pub async fn canonical_checkpoint_for_operation(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    limits: Limits,
+) -> Result<Option<FileRef>> {
+    let (_, records) = replay_execution(journal, operation_id, 1, |event| {
+        matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. })
+    })
+    .await?;
+    let Some(record) = records.first() else {
+        return Ok(None);
+    };
+    let ExecutionEvent::ContextCompacted {
+        projection,
+        compaction,
+        ..
+    } = &record.event
+    else {
+        return Err(Error::Storage(
+            "canonical publication event is invalid".into(),
+        ));
+    };
+    limits.validate_file(projection)?;
+    let projection = load_json::<ResponseProjection>(journal, projection).await?;
+    crate::context::validate_projected_context(&projection.context, limits)?;
+    let Some(reference) = projection.checkpoint else {
+        if projection.canonical.is_some() {
+            return Err(Error::Storage(
+                "canonical publication has no checkpoint".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    limits.validate_file(&reference)?;
+    let envelope =
+        load_json::<crate::context::CanonicalContextCheckpoint>(journal, &reference).await?;
+    envelope.validate(limits)?;
+    if envelope.operation_id != operation_id
+        || projection.canonical.as_ref() != Some(&envelope.source)
+        || &envelope.compaction != compaction
+    {
+        return Err(Error::Storage(
+            "checkpoint differs from its committed publication".into(),
+        ));
+    }
+    Ok(Some(reference))
+}
+
+/// Materializes only this published checkpoint, never its lifetime chain.
+pub async fn load_canonical_checkpoint(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+) -> Result<(
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::Context,
+)> {
+    limits.validate_file(reference)?;
+    let envelope =
+        load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference).await?;
+    envelope.validate(limits)?;
+    if canonical_checkpoint_for_operation(journal, envelope.operation_id, limits)
+        .await?
+        .as_ref()
+        != Some(reference)
+    {
+        return Err(Error::Conflict(
+            "checkpoint is not published by its owning execution".into(),
+        ));
+    }
+    let source = load_json::<crate::context::Context>(journal, &envelope.source).await?;
+    let retained = load_json::<crate::context::Context>(journal, &envelope.retained).await?;
+    let proof =
+        load_json::<crate::context::CompactionReference>(journal, &envelope.compaction).await?;
+    envelope.validate_projection(&source, &retained, &proof, limits)?;
+    // Publication authenticates the checkpoint; a new admission must still
+    // hold current owner-mediated read grants for every retained payload.
+    for message in &retained.messages {
+        for file in message.content.file_refs() {
+            journal.verify_input_file(file).await?;
+        }
+    }
+    for file in retained.metadata.values() {
+        journal.verify_input_file(file).await?;
+    }
+    if proof
+        .summary
+        .as_ref()
+        .is_none_or(|summary| summary.step != 0)
+    {
+        return Err(Error::Storage(
+            "canonical checkpoint summary belongs to another step".into(),
+        ));
+    }
+    Ok((envelope, retained))
 }
 
 async fn load_model_request(

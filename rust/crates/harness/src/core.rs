@@ -1484,6 +1484,7 @@ pub struct Reducer {
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
     context_selections: Vec<ModelContextSelection>,
+    latest_context_checkpoint: Option<FileRef>,
     interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
 }
 
@@ -1512,6 +1513,7 @@ impl Reducer {
             published_merges: BTreeSet::new(),
             conversation: ConversationState::default(),
             context_selections: Vec::new(),
+            latest_context_checkpoint: None,
             interactions: BTreeMap::new(),
         }
     }
@@ -1698,6 +1700,12 @@ impl Reducer {
     #[must_use]
     pub fn context_selections(&self) -> &[ModelContextSelection] {
         &self.context_selections
+    }
+
+    /// Latest owner-published canonical base, maintained by selection replay.
+    #[must_use]
+    pub fn latest_context_checkpoint(&self) -> Option<&FileRef> {
+        self.latest_context_checkpoint.as_ref()
     }
 
     /// Returns the exact selection committed for one operation, even after
@@ -2856,6 +2864,9 @@ impl Reducer {
             EventPayload::ModelContextSelected { selection } => {
                 self.require_conversation()?;
                 selection.validate(&self.conversation)?;
+                if let Some(checkpoint) = &selection.checkpoint {
+                    self.latest_context_checkpoint = Some(checkpoint.clone());
+                }
                 self.context_selections.push(selection.clone());
             }
             EventPayload::InteractionOpened { ticket } => {

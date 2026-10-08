@@ -32,6 +32,7 @@ struct StoredContent(Arc<MemoryHarnessStorage>);
 #[derive(Default)]
 struct SummaryModel {
     requests: Mutex<Vec<PreparedModelRequest>>,
+    counts: std::sync::atomic::AtomicUsize,
 }
 
 impl ModelProvider for SummaryModel {
@@ -43,6 +44,7 @@ impl ModelProvider for SummaryModel {
     }
 
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+        self.counts.fetch_add(1, Ordering::SeqCst);
         // This synthetic provider declares byte units including referenced
         // bodies, serialized descriptors and a fixed framing allowance.
         let message_tokens = request
@@ -599,5 +601,415 @@ async fn checkpoint_envelope_binds_real_published_context_and_admitted_summary()
             .ok_or_else(|| Error::Invalid("missing published proof".into()))?,
         Limits::default(),
     )?;
+    Ok(())
+}
+
+struct InputDependentStage {
+    revision: u32,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl acyclic_harness::context::ContextStage for InputDependentStage {
+    fn name(&self) -> &str {
+        "input-dependent"
+    }
+    fn contract(&self) -> serde_json::Value {
+        serde_json::json!({ "name": self.name(), "revision": self.revision })
+    }
+    fn apply<'a>(
+        &'a self,
+        input: &'a acyclic_harness::context::ContextInput,
+        mut context: Context,
+    ) -> BoxProviderFuture<'a, Result<Context>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            context.messages.push(ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(format!(
+                    "stage:{}:{}",
+                    self.revision,
+                    serde_json::to_string(&input.input)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                )),
+            });
+            context.messages.reverse();
+            let length = u32::try_from(context.messages.len())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            context.current_input_index =
+                context.current_input_index.map(|index| length - 1 - index);
+            Ok(context)
+        })
+    }
+}
+
+fn assert_fresh_stage_requests(provider: &SummaryModel, limits: Limits) -> usize {
+    let requests = provider
+        .requests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let responses = requests
+        .iter()
+        .filter(|request| {
+            request
+                .request()
+                .messages
+                .iter()
+                .any(|message| message.role == ModelRole::System)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(responses.len(), 10);
+    for (turn, request) in responses.iter().enumerate() {
+        let systems = request
+            .request()
+            .messages
+            .iter()
+            .filter(|message| message.role == ModelRole::System)
+            .collect::<Vec<_>>();
+        assert_eq!(systems.len(), 1);
+        let expected = if turn < 5 { "stage:1:" } else { "stage:2:" };
+        assert!(
+            matches!(systems.first().map(|message| &message.content), Some(ModelContent::Text(text)) if text.starts_with(expected))
+        );
+        assert!(request.request().messages.len() <= limits.context_messages);
+    }
+    assert!(requests.len() > responses.len());
+    requests.len()
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one default-path history, reload, replay and publication qualification sequence"
+)]
+async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+    let provider = Arc::new(SummaryModel::default());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let limits = Limits {
+        context_messages: 8,
+        ..Limits::default()
+    };
+    let model = Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?;
+    let mut pipeline = ContextPipeline::new([Arc::new(InputDependentStage {
+        revision: 1,
+        calls: calls.clone(),
+    })
+        as Arc<dyn acyclic_harness::context::ContextStage>]);
+    let build = |pipeline| {
+        storage
+            .builder()
+            .model(model.clone(), provider.clone())
+            .grant("model:generate")
+            .context(pipeline)
+            .limits(limits)
+            .build()
+    };
+    let mut bundle = build(pipeline.clone())?;
+    let mut operations = Vec::new();
+    for turn in 0..10 {
+        if turn == 5 {
+            pipeline = pipeline.reload(ContextPipeline::new([Arc::new(InputDependentStage {
+                revision: 2,
+                calls: calls.clone(),
+            })
+                as Arc<dyn acyclic_harness::context::ContextStage>]))?;
+            bundle = build(pipeline.clone())?;
+        }
+        let operation = OperationId::new();
+        let file = storage
+            .stage(
+                operation,
+                &format!("turns/{operation}/input.txt"),
+                "q".repeat(60_000).as_bytes(),
+                "text/plain",
+                "input.txt",
+            )
+            .await?;
+        let output = storage
+            .run_conversation(&bundle, operation, file.clone(), Vec::new(), 1)
+            .await?;
+        operations.push((operation, file, output));
+    }
+    // Twenty canonical records exceed the eight-message model bound. This is a
+    // live default-path fixture, not cold restoration or constant-memory proof.
+    let generated = assert_fresh_stage_requests(&provider, limits);
+    let stage_calls = calls.load(Ordering::SeqCst);
+    let (operation, file, expected) = operations
+        .last()
+        .ok_or_else(|| Error::Invalid("no completed default turn".into()))?;
+    assert_eq!(
+        &storage
+            .run_conversation(&bundle, *operation, file.clone(), Vec::new(), 1)
+            .await?,
+        expected
+    );
+    assert_eq!(
+        provider
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len(),
+        generated
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), stage_calls);
+
+    let journal = storage.journal();
+    let reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
+        journal.as_ref(),
+        *operation,
+        limits,
+    )
+    .await?
+    .ok_or_else(|| Error::Invalid("default path did not publish checkpoint".into()))?;
+    let (checkpoint, retained) =
+        acyclic_harness::executor::load_canonical_checkpoint(journal.as_ref(), &reference, limits)
+            .await?;
+    let source: Context = serde_json::from_slice(&storage.read(&checkpoint.source).await?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(
+        source
+            .messages
+            .iter()
+            .all(|message| message.role != ModelRole::System)
+    );
+    assert!(
+        retained
+            .messages
+            .iter()
+            .all(|message| message.role != ModelRole::System)
+    );
+    assert_eq!(
+        (
+            checkpoint.selection.conversation_revision,
+            checkpoint.selection.message_ids.len()
+        ),
+        (19, 2)
+    );
+    assert!(checkpoint.selection.checkpoint.is_some());
+    Ok(())
+}
+
+struct LostCanonicalAck {
+    inner: Arc<dyn acyclic_harness::executor::ExecutionJournal>,
+    fail: std::sync::atomic::AtomicBool,
+    deny_reads: std::sync::atomic::AtomicBool,
+}
+
+impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
+    fn replay<'a>(
+        &'a self,
+        operation: OperationId,
+        after: u64,
+        maximum: u32,
+    ) -> BoxProviderFuture<'a, Result<Vec<acyclic_harness::executor::ExecutionRecord>>> {
+        self.inner.replay(operation, after, maximum)
+    }
+    fn append<'a>(
+        &'a self,
+        operation: OperationId,
+        key: String,
+        event: acyclic_harness::executor::ExecutionEvent,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        self.inner.append(operation, key, event)
+    }
+    fn append_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        tail: u64,
+        key: String,
+        event: acyclic_harness::executor::ExecutionEvent,
+    ) -> BoxProviderFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let compacted = matches!(
+                event,
+                acyclic_harness::executor::ExecutionEvent::ContextCompacted { step: 0, .. }
+            );
+            let committed = self
+                .inner
+                .append_if_tail(operation, tail, key, event)
+                .await?;
+            if committed && compacted && self.fail.swap(false, Ordering::SeqCst) {
+                Err(Error::Storage(
+                    "lost canonical compaction acknowledgement".into(),
+                ))
+            } else {
+                Ok(committed)
+            }
+        })
+    }
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        key: String,
+        bytes: Vec<u8>,
+        media_type: &'static str,
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        self.inner.stage(operation, key, bytes, media_type)
+    }
+    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+        self.inner.load(file)
+    }
+    fn verify_input_file<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
+        if self.deny_reads.load(Ordering::SeqCst) {
+            Box::pin(async { Err(Error::Unauthorized("retained payload read denied".into())) })
+        } else {
+            self.inner.verify_input_file(file)
+        }
+    }
+    fn verify_selected_context<'a>(
+        &'a self,
+        operation: OperationId,
+        selected: &'a acyclic_harness::projection::SelectedModelContext,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        self.inner.verify_selected_context(operation, selected)
+    }
+    fn open_interaction<'a>(
+        &'a self,
+        id: acyclic_harness::InteractionId,
+        interaction: acyclic_harness::interaction::Interaction,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        self.inner.open_interaction(id, interaction)
+    }
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: acyclic_harness::InteractionId,
+    ) -> BoxProviderFuture<'a, Result<Option<acyclic_harness::interaction::InteractionOutcome>>>
+    {
+        self.inner.interaction_outcome(id)
+    }
+}
+
+#[tokio::test]
+async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_or_stage_replay()
+-> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+    let provider = Arc::new(SummaryModel::default());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let journal = Arc::new(LostCanonicalAck {
+        inner: storage.journal(),
+        fail: std::sync::atomic::AtomicBool::new(true),
+        deny_reads: std::sync::atomic::AtomicBool::new(false),
+    });
+    let bundle = storage
+        .builder()
+        .journal(journal.clone())
+        .grant("model:generate")
+        .model(
+            Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?,
+            provider.clone(),
+        )
+        .context(ContextPipeline::new([Arc::new(InputDependentStage {
+            revision: 1,
+            calls: calls.clone(),
+        })
+            as Arc<dyn acyclic_harness::context::ContextStage>]))
+        .build()?;
+    storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+    let operation = OperationId::new();
+    let file = storage
+        .stage(
+            operation,
+            "fault/current.txt",
+            "q".repeat(60_000).as_bytes(),
+            "text/plain",
+            "current.txt",
+        )
+        .await?;
+    let error = storage
+        .run_conversation(&bundle, operation, file.clone(), Vec::new(), 1)
+        .await;
+    assert!(matches!(error, Err(Error::Storage(message)) if message.contains("lost canonical")));
+    assert!(
+        acyclic_harness::executor::canonical_checkpoint_for_operation(
+            storage.journal().as_ref(),
+            operation,
+            Limits::default()
+        )
+        .await?
+        .is_some()
+    );
+    let generated = provider
+        .requests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
+    let counted = provider.counts.load(Ordering::SeqCst);
+    let transformed = calls.load(Ordering::SeqCst);
+    assert!(storage.run_prompt(&bundle, "another turn").await.is_err());
+    let output = storage
+        .run_conversation(&bundle, operation, file, Vec::new(), 1)
+        .await?;
+    assert_eq!(output.text, "retained summary");
+    assert_eq!(
+        provider
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len(),
+        generated + 1
+    );
+    assert_eq!(provider.counts.load(Ordering::SeqCst), counted);
+    assert_eq!(calls.load(Ordering::SeqCst), transformed);
+    let records = storage.journal().replay(operation, 0, 64).await?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(
+                record.event,
+                acyclic_harness::executor::ExecutionEvent::ContextCompacted { .. }
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(
+                record.event,
+                acyclic_harness::executor::ExecutionEvent::ModelStarted {
+                    purpose: acyclic_harness::executor::ModelPurpose::Summary,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+    storage.run_prompt(&bundle, "after recovery").await?;
+    assert_checkpoint_read_admission(&storage, &journal, operation).await?;
+    Ok(())
+}
+
+async fn assert_checkpoint_read_admission(
+    storage: &MemoryHarnessStorage,
+    journal: &LostCanonicalAck,
+    operation: OperationId,
+) -> Result<()> {
+    let limits = Limits::default();
+    let reference =
+        acyclic_harness::executor::canonical_checkpoint_for_operation(journal, operation, limits)
+            .await?
+            .ok_or_else(|| Error::Invalid("recovered checkpoint missing".into()))?;
+    let (mut envelope, _) =
+        acyclic_harness::executor::load_canonical_checkpoint(journal, &reference, limits).await?;
+    journal.deny_reads.store(true, Ordering::SeqCst);
+    assert!(
+        matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &reference, limits).await,
+        Err(Error::Unauthorized(message)) if message.contains("retained payload"))
+    );
+    journal.deny_reads.store(false, Ordering::SeqCst);
+    envelope.operation_id = OperationId::new();
+    let unpublished = storage
+        .stage(
+            envelope.operation_id,
+            "fault/unpublished-checkpoint.json",
+            &envelope.encode(limits)?,
+            "application/json",
+            "checkpoint.json",
+        )
+        .await?;
+    assert!(
+        matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &unpublished, limits).await,
+        Err(Error::Conflict(message)) if message.contains("not published"))
+    );
     Ok(())
 }

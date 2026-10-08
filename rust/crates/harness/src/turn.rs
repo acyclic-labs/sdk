@@ -106,8 +106,7 @@ pub fn prepare_turn(
 /// always derive the canonical identity and do not detect legacy histories.
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the shared planner owns one auditable deterministic admission sequence"
+    reason = "the explicit identity planner forwards deterministic admission inputs"
 )]
 pub fn prepare_turn_with_user_id(
     conversation: &ConversationState,
@@ -119,6 +118,67 @@ pub fn prepare_turn_with_user_id(
     has_completed_output: bool,
     can_reconcile: bool,
     user_id_override: Option<Uuid>,
+) -> Result<TurnPreparation> {
+    prepare_turn_inherited(
+        conversation,
+        operation_id,
+        content,
+        attachments,
+        limits,
+        existing_selection,
+        has_completed_output,
+        can_reconcile,
+        user_id_override,
+        None,
+    )
+}
+
+/// Plans a new turn against an owner-verified, immutable canonical checkpoint.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit deterministic turn admission inputs"
+)]
+pub fn prepare_turn_with_checkpoint(
+    conversation: &ConversationState,
+    operation_id: OperationId,
+    content: FileRef,
+    attachments: ReferencedAttachments,
+    limits: Limits,
+    existing_selection: Option<ModelContextSelection>,
+    has_completed_output: bool,
+    can_reconcile: bool,
+    checkpoint: Option<(&crate::context::CanonicalContextCheckpoint, FileRef)>,
+) -> Result<TurnPreparation> {
+    prepare_turn_inherited(
+        conversation,
+        operation_id,
+        content,
+        attachments,
+        limits,
+        existing_selection,
+        has_completed_output,
+        can_reconcile,
+        None,
+        checkpoint,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one deterministic admission sequence"
+)]
+fn prepare_turn_inherited(
+    conversation: &ConversationState,
+    operation_id: OperationId,
+    content: FileRef,
+    attachments: ReferencedAttachments,
+    limits: Limits,
+    existing_selection: Option<ModelContextSelection>,
+    has_completed_output: bool,
+    can_reconcile: bool,
+    user_id_override: Option<Uuid>,
+    checkpoint: Option<(&crate::context::CanonicalContextCheckpoint, FileRef)>,
 ) -> Result<TurnPreparation> {
     limits.validate_file(&content)?;
     attachments.validate()?;
@@ -220,7 +280,7 @@ pub fn prepare_turn_with_user_id(
             }
             selection
         }
-        None => select_turn_delta(conversation, &user_message, append_user, None, limits)?,
+        None => select_turn_delta(conversation, &user_message, append_user, checkpoint, limits)?,
     };
     let disposition = if has_completed_output {
         TurnDisposition::Completed

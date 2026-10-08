@@ -825,7 +825,24 @@ impl MemoryHarnessStorage {
             .reducer()
             .context_selection_for_operation(operation_id)
             .cloned();
-        let preparation = crate::turn::prepare_turn_with_user_id(
+        let checkpoint_reference = aggregate.reducer().latest_context_checkpoint().cloned();
+        let checkpoint = if existing_selection.is_none() {
+            match &checkpoint_reference {
+                Some(reference) => Some(
+                    crate::executor::load_canonical_checkpoint(
+                        self.journal.as_ref(),
+                        reference,
+                        limits,
+                    )
+                    .await?
+                    .0,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let preparation = crate::turn::prepare_turn_with_checkpoint(
             state,
             operation_id,
             content,
@@ -834,7 +851,7 @@ impl MemoryHarnessStorage {
             existing_selection,
             false,
             true,
-            None,
+            checkpoint.as_ref().zip(checkpoint_reference),
         )?;
         let user_id = preparation.user_id;
         if let Some(message) = preparation.user_message.clone() {
@@ -896,6 +913,8 @@ impl MemoryHarnessStorage {
                 max_steps,
             )?)
             .await?;
+        self.publish_canonical_checkpoint(operation_id, limits)
+            .await?;
         self.append_assistant(operation_id, user_id, &output, limits)
             .await?;
         Ok(output)
@@ -933,6 +952,48 @@ impl MemoryHarnessStorage {
             .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?;
         self.run_conversation(bundle, operation_id, content, attachments, max_steps)
             .await
+    }
+
+    async fn publish_canonical_checkpoint(
+        &self,
+        operation_id: OperationId,
+        limits: Limits,
+    ) -> Result<()> {
+        let Some(reference) = crate::executor::canonical_checkpoint_for_operation(
+            self.journal.as_ref(),
+            operation_id,
+            limits,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        let (envelope, _) =
+            crate::executor::load_canonical_checkpoint(self.journal.as_ref(), &reference, limits)
+                .await?;
+        let mut selection = envelope.selection;
+        selection.checkpoint = Some(reference);
+        let mut aggregate = self.open_conversation(limits).await?;
+        let publication = derived_operation_id(operation_id, b"conversation-checkpoint");
+        if let Some(committed) = aggregate
+            .reducer()
+            .context_selection_for_operation(publication)
+        {
+            return if committed == &selection {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "canonical checkpoint publication changed on retry".into(),
+                ))
+            };
+        }
+        self.append_conversation(
+            &mut aggregate,
+            publication,
+            "checkpoint",
+            Action::SelectModelContext { selection },
+        )
+        .await
     }
 
     async fn open_conversation(
