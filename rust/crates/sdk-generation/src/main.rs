@@ -1061,7 +1061,11 @@ fn materialize_generated_sources(
                         CliError(format!("Rustdoc generated source has invalid filename {filename}"))
                     })?;
                 (
-                    stage_generated_source(root, &canonical, &filename)?,
+                    // Keep an existing external producer path so sdk-docs can
+                    // resolve the Rustdoc span by its canonical filename.
+                    // Missing external paths are staged below; existing
+                    // profile outputs are already immutable inputs.
+                    canonical,
                     format!("external/{basename}"),
                 )
             }
@@ -1675,6 +1679,37 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].sha256, sha256_file(&canonical).expect("source should hash"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn existing_external_rustdoc_span_keeps_canonical_input_path() {
+        let root = test_root("existing-external-generated-span");
+        let external = std::env::temp_dir()
+            .join(format!("sdk-generation-existing-span-{}", std::process::id()))
+            .join("wire.rs");
+        if let Some(parent) = external.parent() {
+            fs::create_dir_all(parent).expect("external fixture directory should be writable");
+        }
+        fs::write(&external, b"pub struct Wire;\n").expect("external source should be writable");
+        let receipt = root.join("receipt.json");
+        fs::write(
+            &receipt,
+            serde_json::to_vec(&serde_json::json!({
+                "span": { "filename": external.to_string_lossy() }
+            }))
+            .expect("span fixture should serialize"),
+        )
+        .expect("receipt should be writable");
+
+        let sources = materialize_generated_sources(&root, std::slice::from_ref(&receipt))
+            .expect("existing external source should be attested");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].physical_path,
+            external.canonicalize().expect("external source should canonicalize")
+        );
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(external.parent().unwrap());
     }
 
     #[test]
