@@ -178,6 +178,51 @@ impl ToolProjection for InterruptedTool {
 }
 
 impl ModelProvider for InterruptedModel {
+    fn context_capacity(
+        &self,
+        _: &Model,
+    ) -> Result<acyclic_harness::context::ModelContextCapacity> {
+        Ok(acyclic_harness::context::ModelContextCapacity {
+            context_tokens: 131_072,
+            output_tokens: 16_384,
+        })
+    }
+
+    fn count_tokens(
+        &self,
+        request: &PreparedModelRequest,
+    ) -> Result<acyclic_harness::context::ModelTokenCount> {
+        // This fixture counts serialized UTF-8 bytes and referenced bytes as token units.
+        let message_tokens = request
+            .request()
+            .messages
+            .iter()
+            .map(|message| {
+                let bytes = message.content.file_refs().iter().try_fold(
+                    serde_json::to_vec(message)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .len() as u64,
+                    |total, file| {
+                        total
+                            .checked_add(file.descriptor().byte_length())
+                            .ok_or_else(|| Error::Invalid("synthetic token count overflows".into()))
+                    },
+                )?;
+                u32::try_from(bytes)
+                    .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fixed = serde_json::to_vec(&request.request().tools)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .len();
+        Ok(acyclic_harness::context::ModelTokenCount {
+            request_digest: request.manifest().request_digest,
+            fixed_tokens: u32::try_from(fixed)
+                .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+            message_tokens,
+        })
+    }
+
     fn generate<'a>(
         &'a self,
         request: PreparedModelRequest,
@@ -2302,7 +2347,9 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
         } else {
             if let Some(mode) = fault {
-                stream_provider.arm_execution(2, mode);
+                // Started, ContextPrepared and ModelStarted precede the first
+                // observed event. Keep the fault on event publication.
+                stream_provider.arm_execution(3, mode);
             }
             let interrupted = if pre_context {
                 // Produce the actual earlier stock Started/request bytes and

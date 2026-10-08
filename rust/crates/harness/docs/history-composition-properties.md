@@ -184,3 +184,66 @@ storage fixture passes with its existing payload allowance. Context lookup by
 operation already uses `operation_intents`; no additional selection index was
 needed. This checkpoint does not close default compaction/fork, cold hydration,
 total refresh work, generated/current consumers or final qualification.
+
+The current development source installs ordinary `CompactionPolicy` configuration
+in both `StockExecutor` and `HarnessBuilder`, defaulting to a threshold with
+16,384 response-reserve tokens and 20,000 recent tokens. `ModelProvider` supplies
+the selected model's actual input/output capacities and deterministic additive
+request token upper bounds. The SDK supplies no model-name catalog or tokenizer;
+unsupported capacity/counting fails explicitly. Capacity and impossible budgets
+are validated before the root turn's Started observation. Disabled policy is an
+explicit imported alternative used by the older unrelated synthetic fixtures.
+
+Provider accounting binds the exact prepared request digest and message count,
+and is persisted beside the frozen context in the same ContextPrepared record.
+Recent suffix planning expands a split tool exchange, and uses the same mandatory
+positions as deterministic compaction. Oversized mandatory input fails before
+summary inference. The summary uses the original turn's journal and shared model
+accounting; its finite output ceiling comes from the validated reserve/output
+capacity. A retained uncertain summary is reconciled without recounting its
+already admitted input or rereading mutable context sources. Final response
+accounting validates the actual compacted request before response dispatch.
+Explicit same-message-count compression is supported, since a large old message
+may be replaced by a shorter summary without reducing message count.
+
+`target-b-clippy-default-compaction-recovery.log` passes native all-target strict
+lint. The new native fixtures use a synthetic provider with declared byte-based
+token units, capture both summary/response requests, check impossible default
+capacity before records/artifacts/generation, and interrupt/reconcile an automatic
+summary over a changing source. They do not claim a production provider's tokenizer
+or media support. Source hashes are in `target/b-default-compaction-source-hashes.json`;
+`target-b-native-default-compaction.log` is in progress. Native integrations,
+malformed accounting/policy replacement/mandatory-bound negatives, generated and
+WASM runtime consumption, incremental projection reuse across later turns, default
+fork policies, cold checkpoints and final qualification remain open.
+
+The first default-policy unit run completed 244 passes and four failures in
+`target-b-native-default-compaction.log`: two automatic-summary fixtures lacked
+staged-file verification, and two local-default fixtures lacked selected-capacity
+advertisements. The synthetic journal now verifies its staged summary file via
+its real load/descriptor path. Local-default synthetic providers now advertise
+their capacities and bound referenced bytes/framing, keeping automatic compaction
+enabled for those default-consumer checks. Unrelated discovery/journal/recursive
+fixtures and the custom-executor example explicitly disable compaction; the
+durable journal fixture also checks the additional ContextPrepared record.
+`target-b-clippy-default-compaction-fixtures.log` passes native all-target strict
+lint. Corrected unit and integration execution completed in
+`target-b-native-default-compaction-fixtures.log`, with source hashes recorded in
+`target/b-default-compaction-fixtures-source-hashes.json`: 248 unit tests passed,
+as did the preceding integration binaries, before `task_workflow` reported 12
+passes and eight failures. Its synthetic InterruptedModel lacked the new selected
+capacity/accounting hooks, so default admission failed before the intended
+file-grant and uncertain-recovery checks. That test provider now advertises actual
+fixture capacities and counts serialized messages/framing plus referenced bytes,
+keeping default compaction enabled and the existing 8,192-token output contract.
+The targeted rerun in `target-b-native-default-compaction-workflow.log` passed
+18 workflow tests and failed two publication-fault scenarios. Their positional
+fault targeted tail 2, now ModelStarted instead of the first observed event.
+The fault remains on first-event publication at tail 3, retaining the existing
+before/visible/hidden acknowledgement, exact-generation/reconciliation and
+cancelled-owner checks. The corrected rerun is recorded in
+`target-b-native-default-compaction-workflow-fault-position.log`, with hashes in
+`target/b-default-compaction-workflow-fault-position-source-hashes.json`: all 20
+workflow tests passed, with zero failures or ignored tests. Strict native
+all-target lint passed in `target-b-clippy-default-compaction-workflow.log`.
+These receipts precede integration of main's observation-span changes.

@@ -1399,7 +1399,49 @@ mod tests {
 
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
+    fn synthetic_token_count(
+        request: &crate::model::PreparedModelRequest,
+    ) -> Result<crate::context::ModelTokenCount> {
+        // These test providers use UTF-8 bytes as token units, including framing.
+        let message_tokens = request
+            .request()
+            .messages
+            .iter()
+            .map(|message| {
+                let bytes = message.content.file_refs().iter().try_fold(
+                    crate::contract::canonical_json_bytes(message)?.len() as u64,
+                    |total, file| {
+                        total
+                            .checked_add(file.descriptor().byte_length())
+                            .ok_or_else(|| Error::Invalid("synthetic token count overflows".into()))
+                    },
+                )?;
+                u32::try_from(bytes)
+                    .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.manifest().request_digest,
+            fixed_tokens: u32::try_from(fixed)
+                .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+            message_tokens,
+        })
+    }
+
     impl ModelProvider for TextModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            synthetic_token_count(request)
+        }
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -1710,6 +1752,18 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            synthetic_token_count(request)
+        }
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -1848,6 +1902,7 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let bundle = storage
             .builder()
+            .compaction(crate::context::CompactionPolicy::Disabled)
             .model(
                 Model::new("test", "text", "1", Value::Null)?,
                 Arc::new(TextModel(requests.clone())),
@@ -2062,6 +2117,7 @@ mod tests {
         )?;
         let bundle = storage
             .builder()
+            .compaction(crate::context::CompactionPolicy::Disabled)
             .tasks(tasks)
             .model(
                 Model::new("test", "text", "1", Value::Null)?,

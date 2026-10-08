@@ -714,7 +714,8 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
         model.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    );
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
     let operation_id = OperationId::from_bytes([9; 16]);
     let input = TurnInput {
         operation_id,
@@ -728,7 +729,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(first.text, "private answer");
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
     let records = journal.replay(operation_id, 0, 64).await?;
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 5);
     let stream = stream
         .stream(format!("harness/v2/execution/{operation_id}"))
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
@@ -1160,7 +1161,8 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         model.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    );
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
     let content = ModelContent::Parts(vec![
         ModelContentPart::Text {
             text: "describe".into(),

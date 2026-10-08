@@ -25,6 +25,8 @@ mod selection;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;
+mod compaction;
+pub use compaction::*;
 
 /// Durable output of an ordinary admitted summary model operation.
 /// The operation's execution journal retains its exact request and observations.
@@ -388,7 +390,9 @@ impl DurableContextProvider {
                 ));
             }
         }
-        let compacted = if context.messages.len() > max_messages {
+        let compacted = if context.messages.len() > max_messages
+            || (summary.is_some() && context.messages.len() == max_messages)
+        {
             let summary = summary.as_ref().ok_or_else(|| {
                 crate::Error::Invalid(
                     "compaction requires a durable summary; context cannot be silently dropped"
@@ -422,7 +426,28 @@ fn compact_projection(
             "compaction must retain the current input and summary".into(),
         ));
     }
-    let mandatory = context
+    let mandatory = mandatory_positions(context, summary.source_messages as usize, retention);
+    if mandatory.len() >= max_messages {
+        return Err(crate::Error::Invalid(
+            "mandatory context exceeds compaction message budget".into(),
+        ));
+    }
+    let mut selected = mandatory;
+    for position in (0..context.messages.len()).rev() {
+        if selected.len() + 1 == max_messages {
+            break;
+        }
+        selected.insert(position);
+    }
+    retain_compacted_messages(context, selected, summary)
+}
+
+pub(super) fn mandatory_positions(
+    context: &Context,
+    covered: usize,
+    retention: &CompactionRetention,
+) -> std::collections::BTreeSet<usize> {
+    context
         .messages
         .iter()
         .enumerate()
@@ -430,7 +455,7 @@ fn compact_projection(
             let parts = message.content.parts();
             (context.current_input_index.map(|index| index as usize) == Some(position)
                 || position + 1 == context.messages.len()
-                || position >= summary.source_messages as usize
+                || position >= covered
                 || retention.roles.contains(&message.role)
                 || (retention.native_media
                     && parts.iter().any(|part| {
@@ -444,19 +469,14 @@ fn compact_projection(
                     })))
             .then_some(position)
         })
-        .collect::<std::collections::BTreeSet<_>>();
-    if mandatory.len() >= max_messages {
-        return Err(crate::Error::Invalid(
-            "mandatory context exceeds compaction message budget".into(),
-        ));
-    }
-    let mut selected = mandatory;
-    for position in (0..context.messages.len()).rev() {
-        if selected.len() + 1 == max_messages {
-            break;
-        }
-        selected.insert(position);
-    }
+        .collect()
+}
+
+fn retain_compacted_messages(
+    context: &Context,
+    selected: std::collections::BTreeSet<usize>,
+    summary: &ContextSummary,
+) -> Result<Context> {
     let mut calls = std::collections::BTreeSet::new();
     let mut retained = vec![ModelMessage {
         role: ModelRole::Assistant,

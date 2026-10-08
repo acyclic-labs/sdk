@@ -792,7 +792,15 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         O: AsyncObjectStore + 'static,
     {
         let refs: Vec<&FileRef> = match event {
-            ExecutionEvent::ContextPrepared { projection, .. } => vec![projection],
+            ExecutionEvent::ContextPrepared {
+                projection,
+                accounting,
+                ..
+            } => {
+                let mut references = vec![projection];
+                references.extend(accounting.iter());
+                references
+            }
             ExecutionEvent::ModelStarted { request, .. } => vec![request],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
@@ -1331,6 +1339,7 @@ mod tests {
                 let prepared = ExecutionEvent::ContextPrepared {
                     step: 0,
                     projection: file.clone(),
+                    accounting: None,
                 };
                 state.accept(
                     &ExecutionRecord {

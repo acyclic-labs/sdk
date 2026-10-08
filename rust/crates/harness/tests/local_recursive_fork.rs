@@ -191,6 +191,7 @@ where
         ContextPipeline::default(),
         tools,
     )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled)
     .with_tool_authority(
         RuntimeScope::new(
             Capabilities::new(["tool:call:example.fork"]),
