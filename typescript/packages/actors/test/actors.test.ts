@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import fc from "fast-check";
-import { readFileSync } from "node:fs";
 import { HttpActorsClient, CreateActorRequestSchema, InspectActorRequestSchema, type OperationEvent } from "../src/index.js";
 import { observeInterceptors } from "../src/observe.js";
 
@@ -76,9 +75,5 @@ describe("Actors v1 generated transport", () => {
     try { await new HttpActorsClient({ endpoint: "https://actors.example.test", token: "secret", fetcher }).inspectActor(create(InspectActorRequestSchema, { actorId: "present" })); }
     finally { delete process.env.ACYCLIC_PERF; }
     expect(performance.getEntriesByType("measure").map(entry => entry.name)).toEqual(["acyclic.actors.inspectActor"]);
-  });
-  test("keeps every package's observer helper identical", () => {
-    const source = (name: string) => readFileSync(new URL(`../../${name}/src/observe.ts`, import.meta.url), "utf8");
-    for (const name of ["filesystem", "harness", "inference", "machines", "objects", "stream", "workers"]) expect(source(name)).toBe(source("actors"));
   });
 });

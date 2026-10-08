@@ -113,6 +113,7 @@ pub mod model;
 pub mod mount;
 pub mod multi_root;
 mod numeric;
+mod obs;
 pub use numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;

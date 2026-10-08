@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,6 +123,7 @@ const metadata = capture(cargo, ["metadata", "--locked", "--no-deps", "--format-
 if (!metadata) throw new Error("cargo metadata failed");
 const targetRoot = JSON.parse(metadata).target_directory;
 
+const script = readFileSync(fileURLToPath(import.meta.url));
 const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
 
 for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
@@ -141,13 +143,25 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ]);
+  // A lane builds each package several times (the workspace check, the
+  // check-generated comparison, package checks). Cargo already makes the
+  // repeated module build a no-op; the bindings are a pure function of the
+  // module, the CLI and this script, so reuse them while those are unchanged.
+  const module = resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`);
+  const bindings = resolve(target, "wasm-bindgen", name);
+  const stamp = `${bindings}.sha256`;
+  const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
+  if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
+    for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
+    // The function name section is about 45% of each module and only serves
+    // symbolicated stack traces; shipped packages trade those for size.
+    run(wasmBindgen, [
+      module, "--target", "web", "--out-dir", bindings, "--out-name", outName,
+      "--remove-name-section", "--remove-producers-section",
+    ]);
+    postprocess?.(bindings);
+    writeFileSync(stamp, key);
+  }
   mkdirSync(output, { recursive: true });
-  // The function name section is about 45% of each module and only serves
-  // symbolicated stack traces; shipped packages trade those for size.
-  run(wasmBindgen, [
-    resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`),
-    "--target", "web", "--out-dir", output, "--out-name", outName,
-    "--remove-name-section", "--remove-producers-section",
-  ]);
-  postprocess?.(output);
+  cpSync(bindings, output, { recursive: true });
 }

@@ -3,6 +3,7 @@ use super::response::object_info as info;
 use super::{
     Download, Error, Object, ObjectsProvider, UploadBody, request, response, upload, wire,
 };
+use crate::obs;
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
@@ -69,43 +70,46 @@ impl GrpcObjects {
         query: wire::PutObjectHeader,
         body: UploadBody,
     ) -> Result<wire::ObjectInfo, Error> {
-        request::put_stream_digest(&query)?;
-        let original = query.encode_to_vec();
-        let header = wire::PutObjectRequest {
-            frame: Some(wire::put_object_request::Frame::Header(query)),
-        };
-        let (chunks, state, failure) = upload::chunks(body);
-        // An invalid frame also prevents valid EOF if the transport polls a failing source.
-        let frames = chunks.map(put_frame as fn(Result<Bytes, Error>) -> wire::PutObjectRequest);
-        let mut client = owner.objects();
-        let complete = wire::PutObjectRequest {
-            frame: Some(wire::put_object_request::Frame::Complete(true)),
-        };
-        let input = owner.authenticated(
-            stream::iter([header])
-                .chain(frames)
-                .chain(stream::iter([complete]))
-                .boxed(),
-        );
-        let result = upload::run(
-            client
-                .put_object(input)
-                .map(|reply| {
-                    reply
-                        .map(|reply| reply.into_inner())
-                        .map_err(|status| error_from_status(&status))
-                })
-                .boxed(),
-            failure,
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.grpc.put", rpc.code = obs::Empty),
+            async {
+                request::put_stream_digest(&query)?;
+                let original = query.encode_to_vec();
+                let header = wire::PutObjectRequest {
+                    frame: Some(wire::put_object_request::Frame::Header(query)),
+                };
+                let (chunks, state, failure) = upload::chunks(body);
+                // An invalid frame also prevents valid EOF if the transport polls a failing source.
+                let frames =
+                    chunks.map(put_frame as fn(Result<Bytes, Error>) -> wire::PutObjectRequest);
+                let mut client = owner.objects();
+                let complete = wire::PutObjectRequest {
+                    frame: Some(wire::put_object_request::Frame::Complete(true)),
+                };
+                let input = owner.authenticated(
+                    stream::iter([header])
+                        .chain(frames)
+                        .chain(stream::iter([complete]))
+                        .boxed(),
+                );
+                let result = upload::run(
+                    client
+                        .put_object(input)
+                        .map(|reply| reply.map(ok).map_err(|status| error_from_status(&status)))
+                        .boxed(),
+                    failure,
+                )
+                .await?;
+                response::validate_binary(
+                    "objects/put",
+                    &original,
+                    &result.encode_to_vec(),
+                    state.finish()?,
+                )?;
+                Ok(result)
+            },
         )
-        .await?;
-        response::validate_binary(
-            "objects/put",
-            &original,
-            &result.encode_to_vec(),
-            state.finish()?,
-        )?;
-        Ok(result)
+        .await
     }
     /// Streams one staged multipart part without publishing the final object.
     async fn upload_part_stream_owned(
@@ -113,42 +117,49 @@ impl GrpcObjects {
         query: wire::UploadPartHeader,
         body: UploadBody,
     ) -> Result<wire::UploadedPart, Error> {
-        request::upload_part_stream_digest(&query)?;
-        let original = query.encode_to_vec();
-        let header = wire::UploadPartRequest {
-            frame: Some(wire::upload_part_request::Frame::Header(query)),
-        };
-        let (chunks, state, failure) = upload::chunks(body);
-        let frames = chunks.map(part_frame as fn(Result<Bytes, Error>) -> wire::UploadPartRequest);
-        let mut client = owner.multipart();
-        let complete = wire::UploadPartRequest {
-            frame: Some(wire::upload_part_request::Frame::Complete(true)),
-        };
-        let input = owner.authenticated(
-            stream::iter([header])
-                .chain(frames)
-                .chain(stream::iter([complete]))
-                .boxed(),
-        );
-        let result = upload::run(
-            client
-                .upload_part(input)
-                .map(|reply| {
-                    reply
-                        .map(|reply| reply.into_inner())
-                        .map_err(|status| error_from_status(&status))
-                })
-                .boxed(),
-            failure,
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.upload_part",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::upload_part_stream_digest(&query)?;
+                let original = query.encode_to_vec();
+                let header = wire::UploadPartRequest {
+                    frame: Some(wire::upload_part_request::Frame::Header(query)),
+                };
+                let (chunks, state, failure) = upload::chunks(body);
+                let frames =
+                    chunks.map(part_frame as fn(Result<Bytes, Error>) -> wire::UploadPartRequest);
+                let mut client = owner.multipart();
+                let complete = wire::UploadPartRequest {
+                    frame: Some(wire::upload_part_request::Frame::Complete(true)),
+                };
+                let input = owner.authenticated(
+                    stream::iter([header])
+                        .chain(frames)
+                        .chain(stream::iter([complete]))
+                        .boxed(),
+                );
+                let result = upload::run(
+                    client
+                        .upload_part(input)
+                        .map(|reply| reply.map(ok).map_err(|status| error_from_status(&status)))
+                        .boxed(),
+                    failure,
+                )
+                .await?;
+                response::validate_binary(
+                    "multipart/upload-part",
+                    &original,
+                    &result.encode_to_vec(),
+                    state.finish()?,
+                )?;
+                Ok(result)
+            },
         )
-        .await?;
-        response::validate_binary(
-            "multipart/upload-part",
-            &original,
-            &result.encode_to_vec(),
-            state.finish()?,
-        )?;
-        Ok(result)
+        .await
     }
     /// Connects over authenticated TLS with an optional additional private CA.
     ///
@@ -265,53 +276,60 @@ impl GrpcObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Download, Error> {
-        request::validate_binary("objects/get", &query.encode_to_vec(), 0)?;
-        let range = query.range;
-        let mut frames = self
-            .objects()
-            .get_object(self.authenticated(query))
-            .await
-            .map_err(|status| error_from_status(&status))?
-            .into_inner();
-        let first = frames
-            .message()
-            .await
-            .map_err(|status| error_from_status(&status))?
-            .ok_or_else(protocol)?;
-        let header = match first.frame {
-            Some(wire::get_object_response::Frame::Header(header)) => header,
-            Some(wire::get_object_response::Frame::Error(detail)) => {
-                return Err(frame_error(detail.code));
-            }
-            _ => return Err(protocol()),
-        };
-        let remaining = response::get_header(&header, &range, maximum_bytes)?;
-        let body = stream::try_unfold((frames, remaining), |(mut frames, remaining)| async move {
-            let Some(frame) = frames
-                .message()
-                .await
-                .map_err(|status| error_from_status(&status))?
-            else {
-                return if remaining == 0 {
-                    Ok(None)
-                } else {
-                    Err(protocol())
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.grpc.get", rpc.code = obs::Empty),
+            async {
+                request::validate_binary("objects/get", &query.encode_to_vec(), 0)?;
+                let range = query.range;
+                let mut frames = self
+                    .objects()
+                    .get_object(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                let first = frames
+                    .message()
+                    .await
+                    .map_err(|status| error_from_status(&status))?
+                    .ok_or_else(protocol)?;
+                let header = match first.frame {
+                    Some(wire::get_object_response::Frame::Header(header)) => header,
+                    Some(wire::get_object_response::Frame::Error(detail)) => {
+                        return Err(frame_error(detail.code));
+                    }
+                    _ => return Err(protocol()),
                 };
-            };
-            match frame.frame {
-                Some(wire::get_object_response::Frame::Body(frame)) => {
-                    let bytes = response::body(frame, remaining)?;
-                    let remaining = remaining - bytes.len() as u64;
-                    Ok(Some((Bytes::from(bytes), (frames, remaining))))
-                }
-                Some(wire::get_object_response::Frame::Error(detail)) => {
-                    Err(frame_error(detail.code))
-                }
-                _ => Err(protocol()),
-            }
-        })
-        .boxed();
-        Ok(Download { header, body })
+                let remaining = response::get_header(&header, &range, maximum_bytes)?;
+                let body =
+                    stream::try_unfold((frames, remaining), |(mut frames, remaining)| async move {
+                        let Some(frame) = frames
+                            .message()
+                            .await
+                            .map_err(|status| error_from_status(&status))?
+                        else {
+                            return if remaining == 0 {
+                                Ok(None)
+                            } else {
+                                Err(protocol())
+                            };
+                        };
+                        match frame.frame {
+                            Some(wire::get_object_response::Frame::Body(frame)) => {
+                                let bytes = response::body(frame, remaining)?;
+                                let remaining = remaining - bytes.len() as u64;
+                                Ok(Some((Bytes::from(bytes), (frames, remaining))))
+                            }
+                            Some(wire::get_object_response::Frame::Error(detail)) => {
+                                Err(frame_error(detail.code))
+                            }
+                            _ => Err(protocol()),
+                        }
+                    })
+                    .boxed();
+                Ok(Download { header, body })
+            },
+        )
+        .await
     }
 }
 fn frame_error(code: i32) -> Error {
@@ -321,9 +339,16 @@ fn frame_error(code: i32) -> Error {
         .map_or_else(protocol, Error::from)
 }
 
+/// Unwraps a successful reply, recording its gRPC code on the current span.
+fn ok<T>(reply: tonic::Response<T>) -> T {
+    obs::record!("rpc.code" = tonic::Code::Ok as u64);
+    reply.into_inner()
+}
+
 /// Maps canonical service details, falling back to stable transport categories.
 #[must_use]
 pub fn error_from_status(status: &tonic::Status) -> Error {
+    obs::record!("rpc.code" = status.code() as u64);
     if let Ok(detail) = wire::ErrorDetail::decode(status.details())
         && let Ok(code) = wire::ErrorCode::try_from(detail.code)
         && code != wire::ErrorCode::Unspecified
@@ -358,49 +383,79 @@ fn protocol() -> Error {
 #[async_trait::async_trait]
 impl ObjectsProvider for GrpcObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
-        request::bucket_name(&query.name)?;
-        request::identity(&query.mutation)?;
-        bounded(&query)?;
-        let expected = wire::BucketRef {
-            name: query.name.clone(),
-        };
-        let result = self
-            .buckets()
-            .create_bucket(self.authenticated(query))
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))?;
-        response::bucket(&result, &expected)?;
-        Ok(result)
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.create_bucket",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::bucket_name(&query.name)?;
+                request::identity(&query.mutation)?;
+                bounded(&query)?;
+                let expected = wire::BucketRef {
+                    name: query.name.clone(),
+                };
+                let result = self
+                    .buckets()
+                    .create_bucket(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                response::bucket(&result, &expected)?;
+                Ok(result)
+            },
+        )
+        .await
     }
     async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
-        request::bucket(&query.bucket)?;
-        bounded(&query)?;
-        let expected = query
-            .bucket
-            .clone()
-            .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-        let result = self
-            .buckets()
-            .head_bucket(self.authenticated(query))
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))?;
-        response::bucket(&result, &expected)?;
-        Ok(result)
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.head_bucket",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::bucket(&query.bucket)?;
+                bounded(&query)?;
+                let expected = query
+                    .bucket
+                    .clone()
+                    .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
+                let result = self
+                    .buckets()
+                    .head_bucket(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                response::bucket(&result, &expected)?;
+                Ok(result)
+            },
+        )
+        .await
     }
     async fn delete_bucket(
         &self,
         query: wire::DeleteBucketRequest,
     ) -> Result<wire::DeleteBucketResponse, Error> {
-        request::bucket(&query.bucket)?;
-        request::identity(&query.mutation)?;
-        bounded(&query)?;
-        self.buckets()
-            .delete_bucket(self.authenticated(query))
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.delete_bucket",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::bucket(&query.bucket)?;
+                request::identity(&query.mutation)?;
+                bounded(&query)?;
+                self.buckets()
+                    .delete_bucket(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))
+            },
+        )
+        .await
     }
     async fn put(
         &self,
@@ -424,60 +479,88 @@ impl ObjectsProvider for GrpcObjects {
         &self,
         query: wire::HeadObjectRequest,
     ) -> Result<wire::HeadObjectResponse, Error> {
-        request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        bounded(&query)?;
-        let response = self
-            .objects()
-            .head_object(self.authenticated(query))
-            .await
-            .map_err(|status| error_from_status(&status))?
-            .into_inner();
-        info(response.object.as_ref().ok_or_else(protocol)?)?;
-        Ok(response)
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.grpc.head", rpc.code = obs::Empty),
+            async {
+                request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
+                request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                bounded(&query)?;
+                let response = self
+                    .objects()
+                    .head_object(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                info(response.object.as_ref().ok_or_else(protocol)?)?;
+                Ok(response)
+            },
+        )
+        .await
     }
     async fn delete(
         &self,
         query: wire::DeleteObjectRequest,
     ) -> Result<wire::DeleteObjectResponse, Error> {
-        bounded(&query)?;
-        self.objects()
-            .delete_object(self.authenticated(query))
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.grpc.delete", rpc.code = obs::Empty),
+            async {
+                bounded(&query)?;
+                self.objects()
+                    .delete_object(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))
+            },
+        )
+        .await
     }
     async fn list(
         &self,
         query: wire::ListObjectsRequest,
     ) -> Result<wire::ListObjectsResponse, Error> {
-        request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-        request::page_size(query.page_size)?;
-        bounded(&query)?;
-        let response = self
-            .objects()
-            .list_objects(self.authenticated(query.clone()))
-            .await
-            .map_err(|status| error_from_status(&status))?
-            .into_inner();
-        response::listing(&query, &response)?;
-        Ok(response)
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.grpc.list", rpc.code = obs::Empty),
+            async {
+                request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
+                request::page_size(query.page_size)?;
+                bounded(&query)?;
+                let response = self
+                    .objects()
+                    .list_objects(self.authenticated(query.clone()))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                response::listing(&query, &response)?;
+                Ok(response)
+            },
+        )
+        .await
     }
     async fn create_multipart(
         &self,
         query: wire::CreateMultipartRequest,
     ) -> Result<wire::MultipartUpload, Error> {
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::metadata(&query.metadata)?;
-        request::identity(&query.mutation)?;
-        bounded(&query)?;
-        self.multipart()
-            .create_multipart(self.authenticated(query))
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.create_multipart",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                request::metadata(&query.metadata)?;
+                request::identity(&query.mutation)?;
+                bounded(&query)?;
+                self.multipart()
+                    .create_multipart(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))
+            },
+        )
+        .await
     }
     async fn upload_part(
         &self,
@@ -491,44 +574,74 @@ impl ObjectsProvider for GrpcObjects {
         &self,
         query: wire::ListPartsRequest,
     ) -> Result<wire::ListPartsResponse, Error> {
-        request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-        request::page_size(query.page_size)?;
-        bounded(&query)?;
-        let response = self
-            .multipart()
-            .list_parts(self.authenticated(query.clone()))
-            .await
-            .map_err(|status| error_from_status(&status))?
-            .into_inner();
-        response::parts(&query, &response)?;
-        Ok(response)
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.list_parts",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
+                request::page_size(query.page_size)?;
+                bounded(&query)?;
+                let response = self
+                    .multipart()
+                    .list_parts(self.authenticated(query.clone()))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                response::parts(&query, &response)?;
+                Ok(response)
+            },
+        )
+        .await
     }
     async fn complete_multipart(
         &self,
         query: wire::CompleteMultipartRequest,
     ) -> Result<wire::ObjectInfo, Error> {
-        bounded(&query)?;
-        let response = self
-            .multipart()
-            .complete_multipart(self.authenticated(query))
-            .await
-            .map_err(|status| error_from_status(&status))?
-            .into_inner();
-        info(&response)?;
-        Ok(response)
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.complete_multipart",
+                rpc.code = obs::Empty
+            ),
+            async {
+                bounded(&query)?;
+                let response = self
+                    .multipart()
+                    .complete_multipart(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))?;
+                info(&response)?;
+                Ok(response)
+            },
+        )
+        .await
     }
     async fn abort_multipart(
         &self,
         query: wire::AbortMultipartRequest,
     ) -> Result<wire::AbortMultipartResponse, Error> {
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::identity(&query.mutation)?;
-        bounded(&query)?;
-        self.multipart()
-            .abort_multipart(self.authenticated(query))
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.grpc.abort_multipart",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                request::identity(&query.mutation)?;
+                bounded(&query)?;
+                self.multipart()
+                    .abort_multipart(self.authenticated(query))
+                    .await
+                    .map(ok)
+                    .map_err(|status| error_from_status(&status))
+            },
+        )
+        .await
     }
 }

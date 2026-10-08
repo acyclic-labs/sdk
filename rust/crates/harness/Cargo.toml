@@ -8,11 +8,16 @@ repository.workspace = true
 publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
+exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
+
+[[bench]]
+name = "harness"
+harness = false
 
 [features]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
@@ -59,6 +64,7 @@ tonic-prost-build = { workspace = true, optional = true }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+divan.workspace = true
 async-trait.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }

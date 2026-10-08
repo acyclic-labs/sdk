@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 description = "Hierarchical append-only Streams contract, clients, and local provider"
 readme = "README.md"
+exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-stream"
 keywords = ["streams", "events", "grpc"]
 categories = ["api-bindings", "data-structures"]
@@ -22,6 +23,11 @@ required-features = ["http"]
 
 [[example]]
 name = "local-contention"
+required-features = ["local"]
+
+[[bench]]
+name = "stream"
+harness = false
 required-features = ["local"]
 
 [features]
@@ -70,6 +76,7 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
+divan.workspace = true
 proptest.workspace = true
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true

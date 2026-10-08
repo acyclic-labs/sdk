@@ -6,60 +6,76 @@ const TEMPORARY: &str = ".v2-checkpoint.tmp";
 
 impl Journal {
     pub(super) fn compact(&self, state: &State) -> Result<u64, LocalOpenError> {
-        self.check().map_err(|_| LocalOpenError::Unavailable)?;
-        let snapshot =
-            difference(&State::default(), state, 0).map_err(|_| LocalOpenError::Corrupt)?;
-        let temporary = self.root.path.join(TEMPORARY);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&temporary)?;
-        let header = self.header.encode_to_vec();
-        file.write_all(MAGIC)?;
-        file.write_all(&u32::try_from(header.len()).map_err(corrupt)?.to_le_bytes())?;
-        file.write_all(blake3::hash(&header).as_bytes())?;
-        file.write_all(&header)?;
-        let mut output = Checkpoint {
-            file,
-            limits: self.limits,
-            operations: 0,
-            bytes: (MAGIC.len() + 36 + header.len()) as u64,
-            pending: Delta {
-                sequence: state.sequence,
-                ..Default::default()
+        obs::scoped(
+            &obs::span!(
+                DEBUG,
+                "acyclic.objects.journal.checkpoint",
+                frames = obs::Empty,
+                bytes = obs::Empty,
+                reclaimed = obs::Empty
+            ),
+            || {
+                self.check().map_err(|_| LocalOpenError::Unavailable)?;
+                let snapshot =
+                    difference(&State::default(), state, 0).map_err(|_| LocalOpenError::Corrupt)?;
+                let temporary = self.root.path.join(TEMPORARY);
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .read(true)
+                    .write(true)
+                    .open(&temporary)?;
+                let header = self.header.encode_to_vec();
+                file.write_all(MAGIC)?;
+                file.write_all(&u32::try_from(header.len()).map_err(corrupt)?.to_le_bytes())?;
+                file.write_all(blake3::hash(&header).as_bytes())?;
+                file.write_all(&header)?;
+                let mut output = Checkpoint {
+                    file,
+                    limits: self.limits,
+                    operations: 0,
+                    bytes: (MAGIC.len() + 36 + header.len()) as u64,
+                    pending: Delta {
+                        sequence: state.sequence,
+                        ..Default::default()
+                    },
+                };
+                output.snapshot(snapshot)?;
+                #[cfg(test)]
+                self.checkpoint_fault(1)?;
+                sync(&output.file, self.limits)?;
+                #[cfg(test)]
+                self.checkpoint_fault(2)?;
+                let mut tail = self.tail.lock().map_err(|_| LocalOpenError::Unavailable)?;
+                let reclaimed = tail.bytes.saturating_sub(output.bytes);
+                // Closing the old journal permits Windows replacement. The replacement
+                // handle retains the fully synchronized checkpoint across the rename.
+                drop(std::mem::replace(&mut tail.file, output.file));
+                #[cfg(test)]
+                self.checkpoint_fault(3)?;
+                if let Err(error) = self.root.replace_journal(|| {
+                    acyclic_native_runtime::durable_rename(
+                        &temporary,
+                        &self.root.path.join("mutations.log"),
+                        acyclic_native_runtime::RenameMode::Replace,
+                    )
+                }) {
+                    self.poisoned.store(true, Ordering::Release);
+                    return Err(error.into());
+                }
+                #[cfg(test)]
+                self.checkpoint_fault(4)?;
+                tail.bytes = output.bytes;
+                tail.operations = output.operations;
+                tail.inline_bytes = 0;
+                obs::record!(
+                    "frames" = output.operations,
+                    "bytes" = output.bytes,
+                    "reclaimed" = reclaimed,
+                );
+                Ok(reclaimed)
             },
-        };
-        output.snapshot(snapshot)?;
-        #[cfg(test)]
-        self.checkpoint_fault(1)?;
-        sync(&output.file, self.limits)?;
-        #[cfg(test)]
-        self.checkpoint_fault(2)?;
-        let mut tail = self.tail.lock().map_err(|_| LocalOpenError::Unavailable)?;
-        let reclaimed = tail.bytes.saturating_sub(output.bytes);
-        // Closing the old journal permits Windows replacement. The replacement
-        // handle retains the fully synchronized checkpoint across the rename.
-        drop(std::mem::replace(&mut tail.file, output.file));
-        #[cfg(test)]
-        self.checkpoint_fault(3)?;
-        if let Err(error) = self.root.replace_journal(|| {
-            acyclic_native_runtime::durable_rename(
-                &temporary,
-                &self.root.path.join("mutations.log"),
-                acyclic_native_runtime::RenameMode::Replace,
-            )
-        }) {
-            self.poisoned.store(true, Ordering::Release);
-            return Err(error.into());
-        }
-        #[cfg(test)]
-        self.checkpoint_fault(4)?;
-        tail.bytes = output.bytes;
-        tail.operations = output.operations;
-        tail.inline_bytes = 0;
-        Ok(reclaimed)
+        )
     }
 
     #[cfg(test)]

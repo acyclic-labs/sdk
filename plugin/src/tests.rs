@@ -205,8 +205,11 @@ async fn concurrent_service_case() {
         name: String::new(),
         arguments: Value::Null,
     };
+    // Session a's actor stays paused until `resume_a` is sent, so b completing
+    // at all proves it did not queue behind a. The deadline is no latency
+    // bound, only what turns such a queue into a failure instead of a hang.
     tokio::time::timeout(
-        std::time::Duration::from_millis(250),
+        std::time::Duration::from_secs(60),
         service.dispatch_request(request_b),
     )
     .await

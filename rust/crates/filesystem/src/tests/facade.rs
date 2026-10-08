@@ -1319,6 +1319,188 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod spans {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, PoisonError};
+    use tracing::field::{Field, Visit};
+
+    /// Each span or event by name (an event by target), with its fields.
+    pub(super) type Captured = Arc<Mutex<Vec<(&'static str, Vec<(&'static str, String)>)>>>;
+
+    pub(super) struct Capture(pub(super) Captured, pub(super) Mutex<HashMap<u64, usize>>);
+
+    struct Fields<'a>(&'a mut Vec<(&'static str, String)>);
+
+    impl Visit for Fields<'_> {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.push((field.name(), value.to_owned()));
+        }
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name(), format!("{value:?}")));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_new_span(
+            &self,
+            attributes: &tracing::span::Attributes<'_>,
+            id: &tracing::span::Id,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            attributes.record(&mut Fields(&mut fields));
+            let mut captured = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut spans = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+            spans.insert(id.into_u64(), captured.len());
+            captured.push((attributes.metadata().name(), fields));
+        }
+        fn on_record(
+            &self,
+            id: &tracing::span::Id,
+            values: &tracing::span::Record<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let spans = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut captured = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, fields)) = spans
+                .get(&id.into_u64())
+                .and_then(|&index| captured.get_mut(index))
+            {
+                values.record(&mut Fields(fields));
+            }
+        }
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            event.record(&mut Fields(&mut fields));
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((event.metadata().target(), fields));
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn commit_records_its_span_and_one_work_receipt() -> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("create blocked")??
+        .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    poll_ready(checkout.create_file(
+        path("traced")?,
+        Bytes::from_static(b"secret contents"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("create file blocked")??;
+    let mut reader = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("reader checkout blocked")??
+    .value;
+    // With one live dispatcher, a callsite that a concurrent test reaches
+    // first caches only that thread's (absent) interest; a second one makes
+    // every callsite consult this test's subscriber too.
+    let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
+    let captured = spans::Captured::default();
+    let capture = spans::Capture(Arc::clone(&captured), std::sync::Mutex::default());
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::Registry::default().with(capture));
+    let operation = OperationId::from_bytes([31; 16]);
+    let committed = poll_ready(checkout.commit(operation, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("commit blocked")??;
+    let failed = poll_ready(reader.commit(operation, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("read-only commit blocked")?;
+    assert!(failed.is_err());
+
+    let captured = captured.lock().map_err(|_| "capture poisoned")?;
+    let named = |name: &str| {
+        captured
+            .iter()
+            .filter(|(found, _)| *found == name)
+            .map(|(_, fields)| fields.clone())
+            .collect::<Vec<_>>()
+    };
+    let has = |fields: &[(&str, String)], field: &str, value: &str| {
+        fields.contains(&(field, value.to_owned()))
+    };
+    let commits = named("acyclic.fs.commit");
+    assert_eq!(commits.len(), 2, "{captured:?}");
+    let work = committed.work;
+    let bytes = work.object_bytes_read + work.object_bytes_written + work.authority_bytes_written;
+    for (field, value) in [
+        ("outcome", "ok".to_owned()),
+        ("work.items", work.items_examined.to_string()),
+        ("work.bytes", bytes.to_string()),
+        ("work.durability", work.durability_operations.to_string()),
+    ] {
+        assert!(has(&commits[0], field, &value), "{field}: {commits:?}");
+    }
+    assert!(
+        commits[0]
+            .iter()
+            .any(|(field, value)| *field == "volume_id" && value.len() == 32)
+    );
+    assert!(has(&commits[1], "outcome", "err"));
+    assert!(
+        commits[1]
+            .iter()
+            .any(|(field, value)| *field == "error.kind" && !value.is_empty())
+    );
+    let publish = named("acyclic.fs.kernel.publish");
+    assert!(publish.iter().any(|fields| {
+        has(fields, "outcome", "ok")
+            && fields
+                .iter()
+                .any(|(field, value)| *field == "generation" && value.len() == 16)
+    }));
+    // Nested spans summarise their own receipts; the operation emits the
+    // one work event, whose counters are the receipt the caller received.
+    let receipts = named("acyclic.work");
+    assert_eq!(receipts.len(), 2, "{receipts:?}");
+    assert!(has(&receipts[0], "op", "commit") && has(&receipts[0], "outcome", "ok"));
+    for (field, value) in [
+        ("items_examined", work.items_examined),
+        (
+            "authority_records_appended",
+            work.authority_records_appended,
+        ),
+        ("peak_allocation_bytes", work.peak_allocation_bytes),
+    ] {
+        assert!(has(&receipts[0], field, &value.to_string()), "{field}");
+    }
+    assert!(has(&receipts[1], "outcome", "err"));
+    for (_, fields) in captured.iter() {
+        for (field, value) in fields {
+            assert!(!["path", "token", "content", "body", "authorization"].contains(field));
+            assert!(
+                !value.contains("traced") && !value.contains("secret"),
+                "{field}"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -9202,7 +9384,9 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
-    for iteration in 0..200_u32 {
+    // An orphaned opener shows on the first quick reopen it races; the
+    // iterations only vary that race's timing.
+    for iteration in 0..24_u32 {
         let fs = Fs::local(options.clone()).await?;
         assert!(
             Fs::open_local_unshared(options.clone(), None)

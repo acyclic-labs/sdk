@@ -3,6 +3,7 @@ use super::{
     Download, Error, HTTP_ROUTES, Object, ObjectsProvider, UploadBody, json, request, response,
     upload, wire,
 };
+use crate::obs;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use prost::Message;
@@ -189,24 +190,41 @@ impl HttpObjects {
             maximum: maximum_response_bytes,
         })
     }
-    async fn post(&self, route: &str, content_type: &str, body: Body) -> Result<Response, Error> {
-        let url = self
-            .endpoint
-            .join(&format!("v2/objects/{route}"))
-            .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-        let response = self
-            .transport
-            .post(url)
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", content_type)
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| response::invalid())?;
-        if response.status().as_u16() != 200 {
-            return Err(self.failure(response).await);
-        }
-        Ok(response)
+    async fn post(
+        &self,
+        route: &'static str,
+        content_type: &str,
+        body: Body,
+    ) -> Result<Response, Error> {
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.http.call",
+                route,
+                rpc.code = obs::Empty
+            ),
+            async {
+                let url = self
+                    .endpoint
+                    .join(&format!("v2/objects/{route}"))
+                    .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+                let response = self
+                    .transport
+                    .post(url)
+                    .header(AUTHORIZATION, self.authorization.clone())
+                    .header("content-type", content_type)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|_| response::invalid())?;
+                obs::record!("rpc.code" = response.status().as_u16());
+                if response.status().as_u16() != 200 {
+                    return Err(self.failure(response).await);
+                }
+                Ok(response)
+            },
+        )
+        .await
     }
     async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
         if response
@@ -263,7 +281,7 @@ impl HttpObjects {
     }
     async fn call<I: Message, O: Message + Default>(
         &self,
-        route: &str,
+        route: &'static str,
         value: &I,
     ) -> Result<O, Error> {
         let (_, input, output) = HTTP_ROUTES

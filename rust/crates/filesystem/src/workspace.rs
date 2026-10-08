@@ -923,10 +923,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Returns an authority or authentication failure when the current head
     /// cannot be resolved exactly.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.workspace.sync",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                workspace_id = crate::obs::hex(&self.id.0),
+            )
+        )
+    )]
     pub async fn sync(&self) -> Result<WorkspaceSync<A, O>, WorkspaceError> {
-        Ok(WorkspaceSync {
-            generation: self.head().await?,
-        })
+        crate::obs::outcome(
+            async move {
+                Ok(WorkspaceSync {
+                    generation: self.head().await?,
+                })
+            }
+            .await,
+        )
     }
 
     /// Creates an independent named workspace at one exact generation without
@@ -936,22 +954,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects invalid destination names, foreign generations, incompatible
     /// existing destinations, or storage/publication failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.workspace.fork",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                workspace_id = crate::obs::hex(&self.id.0),
+            )
+        )
+    )]
     pub async fn fork(
         &self,
         destination: impl AsRef<str>,
         options: ForkOptions<A, O>,
     ) -> Result<Self, WorkspaceError> {
-        if options.generation.workspace.id != self.id {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        self.fork_measured(
-            destination,
-            options,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+        crate::obs::outcome(
+            async move {
+                if options.generation.workspace.id != self.id {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                self.fork_measured(
+                    destination,
+                    options,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+            }
+            .await,
         )
-        .await
-        .map(|receipt| receipt.value)
     }
 
     pub(crate) async fn fork_measured(
@@ -984,17 +1020,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// # Errors
     ///
     /// Returns an authentication, authority, storage, or workspace-state failure.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.workspace.begin_transaction",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                workspace_id = crate::obs::hex(&self.id.0),
+            )
+        )
+    )]
     pub async fn begin_transaction(
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Transaction<A, O>, WorkspaceError> {
-        self.begin_transaction_measured(
-            idempotency_key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+        crate::obs::outcome(
+            self.begin_transaction_measured(
+                idempotency_key,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value),
         )
-        .await
-        .map(|receipt| receipt.value)
     }
 
     pub(crate) async fn begin_transaction_measured(
@@ -1116,22 +1167,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects invalid labels, generation authentication failures, or an
     /// existing label bound to different state.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.workspace.checkpoint",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                workspace_id = crate::obs::hex(&self.id.0),
+            )
+        )
+    )]
     pub async fn checkpoint(
         &self,
         label: impl AsRef<str>,
     ) -> Result<Checkpoint<A, O>, WorkspaceError> {
-        let label = WorkspaceName::new(label)?;
-        let generation = self.head().await?;
-        self.volume
-            .fs
-            .retain_workspace_generation(
-                &self.volume,
-                generation.id,
-                crate::kernel::RetentionKind::Checkpoint,
-                label.as_str().to_owned(),
-            )
-            .await?;
-        Ok(Checkpoint { label, generation })
+        crate::obs::outcome(
+            async move {
+                let label = WorkspaceName::new(label)?;
+                let generation = self.head().await?;
+                self.volume
+                    .fs
+                    .retain_workspace_generation(
+                        &self.volume,
+                        generation.id,
+                        crate::kernel::RetentionKind::Checkpoint,
+                        label.as_str().to_owned(),
+                    )
+                    .await?;
+                Ok(Checkpoint { label, generation })
+            }
+            .await,
+        )
     }
 
     /// Durably pins the current immutable generation under an opaque customer
@@ -1173,35 +1242,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects foreign endpoints, zero bounds, malformed state, or a truncated
     /// authenticated diff frontier.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.workspace.diff",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                workspace_id = crate::obs::hex(&self.id.0),
+            )
+        )
+    )]
     pub async fn diff(
         &self,
         from: &Generation<A, O>,
         to: &Generation<A, O>,
         maximum_changes: u32,
     ) -> Result<ChangeSet<A, O>, WorkspaceError> {
-        if from.workspace.id != self.id || to.workspace.id != self.id {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        let receipt = self
-            .volume
-            .diff_generations(
-                from.id,
-                to.id,
-                maximum_changes,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
-        if receipt.value.truncated {
-            return Err(WorkspaceError::JoinLimit);
-        }
-        Ok(ChangeSet {
-            from: from.clone(),
-            to: to.clone(),
-            changes: receipt.value,
-            work: receipt.work,
-        })
+        crate::obs::outcome(
+            async move {
+                if from.workspace.id != self.id || to.workspace.id != self.id {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                let receipt = self
+                    .volume
+                    .diff_generations(
+                        from.id,
+                        to.id,
+                        maximum_changes,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(WorkspaceError::engine)?;
+                if receipt.value.truncated {
+                    return Err(WorkspaceError::JoinLimit);
+                }
+                Ok(ChangeSet {
+                    from: from.clone(),
+                    to: to.clone(),
+                    changes: receipt.value,
+                    work: receipt.work,
+                })
+            }
+            .await,
+        )
     }
 
     /// Begins a side-effect-free join description from this workspace into a
@@ -1230,6 +1317,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects a workspace that is not a fork, incompatible source semantics,
     /// exhausted lineage/conflict bounds, malformed state, or backend failure.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.workspace.live_rebase",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                workspace_id = crate::obs::hex(&self.id.0),
+            )
+        )
+    )]
     pub async fn live_rebase(
         &self,
         idempotency_key: IdempotencyKey,
@@ -1237,49 +1337,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         maximum_changes: u32,
         maximum_conflicts: u32,
     ) -> Result<WorkspaceRebase<A, O>, WorkspaceError> {
-        let outcome = self
-            .volume
-            .fs
-            .live_rebase_workspace(crate::facade::WorkspaceRebaseRequest {
-                target: &self.volume,
-                operation_id: idempotency_key.operation_id(),
-                maximum_generations,
-                maximum_changes,
-                maximum_conflicts,
-            })
-            .await?;
-        let generation = |id| Generation {
-            workspace: self.clone(),
-            id,
-        };
-        Ok(match outcome {
-            crate::facade::WorkspaceJoinOutcome::Applied(id) => {
-                WorkspaceRebase::Rebased(generation(id))
+        crate::obs::outcome(
+            async move {
+                let outcome = self
+                    .volume
+                    .fs
+                    .live_rebase_workspace(crate::facade::WorkspaceRebaseRequest {
+                        target: &self.volume,
+                        operation_id: idempotency_key.operation_id(),
+                        maximum_generations,
+                        maximum_changes,
+                        maximum_conflicts,
+                    })
+                    .await?;
+                let generation = |id| Generation {
+                    workspace: self.clone(),
+                    id,
+                };
+                Ok(match outcome {
+                    crate::facade::WorkspaceJoinOutcome::Applied(id) => {
+                        WorkspaceRebase::Rebased(generation(id))
+                    }
+                    crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
+                        WorkspaceRebase::AlreadyRebased(generation(id))
+                    }
+                    crate::facade::WorkspaceJoinOutcome::Joined(_, _)
+                    | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
+                        return Err(WorkspaceError::IncompatibleWorkspace);
+                    }
+                    crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
+                        WorkspaceRebase::Current(generation(id))
+                    }
+                    crate::facade::WorkspaceJoinOutcome::Stale(id) => {
+                        WorkspaceRebase::Stale(generation(id))
+                    }
+                    crate::facade::WorkspaceJoinOutcome::Conflicted(conflicts, truncated) => {
+                        WorkspaceRebase::Conflicted {
+                            conflicts,
+                            truncated,
+                        }
+                    }
+                    crate::facade::WorkspaceJoinOutcome::Fenced => WorkspaceRebase::Fenced,
+                    crate::facade::WorkspaceJoinOutcome::IdempotencyConflict => {
+                        WorkspaceRebase::IdempotencyConflict
+                    }
+                })
             }
-            crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
-                WorkspaceRebase::AlreadyRebased(generation(id))
-            }
-            crate::facade::WorkspaceJoinOutcome::Joined(_, _)
-            | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
-                return Err(WorkspaceError::IncompatibleWorkspace);
-            }
-            crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
-                WorkspaceRebase::Current(generation(id))
-            }
-            crate::facade::WorkspaceJoinOutcome::Stale(id) => {
-                WorkspaceRebase::Stale(generation(id))
-            }
-            crate::facade::WorkspaceJoinOutcome::Conflicted(conflicts, truncated) => {
-                WorkspaceRebase::Conflicted {
-                    conflicts,
-                    truncated,
-                }
-            }
-            crate::facade::WorkspaceJoinOutcome::Fenced => WorkspaceRebase::Fenced,
-            crate::facade::WorkspaceJoinOutcome::IdempotencyConflict => {
-                WorkspaceRebase::IdempotencyConflict
-            }
-        })
+            .await,
+        )
     }
 
     /// The parent head that [`Self::live_rebase`] would rebase this fork onto,
@@ -2708,20 +2813,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 
     /// Publishes this transaction only while an SDK operation-window permit
     /// is still active at the authority linearization point.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.transaction.commit",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn commit_with_permit(
         &mut self,
         permit: crate::PublicationPermit,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        in_heap(move || async move {
-            self.commit_with_permit_measured(
-                permit,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-        })
-        .await
+        crate::obs::outcome(
+            in_heap(move || async move {
+                self.commit_with_permit_measured(
+                    permit,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+            })
+            .await,
+        )
     }
 
     /// Publishes this transaction under an exact work budget and cancellation token.
@@ -2835,39 +2951,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Returns bounded dependency-probe, authentication, storage, or replay
     /// failures. Semantic overlap is returned as a typed conflict and leaves
     /// the transaction unchanged.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.transaction.rebase",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn rebase(
         &mut self,
         maximum_conflicts: u32,
     ) -> Result<TransactionRebase<A, O>, WorkspaceError> {
-        let decision = self
-            .checkout
-            .rebase_head(
-                maximum_conflicts,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await
-            .map_err(WorkspaceError::engine)?
-            .value;
-        Ok(match decision {
-            crate::kernel::RebaseDecision::Safe { generation } => {
-                self.requires_rebase = false;
-                TransactionRebase::Rebased(Generation {
-                    workspace: self.workspace.clone(),
-                    id: generation,
+        crate::obs::outcome(
+            async move {
+                let decision = self
+                    .checkout
+                    .rebase_head(
+                        maximum_conflicts,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(WorkspaceError::engine)?
+                    .value;
+                Ok(match decision {
+                    crate::kernel::RebaseDecision::Safe { generation } => {
+                        self.requires_rebase = false;
+                        TransactionRebase::Rebased(Generation {
+                            workspace: self.workspace.clone(),
+                            id: generation,
+                        })
+                    }
+                    crate::kernel::RebaseDecision::Conflicted {
+                        conflicts,
+                        truncated,
+                    } => TransactionRebase::Conflicted {
+                        conflicts: conflicts
+                            .into_iter()
+                            .map(TransactionConflict::from_engine)
+                            .collect(),
+                        truncated,
+                    },
                 })
             }
-            crate::kernel::RebaseDecision::Conflicted {
-                conflicts,
-                truncated,
-            } => TransactionRebase::Conflicted {
-                conflicts: conflicts
-                    .into_iter()
-                    .map(TransactionConflict::from_engine)
-                    .collect(),
-                truncated,
-            },
-        })
+            .await,
+        )
     }
 
     async fn apply(&mut self, operations: Vec<AuthoredMutation>) -> Result<(), WorkspaceError> {
@@ -3893,7 +4023,7 @@ pub enum WorkspacePathApply<A, O> {
 }
 
 /// Failure while resolving or validating a declarative real-workspace join.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum DrivenJoinError {
     /// Workspace planning, storage, or publication failed.
     #[error(transparent)]
@@ -3974,6 +4104,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Runs merge drivers and publishes only while the supplied writer permit remains valid.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.join.apply",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn apply_with_drivers_and_permit<C: MergeResolutionCache>(
         &self,
         options: ApplyOptions,
@@ -3982,18 +4121,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         replanning: bool,
         permit: crate::PublicationPermit,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        let initial = self.apply_with_permit(options, permit).await?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        else {
-            return Ok(initial);
-        };
-        let plan = self.typed_merge_plan(conflicts, truncated).await?;
-        let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
-        self.apply_candidate_with_permit(options, &candidate, permit)
-            .await
+        crate::obs::outcome(
+            async move {
+                let initial = self.apply_with_permit(options, permit).await?;
+                let JoinOutcome::Conflicted {
+                    conflicts,
+                    truncated,
+                } = initial
+                else {
+                    return Ok(initial);
+                };
+                let plan = self.typed_merge_plan(conflicts, truncated).await?;
+                let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
+                self.apply_candidate_with_permit(options, &candidate, permit)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// Applies caller-selected immutable sides after validating that they
@@ -4776,19 +4920,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// and Linux birth time are host-generated view-local facts; their exact
     /// canonical values remain in this generation, not in the host inode.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.generation.materialize",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn materialize(
         &self,
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        self.materialize_with_mode(
-            options,
-            budget,
-            cancellation,
-            crate::native_mount::MaterializeMode::DurableOutput,
+        crate::obs::outcome(
+            self.materialize_with_mode(
+                options,
+                budget,
+                cancellation,
+                crate::native_mount::MaterializeMode::DurableOutput,
+            )
+            .await,
         )
-        .await
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -4828,6 +4983,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// host directory. The same relative path is reproduced below the
     /// destination, allowing callers to stage and atomically exchange it.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.generation.materialize_path",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn materialize_path(
         &self,
         path: &str,
@@ -4835,14 +4999,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        self.materialize_path_with_mode(
-            path,
-            options,
-            budget,
-            cancellation,
-            crate::native_mount::MaterializeMode::DurableOutput,
+        crate::obs::outcome(
+            self.materialize_path_with_mode(
+                path,
+                options,
+                budget,
+                cancellation,
+                crate::native_mount::MaterializeMode::DurableOutput,
+            )
+            .await,
         )
-        .await
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -4884,6 +5050,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// Materializes multiple paths with one pinned checkout and shared
     /// file-identity table, preserving hard links across selected paths.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.generation.materialize_paths",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn materialize_paths(
         &self,
         paths: &[String],
@@ -4891,33 +5066,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        let checkout = self
-            .workspace
-            .engine_checkout_measured(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await?;
-        let mut value = checkout.value;
-        let paths = paths
-            .iter()
-            .map(|path| customer_path(path, value.volume_config()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let receipt = crate::materialize_checkout_paths(
-            &mut value,
-            &paths,
-            options,
-            checkout
-                .work
-                .remaining(budget)
-                .map_err(WorkspaceError::from)?,
-            cancellation,
+        crate::obs::outcome(
+            async move {
+                let checkout = self
+                    .workspace
+                    .engine_checkout_measured(
+                        GenerationSelector::Exact(self.id),
+                        CheckoutMode::read_only_pinned(),
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                let mut value = checkout.value;
+                let paths = paths
+                    .iter()
+                    .map(|path| customer_path(path, value.volume_config()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let receipt = crate::materialize_checkout_paths(
+                    &mut value,
+                    &paths,
+                    options,
+                    checkout
+                        .work
+                        .remaining(budget)
+                        .map_err(WorkspaceError::from)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::engine(failure.error))?;
+                merge_workspace_work(checkout.work, receipt, budget)
+            }
+            .await,
         )
-        .await
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        merge_workspace_work(checkout.work, receipt, budget)
     }
 
     /// Restores one path from this immutable generation into a host tree.
@@ -5565,7 +5745,7 @@ pub enum WorkspaceNameError {
 }
 
 /// Customer workspace operation failure.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum WorkspaceError {
     /// Friendly name was invalid.
     #[error(transparent)]
