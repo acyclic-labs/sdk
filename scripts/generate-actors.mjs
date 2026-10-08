@@ -48,6 +48,10 @@ async function rustGenerate(output, protoRoot) {
     "run", "--offline", "--locked", "-p", "acyclic-actors", "--example", "actors-http-routes", "--",
     output, "--proto-out", protoRoot,
   ]);
+  const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
+  if (readonly.error) throw readonly.error;
+  if (readonly.status !== 0) throw new Error(`Rust readonly projection exited with ${readonly.status ?? "unknown"}`);
+  await writeFile(join(dirname(output), "readonly.ts"), readonly.stdout);
 }
 
 async function copyRustProto(protoRoot, destination) {

@@ -99,3 +99,128 @@ fn empty_inline_and_permitted_object_spelling_preserve_admission() {
     request.retry = None;
     assert!(domain::SubmitJobRequest::try_from(request).is_err());
 }
+
+#[test]
+fn every_request_ingress_uses_the_real_admission_hook() {
+    use sha2::{Digest, Sha256};
+    let module = b"export default {}";
+    let mut publish = wire::PublishVersionRequest {
+        javascript_module: module.to_vec().into(),
+        expected_sha256: Sha256::digest(module).to_vec().into(),
+        idempotency_key: "publish".into(),
+    };
+    assert!(domain::PublishVersionRequest::try_from(publish.clone()).is_ok());
+    publish.expected_sha256 = vec![1; 32].into();
+    assert!(matches!(
+        domain::PublishVersionRequest::try_from(publish),
+        Err(domain::DomainError::Contract(
+            acyclic_workers::ContractError::DigestMismatch
+        ))
+    ));
+    let submit = wire::SubmitJobRequest {
+        target: Some(wire::JobTarget {
+            target: Some(wire::job_target::Target::DeploymentAlias("current".into())),
+        }),
+        input: Some(wire::Payload {
+            source: Some(wire::payload::Source::InlineBytes(Vec::new().into())),
+        }),
+        limits: Some(wire::JobLimits {
+            timeout_millis: 1,
+            memory_bytes: 1,
+            output_bytes: 1,
+        }),
+        retry: Some(wire::RetryPolicy {
+            max_attempts: 0,
+            backoff_millis: 0,
+        }),
+        idempotency_key: "submit".into(),
+    };
+    assert!(matches!(
+        domain::SubmitJobRequest::try_from(submit),
+        Err(domain::DomainError::Contract(
+            acyclic_workers::ContractError::InvalidArgument
+        ))
+    ));
+    let raw = wire::Error {
+        code: 991,
+        message: "original".into(),
+    };
+    let decoded = wire::Error::decode(raw.encode_to_vec().as_slice()).expect("raw error");
+    assert_eq!(decoded.code, 991);
+    assert!(matches!(
+        domain::Error::try_from(decoded),
+        Err(domain::DomainError::UnknownErrorCode(991))
+    ));
+}
+
+#[test]
+fn submit_requires_every_message_and_both_selectors() {
+    let request = wire::SubmitJobRequest {
+        target: Some(wire::JobTarget {
+            target: Some(wire::job_target::Target::DeploymentAlias("A_1".into())),
+        }),
+        input: Some(wire::Payload {
+            source: Some(wire::payload::Source::InlineBytes(Vec::new().into())),
+        }),
+        limits: Some(wire::JobLimits {
+            timeout_millis: 1,
+            memory_bytes: 1,
+            output_bytes: 1,
+        }),
+        retry: Some(wire::RetryPolicy {
+            max_attempts: 1,
+            backoff_millis: 0,
+        }),
+        idempotency_key: "submit".into(),
+    };
+    for field in 0..4 {
+        let mut absent = request.clone();
+        match field {
+            0 => absent.target = None,
+            1 => absent.input = None,
+            2 => absent.limits = None,
+            _ => absent.retry = None,
+        }
+        assert_eq!(
+            acyclic_workers::validate_submit(&absent),
+            Err(acyclic_workers::ContractError::InvalidArgument)
+        );
+        assert!(domain::SubmitJobRequest::try_from(absent).is_err());
+    }
+    assert!(domain::JobTarget::try_from(wire::JobTarget { target: None }).is_err());
+    assert!(domain::Payload::try_from(wire::Payload { source: None }).is_err());
+    let mut invalid = request;
+    invalid.limits.as_mut().expect("limits").output_bytes = 0;
+    assert!(matches!(
+        domain::SubmitJobRequest::try_from(invalid),
+        Err(domain::DomainError::Contract(
+            acyclic_workers::ContractError::InvalidArgument
+        ))
+    ));
+}
+
+#[test]
+fn publish_preserves_ordered_error_classes() {
+    let empty = wire::PublishVersionRequest {
+        javascript_module: Vec::new().into(),
+        expected_sha256: vec![1; 32].into(),
+        idempotency_key: "publish".into(),
+    };
+    assert!(matches!(
+        domain::PublishVersionRequest::try_from(empty),
+        Err(domain::DomainError::Contract(
+            acyclic_workers::ContractError::InvalidArgument
+        ))
+    ));
+    let oversized = wire::PublishVersionRequest {
+        javascript_module: vec![0; acyclic_workers::MAX_MODULE_BYTES + 1].into(),
+        expected_sha256: vec![0; 32].into(),
+        idempotency_key: "publish".into(),
+    };
+    assert!(matches!(
+        domain::PublishVersionRequest::try_from(oversized),
+        Err(domain::DomainError::Contract(
+            acyclic_workers::ContractError::LimitExceeded
+        ))
+    ));
+}

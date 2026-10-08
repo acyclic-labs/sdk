@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -142,6 +142,17 @@ const checkWasmPackage = async ([packageName, basename]) => {
 
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
 try {
+  const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8" });
+  if (readonly.error) throw readonly.error;
+  if (readonly.status !== 0) throw new Error(`Rust readonly projection failed: ${readonly.stderr}`);
+  for (const family of ["actors", "workers"]) if (readFileSync(join(root, `typescript/packages/${family}/src/generated/readonly.ts`), "utf8") !== readonly.stdout) throw new Error(`${family} readonly projection drift`);
+  const readonlyTypes = join(temporary, "readonly-types");
+  mkdirSync(readonlyTypes);
+  writeFileSync(join(readonlyTypes, "readonly.ts"), readonly.stdout);
+  writeFileSync(join(readonlyTypes, "consumer.ts"), readFileSync(join(root, "rust/crates/proto-codegen/tests/readonly-consumer.ts")));
+  const readonlyConsumer = spawnSync(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--ignoreConfig", "--noEmit", "--strict", "--target", "ES2023", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--pretty", "false", join(readonlyTypes, "consumer.ts")], { cwd: root, encoding: "utf8" });
+  if (readonlyConsumer.error) throw readonlyConsumer.error;
+  if (readonlyConsumer.status !== 0) throw new Error(`readonly TypeScript consumer failed: ${readonlyConsumer.stdout}${readonlyConsumer.stderr}`);
   const freshWorkers = join(temporary, "workers-semantic");
   const freshWorkersProto = join(temporary, "workers-proto");
   const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", freshWorkersProto, freshWorkers], { cwd: root, encoding: "utf8" });

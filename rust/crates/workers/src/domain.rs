@@ -88,11 +88,16 @@ pub mod payload {
     use super::*;
     #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = DomainError)]
     #[derive(Clone, Debug, Eq, PartialEq, TS)]
-    #[ts(tag = "case", content = "value", rename_all = "camelCase")]
+    #[ts(
+        export_to = "workers/Source.ts",
+        tag = "case",
+        content = "value",
+        rename_all = "camelCase"
+    )]
     pub enum Source {
         /// Published selector 1.
         #[proto(tag = 1, bytes)]
-        #[ts(type = "Readonly<Uint8Array>")]
+        #[ts(type = "Uint8Array")]
         InlineBytes(Vec<u8>),
         /// Published selector 2.
         #[proto(tag = 2, message(proxied))]
@@ -105,14 +110,19 @@ pub mod job_target {
     use super::*;
     #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = DomainError)]
     #[derive(Clone, Debug, Eq, PartialEq, TS)]
-    #[ts(tag = "case", content = "value", rename_all = "camelCase")]
+    #[ts(
+        export_to = "workers/Target.ts",
+        tag = "case",
+        content = "value",
+        rename_all = "camelCase"
+    )]
     pub enum Target {
         /// Published selector 1.
         #[proto(tag = 1, string)]
         DeploymentAlias(String),
         /// Published selector 2.
         #[proto(tag = 2, bytes)]
-        #[ts(type = "Readonly<Uint8Array>")]
+        #[ts(type = "Uint8Array")]
         VersionSha256(Vec<u8>),
     }
 }
@@ -124,7 +134,7 @@ pub mod job_target {
 #[ts(export_to = "workers/CodeVersion.ts", rename_all = "camelCase")]
 pub struct CodeVersion {
     #[proto(tag = 1, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub sha256: Vec<u8>,
     #[proto(tag = 2, uint64)]
@@ -144,6 +154,7 @@ pub struct Deployment {
     pub alias: String,
     #[proto(tag = 2, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub version: Option<CodeVersion>,
     #[proto(tag = 3, uint64)]
     #[ts(type = "bigint")]
@@ -161,10 +172,10 @@ pub struct Deployment {
 )]
 pub struct PublishVersionRequest {
     #[proto(tag = 1, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     javascript_module: Vec<u8>,
     #[proto(tag = 2, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     expected_sha256: Vec<u8>,
     #[proto(tag = 3)]
     idempotency_key: String,
@@ -215,6 +226,7 @@ impl PublishVersionRequest {
 pub struct PublishVersionResponse {
     #[proto(tag = 1, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub version: Option<CodeVersion>,
 }
 
@@ -230,9 +242,10 @@ pub struct SelectDeploymentRequest {
     #[proto(tag = 1)]
     alias: String,
     #[proto(tag = 2, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     version_sha256: Vec<u8>,
     #[proto(tag = 3, optional(uint64))]
+    #[ts(optional)]
     expected_revision: Option<u64>,
     #[proto(tag = 4)]
     idempotency_key: String,
@@ -290,6 +303,7 @@ impl SelectDeploymentRequest {
 pub struct SelectDeploymentResponse {
     #[proto(tag = 1, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub deployment: Option<Deployment>,
 }
 
@@ -325,7 +339,7 @@ pub struct Payload {
 #[ts(export_to = "workers/JobResult.ts", rename_all = "camelCase")]
 pub struct JobResult {
     #[proto(tag = 1, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub body: Vec<u8>,
 }
@@ -450,6 +464,7 @@ impl SubmitJobRequest {
 pub struct SubmitJobResponse {
     #[proto(tag = 1, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub job: Option<JobObservation>,
 }
 
@@ -466,7 +481,7 @@ pub struct JobObservation {
     /// Published semantic field.
     pub state: JobState,
     #[proto(tag = 3, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub resolved_sha256: Vec<u8>,
     #[proto(tag = 4, uint32)]
@@ -474,6 +489,7 @@ pub struct JobObservation {
     pub attempt: u32,
     #[proto(tag = 5, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub result: Option<JobResult>,
     #[proto(tag = 6)]
     /// Published semantic field.
@@ -502,6 +518,7 @@ pub struct InspectJobRequest {
 pub struct InspectJobResponse {
     #[proto(tag = 1, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub job: Option<JobObservation>,
 }
 
@@ -527,6 +544,7 @@ pub struct CancelJobRequest {
 pub struct CancelJobResponse {
     #[proto(tag = 1, message(proxied))]
     /// Published semantic field.
+    #[ts(optional)]
     pub job: Option<JobObservation>,
 }
 
@@ -554,7 +572,7 @@ pub struct Header {
 )]
 pub struct InvokeVersionRequest {
     #[proto(tag = 1, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub version_sha256: Vec<u8>,
     #[proto(tag = 2)]
@@ -567,7 +585,7 @@ pub struct InvokeVersionRequest {
     /// Published semantic field.
     pub headers: Vec<Header>,
     #[proto(tag = 5, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub body: Vec<u8>,
 }
@@ -594,7 +612,7 @@ pub struct InvokeDeploymentRequest {
     /// Published semantic field.
     pub headers: Vec<Header>,
     #[proto(tag = 5, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub body: Vec<u8>,
 }
@@ -612,15 +630,16 @@ pub struct InvokeResponse {
     /// Published semantic field.
     pub headers: Vec<Header>,
     #[proto(tag = 3, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub body: Vec<u8>,
     #[proto(tag = 4, bytes)]
-    #[ts(type = "Readonly<Uint8Array>")]
+    #[ts(type = "Uint8Array")]
     /// Published semantic field.
     pub resolved_sha256: Vec<u8>,
     #[proto(tag = 5, optional(uint64))]
     /// Published semantic field.
+    #[ts(optional)]
     pub resolved_revision: Option<u64>,
 }
 
@@ -638,35 +657,48 @@ pub struct Error {
     pub message: String,
 }
 
-/// Export semantic types through maintained ts-rs dependency traversal.
+/// Export the actual Rust declaration registry and its readonly public aliases.
 pub fn export_typescript(path: impl AsRef<std::path::Path>) -> Result<(), ExportError> {
     let config = Config::default()
         .with_out_dir(path.as_ref())
         .with_import_extension(Some("js"));
-    <CodeVersion as TS>::export_all(&config)?;
-    <Deployment as TS>::export_all(&config)?;
-    <PublishVersionRequest as TS>::export_all(&config)?;
-    <PublishVersionResponse as TS>::export_all(&config)?;
-    <SelectDeploymentRequest as TS>::export_all(&config)?;
-    <SelectDeploymentResponse as TS>::export_all(&config)?;
-    <ObjectRef as TS>::export_all(&config)?;
-    <Payload as TS>::export_all(&config)?;
-    <JobResult as TS>::export_all(&config)?;
-    <JobLimits as TS>::export_all(&config)?;
-    <RetryPolicy as TS>::export_all(&config)?;
-    <JobTarget as TS>::export_all(&config)?;
-    <SubmitJobRequest as TS>::export_all(&config)?;
-    <SubmitJobResponse as TS>::export_all(&config)?;
-    <JobObservation as TS>::export_all(&config)?;
-    <InspectJobRequest as TS>::export_all(&config)?;
-    <InspectJobResponse as TS>::export_all(&config)?;
-    <CancelJobRequest as TS>::export_all(&config)?;
-    <CancelJobResponse as TS>::export_all(&config)?;
-    <Header as TS>::export_all(&config)?;
-    <InvokeVersionRequest as TS>::export_all(&config)?;
-    <InvokeDeploymentRequest as TS>::export_all(&config)?;
-    <InvokeResponse as TS>::export_all(&config)?;
-    <Error as TS>::export_all(&config)?;
+    let mut exports = Vec::new();
+    macro_rules! export_roots {
+        ($($root:ty),+ $(,)?) => { $(
+            <$root as TS>::export_all(&config)?;
+            exports.push((<$root as TS>::ident(&config), <$root as TS>::output_path().ok_or(ExportError::CannotBeExported(std::any::type_name::<$root>()))?));
+        )+ };
+    }
+    export_roots!(
+        CodeVersion,
+        Deployment,
+        PublishVersionRequest,
+        PublishVersionResponse,
+        SelectDeploymentRequest,
+        SelectDeploymentResponse,
+        ObjectRef,
+        Payload,
+        JobResult,
+        JobLimits,
+        RetryPolicy,
+        JobTarget,
+        SubmitJobRequest,
+        SubmitJobResponse,
+        JobObservation,
+        InspectJobRequest,
+        InspectJobResponse,
+        CancelJobRequest,
+        CancelJobResponse,
+        Header,
+        InvokeVersionRequest,
+        InvokeDeploymentRequest,
+        InvokeResponse,
+        Error,
+        JobState,
+        ErrorCode,
+        payload::Source,
+        job_target::Target
+    );
     std::fs::write(
         path.as_ref().join("workers/JobState.ts"),
         format!(
@@ -681,6 +713,36 @@ pub fn export_typescript(path: impl AsRef<std::path::Path>) -> Result<(), Export
             "// Generated from Rust discriminants. Do not edit.\nexport type {} = {};\n",
             <ErrorCode as TS>::ident(&config),
             <ErrorCode as TS>::inline(&config)
+        ),
+    )?;
+    exports.sort_by(|left, right| left.0.cmp(&right.0));
+    let raw = exports
+        .iter()
+        .map(|(_, output)| {
+            format!(
+                "export * from \"./{}\";",
+                output
+                    .file_name()
+                    .expect("TS export file")
+                    .to_string_lossy()
+                    .replace(".ts", ".js")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let aliases = exports
+        .iter()
+        .map(|(name, _)| format!("export type {name} = ReadonlySemantic<Semantic.{name}>;"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        path.as_ref().join("workers/index.ts"),
+        format!("// Generated from Rust ts-rs metadata. Do not edit.\n{raw}\n"),
+    )?;
+    std::fs::write(
+        path.as_ref().join("workers/readonly.ts"),
+        format!(
+            "// Generated from Rust ts-rs metadata. Do not edit.\nimport type * as Semantic from \"./index.js\";\nimport type {{ ReadonlySemantic }} from \"../../readonly.js\";\n{aliases}\n"
         ),
     )?;
     Ok(())

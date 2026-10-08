@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatedDescriptors } from "./generated-bindings.mjs";
@@ -23,6 +23,7 @@ if (actors.status !== 0) process.exit(actors.status ?? 1);
 const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", join(root, "proto"), join(root, "typescript/packages/workers/src/generated/semantic")], { cwd: root, stdio: "inherit" });
 if (workers.error) throw workers.error;
 if (workers.status !== 0) process.exit(workers.status ?? 1);
+copyFileSync(join(root, "typescript/packages/actors/src/generated/readonly.ts"), join(root, "typescript/packages/workers/src/generated/readonly.ts"));
 
 run(["generate"]);
 for (const [source, destination] of generatedDescriptors) {
