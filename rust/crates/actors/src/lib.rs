@@ -30,8 +30,22 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Bearer credentials must be nonblank and at most [`MAX_BEARER_TOKEN_BYTES`]; the HTTP and gRPC
 /// header parsers additionally reject control characters such as CR, LF, and NUL.
+<<<<<<< HEAD
 fn valid_token(token: &str) -> bool {
     !token.trim().is_empty() && token.len() <= MAX_BEARER_TOKEN_BYTES
+=======
+pub(crate) fn valid_token(token: &str) -> bool {
+    !token.trim().is_empty()
+        && token.len() <= MAX_BEARER_TOKEN_BYTES
+        && !token
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+}
+
+/// Idempotency keys are present and bounded consistently across operations.
+pub(crate) fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256
+>>>>>>> origin/codex/actors-final-platform-integration
 }
 
 /// Rust-owned route names used by the TypeScript transport generator.
@@ -60,6 +74,7 @@ pub enum ContractError {
     DuplicateName,
 }
 
+<<<<<<< HEAD
 fn digest(value: &[u8]) -> bool {
     value.len() == 32 && value.iter().any(|byte| *byte != 0)
 }
@@ -67,6 +82,24 @@ fn digest(value: &[u8]) -> bool {
 /// Idempotency keys share the 1..=256 byte bound used by the other families.
 fn idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
+=======
+impl ContractError {
+    /// Returns the stable error code shared by every SDK bridge.
+    #[must_use]
+    pub const fn code_name(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::LimitExceeded => "limit_exceeded",
+            Self::DuplicateName => "duplicate_name",
+        }
+    }
+}
+
+impl From<std::convert::Infallible> for ContractError {
+    fn from(value: std::convert::Infallible) -> Self {
+        match value {}
+    }
+>>>>>>> origin/codex/actors-final-platform-integration
 }
 
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
@@ -213,7 +246,10 @@ mod tests {
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
     }
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/codex/actors-final-platform-integration
     #[test]
     fn clients_share_endpoint_and_credential_policy() {
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
@@ -229,7 +265,7 @@ mod tests {
             "http://[::1]:1",
             "https://example.test",
         ] {
-            assert!(http::Client::new(endpoint, &"t".repeat(8192), 1).is_ok());
+            assert!(http::Client::new(endpoint, &"t".repeat(MAX_BEARER_TOKEN_BYTES), 1).is_ok());
         }
         for endpoint in [
             "http://example.test",

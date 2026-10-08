@@ -5,11 +5,99 @@ import { readFileSync } from "node:fs";
 import { HttpActorsClient, CreateActorRequestSchema, InspectActorRequestSchema, type OperationEvent } from "../src/index.js";
 import { observeInterceptors } from "../src/observe.js";
 
+<<<<<<< HEAD
 describe("Actors v1 generated transport", () => {
   test("uses the generated request shape on the Rust-owned create route", async () => {
     let posted = "";
     const client = new HttpActorsClient({
       endpoint: "https://actors.example.test/",
+=======
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  if ("message" in error && typeof error.message === "string") {
+    try {
+      const metadata: unknown = JSON.parse(error.message);
+      if (typeof metadata === "object" && metadata !== null && "code" in metadata && typeof metadata.code === "string") {
+        return metadata.code;
+      }
+    } catch {
+      // Native N-API errors use their status code when no structured metadata exists.
+    }
+  }
+  return "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+describe("Rust-backed Actors client", () => {
+  test("exposes nominal constructors from the package entrypoint", async () => {
+    const actorId = await ActorId("actor-a");
+    const digest = await CodeSha256(new Uint8Array([1, ...new Uint8Array(31)]));
+    const positive = await PositiveU64(1n);
+    const currentHead = await CurrentHeadMarker(true);
+    expect(actorId).toBe("actor-a");
+    expect(digest).toHaveLength(32);
+    expect(positive).toBe(1n);
+    expect(currentHead).toBe(true);
+  });
+
+  test("rejects out-of-range positive integers at the Rust bridge", async () => {
+    for (const [value, code] of [
+      [-1n, "not_positive"],
+      [0n, "invalid_argument"],
+      [18_446_744_073_709_551_616n, "not_positive"],
+    ] as const) {
+      try {
+        await PositiveU64(value);
+        throw new Error(`PositiveU64 unexpectedly accepted ${value}`);
+      } catch (error) {
+        expect(errorCode(error)).toBe(code);
+      }
+    }
+    expect(await PositiveU64(18_446_744_073_709_551_615n)).toBe(18_446_744_073_709_551_615n);
+  });
+
+  test("installs every public operation from the maintained service descriptor", () => {
+    expect(ACTORS_OPERATION_NAMES).toEqual(ActorsService.methods.map(method => method.localName));
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding: { connect: async () => ({ transport: "test" }) } });
+    for (const operation of ACTORS_OPERATION_NAMES) expect(typeof client[operation]).toBe("function");
+  });
+
+  test("encodes semantic oneof requests and preserves optional response presence", async () => {
+    let inspected: MessageShape<typeof InspectActorRequestSchema> | undefined;
+    let subscribed: MessageShape<typeof AddSubscriptionRequestSchema> | undefined;
+    const events: OperationEvent[] = [];
+    const binding: ActorsRustBinding = {
+      connect: async () => ({
+        transport: "test",
+        inspectActor: async request => {
+          inspected = fromBinary(InspectActorRequestSchema, request);
+          return new Uint8Array();
+        },
+        addSubscription: async request => {
+          subscribed = fromBinary(AddSubscriptionRequestSchema, request);
+          return new Uint8Array();
+        },
+      }),
+    };
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding, observer: { onOperation: event => events.push(event) } });
+
+    await client.inspectActor({ actorId: "actor-a" as semantic.ActorId });
+    await client.addSubscription({
+      actorId: "actor-a" as semantic.ActorId,
+      subscription: { subscriptionId: "subscription-a", streamPath: "events/a", start: { start: { case: "currentHead", value: true } }, placementAnchor: false },
+      idempotencyKey: "subscribe-a",
+    });
+
+    expect(inspected?.actorId).toBe("actor-a");
+    expect(subscribed?.subscription?.start?.start.case).toBe("currentHead");
+    expect(subscribed?.subscription?.start?.start.value).toBe(true);
+    expect(events.map(event => event.op)).toEqual(["inspectActor", "addSubscription"]);
+    expect(events.every(event => event.requestBytes !== undefined)).toBe(true);
+  });
+
+  test("materializes absent optional scalar response properties", async () => {
+    const client = new ActorsClient({
+      endpoint: "https://actors.example.test",
+>>>>>>> origin/codex/actors-final-platform-integration
       token: "secret",
       fetcher: async (input, init) => {
         expect(String(input)).toBe("https://actors.example.test/v1/actors/create");
@@ -17,6 +105,7 @@ describe("Actors v1 generated transport", () => {
         return new Response(JSON.stringify({ actor: { actorId: "a", codeSha256: "AQ==", homeRegion: "eu" } }));
       },
     });
+<<<<<<< HEAD
     const response = await client.createActor(create(CreateActorRequestSchema, {
       codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", idempotencyKey: "create-a",
       limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n },
@@ -66,6 +155,8 @@ describe("Actors v1 generated transport", () => {
     ]);
     for (const event of events) expect(Object.keys(event).every(key => ["family", "op", "durationMs", "ok", "code", "requestBytes", "responseBytes", "work"].includes(key))).toBe(true);
     expect(JSON.stringify(events)).not.toMatch(/secret|present|missing|v1\/actors/);
+=======
+>>>>>>> origin/codex/actors-final-platform-integration
 
     const interceptors = [(next: (request: { method: { localName: string } }) => Promise<unknown>) => next];
     expect(observeInterceptors(interceptors, undefined, "actors")).toBe(interceptors);

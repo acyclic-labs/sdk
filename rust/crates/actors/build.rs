@@ -14,6 +14,18 @@ pub enum ContractError {
     DuplicateName,
 }
 
+impl ContractError {
+    /// Returns the stable error code used by the generated schema metadata.
+    #[must_use]
+    pub const fn code_name(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::LimitExceeded => "limit_exceeded",
+            Self::DuplicateName => "duplicate_name",
+        }
+    }
+}
+
 impl From<std::convert::Infallible> for ContractError {
     fn from(value: std::convert::Infallible) -> Self {
         match value {}

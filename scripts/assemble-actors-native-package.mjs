@@ -5,6 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertSourceSnapshot, sourceSnapshot } from "./build-actors-native.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagePath = resolve(root, "typescript/packages/actors");
@@ -53,13 +54,11 @@ async function main() {
   }
   const sourceSha = run("git", ["rev-parse", "HEAD"]);
   if (sourceSha !== options.sourceSha) fail(`source ${options.sourceSha} differs from checkout ${sourceSha}`);
+  const source = await sourceSnapshot();
   const bundle = resolve(options.bundle);
   const output = resolve(options.output);
   const metadata = JSON.parse(await readFile(join(bundle, "native-targets.json"), "utf8"));
   if (metadata.source_revision !== sourceSha) fail("native bundle source revision differs from signed source");
-  for (const name of ["acyclic_actors_wasm.js", "acyclic_actors_wasm_bg.wasm"]) {
-    await readFile(join(packagePath, "generated", "wasm", name));
-  }
   const manifest = JSON.parse(await readFile(join(packagePath, "package.json"), "utf8"));
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-actors-package-"));
   try {
@@ -78,8 +77,21 @@ async function main() {
     // WASM and prevents a corrupt companion from failing closed.
     await cp(packagePath, parentRoot, {
       recursive: true,
+      filter: (source) => source !== join(packagePath, "generated/native") && !source.endsWith(".node"),
+    });
+    const verifiedNative = join(temporary, "native");
+    run(process.execPath, [
+      join(root, "scripts/build-actors-native.mjs"), "stage", "--bundle", bundle,
+      "--output", verifiedNative,
+    ]);
+    await cp(verifiedNative, join(parentRoot, "generated/native"), {
+      recursive: true,
       filter: (source) => !source.endsWith(".node"),
     });
+    run(process.execPath, [
+      join(root, "scripts/build-wasm.mjs"), "actors",
+      join(parentRoot, "generated/wasm"),
+    ]);
     await mkdir(output, { recursive: true });
     const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
 
@@ -93,12 +105,14 @@ async function main() {
     const napi = new NapiCli();
     const npmDir = join(temporary, "npm");
     await napi.createNpmDirs({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir });
-    await napi.artifacts({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir, outputDir: bundle });
+    await napi.artifacts({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir, outputDir: verifiedNative });
     const companionEntries = (await readdir(npmDir, { withFileTypes: true })).filter(entry => entry.isDirectory());
     if (companionEntries.length !== 1) fail(`NAPI-RS produced ${companionEntries.length} companion package directories`);
     const companionRoot = join(npmDir, companionEntries[0].name);
     const companionManifest = JSON.parse(await readFile(join(companionRoot, "package.json"), "utf8"));
     const companionArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: companionRoot });
+    await assertSourceSnapshot(source);
+    if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("source revision changed during package assembly");
     const receipt = {
       schema: "acyclic.actors.native-package-assembly.v1",
       source_commit: sourceSha,

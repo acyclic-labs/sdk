@@ -6,7 +6,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use acyclic_actors::{client, domain, wire};
-use js_sys::{Function, Reflect};
+use js_sys::{BigInt, Function, Reflect, Uint8Array};
 use prost::Message;
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::JsCast;
@@ -21,35 +21,27 @@ fn js_error(code: &str, message: impl std::fmt::Display) -> JsValue {
 }
 
 fn map_error(error: client::Error) -> JsValue {
-    let code = match error {
-        client::Error::Configuration(_) => "configuration",
-        client::Error::Transport(_) => "transport",
-        client::Error::Service { .. } => "service",
-        client::Error::Contract(_) => "contract",
-        client::Error::Semantic(_) => "semantic",
-        client::Error::Cancelled => "cancelled",
-    };
+    let code = error.code_name();
     js_error(code, error)
 }
 
 fn nominal_error(error: domain::DomainError) -> JsValue {
-    let code = match error {
-        domain::DomainError::EmptyActorId => "empty_actor_id",
-        domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
-        domain::DomainError::Contract(_) => "invalid_argument",
-        domain::DomainError::UnknownActorState(_) => "unknown_actor_state",
-        domain::DomainError::UnknownSubscriptionState(_) => "unknown_subscription_state",
-        domain::DomainError::UnknownErrorCode(_) => "unknown_error_code",
-        domain::DomainError::MissingMessage => "missing_message",
-        domain::DomainError::InvalidSubscription => "invalid_subscription",
-        domain::DomainError::InvalidBinding => "invalid_binding",
-    };
+    let code = error.code_name();
     js_error(code, error)
+}
+
+fn nominal_string(value: JsValue, field: &str) -> Result<String, JsValue> {
+    value
+        .as_string()
+        .ok_or_else(|| js_error("invalid_argument", format!("{field} must be a string")))
 }
 
 /// Rust-backed nominal constructor for `ActorId`.
 #[wasm_bindgen(js_name = "ActorId")]
-pub fn actor_id(value: String) -> Result<String, JsValue> {
+pub fn actor_id(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
+) -> Result<String, JsValue> {
+    let value = nominal_string(value, "actor_id")?;
     domain::ActorId::new(value)
         .map(|value| value.as_str().to_owned())
         .map_err(nominal_error)
@@ -57,15 +49,22 @@ pub fn actor_id(value: String) -> Result<String, JsValue> {
 
 /// Rust-backed nominal constructor for `CodeSha256`.
 #[wasm_bindgen(js_name = "CodeSha256")]
-pub fn code_sha256(value: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-    domain::CodeSha256::new(value)
+pub fn code_sha256(
+    #[wasm_bindgen(unchecked_param_type = "Uint8Array")] value: JsValue,
+) -> Result<Vec<u8>, JsValue> {
+    let value: Uint8Array = value
+        .dyn_into()
+        .map_err(|_| js_error("invalid_argument", "code_sha256 must be a Uint8Array"))?;
+    domain::CodeSha256::new(value.to_vec())
         .map(|value| value.as_bytes().to_vec())
         .map_err(nominal_error)
 }
 
 /// Rust-backed nominal constructor for `PositiveU64`.
 #[wasm_bindgen(js_name = "PositiveU64")]
-pub fn positive_u64(value: u64) -> Result<u64, JsValue> {
+pub fn positive_u64(value: BigInt) -> Result<u64, JsValue> {
+    let value = u64::try_from(value)
+        .map_err(|_| js_error("not_positive", "value must be a lossless positive u64"))?;
     domain::PositiveU64::new(value)
         .map(domain::PositiveU64::get)
         .map_err(nominal_error)
@@ -73,7 +72,12 @@ pub fn positive_u64(value: u64) -> Result<u64, JsValue> {
 
 /// Rust-backed nominal constructor for the true-only current-head marker.
 #[wasm_bindgen(js_name = "CurrentHeadMarker")]
-pub fn current_head_marker(value: bool) -> Result<bool, JsValue> {
+pub fn current_head_marker(
+    #[wasm_bindgen(unchecked_param_type = "boolean")] value: JsValue,
+) -> Result<bool, JsValue> {
+    let value = value
+        .as_bool()
+        .ok_or_else(|| js_error("invalid_argument", "current_head_marker must be a boolean"))?;
     domain::subscription_start::CurrentHeadMarker::try_from(value)
         .map(bool::from)
         .map_err(nominal_error)

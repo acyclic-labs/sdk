@@ -73,17 +73,7 @@ fn napi_error(metadata: NativeActorsErrorMetadata) -> Error {
 }
 
 fn nominal_error(error: domain::DomainError) -> NativeActorsErrorMetadata {
-    let code = match error {
-        domain::DomainError::EmptyActorId => "empty_actor_id",
-        domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
-        domain::DomainError::Contract(_) => "invalid_argument",
-        domain::DomainError::UnknownActorState(_) => "unknown_actor_state",
-        domain::DomainError::UnknownSubscriptionState(_) => "unknown_subscription_state",
-        domain::DomainError::UnknownErrorCode(_) => "unknown_error_code",
-        domain::DomainError::MissingMessage => "missing_message",
-        domain::DomainError::InvalidSubscription => "invalid_subscription",
-        domain::DomainError::InvalidBinding => "invalid_binding",
-    };
+    let code = error.code_name();
     NativeActorsErrorMetadata {
         code: code.to_owned(),
         message: error.to_string(),
@@ -141,71 +131,43 @@ pub fn current_head_marker(value: bool) -> Result<bool> {
         .map_err(|error| napi_error(nominal_error(error)))
 }
 
-fn grpc_name(code: i32) -> &'static str {
-    match code {
-        0 => "ok",
-        1 => "cancelled",
-        3 => "invalid_argument",
-        4 => "deadline_exceeded",
-        5 => "not_found",
-        6 => "already_exists",
-        7 => "permission_denied",
-        8 => "resource_exhausted",
-        9 => "failed_precondition",
-        10 => "aborted",
-        11 => "out_of_range",
-        12 => "unimplemented",
-        13 => "internal",
-        14 => "unavailable",
-        15 => "data_loss",
-        16 => "unauthenticated",
-        _ => "unknown",
-    }
-}
-
 fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
+    let code = error.code_name();
     match error {
         client::Error::Configuration(message) => NativeActorsErrorMetadata {
-            code: String::from("invalid_argument"),
+            code: code.to_owned(),
             message,
             ..Default::default()
         },
         client::Error::Transport(message) => NativeActorsErrorMetadata {
-            code: String::from("unavailable"),
+            code: code.to_owned(),
             message,
             ..Default::default()
         },
-        client::Error::Contract(error) => {
-            let code = match error {
-                acyclic_actors::ContractError::InvalidArgument => "invalid_argument",
-                acyclic_actors::ContractError::LimitExceeded => "limit_exceeded",
-                acyclic_actors::ContractError::DuplicateName => "duplicate_name",
-            };
-            NativeActorsErrorMetadata {
-                code: code.to_owned(),
-                message: error.to_string(),
-                contract_code: Some(code.to_owned()),
-                ..Default::default()
-            }
-        }
+        client::Error::Contract(error) => NativeActorsErrorMetadata {
+            code: code.to_owned(),
+            message: error.to_string(),
+            contract_code: Some(code.to_owned()),
+            ..Default::default()
+        },
         client::Error::Semantic(error) => nominal_error(error),
         client::Error::Service { grpc_code, detail } => NativeActorsErrorMetadata {
-            code: grpc_name(grpc_code).to_owned(),
+            code: code.to_owned(),
             message: detail.as_ref().map_or_else(
                 || String::from("Actors service failure"),
                 |value| value.message.clone(),
             ),
             grpc_code: Some(grpc_code),
-            grpc_name: Some(grpc_name(grpc_code).to_owned()),
+            grpc_name: Some(code.to_owned()),
             service_code: detail.as_ref().map(|value| value.code),
             service_message: detail.map(|value| value.message),
             ..Default::default()
         },
         client::Error::Cancelled => NativeActorsErrorMetadata {
-            code: String::from("cancelled"),
+            code: code.to_owned(),
             message: String::from("Actors operation cancelled"),
             grpc_code: Some(1),
-            grpc_name: Some(String::from("cancelled")),
+            grpc_name: Some(code.to_owned()),
             ..Default::default()
         },
     }
