@@ -231,7 +231,9 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     // NAPI-RS emits a dylib-backed addon on Darwin. Keep its Mach-O install
     // name relocatable so the package never embeds the producer's Cargo path.
     // Keep the final linker identity stable while Cargo builds in its own path.
-    flags.push("-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-Wl,-final_output,libacyclic_stream_napi.dylib");
+    // rust-lld is invoked directly by rustc, so pass Darwin options directly;
+    // the -Wl, prefix is only valid when the driver is Apple's ld wrapper.
+    flags.push("-C", "link-arg=-install_name", "-C", "link-arg=@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-final_output", "-C", "link-arg=libacyclic_stream_napi.dylib");
   }
   return flags.join("\x1f");
 }
@@ -251,20 +253,26 @@ export function darwinRustLldPaths(target, sysroot) {
   };
 }
 
-export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, linkerExists = existsSync } = {}) {
+export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, sdkRoot: suppliedSdkRoot, linkerExists = existsSync } = {}) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return () => {};
   const sysroot = suppliedSysroot ?? commandOutput("rustc", ["--print", "sysroot"]);
   const paths = darwinRustLldPaths(target, sysroot);
   if (!linkerExists(paths.linker)) throw new Error(`Rust toolchain rust-lld is unavailable at ${paths.linker}`);
+  const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  if (sdkRoot.length === 0) throw new Error("Darwin rust-lld requires an Apple macOS SDK");
   const priorTargetLinker = envValue(paths.linkerEnvironment);
   const priorDyldLibraryPath = envValue("DYLD_LIBRARY_PATH");
+  const priorSdkRoot = envValue("SDKROOT");
   process.env[paths.linkerEnvironment] = paths.linker;
   process.env.DYLD_LIBRARY_PATH = [paths.loaderPath, priorDyldLibraryPath].filter(value => typeof value === "string" && value.length > 0).join(delimiter);
+  process.env.SDKROOT = sdkRoot;
   return () => {
     if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
     else process.env[paths.linkerEnvironment] = priorTargetLinker;
     if (priorDyldLibraryPath === null) delete process.env.DYLD_LIBRARY_PATH;
     else process.env.DYLD_LIBRARY_PATH = priorDyldLibraryPath;
+    if (priorSdkRoot === null) delete process.env.SDKROOT;
+    else process.env.SDKROOT = priorSdkRoot;
   };
 }
 
@@ -310,6 +318,7 @@ export function linkerInputs(target, environment = process.env) {
       AR: envValue("AR", environment),
       RUSTC_LINKER: envValue("RUSTC_LINKER", environment),
       DYLD_LIBRARY_PATH: envValue("DYLD_LIBRARY_PATH", environment),
+      SDKROOT: envValue("SDKROOT", environment),
       VCINSTALLDIR: envValue("VCINSTALLDIR", environment),
       VCToolsInstallDir: envValue("VCToolsInstallDir", environment),
       WindowsSdkDir: envValue("WindowsSdkDir", environment),
@@ -557,6 +566,7 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
   normalized.linker.configured.target = normalizeToolPath(value.linker.configured.target, context);
   for (const field of ["LINK", "CC", "AR", "RUSTC_LINKER"]) normalized.linker.environment[field] = normalizeToolPath(value.linker.environment[field], context);
   normalized.linker.environment.DYLD_LIBRARY_PATH = normalizeToolPathList(value.linker.environment.DYLD_LIBRARY_PATH, context);
+  normalized.linker.environment.SDKROOT = normalizeToolPath(value.linker.environment.SDKROOT, context);
   for (const field of ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]) normalized.environment[field] = normalizeFlagValue(value.environment[field], context);
   return normalized;
 }
@@ -702,7 +712,7 @@ export function assertBuildInputs(value) {
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
   const linker = assertObject(value.linker, "linker");
   assertNullableStringFields(linker.configured, ["target"], "linker.configured");
-  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "DYLD_LIBRARY_PATH", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
+  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "DYLD_LIBRARY_PATH", "SDKROOT", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
   const actualLinker = assertStringFields(linker.actual, ["source", "rustc", "target"], "linker.actual");
   if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
   if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");

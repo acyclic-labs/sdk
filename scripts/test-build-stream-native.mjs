@@ -153,7 +153,7 @@ function validBuildInputs() {
     },
     linker: {
       configured: { target: null },
-      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, DYLD_LIBRARY_PATH: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
+      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, DYLD_LIBRARY_PATH: null, SDKROOT: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
       actual: {
         source: "rustc-invocation",
         rustc: "C:/Rust/bin/rustc.exe",
@@ -208,8 +208,10 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
 
   const darwin = deterministicRustflags("/src", "/target", "aarch64-apple-darwin").split("\x1f");
   assert.ok(darwin.includes("-C"));
-  assert.ok(darwin.includes("link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib"));
-  assert.ok(darwin.includes("link-arg=-Wl,-final_output,libacyclic_stream_napi.dylib"));
+  assert.ok(darwin.includes("link-arg=-install_name"));
+  assert.ok(darwin.includes("link-arg=@rpath/libacyclic_stream_napi.dylib"));
+  assert.ok(darwin.includes("link-arg=-final_output"));
+  assert.ok(darwin.includes("link-arg=libacyclic_stream_napi.dylib"));
   const lldPaths = darwinRustLldPaths("aarch64-apple-darwin", "/rust/sysroot");
   assert.deepEqual(lldPaths, {
     linkerEnvironment: "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
@@ -257,9 +259,11 @@ test("native qualification rejects build input identity mutations", () => {
   const darwinLinker = linkerInputs("aarch64-apple-darwin", {
     CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld",
     DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
+    SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
   });
   assert.equal(darwinLinker.configured.target, "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld");
   assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
+  assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
 });
 
 test("native qualification normalizes host paths in published build inputs", () => {
@@ -420,29 +424,34 @@ test("native qualification restores Darwin rust-lld linker and loader environmen
   const linkerEnvironment = "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER";
   const priorLinker = process.env[linkerEnvironment];
   const priorLoader = process.env.DYLD_LIBRARY_PATH;
+  const priorSdkRoot = process.env.SDKROOT;
   process.env[linkerEnvironment] = "ambient-linker";
   process.env.DYLD_LIBRARY_PATH = "ambient-loader";
+  process.env.SDKROOT = "ambient-sdk";
   let restore;
   try {
-    restore = configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", linkerExists: () => true });
+    restore = configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", linkerExists: () => true });
     assert.equal(process.env[linkerEnvironment], resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "rust-lld"));
     assert.equal(process.env.DYLD_LIBRARY_PATH, `${resolve("/rust/sysroot", "lib")}${process.platform === "win32" ? ";" : ":"}ambient-loader`);
     restore();
     restore = undefined;
     assert.equal(process.env[linkerEnvironment], "ambient-linker");
     assert.equal(process.env.DYLD_LIBRARY_PATH, "ambient-loader");
+    assert.equal(process.env.SDKROOT, "ambient-sdk");
   } finally {
     restore?.();
     if (priorLinker === undefined) delete process.env[linkerEnvironment];
     else process.env[linkerEnvironment] = priorLinker;
     if (priorLoader === undefined) delete process.env.DYLD_LIBRARY_PATH;
     else process.env.DYLD_LIBRARY_PATH = priorLoader;
+    if (priorSdkRoot === undefined) delete process.env.SDKROOT;
+    else process.env.SDKROOT = priorSdkRoot;
   }
 });
 
 test("native qualification refuses a Darwin toolchain without rust-lld", () => {
   assert.throws(
-    () => configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", linkerExists: () => false }),
+    () => configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", linkerExists: () => false }),
     /Rust toolchain rust-lld is unavailable/u,
   );
 });
