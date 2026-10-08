@@ -42,11 +42,11 @@ const sourceRoots = [
 
 function usage() {
   return `usage:
-  node scripts/build-stream-native.mjs build --target <rust-triple> [--output <native-bundle>] [--target-dir <cargo-target-dir>]
+  node scripts/build-stream-native.mjs build --target <rust-triple> --output <native-bundle> [--target-dir <cargo-target-dir>]
   node scripts/build-stream-native.mjs stage --bundle <native-bundle> [--output <package-native-dir>]
   node scripts/build-stream-native.mjs check [--output <package-native-dir>]
 
-build requires an explicit Rust target and a clean source closure. Release and
+build requires an explicit Rust target, output bundle, and clean source closure. Release and
 manual matrix jobs build into a bundle, then stage copies that attested bundle
 into the package. check is cheap and never invokes Cargo or NAPI-RS.`;
 }
@@ -171,6 +171,14 @@ function executableIdentity(command, args, executable) {
 
 function executableFileIdentity(command, executable) {
   return { command, args: [], output: executable, executable_sha256: digest(readFileSync(executable)) };
+}
+
+export function capturedCompilerIdentity(invocation, target, preflight, identity = executableIdentity) {
+  const actual = identity(invocation.rustc, ["--version", "--verbose"], invocation.rustc);
+  if (target.endsWith("-apple-darwin") && actual.output !== preflight.output) {
+    throw new Error("captured Darwin Rust compiler differs from Apple toolchain preflight");
+  }
+  return actual;
 }
 
 function optionalCommandIdentity(command, args) {
@@ -630,6 +638,7 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
   normalized.generator.options.output_dir = "<output-dir>";
   normalized.generator.options.target_dir = "<target-dir>";
   normalized.linker.actual.rustc = "rustc";
+  normalized.compiler.rustc.command = "rustc";
   normalized.linker.actual.linker = normalizeToolPath(value.linker.actual.linker, context);
   const rawLinkerArgs = value.linker.actual.args.filter(arg => !isDiagnosticOnlyRustcArgument(arg));
   normalized.linker.actual.args = normalized.linker.actual.args.filter(arg => !isDiagnosticOnlyRustcArgument(arg)).map((arg, index) => {
@@ -776,6 +785,7 @@ export function assertBuildInputs(value) {
     const identity = assertStringFields(value.compiler?.[compiler], ["command", "output"], `compiler.${compiler}`);
     assertStringArray(identity.args, `compiler.${compiler}.args`);
   }
+  assertDigest(value.compiler.rustc.executable_sha256, "compiler.rustc.executable_sha256");
   const generator = assertStringFields(value.generator, ["package", "version", "package_sha256", "entry_sha256", "lock_sha256"], "generator");
   assertString(generator.package, "generator.package");
   if (value.generator.package !== "@napi-rs/cli") throw new Error("native build generator package is unsupported");
@@ -1010,8 +1020,9 @@ export async function publishBundle(candidate, output, { validateExisting = asse
 
 async function build(options) {
   if (options.target === undefined) throw new Error(`build requires --target <rust-triple>\n\n${usage()}`);
+  if (options.output === undefined) throw new Error(`build requires --output <native-bundle>; stage copies the completed bundle into the package\n\n${usage()}`);
   assertCleanSource();
-  const output = resolve(options.output ?? defaultOutput);
+  const output = resolve(options.output);
   await assertExistingBundle(output);
   const buildOutput = await mkdtemp(resolve(dirname(output), ".acyclic-stream-native-build-"));
   let published = false;
@@ -1081,6 +1092,7 @@ async function build(options) {
       await rustcCapture.close();
       await rm(temporary, { recursive: true, force: true });
     }
+    attestedInputs.compiler.rustc = capturedCompilerIdentity(attestedInputs.linker.actual, options.target, attestedInputs.compiler.rustc);
     return attestedInputs;
   });
   await assertSourceSnapshot(source);

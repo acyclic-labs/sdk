@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -7,9 +8,33 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, darwinRustObjcopyIdentity, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, capturedCompilerIdentity, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, darwinRustObjcopyIdentity, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+
+test("native build requires an output bundle before discovering Cargo", () => {
+  const result = spawnSync(process.execPath, [resolve(root, "scripts/build-stream-native.mjs"), "build", "--target", "x86_64-pc-windows-msvc"], {
+    env: { ...process.env, PATH: "", Path: "" }, encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /build requires --output <native-bundle>/u);
+  assert.doesNotMatch(result.stderr, /ENOENT|requires a clean source closure|spawn.*cargo/u);
+});
+
+test("native compiler identity binds the captured executable instead of PATH preflight", async () => {
+  const bytes = await readFile(process.execPath);
+  const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const expected = { command: process.execPath, args: ["--version", "--verbose"], output: "captured compiler version", executable_sha256: sha256 };
+  const identity = (command, args, executable) => {
+    assert.equal(command, process.execPath);
+    assert.deepEqual(args, expected.args);
+    assert.equal(executable, process.execPath);
+    return expected;
+  };
+  assert.equal(capturedCompilerIdentity({ rustc: process.execPath }, "x86_64-pc-windows-msvc", { output: "PATH compiler version" }, identity), expected);
+  assert.throws(() => capturedCompilerIdentity({ rustc: process.execPath }, "aarch64-apple-darwin", { output: "PATH compiler version" }, identity), /differs from Apple toolchain preflight/u);
+  assert.equal(capturedCompilerIdentity({ rustc: process.execPath }, "aarch64-apple-darwin", expected, identity), expected);
+});
 
 test("non-Darwin builds do not discover Apple signing tools or read signing artifacts", () => {
   for (const target of ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]) {
@@ -192,7 +217,7 @@ function validBuildInputs() {
     runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: null } },
     invocation: { script: "scripts/build-stream-native.mjs", runtime: "node", args: ["build", "--target", "x86_64-pc-windows-msvc"] },
     compiler: {
-      rustc: { command: "rustc", args: ["--version", "--verbose"], output: "rustc 1.98.1\nhost: x86_64-pc-windows-msvc" },
+      rustc: { command: "rustc", args: ["--version", "--verbose"], output: "rustc 1.98.1\nhost: x86_64-pc-windows-msvc", executable_sha256: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" },
       cargo: { command: "cargo", args: ["--version", "--verbose"], output: "cargo 1.98.1\nhost: x86_64-pc-windows-msvc" },
     },
     generator: {
@@ -290,6 +315,7 @@ test("native qualification rejects build input identity mutations", () => {
   /** @type {Array<[string, (value: BuildInputs) => void, RegExp]>} */
   const mutations = [
     ["compiler", value => { value.compiler.rustc.output = "rustc 1.99.0"; }, /build input attestation differs/],
+    ["compiler binary", value => { value.compiler.rustc.executable_sha256 = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }, /build input attestation differs/],
     ["generator", value => { value.generator.version = "3.10.4"; }, /build input attestation differs/],
     ["generator options", value => { value.generator.options.output_dir = "C:/runner/_work/other-bundle"; }, /build input attestation differs/],
     ["bun", value => { value.runtime.bun.maintained = "1.4.1"; }, /build input attestation differs/],
@@ -304,7 +330,7 @@ test("native qualification rejects build input identity mutations", () => {
   for (const [label, mutate, expected] of mutations) {
     const mutated = structuredClone(valid);
     mutate(mutated);
-    if (["compiler", "generator", "generator options", "bun", "invocation", "linker", "environment"].includes(label)) assert.throws(() => assertMatchingBuildInputs(valid, mutated), expected);
+    if (["compiler", "compiler binary", "generator", "generator options", "bun", "invocation", "linker", "environment"].includes(label)) assert.throws(() => assertMatchingBuildInputs(valid, mutated), expected);
     else assert.throws(() => assertBuildInputs(mutated), expected);
   }
 
