@@ -1568,7 +1568,7 @@ fn plan_local_context_subtree_discard(
     Ok(Ok(selected))
 }
 
-/// Every context present in memory or on disk, absent ones excluded.
+/// Every context present in memory or on disk with a matching stored identity.
 fn live_context_ids(
     root: &Namespace,
     log: &mut CoreLog,
@@ -1599,7 +1599,12 @@ fn live_context_ids(
     }));
     let mut live = Vec::with_capacity(ids.len());
     for context_id in ids {
-        if log.get::<WorkspaceContext>(root, context_id)?.is_some() {
+        if let Some(context) = log.get::<WorkspaceContext>(root, context_id)? {
+            if context.context_id != context_id {
+                return Err(LocalCoreStateStoreError::ContextTransaction(
+                    "workspace context identity does not match its stored key".to_owned(),
+                ));
+            }
             live.push(context_id);
         }
     }
@@ -2522,6 +2527,76 @@ mod tests {
             .collect(),
             state,
         }
+    }
+
+    #[tokio::test]
+    async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let namespace = store.namespace().expect("admitted namespace");
+        let target_id = WorkspaceContextId::from_bytes([41; 16]);
+        let stored_id = WorkspaceContextId::from_bytes([42; 16]);
+        let removed_root = WorkspaceRootId::from_bytes([10; 16]);
+        let mut target = workspace_context(
+            directory.path(),
+            target_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let mut second = target.roots.values().next().expect("first root").clone();
+        second.root_id = removed_root;
+        second.source_path = directory.path().join("second");
+        second.workspace_id = WorkspaceId::from_bytes([10; 16]);
+        second.workspace_name = "second".to_owned();
+        target.roots.insert(removed_root, second);
+        let corrupt = workspace_context(
+            directory.path(),
+            WorkspaceContextId::from_bytes([99; 16]),
+            1,
+            WorkspaceContextState::Active,
+        );
+        let mut files = Vec::new();
+        for (id, record) in [(target_id, target), (stored_id, corrupt)] {
+            let paths = context_paths(&namespace, id);
+            std::fs::create_dir_all(&paths.directory).expect("record directory");
+            write_journaled(&paths, &record).expect("persist fixture");
+            files.push((
+                paths.current.clone(),
+                std::fs::read(&paths.current).expect("original bytes"),
+            ));
+        }
+        let listed = WorkspaceContextStore::list(&store).await;
+        let swapped = WorkspaceContextStore::compare_and_swap_many(
+            &store,
+            BTreeMap::from([(target_id, 1), (stored_id, 1)]),
+            Vec::new(),
+            true,
+        )
+        .await;
+        let registry = crate::WorkspaceContextRegistry::new(store);
+        let removed = tokio::time::timeout(
+            Duration::from_secs(2),
+            registry.remove_root(target_id, removed_root),
+        )
+        .await;
+        for (path, before) in files {
+            assert_eq!(std::fs::read(path).expect("unchanged bytes"), before);
+        }
+        assert!(
+            matches!(
+                listed.as_ref(),
+                Err(LocalCoreStateStoreError::ContextTransaction(_))
+            ) && matches!(
+                swapped.as_ref(),
+                Err(LocalCoreStateStoreError::ContextTransaction(_))
+            ) && matches!(
+                removed.as_ref(),
+                Ok(Err(crate::WorkspaceContextError::Store(
+                    LocalCoreStateStoreError::ContextTransaction(_)
+                )))
+            ),
+            "corrupt discovery must fail closed, not retry: list={listed:?}, cas={swapped:?}, removal={removed:?}"
+        );
     }
 
     #[tokio::test]
