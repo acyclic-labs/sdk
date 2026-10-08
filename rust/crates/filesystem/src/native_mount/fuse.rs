@@ -3847,7 +3847,10 @@ macro_rules! respond {
     ($reply:ident, $result:expr, |$value:pat_param| $ok:expr) => {
         match $result {
             Ok($value) => $ok,
-            Err(error) => $reply.error(Errno::from_i32(error)),
+            Err(error) => {
+                tracing::Span::current().record("errno", error);
+                $reply.error(Errno::from_i32(error))
+            }
         }
     };
 }
@@ -3877,7 +3880,10 @@ impl Filesystem for FuseProjection {
 
     fn lookup(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let _ = request;
-        let _request = self.core.request("lookup");
+        let _request = (
+            self.core.request("lookup"),
+            callback_span!(TRACE, lookup, ino = parent.0),
+        );
         respond!(reply, self.lookup_entry(parent.0, name), |entry| entry
             .reply(reply));
     }
@@ -3890,7 +3896,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyAttr,
     ) {
         let _ = request;
-        let _request = self.core.request("getattr");
+        let _request = (
+            self.core.request("getattr"),
+            callback_span!(TRACE, getattr, ino = inode.0),
+        );
         respond!(
             reply,
             self.node_attributes(
@@ -3903,7 +3912,10 @@ impl Filesystem for FuseProjection {
 
     fn forget(&self, request: &Request, inode: INodeNo, nlookup: u64) {
         let _ = request;
-        let _request = self.core.request("forget");
+        let _request = (
+            self.core.request("forget"),
+            callback_span!(TRACE, forget, ino = inode.0),
+        );
         self.core
             .state_to_finish()
             .release_lookup_reference(inode.0, nlookup);
@@ -3911,7 +3923,10 @@ impl Filesystem for FuseProjection {
 
     fn readlink(&self, request: &Request, inode: INodeNo, reply: ReplyData) {
         let _ = request;
-        let _request = self.core.request("readlink");
+        let _request = (
+            self.core.request("readlink"),
+            callback_span!(TRACE, readlink, ino = inode.0),
+        );
         respond!(reply, self.read_link(inode.0), |target| reply.data(&target));
     }
 
@@ -3938,7 +3953,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyAttr,
     ) {
         let _ = request;
-        let _request = self.core.request("setattr");
+        let _request = (
+            self.core.request("setattr"),
+            callback_span!(DEBUG, setattr, ino = inode.0),
+        );
         if bkuptime.is_some() {
             return reply.error(Errno::from_i32(libc::EOPNOTSUPP));
         }
@@ -3973,7 +3991,10 @@ impl Filesystem for FuseProjection {
         umask: u32,
         reply: ReplyEntry,
     ) {
-        let _request = self.core.request("mkdir");
+        let _request = (
+            self.core.request("mkdir"),
+            callback_span!(TRACE, mkdir, ino = parent.0),
+        );
         let metadata = create_metadata(mode & !umask, S_IFDIR, request.uid(), request.gid());
         respond!(
             reply,
@@ -3994,7 +4015,10 @@ impl Filesystem for FuseProjection {
         rdev: u32,
         reply: ReplyEntry,
     ) {
-        let _request = self.core.request("mknod");
+        let _request = (
+            self.core.request("mknod"),
+            callback_span!(TRACE, mknod, ino = parent.0),
+        );
         let (kind, device) = match mode & S_IFMT {
             S_IFIFO => (MountNodeKind::Fifo, None),
             S_IFSOCK => (MountNodeKind::Socket, None),
@@ -4023,7 +4047,10 @@ impl Filesystem for FuseProjection {
         target: &Path,
         reply: ReplyEntry,
     ) {
-        let _request = self.core.request("symlink");
+        let _request = (
+            self.core.request("symlink"),
+            callback_span!(TRACE, symlink, ino = parent.0),
+        );
         let metadata = create_metadata(0o777, S_IFLNK, request.uid(), request.gid());
         let target = Bytes::copy_from_slice(target.as_os_str().as_bytes());
         respond!(
@@ -4037,13 +4064,19 @@ impl Filesystem for FuseProjection {
 
     fn unlink(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _request = self.core.request("unlink");
+        let _request = (
+            self.core.request("unlink"),
+            callback_span!(TRACE, unlink, ino = parent.0),
+        );
         respond!(reply, self.remove_name(parent.0, name), |()| reply.ok());
     }
 
     fn rmdir(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _request = self.core.request("rmdir");
+        let _request = (
+            self.core.request("rmdir"),
+            callback_span!(TRACE, rmdir, ino = parent.0),
+        );
         respond!(reply, self.remove_name(parent.0, name), |()| reply.ok());
     }
 
@@ -4058,7 +4091,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _request = self.core.request("rename");
+        let _request = (
+            self.core.request("rename"),
+            callback_span!(DEBUG, rename, ino = parent.0),
+        );
         respond!(
             reply,
             self.rename_name(parent.0, name, new_parent.0, new_name, flags.bits()),
@@ -4075,7 +4111,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let _ = request;
-        let _request = self.core.request("link");
+        let _request = (
+            self.core.request("link"),
+            callback_span!(TRACE, link, ino = inode.0),
+        );
         respond!(
             reply,
             self.link_name(inode.0, new_parent.0, new_name),
@@ -4085,7 +4124,10 @@ impl Filesystem for FuseProjection {
 
     fn open(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = request;
-        let _request = self.core.request("open");
+        let _request = (
+            self.core.request("open"),
+            callback_span!(TRACE, open, ino = inode.0),
+        );
         if self.skips_open {
             // `ENOSYS` tells the kernel to open every file without asking.
             return reply.error(Errno::from_i32(libc::ENOSYS));
@@ -4110,7 +4152,17 @@ impl Filesystem for FuseProjection {
         reply: ReplyData,
     ) {
         let _ = (request, flags, lock_owner);
-        let _request = self.core.request("read");
+        let _request = (
+            self.core.request("read"),
+            callback_span!(
+                TRACE,
+                read,
+                ino = inode.0,
+                fh = fh.0,
+                offset = offset,
+                len = size
+            ),
+        );
         respond!(
             reply,
             self.read_through(inode.0, fh.0, offset, size),
@@ -4137,7 +4189,17 @@ impl Filesystem for FuseProjection {
         reply: ReplyWrite,
     ) {
         let _ = (request, write_flags, flags, lock_owner);
-        let _request = self.core.request("write");
+        let _request = (
+            self.core.request("write"),
+            callback_span!(
+                TRACE,
+                write,
+                ino = inode.0,
+                fh = fh.0,
+                offset = offset,
+                len = data.len()
+            ),
+        );
         respond!(
             reply,
             self.with_handle(inode.0, fh.0, Access::Write, |handle| {
@@ -4158,7 +4220,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, datasync);
-        let _request = self.core.request("fsync");
+        let _request = (
+            self.core.request("fsync"),
+            callback_span!(DEBUG, fsync, ino = inode.0, fh = fh.0),
+        );
         let flushed = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
             self.flush_handle(inode.0, handle, true, false)
         });
@@ -4176,7 +4241,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, lock_owner);
-        let _request = self.core.request("flush");
+        let _request = (
+            self.core.request("flush"),
+            callback_span!(DEBUG, flush, ino = inode.0, fh = fh.0),
+        );
         if self.skips_open && fh.0 == 0 {
             // A close flushes nothing for this source (see `skips_open`), and
             // `ENOSYS` tells the kernel to stop sending closes.
@@ -4206,7 +4274,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, flags, lock_owner, flush);
-        let _request = self.core.request("release");
+        let _request = (
+            self.core.request("release"),
+            callback_span!(DEBUG, release, ino = inode.0, fh = fh.0),
+        );
         respond!(reply, self.flush_handle(inode.0, fh.0, false, true), |()| {
             reply.ok();
         });
@@ -4214,7 +4285,10 @@ impl Filesystem for FuseProjection {
 
     fn opendir(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = (request, inode, flags);
-        let _request = self.core.request("opendir");
+        let _request = (
+            self.core.request("opendir"),
+            callback_span!(TRACE, opendir, ino = inode.0),
+        );
         // `ENOSYS` tells the kernel to list every directory without opening
         // it from now on, with its listing cached.
         if self.skips_opendir {
@@ -4235,7 +4309,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectory,
     ) {
         let _ = (request, fh);
-        let _request = self.core.request("readdir");
+        let _request = (
+            self.core.request("readdir"),
+            callback_span!(TRACE, readdir, ino = inode.0, fh = fh.0, offset = offset),
+        );
         self.list_directory(inode.0, offset, reply);
     }
 
@@ -4248,7 +4325,16 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectoryPlus,
     ) {
         let _ = (request, fh);
-        let _request = self.core.request("readdirplus");
+        let _request = (
+            self.core.request("readdirplus"),
+            callback_span!(
+                TRACE,
+                readdirplus,
+                ino = inode.0,
+                fh = fh.0,
+                offset = offset
+            ),
+        );
         self.list_directory(inode.0, offset, reply);
     }
 
@@ -4261,7 +4347,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, inode, fh, flags);
-        let _request = self.core.request("releasedir");
+        let _request = (
+            self.core.request("releasedir"),
+            callback_span!(TRACE, releasedir, ino = inode.0, fh = fh.0),
+        );
         reply.ok();
     }
 
@@ -4274,7 +4363,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, inode, fh, datasync);
-        let _request = self.core.request("fsyncdir");
+        let _request = (
+            self.core.request("fsyncdir"),
+            callback_span!(TRACE, fsyncdir, ino = inode.0, fh = fh.0),
+        );
         // Directory fsync is an explicit durability boundary too; never hold
         // the state lock across SDK publication.
         respond!(reply, self.source().flush().map_err(errno), |()| reply.ok());
@@ -4295,7 +4387,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _request = self.core.request("setxattr");
+        let _request = (
+            self.core.request("setxattr"),
+            callback_span!(TRACE, setxattr, ino = inode.0),
+        );
         respond!(
             reply,
             self.write_named_attribute(inode.0, name, value, flags, position),
@@ -4312,7 +4407,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyXattr,
     ) {
         let _ = request;
-        let _request = self.core.request("getxattr");
+        let _request = (
+            self.core.request("getxattr"),
+            callback_span!(TRACE, getxattr, ino = inode.0),
+        );
         respond!(reply, self.read_named_attribute(inode.0, name), |value| {
             reply_xattr(reply, &value, size);
         });
@@ -4320,7 +4418,10 @@ impl Filesystem for FuseProjection {
 
     fn listxattr(&self, request: &Request, inode: INodeNo, size: u32, reply: ReplyXattr) {
         let _ = request;
-        let _request = self.core.request("listxattr");
+        let _request = (
+            self.core.request("listxattr"),
+            callback_span!(TRACE, listxattr, ino = inode.0),
+        );
         respond!(reply, self.list_named_attributes(inode.0), |encoded| {
             reply_xattr(reply, &encoded, size);
         });
@@ -4328,7 +4429,10 @@ impl Filesystem for FuseProjection {
 
     fn removexattr(&self, request: &Request, inode: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _request = self.core.request("removexattr");
+        let _request = (
+            self.core.request("removexattr"),
+            callback_span!(TRACE, removexattr, ino = inode.0),
+        );
         respond!(reply, self.remove_named_attribute(inode.0, name), |()| {
             reply.ok();
         });
@@ -4349,7 +4453,17 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _request = self.core.request("fallocate");
+        let _request = (
+            self.core.request("fallocate"),
+            callback_span!(
+                TRACE,
+                fallocate,
+                ino = inode.0,
+                fh = fh.0,
+                offset = offset,
+                len = length
+            ),
+        );
         respond!(
             reply,
             self.with_handle(inode.0, fh.0, Access::Write, |handle| {
@@ -4369,7 +4483,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyLseek,
     ) {
         let _ = request;
-        let _request = self.core.request("lseek");
+        let _request = (
+            self.core.request("lseek"),
+            callback_span!(TRACE, lseek, ino = inode.0, fh = fh.0, offset = offset),
+        );
         let found = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
             self.seek(inode.0, handle, offset, whence)
         });
@@ -4396,7 +4513,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyWrite,
     ) {
         let _ = request;
-        let _request = self.core.request("copy_file_range");
+        let _request = (
+            self.core.request("copy_file_range"),
+            callback_span!(TRACE, copy_file_range, len = length),
+        );
         let copied = self.with_handle(inode_in.0, fh_in.0, Access::Read, |handle_in| {
             self.with_handle(inode_out.0, fh_out.0, Access::Write, |handle_out| {
                 self.copy_range(
@@ -4428,7 +4548,10 @@ impl Filesystem for FuseProjection {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        let _request = self.core.request("create");
+        let _request = (
+            self.core.request("create"),
+            callback_span!(DEBUG, create, ino = parent.0),
+        );
         respond!(
             reply,
             self.create_file(request, parent.0, name, mode & !umask, flags),

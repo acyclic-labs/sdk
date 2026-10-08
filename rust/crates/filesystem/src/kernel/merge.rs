@@ -109,7 +109,7 @@ pub enum MergeGenerationOutcome {
 }
 
 /// Canonical merge failures.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MergeGenerationError {
     /// Merge roots or persistent diff structure are contradictory.
     #[error("generation merge structure is invalid")]
@@ -168,6 +168,21 @@ pub type MergeGenerationResult =
     clippy::too_many_lines,
     reason = "one sparse bounded three-way merge and its two-parent checkpoint"
 )]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    tracing::instrument(
+        name = "acyclic.fs.kernel.merge",
+        level = "debug",
+        skip_all,
+        fields(
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        )
+    )
+)]
 pub async fn merge_generation_async<S: AsyncObjectStore>(
     store: &S,
     request: MergeGenerationRequest,
@@ -175,310 +190,344 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> MergeGenerationResult {
-    cancellation
-        .check()
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-    if request.maximum_changes == 0 || request.maximum_conflicts == 0 {
-        return Err(OperationFailure::before_work(
-            MergeGenerationError::ChangeLimit,
-        ));
-    }
-    if request.base.volume_id != request.ours.volume_id
-        || request.base.volume_id != request.theirs.volume_id
-        || request.base.root_file_id != request.ours.root_file_id
-        || request.base.root_file_id != request.theirs.root_file_id
-    {
-        return Err(OperationFailure::before_work(
-            MergeGenerationError::InvalidDiff,
-        ));
-    }
-    let mut work = WorkCounters::default();
-    let ours = diff_file_records_async(
-        store,
-        Some(request.base.file_table),
-        Some(request.ours.file_table),
-        request.maximum_changes,
-        limits,
-        remaining(work, budget)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| map_diff_failure(failure, work))?;
-    work = add(work, ours.work)?;
-    let theirs = diff_file_records_async(
-        store,
-        Some(request.base.file_table),
-        Some(request.theirs.file_table),
-        request.maximum_changes,
-        limits,
-        remaining(work, budget)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| map_diff_failure(failure, work))?;
-    work = add(work, theirs.work)?;
-    if ours.truncated || theirs.truncated {
-        return Err(OperationFailure::new(
-            MergeGenerationError::ChangeLimit,
-            work,
-        ));
-    }
-    let ours = changes_by_file(ours.changes);
-    let theirs = changes_by_file(theirs.changes);
-    let identities = ours
-        .keys()
-        .chain(theirs.keys())
-        .copied()
-        .collect::<BTreeSet<_>>();
-    if identities.len() > usize::try_from(request.maximum_changes).unwrap_or(usize::MAX) {
-        return Err(OperationFailure::new(
-            MergeGenerationError::ChangeLimit,
-            work,
-        ));
-    }
-    let mut remaining_changes = request
-        .maximum_changes
-        .checked_sub(u32::try_from(identities.len()).unwrap_or(u32::MAX))
-        .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, work))?;
-    let mut resolutions = BTreeMap::new();
-    let mut conflicts = Vec::new();
-    let mut truncated = false;
-    let mut folds = Vec::new();
-    let mut file_folds = Vec::new();
-    for file_id in identities {
-        let base = ours
-            .get(&file_id)
-            .map(|change| change.0)
-            .or_else(|| theirs.get(&file_id).map(|change| change.0))
-            .flatten();
-        let ours_value = ours.get(&file_id).map_or(base, |change| change.1);
-        let theirs_value = theirs.get(&file_id).map_or(base, |change| change.1);
-        let mut resolved = resolve_optional(base, ours_value, theirs_value);
-        // Both sides added the same identity (each materialized one shared
-        // source file, say) with identical content: a convergent addition.
-        if matches!(resolved, OptionalResolution::Conflict)
-            && base.is_none()
-            && let (Some(ours_record), Some(theirs_record)) = (ours_value, theirs_value)
-            && ours_record.kind == theirs_record.kind
-            && ours_record.payload == theirs_record.payload
-            && let Some(metadata) = converge_metadata_async(
+    crate::obs::measured(
+        async move {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::before_work(error.into()))?;
+            if request.maximum_changes == 0 || request.maximum_conflicts == 0 {
+                return Err(OperationFailure::before_work(
+                    MergeGenerationError::ChangeLimit,
+                ));
+            }
+            if request.base.volume_id != request.ours.volume_id
+                || request.base.volume_id != request.theirs.volume_id
+                || request.base.root_file_id != request.ours.root_file_id
+                || request.base.root_file_id != request.theirs.root_file_id
+            {
+                return Err(OperationFailure::before_work(
+                    MergeGenerationError::InvalidDiff,
+                ));
+            }
+            let mut work = WorkCounters::default();
+            let ours = diff_file_records_async(
                 store,
-                ours_record.metadata,
-                theirs_record.metadata,
+                Some(request.base.file_table),
+                Some(request.ours.file_table),
+                request.maximum_changes,
                 limits,
-                budget,
+                remaining(work, budget)?,
                 cancellation,
-                &mut work,
             )
-            .await?
-        {
-            resolved = OptionalResolution::Resolved(Some(FileRecord {
-                metadata,
-                ..ours_record
-            }));
-        }
-        // Both sides added the same directory identity (each promoted one
-        // shared source directory, say) with different entries: merge those
-        // entries against an empty directory.
-        let base = if base.is_none()
-            && matches!(resolved, OptionalResolution::Conflict)
-            && is_directory(ours_value)
-            && is_directory(theirs_value)
-        {
-            let ours_record = ours_value.ok_or_else(|| invalid(work))?;
-            let entries = empty_tree_async(store, limits, budget, cancellation, &mut work).await?;
-            Some(FileRecord {
-                payload: FilePayload::Directory { entries },
-                ..ours_record
-            })
-        } else {
-            base
-        };
-        if matches!(resolved, OptionalResolution::Conflict)
-            && is_directory(base)
-            && is_directory(ours_value)
-            && is_directory(theirs_value)
-        {
-            if remaining_changes == 0 {
+            .await
+            .map_err(|failure| map_diff_failure(failure, work))?;
+            work = add(work, ours.work)?;
+            let theirs = diff_file_records_async(
+                store,
+                Some(request.base.file_table),
+                Some(request.theirs.file_table),
+                request.maximum_changes,
+                limits,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| map_diff_failure(failure, work))?;
+            work = add(work, theirs.work)?;
+            if ours.truncated || theirs.truncated {
                 return Err(OperationFailure::new(
                     MergeGenerationError::ChangeLimit,
                     work,
                 ));
             }
-            let directory = merge_directory_record_with_resolutions_async(
-                store,
-                file_id,
-                base.ok_or_else(|| invalid(work))?,
-                ours_value.ok_or_else(|| invalid(work))?,
-                theirs_value.ok_or_else(|| invalid(work))?,
-                remaining_changes,
-                request
-                    .maximum_conflicts
-                    .saturating_sub(u32::try_from(conflicts.len()).unwrap_or(u32::MAX)),
-                &request.resolutions,
-                limits,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add(work, directory.work)?;
-            remaining_changes = remaining_changes
-                .checked_sub(directory.value.examined_changes)
-                .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, work))?;
-            conflicts.extend(directory.value.conflicts);
-            truncated |= directory.value.truncated;
-            folds.extend(directory.value.folds);
-            file_folds.extend(directory.value.file_folds);
-            let Some(record) = directory.value.record else {
-                continue;
-            };
-            resolved = OptionalResolution::Resolved(Some(record));
-        }
-        if matches!(resolved, OptionalResolution::Conflict)
-            && base.is_some()
-            && ours_value.is_some()
-            && theirs_value.is_some()
-            && is_extent_regular(base)
-            && is_extent_regular(ours_value)
-            && is_extent_regular(theirs_value)
-        {
-            let regular = merge_regular_record_async(
-                store,
-                base.ok_or_else(|| invalid(work))?,
-                ours_value.ok_or_else(|| invalid(work))?,
-                theirs_value.ok_or_else(|| invalid(work))?,
-                remaining_changes,
-                limits,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add(work, regular.work)?;
-            if let Some((record, examined)) = regular.value {
-                remaining_changes = remaining_changes.checked_sub(examined).ok_or_else(|| {
-                    OperationFailure::new(MergeGenerationError::ChangeLimit, work)
-                })?;
-                resolved = OptionalResolution::Resolved(Some(record));
+            let ours = changes_by_file(ours.changes);
+            let theirs = changes_by_file(theirs.changes);
+            let identities = ours
+                .keys()
+                .chain(theirs.keys())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if identities.len() > usize::try_from(request.maximum_changes).unwrap_or(usize::MAX) {
+                return Err(OperationFailure::new(
+                    MergeGenerationError::ChangeLimit,
+                    work,
+                ));
             }
-        }
-        if matches!(resolved, OptionalResolution::Conflict) {
-            resolved = merge_records_async(
+            let mut remaining_changes = request
+                .maximum_changes
+                .checked_sub(u32::try_from(identities.len()).unwrap_or(u32::MAX))
+                .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, work))?;
+            let mut resolutions = BTreeMap::new();
+            let mut conflicts = Vec::new();
+            let mut truncated = false;
+            let mut folds = Vec::new();
+            let mut file_folds = Vec::new();
+            for file_id in identities {
+                let base = ours
+                    .get(&file_id)
+                    .map(|change| change.0)
+                    .or_else(|| theirs.get(&file_id).map(|change| change.0))
+                    .flatten();
+                let ours_value = ours.get(&file_id).map_or(base, |change| change.1);
+                let theirs_value = theirs.get(&file_id).map_or(base, |change| change.1);
+                let mut resolved = resolve_optional(base, ours_value, theirs_value);
+                // Both sides added the same identity (each materialized one shared
+                // source file, say) with identical content: a convergent addition.
+                if matches!(resolved, OptionalResolution::Conflict)
+                    && base.is_none()
+                    && let (Some(ours_record), Some(theirs_record)) = (ours_value, theirs_value)
+                    && ours_record.kind == theirs_record.kind
+                    && ours_record.payload == theirs_record.payload
+                    && let Some(metadata) = converge_metadata_async(
+                        store,
+                        ours_record.metadata,
+                        theirs_record.metadata,
+                        limits,
+                        budget,
+                        cancellation,
+                        &mut work,
+                    )
+                    .await?
+                {
+                    resolved = OptionalResolution::Resolved(Some(FileRecord {
+                        metadata,
+                        ..ours_record
+                    }));
+                }
+                // Both sides added the same directory identity (each promoted one
+                // shared source directory, say) with different entries: merge those
+                // entries against an empty directory.
+                let base = if base.is_none()
+                    && matches!(resolved, OptionalResolution::Conflict)
+                    && is_directory(ours_value)
+                    && is_directory(theirs_value)
+                {
+                    let ours_record = ours_value.ok_or_else(|| invalid(work))?;
+                    let entries =
+                        empty_tree_async(store, limits, budget, cancellation, &mut work).await?;
+                    Some(FileRecord {
+                        payload: FilePayload::Directory { entries },
+                        ..ours_record
+                    })
+                } else {
+                    base
+                };
+                if matches!(resolved, OptionalResolution::Conflict)
+                    && is_directory(base)
+                    && is_directory(ours_value)
+                    && is_directory(theirs_value)
+                {
+                    if remaining_changes == 0 {
+                        return Err(OperationFailure::new(
+                            MergeGenerationError::ChangeLimit,
+                            work,
+                        ));
+                    }
+                    let directory = merge_directory_record_with_resolutions_async(
+                        store,
+                        file_id,
+                        base.ok_or_else(|| invalid(work))?,
+                        ours_value.ok_or_else(|| invalid(work))?,
+                        theirs_value.ok_or_else(|| invalid(work))?,
+                        remaining_changes,
+                        request
+                            .maximum_conflicts
+                            .saturating_sub(u32::try_from(conflicts.len()).unwrap_or(u32::MAX)),
+                        &request.resolutions,
+                        limits,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                    work = add(work, directory.work)?;
+                    remaining_changes = remaining_changes
+                        .checked_sub(directory.value.examined_changes)
+                        .ok_or_else(|| {
+                            OperationFailure::new(MergeGenerationError::ChangeLimit, work)
+                        })?;
+                    conflicts.extend(directory.value.conflicts);
+                    truncated |= directory.value.truncated;
+                    folds.extend(directory.value.folds);
+                    file_folds.extend(directory.value.file_folds);
+                    let Some(record) = directory.value.record else {
+                        continue;
+                    };
+                    resolved = OptionalResolution::Resolved(Some(record));
+                }
+                if matches!(resolved, OptionalResolution::Conflict)
+                    && base.is_some()
+                    && ours_value.is_some()
+                    && theirs_value.is_some()
+                    && is_extent_regular(base)
+                    && is_extent_regular(ours_value)
+                    && is_extent_regular(theirs_value)
+                {
+                    let regular = merge_regular_record_async(
+                        store,
+                        base.ok_or_else(|| invalid(work))?,
+                        ours_value.ok_or_else(|| invalid(work))?,
+                        theirs_value.ok_or_else(|| invalid(work))?,
+                        remaining_changes,
+                        limits,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                    work = add(work, regular.work)?;
+                    if let Some((record, examined)) = regular.value {
+                        remaining_changes =
+                            remaining_changes.checked_sub(examined).ok_or_else(|| {
+                                OperationFailure::new(MergeGenerationError::ChangeLimit, work)
+                            })?;
+                        resolved = OptionalResolution::Resolved(Some(record));
+                    }
+                }
+                if matches!(resolved, OptionalResolution::Conflict) {
+                    resolved = merge_records_async(
+                        store,
+                        [base, ours_value, theirs_value],
+                        limits,
+                        budget,
+                        cancellation,
+                        &mut work,
+                    )
+                    .await?
+                    .map_or(OptionalResolution::Conflict, |record| {
+                        OptionalResolution::Resolved(Some(record))
+                    });
+                }
+                let OptionalResolution::Resolved(resolved) = resolved else {
+                    if let Some(resolution) = request.resolutions.get(&MergeConflict::File(file_id))
+                    {
+                        let resolved = match resolution {
+                            MergeConflictResolution::Select(side) => {
+                                select_optional(*side, base, ours_value, theirs_value)
+                            }
+                            MergeConflictResolution::File(record) => {
+                                if record.is_some_and(|record| record.file_id != file_id) {
+                                    return Err(invalid(work));
+                                }
+                                *record
+                            }
+                            MergeConflictResolution::Binding(_) => return Err(invalid(work)),
+                        };
+                        resolutions.insert(file_id, (ours_value, resolved));
+                        continue;
+                    }
+                    if conflicts.len()
+                        < usize::try_from(request.maximum_conflicts).unwrap_or(usize::MAX)
+                    {
+                        conflicts.push(MergeConflict::File(file_id));
+                    } else {
+                        truncated = true;
+                    }
+                    continue;
+                };
+                resolutions.insert(file_id, (ours_value, resolved));
+            }
+            fold_additions(
                 store,
-                [base, ours_value, theirs_value],
+                folds,
+                &mut resolutions,
+                &mut FoldState {
+                    conflicts: &mut conflicts,
+                    truncated: &mut truncated,
+                    remaining_changes: &mut remaining_changes,
+                    file_folds: &mut file_folds,
+                },
+                request.maximum_conflicts,
+                &request.resolutions,
                 limits,
                 budget,
                 cancellation,
                 &mut work,
             )
-            .await?
-            .map_or(OptionalResolution::Conflict, |record| {
-                OptionalResolution::Resolved(Some(record))
-            });
-        }
-        let OptionalResolution::Resolved(resolved) = resolved else {
-            if let Some(resolution) = request.resolutions.get(&MergeConflict::File(file_id)) {
-                let resolved = match resolution {
-                    MergeConflictResolution::Select(side) => {
-                        select_optional(*side, base, ours_value, theirs_value)
-                    }
-                    MergeConflictResolution::File(record) => {
-                        if record.is_some_and(|record| record.file_id != file_id) {
-                            return Err(invalid(work));
-                        }
-                        *record
-                    }
-                    MergeConflictResolution::Binding(_) => return Err(invalid(work)),
-                };
-                resolutions.insert(file_id, (ours_value, resolved));
-                continue;
+            .await?;
+            if !conflicts.is_empty() || truncated {
+                return Ok(OperationReceipt {
+                    value: MergeGenerationOutcome::Conflicted {
+                        conflicts,
+                        truncated,
+                    },
+                    work,
+                });
             }
-            if conflicts.len() < usize::try_from(request.maximum_conflicts).unwrap_or(usize::MAX) {
-                conflicts.push(MergeConflict::File(file_id));
+            adjust_link_counts(
+                store,
+                &mut resolutions,
+                &mut remaining_changes,
+                limits,
+                budget,
+                cancellation,
+                &mut work,
+            )
+            .await?;
+            let mutations = resolutions
+                .into_iter()
+                .filter(|(_, (before, after))| before != after)
+                .filter_map(|(file_id, (before, after))| {
+                    file_table_mutation(file_id, before, after)
+                })
+                .collect::<Vec<_>>();
+            let merged_table = if mutations.is_empty() {
+                request.ours.file_table
             } else {
-                truncated = true;
-            }
-            continue;
-        };
-        resolutions.insert(file_id, (ours_value, resolved));
-    }
-    fold_additions(
-        store,
-        folds,
-        &mut resolutions,
-        &mut FoldState {
-            conflicts: &mut conflicts,
-            truncated: &mut truncated,
-            remaining_changes: &mut remaining_changes,
-            file_folds: &mut file_folds,
-        },
-        request.maximum_conflicts,
-        &request.resolutions,
-        limits,
-        budget,
-        cancellation,
-        &mut work,
-    )
-    .await?;
-    if !conflicts.is_empty() || truncated {
-        return Ok(OperationReceipt {
-            value: MergeGenerationOutcome::Conflicted {
-                conflicts,
-                truncated,
-            },
-            work,
-        });
-    }
-    adjust_link_counts(
-        store,
-        &mut resolutions,
-        &mut remaining_changes,
-        limits,
-        budget,
-        cancellation,
-        &mut work,
-    )
-    .await?;
-    let mutations = resolutions
-        .into_iter()
-        .filter(|(_, (before, after))| before != after)
-        .filter_map(|(file_id, (before, after))| file_table_mutation(file_id, before, after))
-        .collect::<Vec<_>>();
-    let merged_table = if mutations.is_empty() {
-        request.ours.file_table
-    } else {
-        let applied = apply_file_table_mutations_async(
-            store,
-            request.ours.file_table,
-            mutations,
-            request.maximum_changes,
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::FileTable))?;
-        work = add(work, applied.work)?;
-        applied.root
-    };
-    let (ours_parent_root, ours_parent_generation) = match request.ours_generation {
-        Some(object) if object.kind == crate::storage::ObjectKind::GenerationRoot => {
-            (object, GenerationId::new(object.digest))
-        }
-        Some(_) => {
-            return Err(OperationFailure::new(
-                MergeGenerationError::InvalidDiff,
-                work,
-            ));
-        }
-        None => {
-            let ours_parent = build_checkpoint_async(
+                let applied = apply_file_table_mutations_async(
+                    store,
+                    request.ours.file_table,
+                    mutations,
+                    request.maximum_changes,
+                    limits,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| {
+                    failure.map_with_prior_work(work, MergeGenerationError::FileTable)
+                })?;
+                work = add(work, applied.work)?;
+                applied.root
+            };
+            let (ours_parent_root, ours_parent_generation) = match request.ours_generation {
+                Some(object) if object.kind == crate::storage::ObjectKind::GenerationRoot => {
+                    (object, GenerationId::new(object.digest))
+                }
+                Some(_) => {
+                    return Err(OperationFailure::new(
+                        MergeGenerationError::InvalidDiff,
+                        work,
+                    ));
+                }
+                None => {
+                    let ours_parent = build_checkpoint_async(
+                        store,
+                        CheckpointRequest {
+                            base: request.base_generation,
+                            file_table: request.ours.file_table,
+                            merge_parent: None,
+                        },
+                        limits,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| {
+                        failure.map_with_prior_work(work, MergeGenerationError::Checkpoint)
+                    })?;
+                    work = add(work, ours_parent.work)?;
+                    (ours_parent.root, ours_parent.generation_id)
+                }
+            };
+            let merged = build_checkpoint_async(
                 store,
                 CheckpointRequest {
-                    base: request.base_generation,
-                    file_table: request.ours.file_table,
-                    merge_parent: None,
+                    base: ours_parent_root,
+                    file_table: merged_table,
+                    merge_parent: request
+                        .retain_theirs_parent
+                        .then_some(request.theirs_generation),
                 },
                 limits,
                 remaining(work, budget)?,
@@ -488,48 +537,33 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             .map_err(|failure| {
                 failure.map_with_prior_work(work, MergeGenerationError::Checkpoint)
             })?;
-            work = add(work, ours_parent.work)?;
-            (ours_parent.root, ours_parent.generation_id)
+            work = add(work, merged.work)?;
+            let root = GenerationRoot {
+                volume_id: request.ours.volume_id,
+                root_file_id: request.ours.root_file_id,
+                file_table: merged_table,
+                parents: if request.retain_theirs_parent {
+                    vec![
+                        ours_parent_generation,
+                        GenerationId::new(request.theirs_generation.digest),
+                    ]
+                } else {
+                    vec![ours_parent_generation]
+                },
+                required_features: request.ours.continuation_features(),
+            };
+            Ok(OperationReceipt {
+                value: MergeGenerationOutcome::Prepared {
+                    generation_root: merged.root,
+                    root,
+                    generation_id: merged.generation_id,
+                },
+                work,
+            })
         }
-    };
-    let merged = build_checkpoint_async(
-        store,
-        CheckpointRequest {
-            base: ours_parent_root,
-            file_table: merged_table,
-            merge_parent: request
-                .retain_theirs_parent
-                .then_some(request.theirs_generation),
-        },
-        limits,
-        remaining(work, budget)?,
-        cancellation,
+        .await,
+        |receipt| &receipt.work,
     )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::Checkpoint))?;
-    work = add(work, merged.work)?;
-    let root = GenerationRoot {
-        volume_id: request.ours.volume_id,
-        root_file_id: request.ours.root_file_id,
-        file_table: merged_table,
-        parents: if request.retain_theirs_parent {
-            vec![
-                ours_parent_generation,
-                GenerationId::new(request.theirs_generation.digest),
-            ]
-        } else {
-            vec![ours_parent_generation]
-        },
-        required_features: request.ours.continuation_features(),
-    };
-    Ok(OperationReceipt {
-        value: MergeGenerationOutcome::Prepared {
-            generation_root: merged.root,
-            root,
-            generation_id: merged.generation_id,
-        },
-        work,
-    })
 }
 
 fn is_extent_regular(record: Option<FileRecord>) -> bool {

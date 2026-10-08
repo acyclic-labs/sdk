@@ -986,73 +986,41 @@ fn history_window(records: Arc<[Record]>, ceiling: u64) -> Option<HistoryWindow>
 }
 
 fn read_history(history: Option<&Arc<History>>, tail: u64, from: u64, limit: usize) -> Vec<Record> {
-    // Follow asks for one record at a time.  Walking every historical batch and
-    // materializing all of them makes that hot path quadratic as a stream grows.
-    // A single-record read can seek through the newest immutable batches and
-    // clone only the requested record.
-    if limit == 1 {
-        return read_one_history(history, tail, from).into_iter().collect();
-    }
-    let mut cursor = history.cloned();
+    // Batches are newest first and each holds consecutive sequences below the
+    // next one's first, so the walk stops at the batch holding `from` and
+    // slices the visible records instead of scanning older history.
+    let mut cursor = history;
     let mut ceiling = tail;
-    let mut batches = Vec::new();
-    while let Some(history) = cursor {
-        match history.as_ref() {
+    let mut windows = Vec::new();
+    while ceiling > from
+        && let Some(node) = cursor
+    {
+        match node.as_ref() {
             History::Batch { parent, records } => {
-                batches.push((Arc::clone(records), ceiling));
-                cursor = parent.clone();
+                if let Some(first) = records.first().map(|record| record.sequence) {
+                    let offset = |sequence: u64| {
+                        usize::try_from(sequence.saturating_sub(first))
+                            .map_or(records.len(), |offset| offset.min(records.len()))
+                    };
+                    let start = offset(from);
+                    windows.extend(records.get(start..offset(ceiling).max(start)));
+                    ceiling = ceiling.min(first);
+                }
+                cursor = parent.as_ref();
             }
             History::Prefix { source, tail } => {
                 ceiling = ceiling.min(*tail);
-                cursor = source.clone();
+                cursor = source.as_ref();
             }
         }
     }
-    let mut result = Vec::with_capacity(limit);
-    for (records, ceiling) in batches.into_iter().rev() {
-        for record in records.iter() {
-            if record.sequence >= from && record.sequence < ceiling {
-                result.push(record.clone());
-                if result.len() == limit {
-                    return result;
-                }
-            }
-        }
-    }
-    result
-}
-
-fn read_one_history(history: Option<&Arc<History>>, tail: u64, from: u64) -> Option<Record> {
-    let mut cursor = history.cloned();
-    let mut ceiling = tail;
-    while let Some(history) = cursor {
-        match history.as_ref() {
-            History::Batch { parent, records } => {
-                let Some(first) = records.first() else {
-                    cursor = parent.clone();
-                    continue;
-                };
-                let batch_end = records
-                    .len()
-                    .try_into()
-                    .ok()
-                    .and_then(|length: u64| first.sequence.checked_add(length))
-                    .unwrap_or(u64::MAX);
-                let visible_end = ceiling.min(batch_end);
-                if from >= first.sequence && from < visible_end {
-                    let offset = usize::try_from(from - first.sequence).ok()?;
-                    return records.get(offset).cloned();
-                }
-                ceiling = ceiling.min(first.sequence);
-                cursor = parent.clone();
-            }
-            History::Prefix { source, tail } => {
-                ceiling = ceiling.min(*tail);
-                cursor = source.clone();
-            }
-        }
-    }
-    None
+    windows
+        .into_iter()
+        .rev()
+        .flatten()
+        .take(limit)
+        .cloned()
+        .collect()
 }
 
 fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
@@ -1978,7 +1946,7 @@ mod tests {
                 .await?;
             let records = provider
                 .read(ReadRequest {
-                    path: destination,
+                    path: destination.clone(),
                     from: 0,
                     limit: 64,
                 })
@@ -1988,6 +1956,52 @@ mod tests {
             assert_eq!(
                 u64::try_from(records.len()).map_err(|_| StreamError::LimitExceeded)?,
                 cut
+            );
+            // A window across the cut reads the source prefix, then the
+            // destination's own suffix, never the source's later records.
+            provider
+                .append(AppendRequest {
+                    path: destination.clone(),
+                    records: vec![Bytes::from_static(b"own"); 2],
+                    if_tail: Some(cut),
+                    idempotency_key: None,
+                })
+                .await?;
+            let from = cut.saturating_sub(3);
+            let window = provider
+                .read(ReadRequest {
+                    path: destination,
+                    from,
+                    limit: 4,
+                })
+                .await?
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+            let expected = (from..cut + 2)
+                .take(4)
+                .map(|sequence| {
+                    if sequence < cut {
+                        Bytes::from(vec![u8::try_from(sequence).unwrap_or_default()])
+                    } else {
+                        Bytes::from_static(b"own")
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                window
+                    .iter()
+                    .map(|record| record.sequence)
+                    .collect::<Vec<_>>(),
+                (from..from + expected.len() as u64).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                window
+                    .into_iter()
+                    .map(|record| record.value)
+                    .collect::<Vec<_>>(),
+                expected
             );
         }
         assert_eq!(provider.tail(source).await?, 32);

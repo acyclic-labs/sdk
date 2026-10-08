@@ -104,7 +104,7 @@ impl Default for HostedFsOptions {
 }
 
 /// A local validation, transport, or malformed-server failure.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum HostedFsError {
     /// Hosted options are empty, unbounded, or use an unsupported endpoint.
     #[error("invalid hosted filesystem options: {0}")]
@@ -1117,27 +1117,40 @@ impl HostedGeneration {
     }
 
     /// Forks this exact generation without copying its immutable closure.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.hosted.fork",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn fork(
         &self,
         destination_name: impl Into<String>,
         idempotency_key: IdempotencyKey,
         paths: Option<Vec<String>>,
     ) -> Result<HostedWorkspace, HostedFsError> {
-        let mut client = self.workspace.filesystem.client.clone();
-        let response = client
-            .fork_workspace(
-                self.workspace
-                    .filesystem
-                    .request(wire::ForkWorkspaceRequest {
-                        source: Some(self.reference.clone()),
-                        destination_name: destination_name.into(),
-                        operation: Some(operation(idempotency_key)),
-                        selection: paths.map(|paths| wire::ForkPathSelection { paths }),
-                    }),
-            )
-            .await?
-            .into_inner();
-        self.workspace.filesystem.workspace(response.workspace)
+        crate::obs::outcome(
+            async move {
+                let mut client = self.workspace.filesystem.client.clone();
+                let response =
+                    client
+                        .fork_workspace(self.workspace.filesystem.request(
+                            wire::ForkWorkspaceRequest {
+                                source: Some(self.reference.clone()),
+                                destination_name: destination_name.into(),
+                                operation: Some(operation(idempotency_key)),
+                                selection: paths.map(|paths| wire::ForkPathSelection { paths }),
+                            },
+                        ))
+                        .await?
+                        .into_inner();
+                self.workspace.filesystem.workspace(response.workspace)
+            }
+            .await,
+        )
     }
 
     /// Retains this exact generation as a named checkpoint.
@@ -1366,30 +1379,42 @@ impl HostedTransaction {
     }
 
     /// Publishes every accumulated mutation atomically.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.hosted.commit",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn commit(
         self,
         maximum_conflicts: u32,
     ) -> Result<wire::MutationResponse, HostedFsError> {
-        self.workspace
-            .filesystem
-            .require_transaction_bound(self.mutations.len())?;
-        self.workspace
-            .filesystem
-            .require_page_bound(maximum_conflicts, "transaction conflicts")?;
-        let mut client = self.workspace.filesystem.client.clone();
-        Ok(client
-            .apply_transaction(
+        crate::obs::outcome(
+            async move {
                 self.workspace
                     .filesystem
-                    .request(wire::ApplyTransactionRequest {
-                        base: Some(self.base),
-                        mutations: self.mutations,
-                        operation: Some(operation(self.idempotency_key)),
-                        maximum_conflicts,
-                    }),
-            )
-            .await?
-            .into_inner())
+                    .require_transaction_bound(self.mutations.len())?;
+                self.workspace
+                    .filesystem
+                    .require_page_bound(maximum_conflicts, "transaction conflicts")?;
+                let mut client = self.workspace.filesystem.client.clone();
+                Ok(client
+                    .apply_transaction(self.workspace.filesystem.request(
+                        wire::ApplyTransactionRequest {
+                            base: Some(self.base),
+                            mutations: self.mutations,
+                            operation: Some(operation(self.idempotency_key)),
+                            maximum_conflicts,
+                        },
+                    ))
+                    .await?
+                    .into_inner())
+            }
+            .await,
+        )
     }
 
     /// Validates replay against the current head and returns exact conflicts

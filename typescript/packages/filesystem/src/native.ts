@@ -1,4 +1,4 @@
-import { copyBytes, copyOptionalBytes, requireIdentity } from "./binding-values.js";
+import { copyBytes, copyOptionalBytes, ownBytes, requireIdentity } from "./binding-values.js";
 import { adaptOperationWindowCoordinator } from "./operation-windows.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
@@ -449,7 +449,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     },
     async exportObject(objectId, maximumBytes) {
       const value = await raw.exportObject(objectId, maximumBytes);
-      return { bytes: copyBytes(value.bytes), work: parseWork(value.workJson) };
+      return { bytes: ownBytes(value.bytes), work: parseWork(value.workJson) };
     },
     async importObject(objectId, bytes) {
       return mutationResult(await raw.importObject(objectId, bytes));
@@ -459,7 +459,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       return {
         firstObject: value.firstObject,
         nextObject: value.nextObject,
-        objects: value.objects.map((object) => copyBytes(object)),
+        objects: value.objects.map(ownBytes),
         work: parseWork(value.workJson),
       };
     },
@@ -522,7 +522,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async refreshLive() { return checkpointResult(await raw.refreshLive()); },
     async exportManifest(): Promise<GenerationExportManifest> {
       const value = await raw.exportManifest();
-      return { manifestBytes: copyBytes(value.manifestBytes), objects: value.objects.map((object) => copyBytes(object)), work: parseWork(value.workJson) };
+      return { manifestBytes: copyBytes(value.manifestBytes), objects: value.objects.map(ownBytes), work: parseWork(value.workJson) };
     },
     async prepareMerge(theirs, maximumChanges, maximumConflicts) {
       const value = await raw.prepareMerge(theirs, maximumChanges, maximumConflicts);
@@ -737,7 +737,7 @@ function checkpointResult(value: Awaited<ReturnType<NativeRawCheckout["checkpoin
 }
 
 function fileReadResult(value: { readonly bytes: Uint8Array; readonly workJson: string }) {
-  return { bytes: copyBytes(value.bytes), work: parseWork(value.workJson) };
+  return { bytes: ownBytes(value.bytes), work: parseWork(value.workJson) };
 }
 
 function metadataResult(value: { readonly canonicalBytes: Uint8Array; readonly workJson: string }) {

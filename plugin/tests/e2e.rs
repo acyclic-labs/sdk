@@ -27,6 +27,11 @@ use support::{
 // early completion while keeping cleanup qualification fast.
 const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
 
+// A client's own bound: a hook may wait 15 s for the service to start and 15 s
+// more for its answer, and a command 120 s. A tighter test deadline fails a
+// slow, correct lifecycle under load rather than catching a hang.
+const CLIENT_DEADLINE: Duration = Duration::from_secs(120);
+
 /// Times every hook process end to end (spawn to exit with stdout collected)
 /// against a live service in an isolated state root: a session with a series
 /// of Bash tool calls and subagent spawns, each subagent running Bash calls in
@@ -884,7 +889,7 @@ fn immutable_package_command_runs_the_real_service_lifecycle() {
     let native_shell_result = output_with_stdin_timeout(
         &mut native_shell,
         br#"{"tool_name":"web.run"}"#,
-        Duration::from_secs(5),
+        CLIENT_DEADLINE,
     );
     assert!(
         !native_shell_result.expired,
@@ -910,20 +915,19 @@ fn immutable_package_command_runs_the_real_service_lifecycle() {
         .args(["__hook", "codex", "SessionStart"])
         .current_dir(&workspace);
     isolated_state(&mut start, temporary.path());
-    let started =
-        output_with_stdin_timeout(&mut start, &input("SessionStart"), Duration::from_secs(5));
+    let started = output_with_stdin_timeout(&mut start, &input("SessionStart"), CLIENT_DEADLINE);
     let identity = service.assert_hook_service_live();
 
     let mut agents = package.command(&["agents"]);
     agents.current_dir(&workspace);
     isolated_state(&mut agents, temporary.path());
-    let listed = output_with_timeout(&mut agents, Duration::from_secs(5));
+    let listed = output_with_timeout(&mut agents, CLIENT_DEADLINE);
 
     let mut end = command(&package.native);
     end.args(["__hook", "codex", "SessionEnd"])
         .current_dir(&workspace);
     isolated_state(&mut end, temporary.path());
-    let ended = output_with_stdin_timeout(&mut end, &input("SessionEnd"), Duration::from_secs(5));
+    let ended = output_with_stdin_timeout(&mut end, &input("SessionEnd"), CLIENT_DEADLINE);
     service.drain();
     make_writable(&package.root);
 

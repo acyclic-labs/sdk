@@ -975,15 +975,24 @@ impl Namespace {
     /// open between them, and replays a predecessor's log only when it opens
     /// it; a due checkpoint runs before the next transaction rather than inside
     /// the commit that made it due, so a committed change is never reported as
-    /// failed. A shared store takes the log's file lock and replays and
-    /// checkpoints whatever an earlier transaction or owner left.
+    /// failed. A shared store takes the log's file lock, replays and
+    /// checkpoints whatever an earlier transaction or owner left, and
+    /// checkpoints its own commits before releasing the lock. Its frames are
+    /// already flushed then, so the next opener finds an empty log instead of
+    /// re-flushing and replaying it; a failed checkpoint leaves the committed
+    /// frames for that opener, exactly as before.
     fn with_log<T>(
         &self,
         operation: impl FnOnce(&mut CoreLog) -> Result<T, LocalCoreStateStoreError>,
     ) -> Result<T, LocalCoreStateStoreError> {
         match &self.admission {
             Admission::Shared { .. } => with_lock(&core_log_paths(self), || {
-                operation(&mut CoreLog::open(self, Arc::default())?)
+                let mut log = CoreLog::open(self, Arc::default())?;
+                let result = operation(&mut log);
+                if !log.dirty.is_empty() && !log.broken {
+                    drop(log.checkpoint(self));
+                }
+                result
             }),
             Admission::Owned(owner) => {
                 let mut slot = owner.log();
@@ -2535,6 +2544,12 @@ mod tests {
             WorkspaceLineageStore::compare_and_swap(&store, workspace(), 0, state.clone())
                 .await
                 .expect("initial write")
+        );
+        // A shared commit is written back before its lock is released.
+        assert!(
+            std::fs::read(core_log_paths(&namespace).current)
+                .expect("core log")
+                .is_empty()
         );
         WorkspaceLineageStore::load(&store, workspace())
             .await

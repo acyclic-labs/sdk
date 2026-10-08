@@ -102,6 +102,21 @@ pub fn build_checkpoint<S: ObjectStore>(
 ///
 /// Returns the same typed failures as [`build_checkpoint`], including
 /// cancellation from the asynchronous object boundary.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    tracing::instrument(
+        name = "acyclic.fs.kernel.checkpoint",
+        level = "debug",
+        skip_all,
+        fields(
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty,
+        )
+    )
+)]
 pub async fn build_checkpoint_async<S: crate::async_storage::AsyncObjectStore>(
     store: &S,
     request: CheckpointRequest,
@@ -109,53 +124,61 @@ pub async fn build_checkpoint_async<S: crate::async_storage::AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<CheckpointReceipt, CheckpointFailure> {
-    validate_request(request)?;
-    let (base, mut work) = read_root_async(
-        store,
-        request.base,
-        limits,
-        budget,
-        WorkCounters::default(),
-        cancellation,
-    )
-    .await?;
-    let merge = match request.merge_parent {
-        Some(parent_id) => {
-            let (parent, next) =
-                read_root_async(store, parent_id, limits, budget, work, cancellation).await?;
-            work = next;
-            validate_merge_parents(&base, &parent, work)?;
-            Some(parent_id)
+    crate::obs::measured(
+        async move {
+            validate_request(request)?;
+            let (base, mut work) = read_root_async(
+                store,
+                request.base,
+                limits,
+                budget,
+                WorkCounters::default(),
+                cancellation,
+            )
+            .await?;
+            let merge = match request.merge_parent {
+                Some(parent_id) => {
+                    let (parent, next) =
+                        read_root_async(store, parent_id, limits, budget, work, cancellation)
+                            .await?;
+                    work = next;
+                    validate_merge_parents(&base, &parent, work)?;
+                    Some(parent_id)
+                }
+                None => None,
+            };
+            if merge.is_none() && request.file_table == base.file_table {
+                return Ok(reused_checkpoint(request.base, work));
+            }
+            let (object, encoded, prospective) =
+                encode_checkpoint(request, &base, merge, work, budget)?;
+            let remaining = prospective
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let receipt = crate::async_storage::AsyncObjectStore::put(
+                store,
+                object,
+                Bytes::from(encoded),
+                remaining,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prospective, Into::into))?;
+            work = prospective
+                .checked_add(receipt.work)
+                .map_err(|error| OperationFailure::new(error.into(), prospective))?;
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            Ok(CheckpointReceipt {
+                root: object,
+                generation_id: GenerationId::new(object.digest),
+                reused_base: false,
+                work,
+            })
         }
-        None => None,
-    };
-    if merge.is_none() && request.file_table == base.file_table {
-        return Ok(reused_checkpoint(request.base, work));
-    }
-    let (object, encoded, prospective) = encode_checkpoint(request, &base, merge, work, budget)?;
-    let remaining = prospective
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let receipt = crate::async_storage::AsyncObjectStore::put(
-        store,
-        object,
-        Bytes::from(encoded),
-        remaining,
-        cancellation,
+        .await,
+        |receipt| &receipt.work,
     )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(prospective, Into::into))?;
-    work = prospective
-        .checked_add(receipt.work)
-        .map_err(|error| OperationFailure::new(error.into(), prospective))?;
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    Ok(CheckpointReceipt {
-        root: object,
-        generation_id: GenerationId::new(object.digest),
-        reused_base: false,
-        work,
-    })
 }
 
 fn validate_request(request: CheckpointRequest) -> Result<(), CheckpointFailure> {
@@ -309,7 +332,7 @@ async fn read_root_async<S: crate::async_storage::AsyncObjectStore>(
 }
 
 /// Immutable checkpoint construction failures.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum CheckpointError {
     /// Base or merge parent is not a generation-root object.
     #[error("checkpoint parent has the wrong object kind")]

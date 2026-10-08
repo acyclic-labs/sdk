@@ -1,6 +1,7 @@
 import type {
   FsGeneration, WasmRawGeneration, WorkspaceDirectoryPage, WorkspaceExtentPlan, WorkspaceStat,
 } from "./contracts.js";
+import { copyBytes, ownBytes } from "./binding-values.js";
 
 /** One generation facade per binding, preserving the binding's identity domain. */
 export function createGenerationAdapter(
@@ -12,18 +13,18 @@ export function createGenerationAdapter(
   const handles = new WeakMap<FsGeneration, WasmRawGeneration>();
   function adaptGeneration(raw: WasmRawGeneration): FsGeneration {
     const generation: FsGeneration = {
-      get id() { return Uint8Array.from(raw.id); },
-      get workspaceId() { return Uint8Array.from(raw.workspaceId); },
+      get id() { return copyBytes(raw.id); },
+      get workspaceId() { return copyBytes(raw.workspaceId); },
       async read(path, maximumBytes) {
         if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
-        return Uint8Array.from(await raw.read(path, maximumBytes));
+        return ownBytes(await raw.read(path, maximumBytes));
       },
-      async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
+      async readRange(path, offset, length) { return ownBytes(await raw.readRange(path, offset, length)); },
       async stat(path) { return decodeStat(await raw.stat(path)); },
       async listDirectory(path, after, maximumEntries) {
         return decodePage(await raw.listDirectory(path, after, maximumEntries));
       },
-      async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
+      async readSymbolicLink(path) { return ownBytes(await raw.readSymbolicLink(path)); },
       async planExtents(path, offset, length, maximumSpans) {
         return decodePlan(await raw.planExtents(path, offset, length, maximumSpans));
       },

@@ -142,7 +142,7 @@ pub enum HostPathRestore {
 }
 
 /// Fail-closed explicit materialization errors.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MaterializeError {
     /// Destination is absent, non-directory, a symlink, or non-empty.
     #[error("materialization destination must be an existing empty real directory")]
@@ -191,23 +191,35 @@ pub enum MaterializeError {
 /// Fails before traversal for an invalid destination or zero bounds. During
 /// traversal it fails closed on unrepresentable names, unsupported special
 /// kinds, canonical engine errors, host I/O, cancellation, or work exhaustion.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    tracing::instrument(
+        name = "acyclic.fs.materialize",
+        level = "debug",
+        skip_all,
+        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, work.items = crate::obs::Empty, work.bytes = crate::obs::Empty, work.durability = crate::obs::Empty)
+    )
+)]
 pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     options: &MaterializeOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    in_heap(move || async move {
-        materialize_checkout_with_mode(
-            checkout,
-            options,
-            budget,
-            cancellation,
-            MaterializeMode::DurableOutput,
-        )
-        .await
-    })
-    .await
+    crate::obs::measured(
+        in_heap(move || async move {
+            materialize_checkout_with_mode(
+                checkout,
+                options,
+                budget,
+                cancellation,
+                MaterializeMode::DurableOutput,
+            )
+            .await
+        })
+        .await,
+        |receipt| &receipt.work,
+    )
 }
 
 pub(crate) async fn materialize_checkout_with_mode<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -264,6 +276,15 @@ pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectSto
 ///
 /// All selected paths share one destination capability, cumulative work
 /// receipt, and file-identity table, preserving hard links across siblings.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    tracing::instrument(
+        name = "acyclic.fs.materialize_paths",
+        level = "debug",
+        skip_all,
+        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, work.items = crate::obs::Empty, work.bytes = crate::obs::Empty, work.durability = crate::obs::Empty)
+    )
+)]
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
@@ -271,15 +292,18 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    materialize_checkout_paths_with_mode(
-        checkout,
-        paths,
-        options,
-        budget,
-        cancellation,
-        MaterializeMode::DurableOutput,
+    crate::obs::measured(
+        materialize_checkout_paths_with_mode(
+            checkout,
+            paths,
+            options,
+            budget,
+            cancellation,
+            MaterializeMode::DurableOutput,
+        )
+        .await,
+        |receipt| &receipt.work,
     )
-    .await
 }
 
 #[allow(
@@ -485,6 +509,15 @@ pub(crate) async fn materialize_checkout_paths_with_mode<
 /// Materializes a host-relative path using the checkout's configured name
 /// profile. Native consumers do not need to construct logical names or know
 /// whether this platform stores them as bytes or UTF-16 units.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    tracing::instrument(
+        name = "acyclic.fs.materialize_host_path",
+        level = "debug",
+        skip_all,
+        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, work.items = crate::obs::Empty, work.bytes = crate::obs::Empty, work.durability = crate::obs::Empty)
+    )
+)]
 pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     relative: &Path,
@@ -492,26 +525,35 @@ pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObje
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    let limits = checkout.volume_config().limits;
-    let profile = checkout.volume_config().profile;
-    let mut names = Vec::new();
-    for component in relative.components() {
-        let std::path::Component::Normal(name) = component else {
-            return Err(OperationFailure::before_work(MaterializeError::InvalidPath));
-        };
-        let (encoding, bytes) =
-            crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
+    crate::obs::measured(
+        async move {
+            let limits = checkout.volume_config().limits;
+            let profile = checkout.volume_config().profile;
+            let mut names = Vec::new();
+            for component in relative.components() {
+                let std::path::Component::Normal(name) = component else {
+                    return Err(OperationFailure::before_work(MaterializeError::InvalidPath));
+                };
+                let (encoding, bytes) = crate::native_name::host_name_bytes(
+                    name,
+                    profile,
+                    limits.maximum_component_bytes,
+                )
                 .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
-        let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-            .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
-        names.push(logical);
-    }
-    if names.is_empty() {
-        return Err(OperationFailure::before_work(MaterializeError::InvalidPath));
-    }
-    let path = NamespacePath::new(names, limits)
-        .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
-    materialize_checkout_path(checkout, &path, options, budget, cancellation).await
+                let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+                    .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
+                names.push(logical);
+            }
+            if names.is_empty() {
+                return Err(OperationFailure::before_work(MaterializeError::InvalidPath));
+            }
+            let path = NamespacePath::new(names, limits)
+                .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
+            materialize_checkout_path(checkout, &path, options, budget, cancellation).await
+        }
+        .await,
+        |receipt| &receipt.work,
+    )
 }
 
 /// Restores one authenticated host-relative path without touching siblings.

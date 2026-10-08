@@ -2467,8 +2467,7 @@ impl Reducer {
                 if self.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
                 }
-                let mut next = self.conversation.clone();
-                next.append(receipt.notice.clone())?;
+                self.conversation.validate_append(&receipt.notice)?;
                 Ok(EventPayload::ProjectMergePublished {
                     receipt: receipt.clone(),
                 })
@@ -2481,8 +2480,7 @@ impl Reducer {
             }
             Action::AppendConversationMessage { message } => {
                 self.require_conversation()?;
-                let mut next = self.conversation.clone();
-                next.append((**message).clone())?;
+                self.conversation.validate_append(message)?;
                 Ok(EventPayload::ConversationMessageAppended {
                     message: message.clone(),
                 })
