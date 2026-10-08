@@ -42,6 +42,7 @@ const sourceRoots = [
   "scripts/generated-bindings.mjs",
   "rust/crates/proto-codegen",
   "proto/actors/v1/actors.proto",
+  "compatibility/descriptors/actors-v1.bin",
   "buf.yaml",
   "buf.lock",
   "buf.gen.yaml",

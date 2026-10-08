@@ -245,6 +245,7 @@ mod tests {
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
     }
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn clients_share_endpoint_and_credential_policy() {
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
