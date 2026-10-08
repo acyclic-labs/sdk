@@ -142,7 +142,7 @@ pub(crate) fn persist_segment(
     durability: LocalDurability,
 ) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
     let span = crate::obs::span!(
-        DEBUG,
+        TRACE,
         "acyclic.objects.segment.persist",
         items = bodies.len()
     );
@@ -172,7 +172,7 @@ pub(crate) fn write_segment(
     bodies: &[([u8; 32], bytes::Bytes)],
     durability: LocalDurability,
 ) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
-    let span = crate::obs::span!(DEBUG, "acyclic.objects.segment.write", items = bodies.len());
+    let span = crate::obs::span!(TRACE, "acyclic.objects.segment.write", items = bodies.len());
     crate::obs::scoped(&span, || write_segment_inner(root, bodies, durability))
 }
 
@@ -333,7 +333,7 @@ pub(crate) fn validate_referenced_segments(
     maximum_object_bytes: u64,
 ) -> Result<BTreeSet<[u8; 32]>, PhysicalError> {
     let span = crate::obs::span!(
-        DEBUG,
+        TRACE,
         "acyclic.objects.segment.validate",
         items = bodies.len(),
     );
@@ -573,7 +573,7 @@ pub(crate) async fn read_body_at_async(
         LocalBodyLocation::Journal { .. } => "journal",
     };
     let span = crate::obs::span!(
-        DEBUG,
+        TRACE,
         "acyclic.objects.physical.read",
         backend,
         bytes = end.saturating_sub(start),
@@ -1068,10 +1068,20 @@ pub(crate) mod tests {
                 .unwrap_or_else(|_| unreachable!())
                 .iter()
                 .filter(|span| span.name.starts_with("acyclic.objects."))
-                .all(|span| span.fields.keys().all(|key| matches!(
-                    key.as_str(),
-                    "backend" | "bytes" | "body_bytes" | "items" | "outcome" | "error.kind"
-                )))
+                .all(|span| {
+                    span.level == Some(tracing::Level::TRACE)
+                        && span.fields.keys().all(|key| {
+                            matches!(
+                                key.as_str(),
+                                "backend"
+                                    | "bytes"
+                                    | "body_bytes"
+                                    | "items"
+                                    | "outcome"
+                                    | "error.kind"
+                            )
+                        })
+                })
         );
     }
 }

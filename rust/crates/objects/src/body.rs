@@ -106,7 +106,7 @@ impl StoredBody {
         end: usize,
     ) -> BoxFuture<'_, Result<bytes::Bytes, BodyError>> {
         let span = crate::obs::span!(
-            DEBUG,
+            TRACE,
             "acyclic.objects.body.read",
             backend = self.backend(),
             bytes = end.saturating_sub(start),
@@ -201,6 +201,7 @@ pub(crate) mod tests {
     #[derive(Clone, Debug, Default)]
     pub(crate) struct CapturedSpan {
         pub(crate) name: &'static str,
+        pub(crate) level: Option<tracing::Level>,
         pub(crate) id: u64,
         pub(crate) parent_id: Option<u64>,
         pub(crate) fields: BTreeMap<String, String>,
@@ -229,6 +230,7 @@ pub(crate) mod tests {
             let span = ctx.span(id).unwrap_or_else(|| unreachable!());
             let mut captured = CapturedSpan {
                 name: attrs.metadata().name(),
+                level: Some(*attrs.metadata().level()),
                 id: id.into_u64(),
                 parent_id: span.parent().map(|parent| parent.id().into_u64()),
                 ..CapturedSpan::default()
@@ -328,6 +330,11 @@ pub(crate) mod tests {
             spans.len(),
             4,
             "composite leaves must not add logical spans"
+        );
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.level == Some(tracing::Level::TRACE))
         );
         let outcomes = spans
             .iter()
