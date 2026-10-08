@@ -10,7 +10,7 @@ use super::{
 use crate::{Error, OperationId, Result};
 use bytes::BytesMut;
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use tokio_util::codec::{Decoder as _, Encoder as _};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -29,7 +29,8 @@ pub struct McpStdioExchange {
     request: Vec<u8>,
     phase: Phase,
     line: BytesMut,
-    codec: JsonRpcMessageCodec<Value>,
+    codec: JsonRpcMessageCodec<Box<RawValue>>,
+    scanned: usize,
     received: usize,
     maximum_bytes: usize,
     result: Option<Value>,
@@ -79,6 +80,7 @@ impl McpStdioExchange {
                 phase: Phase::Initialize,
                 line: BytesMut::new(),
                 codec: JsonRpcMessageCodec::new_with_max_length(maximum_bytes),
+                scanned: 0,
                 received: 0,
                 maximum_bytes,
                 result: None,
@@ -110,11 +112,33 @@ impl McpStdioExchange {
             .ok_or_else(|| Error::Invalid("MCP stdio stdout exceeds admitted bound".into()))?;
         let mut writes = Vec::new();
         self.line.extend_from_slice(bytes);
-        while let Some(message) = self
-            .codec
-            .decode(&mut self.line)
-            .map_err(|error| Error::Invalid(format!("invalid MCP stdio message: {error}")))?
+        // Validate each bounded complete frame before the library sees it: its
+        // malformed-input debug event includes private stdout. RawValue uses
+        // iterative syntax validation without imposing Value's default depth
+        // ceiling. The library still owns newline decoding and write encoding.
+        while let Some(offset) = self
+            .line
+            .get(self.scanned..)
+            .ok_or_else(|| Error::Invalid("invalid MCP stdio scan offset".into()))?
+            .iter()
+            .position(|byte| *byte == b'\n')
         {
+            let mut frame = self.line.split_to(self.scanned + offset + 1);
+            self.scanned = 0;
+            let body = frame
+                .strip_suffix(b"\n")
+                .ok_or_else(|| Error::Invalid("unterminated MCP stdio frame".into()))?;
+            let body = body.strip_suffix(b"\r").unwrap_or(body);
+            let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
+            serde_json::from_slice::<&RawValue>(body)
+                .map_err(|error| Error::Invalid(format!("invalid MCP stdio JSON: {error}")))?;
+            let raw = self
+                .codec
+                .decode(&mut frame)
+                .map_err(|error| Error::Invalid(format!("invalid MCP stdio message: {error}")))?
+                .ok_or_else(|| Error::Invalid("missing MCP stdio message".into()))?;
+            let message: Value = crate::contract::json_from_slice(raw.get().as_bytes())
+                .map_err(|error| Error::Invalid(format!("invalid MCP stdio JSON: {error}")))?;
             if message.get("id").is_none() {
                 notification(&message)?;
                 // Catalog notifications are hints, never implicit reloads.
@@ -143,6 +167,8 @@ impl McpStdioExchange {
                 }
             }
         }
+        // Each incomplete prefix is scanned once, even for one-byte chunks.
+        self.scanned = self.line.len();
         Ok(writes)
     }
 
@@ -241,5 +267,74 @@ mod tests {
         assert!(codec.push(&truncated).unwrap().is_empty());
         assert!(matches!(codec.finish(), Err(Error::Indeterminate(_))));
         assert!(McpStdioExchange::new(init, init, "tools/list", &json!({}), 4096).is_err());
+    }
+
+    #[test]
+    fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
+        let (init, op) = ids();
+        let nested = format!("{}0{}", "[".repeat(192), "]".repeat(192));
+        let expected: Value = crate::contract::json_from_slice(nested.as_bytes()).unwrap();
+        let mut transcript = initialized(init);
+        transcript.extend_from_slice(
+            format!("\u{feff}{{\"jsonrpc\":\"2.0\",\"id\":\"{op}\",\"result\":{nested}}}\r\n")
+                .as_bytes(),
+        );
+        for width in [1, 2, 3, 17, transcript.len()] {
+            let (mut codec, _) =
+                McpStdioExchange::new(init, op, "tools/list", &json!({}), 4096).unwrap();
+            for chunk in transcript.chunks(width) {
+                codec.push(chunk).unwrap();
+            }
+            assert_eq!(codec.finish().unwrap(), expected);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn malformed_private_stdout_never_reaches_library_debug_log() {
+        use std::{
+            io::Write,
+            sync::{Arc, Mutex},
+        };
+
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("log capture lock poisoned"))?
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logs = Capture(Arc::default());
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let private = b"PRIVATE_STDOUT_FIXTURE invalid json\n";
+            // Negative control proves the dependency and log capture expose the
+            // marker when the unguarded codec sees the malformed frame.
+            let mut unguarded = JsonRpcMessageCodec::<Box<RawValue>>::new();
+            assert!(unguarded.decode(&mut BytesMut::from(&private[..])).is_err());
+            assert!(
+                String::from_utf8_lossy(&logs.0.lock().unwrap()).contains("PRIVATE_STDOUT_FIXTURE")
+            );
+            logs.0.lock().unwrap().clear();
+            let (init, op) = ids();
+            let (mut guarded, _) =
+                McpStdioExchange::new(init, op, "tools/list", &json!({}), 4096).unwrap();
+            assert!(guarded.push(private).is_err());
+            assert!(guarded.push(&initialized(init)).is_err());
+            assert!(logs.0.lock().unwrap().is_empty());
+        });
     }
 }

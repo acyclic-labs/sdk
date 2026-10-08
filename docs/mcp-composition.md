@@ -65,11 +65,13 @@ No raw process launch or replacement process journal is an acceptable fallback.
 It validates initialization before emitting the initialized notification and
 one request, pins distinct IDs, and fails permanently after malformed output.
 Its parser state is transient; it does not substitute for native durable receipts.
-The library ingress still needs its depth and diagnostic audit before native
-stdio integration: `rmcp` 3.3.0's codec uses the default serde nesting policy and
-includes malformed input in a debug event. The admitted byte budget and Harness
-private-content logging contract must govern the adapter without replacing the
-protocol library. Those controls are not qualified by the current stream tests.
+The ingress adapter validates bounded complete frames as `RawValue` before the
+library codec sees them, preventing its malformed-input debug event from logging
+private stdout. The codec decodes raw JSON; Harness then hydrates it using its
+existing unbounded-depth JSON contract. A retained scan offset visits incomplete
+prefix bytes once. Development controls exercise 192-level JSON, split BOM/CRLF,
+and malformed private input, with an unguarded library log as a negative control.
+Native process integration and final-source qualification remain open.
 
 ## Simplification audit
 
@@ -82,6 +84,7 @@ protocol library. Those controls are not qualified by the current stream tests.
 | Library SSE parser with pre-parser byte bound | Established framing implementation handles split UTF-8/CRLF; no unbounded hydration before admission bounds |
 | Shared `rmcp` JSON-RPC boundary | HTTP and stdio enforce the same response identity and notification contracts |
 | Bounded stdio exchange codec | Negotiation precedes the one admitted request; malformed output cannot restart it |
+| Raw JSON ingress validation and scan offset | Keep private malformed stdout out of library logs, preserve the admitted depth policy, and avoid rescanning incomplete prefixes |
 | Reconciliation distinct from HTTP POST | Uncertainty cannot cause an unapproved remote replay |
 | Optional native dependency | Portable/browser construction must not require native network/process providers |
 
@@ -179,3 +182,18 @@ bridge tests passed, including eager/selected/empty exposure and independent
 discovery controls. The isolated browser-provider TypeScript check passed.
 These checks are development evidence; final-source cross-platform, installed,
 Chromium and native stdio gates and the registry seam owner review remain open.
+
+### Stdio ingress development checkpoint
+
+The library codec now decodes raw JSON after bounded syntax validation; the shared
+Harness decoder owns hydration. Four stdio tests pass, including 192-level JSON
+at several stream cuts and split BOM/CRLF. The private-output log test first
+proves the unguarded dependency emits its marker, then verifies the guarded
+exchange rejects the same frame without a log or later processing.
+
+Windows library tests with `filesystem-local,mcp-http`: 253 passed, zero failed/
+ignored, and the seven-case disk-reopen matrix passed. Strict Clippy over library
+and all test targets passed without suppressions. WASM rebuilt successfully and
+all six Node catalog/browser bridge tests passed, with no generated declaration
+changes. These remain development checks, not native-process, actual Chromium
+or final-source platform qualification.

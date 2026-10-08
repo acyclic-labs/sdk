@@ -55,7 +55,7 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["unbounded_depth"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
 serde-saphyr = { version = "=1.3.0", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
 thiserror.workspace = true
