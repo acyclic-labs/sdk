@@ -753,6 +753,7 @@ fn execute_default_profiles(
                     Some(cargo_path),
                 )
                 .map_err(profile_error)?;
+                retain_profile_generated_sources(root, &receipt)?;
                 fs::write(receipt.with_extension("source.sha256"), source_sha256)
                     .map_err(io_error)?;
                 executed.push(ExecutedProfile {
@@ -794,6 +795,7 @@ fn execute_default_profiles(
                         Some(cargo_path),
                     )
                     .map_err(profile_error)?;
+                    retain_profile_generated_sources(root, &wasm_receipt)?;
                     fs::write(wasm_receipt.with_extension("source.sha256"), source_sha256)
                         .map_err(io_error)?;
                     executed.push(ExecutedProfile {
@@ -805,6 +807,39 @@ fn execute_default_profiles(
         }
     }
     Ok(executed)
+}
+
+fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), CliError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(receipt).map_err(io_error)?).map_err(|error| {
+            CliError(format!("invalid Rustdoc JSON {}: {error}", receipt.display()))
+        })?;
+    let mut filenames = BTreeSet::new();
+    collect_span_filenames(&value, &mut filenames);
+    let retained_root = root.join("target/sdk-generation-generated-sources/retained");
+    for filename in filenames {
+        let source = PathBuf::from(&filename);
+        if !source.is_absolute() || source.starts_with(root) || !source.is_file() {
+            continue;
+        }
+        let basename = source.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            CliError(format!("Rustdoc generated source has invalid filename {filename}"))
+        })?;
+        let retained = retained_root.join(basename);
+        if let Some(parent) = retained.parent() {
+            fs::create_dir_all(parent).map_err(io_error)?;
+        }
+        if retained.is_file() {
+            if fs::read(&retained).map_err(io_error)? != fs::read(&source).map_err(io_error)? {
+                return Err(CliError(format!(
+                    "generated source basename is reused with different bytes: {basename}"
+                )));
+            }
+        } else {
+            fs::copy(&source, &retained).map_err(io_error)?;
+        }
+    }
+    Ok(())
 }
 
 fn rustc_host() -> Result<String, CliError> {
