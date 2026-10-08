@@ -40,19 +40,19 @@ until their family version is published and tagged.
   S3 workspace views, native watchers and mounts, core-owned journaled
   materialization, browser WASM persistence, a TypeScript facade, and an N-API
   embedded engine.
-- A hierarchical Stream v2 Rust contract, bounded structural-sharing memory
+- A hierarchical Stream v1 Rust contract, bounded structural-sharing memory
   provider, checksummed crash-recoverable local provider, authenticated gRPC
   client/server adapter, exact retry semantics, immutable-prefix forks, gapless
   follow, and atomic optimistic commits. The memory and local providers execute
   the same semantic state machine; the local feature adds only bounded durable
   publication and recovery.
-- An Objects v2 logical current-key contract with Rust and TypeScript gRPC/HTTP
+- An Objects v1 logical current-key contract with Rust and TypeScript gRPC/HTTP
   clients, conditions, exact retry receipts, bounded listing and multipart
   publication. Native memory and durable-local providers share one state machine;
   local recovery authenticates inline small bodies and immutable larger bodies,
   with grouped native batches and private compaction. Native Filesystem
-  compositions use v2. Existing v1 roots are rejected without conversion or
-  overwrite; the published v1 wire history remains archived.
+  compositions use the sole Objects v1 contract. Roots with obsolete format discriminators are rejected without conversion or
+  overwrite.
 - Candidate Actors v1 and Workers v1 public contracts with Rust validation,
   generated TypeScript message types, and authenticated Rust and Node/Bun
   TypeScript gRPC and HTTP clients. Their

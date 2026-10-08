@@ -6,7 +6,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
 
 use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
@@ -18,6 +17,7 @@ use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, watch};
+#[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
@@ -31,16 +31,15 @@ use crate::{
     UnixMillisClock,
 };
 
-const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V4\0";
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
 const LIMITS_BYTES: usize = 8 * 8;
-const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V04\0";
-/// The magic, the limits, the epoch of the journal that follows, and the
-/// store time; the state and a checksum follow.
-const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8 + 8;
-/// A frame's retention time and sampled Unix commit time, before its command.
-const FRAME_TIME_BYTES: usize = 16;
+const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V01\0";
+/// The magic, limits and journal epoch; state and checksum follow.
+const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8;
+/// A frame's sampled Unix commit time, before its command.
+const FRAME_TIME_BYTES: usize = 8;
 const LOCK_FILE: &str = "stream.lock";
 const JOURNAL_FILE: &str = "stream.journal";
 const SNAPSHOT_FILE: &str = "stream.snapshot";
@@ -60,14 +59,21 @@ type JournalPersistBlocker = (
 #[cfg(test)]
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
-async fn run_owned_initialization<T, F>(initialize: F) -> Result<T, LocalStreamError>
+async fn run_owned_initialization<T, F>(
+    span: &obs::OwnedSpan,
+    initialize: F,
+) -> Result<T, LocalStreamError>
 where
     T: Send + 'static,
-    F: Future<Output = T> + Send + 'static,
+    F: Future<Output = Result<T, LocalStreamError>> + Send + 'static,
 {
-    tokio::spawn(initialize.in_current_span())
+    let operation = span.clone();
+    tokio::spawn(async move { obs::finish(&operation, operation.scope(initialize).await) })
         .await
-        .map_err(|_| LocalStreamError::Executor)
+        .map_err(|_| {
+            obs::failed(span, obs::ErrorKind::kind(&LocalStreamError::Executor));
+            LocalStreamError::Executor
+        })?
 }
 
 /// How the journal is made durable before a mutation becomes observable.
@@ -186,8 +192,8 @@ impl obs::ErrorKind for LocalStreamError {
 /// snapshot and the journal starts again, so it bounds only what happened since.
 ///
 /// Retry outcomes and immutable envelopes persist indefinitely within capacity
-/// limits, including through snapshots and downtime. Journal clock fields remain
-/// part of the existing disk encoding; they never authorize identity reuse.
+/// limits, including through snapshots and downtime. The v1 format records only
+/// commit timestamps; time never authorizes retry identity reuse.
 #[derive(Clone)]
 pub struct LocalStream {
     inner: Arc<LocalInner>,
@@ -195,7 +201,6 @@ pub struct LocalStream {
 
 struct LocalInner {
     provider: MemoryStream,
-    clock: Arc<StoreClock>,
     commit_clock: Arc<PinnedCommitClock>,
     journal: OwnedJournal,
     /// Held exclusively while a mutation applies and writes its frame, and
@@ -290,61 +295,6 @@ impl OwnedJournal {
     }
 }
 
-/// Time as the store experiences it: milliseconds the provider has been
-/// open, summed over every open. A mutation pins it for its whole run, and
-/// its frame records that time. Legacy samples never expire retry outcomes.
-#[derive(Default)]
-struct StoreClock(Mutex<StoreTime>);
-
-#[derive(Default)]
-struct StoreTime {
-    /// The store time when `since` was taken, or the latest recovered.
-    base: u64,
-    /// When the provider opened; `None` while it recovers.
-    since: Option<Instant>,
-    pinned: Option<u64>,
-}
-
-impl StoreClock {
-    fn time(&self) -> std::sync::MutexGuard<'_, StoreTime> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn live(&self) -> u64 {
-        let time = self.time();
-        time.since.map_or(time.base, |since| {
-            time.base
-                .saturating_add(u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX))
-        })
-    }
-
-    fn pin(&self, at: u64) {
-        let mut time = self.time();
-        time.pinned = Some(at);
-        if time.since.is_none() {
-            time.base = time.base.max(at);
-        }
-    }
-
-    fn unpin(&self) {
-        self.time().pinned = None;
-    }
-
-    /// Starts running from the latest time recovered.
-    fn start(&self) {
-        let mut time = self.time();
-        time.pinned = None;
-        time.since = Some(Instant::now());
-    }
-}
-
-impl UnixMillisClock for StoreClock {
-    fn now_unix_millis(&self) -> u64 {
-        let pinned = self.time().pinned;
-        pinned.unwrap_or_else(|| self.live())
-    }
-}
-
 /// Records the wall-clock sample in a frame and supplies that same sample on replay.
 struct PinnedCommitClock {
     source: Arc<dyn UnixMillisClock>,
@@ -372,11 +322,12 @@ impl UnixMillisClock for PinnedCommitClock {
 
 /// What recovery hands the state machine, in order.
 enum Recovered {
+    /// Authorizes disk repair only after every recovered semantic operation passed.
+    Validate(tokio::sync::oneshot::Sender<bool>),
     /// The snapshot's state, first.
-    State { encoded: Vec<u8>, store_time: u64 },
+    State { encoded: Vec<u8> },
     /// Each command in the journal after it.
     Command {
-        store_time: u64,
         committed_at_millis: u64,
         command: Command,
     },
@@ -416,28 +367,28 @@ impl LocalStream {
         Self::open_with_clock_and_anchor(root, limits, clock, None).await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.open",
-        skip_all,
-        fields(outcome = Empty, error.kind = Empty)
-    )]
     async fn open_with_clock_and_anchor(
         root: impl AsRef<Path>,
         limits: LocalStreamLimits,
         clock: Arc<dyn UnixMillisClock>,
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
-        let root = root.as_ref().to_path_buf();
-        // Dropping the caller must not release an external root gate while journal recovery is
-        // still running on a blocking worker. The independently owned task retains every startup
-        // input until the worker and bounded replay have both completed.
-        obs::finish(
-            run_owned_initialization(async move {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.open",
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        span.scope(async {
+            let root = root.as_ref().to_path_buf();
+            // Dropping the caller must not release an external root gate while journal recovery is
+            // still running on a blocking worker. The independently owned task retains every startup
+            // input until the worker and bounded replay have both completed.
+            run_owned_initialization(&span, async move {
                 Self::open_owned(root, limits, clock, ownership_anchor).await
             })
             .await
-            .and_then(|opened| opened),
-        )
+        })
+        .await
     }
 
     async fn open_owned(
@@ -450,9 +401,13 @@ impl LocalStream {
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(test)]
         let submitted_root = root.clone();
-        let span = tracing::debug_span!("acyclic.stream.recover", frames = Empty, bytes = Empty);
+        let span = obs::OwnedSpan::new(tracing::debug_span!(
+            "acyclic.stream.recover",
+            frames = Empty,
+            bytes = Empty
+        ));
         let open = tokio::task::spawn_blocking(move || {
-            span.in_scope(|| Journal::open(&root, limits, &recovered))
+            span.in_scope(|| Journal::open(&root, limits, &recovered, &span))
         });
         #[cfg(test)]
         {
@@ -465,48 +420,31 @@ impl LocalStream {
                 let _ = submitted.send(());
             }
         }
-        let store_clock = Arc::new(StoreClock::default());
         let commit_clock = Arc::new(PinnedCommitClock {
             source: Arc::clone(&clock),
             pinned: Mutex::new(None),
         });
-        let mut provider = MemoryStream::new_with_commit_clock(
+        let provider = MemoryStream::new_with_commit_clock(
             limits.memory,
             clock,
-            Arc::clone(&store_clock) as _,
             Arc::clone(&commit_clock) as _,
         );
-        let maximum_commands = usize::try_from(limits.journal_operations)
-            .map_err(|_| LocalStreamError::InvalidLimits)?;
-        provider
-            .recovery_limits(limits.memory, maximum_commands)
-            .await
-            .map_err(LocalStreamError::Replay)?;
         let mut replay_error = None;
         while let Some(recovered) = receiver.recv().await {
-            if replay_error.is_some() {
-                continue;
-            }
             let replayed = match recovered {
-                Recovered::State {
-                    encoded,
-                    store_time,
-                } => {
-                    store_clock.pin(store_time);
-                    match provider.install_state(&encoded).await {
-                        Ok(()) => provider
-                            .recovery_limits(limits.memory, maximum_commands)
-                            .await
-                            .map_err(LocalStreamError::Replay),
-                        Err(_) => Err(LocalStreamError::Corrupt),
-                    }
+                Recovered::Validate(complete) => {
+                    let _ = complete.send(replay_error.is_none());
+                    continue;
                 }
+                _ if replay_error.is_some() => continue,
+                Recovered::State { encoded } => provider
+                    .install_state(&encoded)
+                    .await
+                    .map_err(|_| LocalStreamError::Corrupt),
                 Recovered::Command {
-                    store_time,
                     committed_at_millis,
                     command,
                 } => {
-                    store_clock.pin(store_time);
                     commit_clock.pin(committed_at_millis);
                     replay(&provider, command)
                         .await
@@ -521,14 +459,11 @@ impl LocalStream {
         if let Some(error) = replay_error {
             return Err(error);
         }
-        provider.finish_recovery(limits.memory);
-        store_clock.start();
         commit_clock.unpin();
         let (changed, _) = watch::channel(0_u64);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
-                clock: store_clock,
                 commit_clock,
                 journal: OwnedJournal {
                     journal: Arc::new(Mutex::new(journal)),
@@ -550,18 +485,14 @@ impl LocalStream {
         }
     }
 
-    /// Encodes `command`'s frame at the current store time, which it pins
-    /// until the mutation ends.
+    /// Encodes the command and pins its recorded commit timestamp.
     fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
-        let at = self.inner.clock.live();
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         let frame =
-            PreparedFrame::encode(command, at, committed_at_millis).map_err(
-                |error| match error {
-                    LocalStreamError::InvalidLimits => StreamError::Capacity,
-                    _ => StreamError::Unavailable,
-                },
-            )?;
+            PreparedFrame::encode(command, committed_at_millis).map_err(|error| match error {
+                LocalStreamError::InvalidLimits => StreamError::Capacity,
+                _ => StreamError::Unavailable,
+            })?;
         self.inner
             .journal
             .journal
@@ -572,7 +503,6 @@ impl LocalStream {
                 LocalStreamError::InvalidLimits => StreamError::Capacity,
                 _ => StreamError::Unavailable,
             })?;
-        self.inner.clock.pin(at);
         self.inner.commit_clock.pin(committed_at_millis);
         Ok(frame)
     }
@@ -583,16 +513,17 @@ impl LocalStream {
     /// # Errors
     ///
     /// Fails, and poisons the store, when the journal cannot be flushed.
-    #[tracing::instrument(
-        name = "acyclic.stream.flush",
-        skip_all,
-        fields(batch_len = Empty, outcome = Empty, error.kind = Empty)
-    )]
     pub fn flush(&self) -> Result<(), StreamError> {
-        obs::finish(self.flush_all())
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.flush",
+            batch_len = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        span.in_scope(|| obs::finish(&span, self.flush_all(&span)))
     }
 
-    fn flush_all(&self) -> Result<(), StreamError> {
+    fn flush_all(&self, span: &tracing::Span) -> Result<(), StreamError> {
         let (target, file, durability) = {
             let journal = self
                 .inner
@@ -603,7 +534,7 @@ impl LocalStream {
             if journal.synced >= journal.appended {
                 return Ok(());
             }
-            obs::record("batch_len", journal.appended - journal.synced);
+            obs::record(span, "batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
                 Arc::clone(&journal.sync),
@@ -655,20 +586,23 @@ impl LocalStream {
             return Ok(());
         }
         let state = self.inner.provider.encode_state().await;
-        let store_time = self.inner.clock.now_unix_millis();
         let inner = Arc::clone(&self.inner);
-        let span = tracing::debug_span!("acyclic.stream.compact", bytes = state.len());
+        let span = obs::OwnedSpan::new(tracing::debug_span!(
+            "acyclic.stream.compact",
+            bytes = state.len()
+        ));
         tokio::task::spawn_blocking(move || {
-            let _span = span.enter();
-            let mut journal = inner
-                .journal
-                .journal
-                .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?;
-            journal.compact(&state, store_time)?;
-            let appended = journal.appended;
-            inner.publish_synced(&mut journal, appended);
-            Ok::<_, LocalStreamError>(())
+            span.in_scope(|| {
+                let mut journal = inner
+                    .journal
+                    .journal
+                    .lock()
+                    .map_err(|_| LocalStreamError::Corrupt)?;
+                journal.compact(&state)?;
+                let appended = journal.appended;
+                inner.publish_synced(&mut journal, appended);
+                Ok::<_, LocalStreamError>(())
+            })
         })
         .await
         .map_err(|_| LocalStreamError::Executor)
@@ -743,35 +677,41 @@ impl LocalStream {
     /// it may have observed are durable.
     async fn exclusive<T, F>(
         &self,
+        span: &obs::OwnedSpan,
         mutation: impl FnOnce(Self) -> F + Send + 'static,
     ) -> Result<T, StreamError>
     where
         T: Send + 'static,
         F: Future<Output = Result<T, StreamError>> + Send + 'static,
     {
-        self.check_available()?;
+        self.check_available().inspect_err(|error| {
+            obs::failed(span, error.code());
+        })?;
         let stream = self.clone();
-        // The mutation runs on a task of its own, which takes its caller's
-        // durability scope with it.
+        // The mutation owns completion as well as durability, even if its caller is dropped.
         let deferred = deferred();
-        tokio::spawn(
-            DEFERRED
-                .scope(deferred, async move {
+        let operation = span.clone();
+        tokio::spawn(DEFERRED.scope(deferred, async move {
+            let result = operation
+                .scope(async {
                     let (result, required) = {
                         let _visibility = stream.inner.visibility.write().await;
                         stream.check_available()?;
                         let result = mutation(stream.clone()).await;
-                        stream.inner.clock.unpin();
                         stream.inner.commit_clock.unpin();
                         (result, stream.inner.journal.required()?)
                     };
                     stream.await_durable(required).await?;
                     result
                 })
-                .in_current_span(),
-        )
+                .await;
+            obs::finish(&operation, result)
+        }))
         .await
-        .map_err(|_| StreamError::Unavailable)?
+        .map_err(|_| {
+            obs::failed(span, StreamError::Unavailable.code());
+            StreamError::Unavailable
+        })?
     }
 
     /// Runs one read under shared visibility, then returns its result once
@@ -815,20 +755,18 @@ impl StreamProvider for LocalStream {
         self.visible(self.inner.provider.bounds(path)).await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.append",
-        skip_all,
-        fields(
+    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.append",
             items = request.records.len(),
             bytes = request.records.iter().map(bytes::Bytes::len).sum::<usize>(),
             rev = Empty,
             outcome = Empty,
-            error.kind = Empty,
-        )
-    )]
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let outcome = self
-            .exclusive(|stream| async move {
+            error.kind = Empty
+        ));
+        span.scope(async {
+            let operation = span.clone();
+            self.exclusive(&span, move |stream| async move {
                 let command = Command::Append(request.clone());
                 let frame = stream.prepare(&command)?;
                 let retain_conflict = request.idempotency_key.is_some();
@@ -836,92 +774,112 @@ impl StreamProvider for LocalStream {
                 if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
                     stream.persist(frame).await?;
                 }
+                if let AppendOutcome::Committed(receipt) = &outcome {
+                    obs::record(&operation, "rev", receipt.tail);
+                }
                 Ok(outcome)
             })
-            .await;
-        if let Ok(AppendOutcome::Committed(receipt)) = &outcome {
-            obs::record("rev", receipt.tail);
-        }
-        obs::finish(outcome)
+            .await
+        })
+        .await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.fork",
-        skip_all,
-        fields(outcome = Empty, error.kind = Empty)
-    )]
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        obs::finish(
-            self.exclusive(|stream| async move {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.fork",
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        span.scope(async {
+            self.exclusive(&span, |stream| async move {
                 let frame = stream.prepare(&Command::Fork(request.clone()))?;
                 let outcome = stream.inner.provider.fork(request).await?;
                 stream.persist(frame).await?;
                 Ok(outcome)
             })
-            .await,
-        )
-    }
-
-    #[tracing::instrument(
-        name = "acyclic.stream.read",
-        skip_all,
-        fields(rev = request.from, items = request.limit, outcome = Empty, error.kind = Empty)
-    )]
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        obs::finish(self.read_visible(request).await)
-    }
-
-    #[tracing::instrument(
-        name = "acyclic.stream.follow",
-        skip_all,
-        fields(rev = from, outcome = Empty, error.kind = Empty)
-    )]
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        obs::finish(self.tail(path.clone()).await)?;
-        let state = FollowState {
-            provider: self.clone(),
-            path,
-            next: from,
-            changed: self.inner.changed.subscribe(),
-            done: false,
-        };
-        Ok(stream::unfold(state, |mut state| async move {
-            if state.done {
-                return None;
-            }
-            loop {
-                match state
-                    .provider
-                    .read_visible(ReadRequest {
-                        path: state.path.clone(),
-                        from: state.next,
-                        limit: 1,
-                    })
-                    .await
-                {
-                    Ok(mut records) => match records.next().await {
-                        Some(Ok(record)) => {
-                            state.next = record.sequence.saturating_add(1);
-                            return Some((Ok(record), state));
-                        }
-                        Some(Err(error)) => {
-                            state.done = true;
-                            return Some((Err(error), state));
-                        }
-                        None => {}
-                    },
-                    Err(error) => {
-                        state.done = true;
-                        return Some((Err(error), state));
-                    }
-                }
-                if state.changed.changed().await.is_err() {
-                    state.done = true;
-                    return Some((Err(StreamError::Unavailable), state));
-                }
-            }
+            .await
         })
-        .boxed())
+        .await
+    }
+
+    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.read",
+            rev = request.from,
+            items = request.limit,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let mut observation = ReadObservation {
+            span,
+            finished: false,
+        };
+        let result = observation.span.scope(self.read_visible(request)).await;
+        observation.finished = true;
+        obs::finish(&observation.span, result)
+    }
+
+    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.follow",
+            rev = from,
+            terminal = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        span.scope(async {
+            let mut state = FollowState {
+                provider: self.clone(),
+                path,
+                next: from,
+                changed: self.inner.changed.subscribe(),
+                done: false,
+                span: span.clone(),
+            };
+            if let Err(error) = self.tail(state.path.clone()).await {
+                state.failed(&error);
+                return Err(error);
+            }
+            Ok(span
+                .scope(stream::unfold(state, |mut state| async move {
+                    if state.done {
+                        return None;
+                    }
+                    loop {
+                        match state
+                            .provider
+                            .read_visible(ReadRequest {
+                                path: state.path.clone(),
+                                from: state.next,
+                                limit: 1,
+                            })
+                            .await
+                        {
+                            Ok(mut records) => match records.next().await {
+                                Some(Ok(record)) => {
+                                    state.next = record.sequence.saturating_add(1);
+                                    return Some((Ok(record), state));
+                                }
+                                Some(Err(error)) => {
+                                    state.failed(&error);
+                                    return Some((Err(error), state));
+                                }
+                                None => {}
+                            },
+                            Err(error) => {
+                                state.failed(&error);
+                                return Some((Err(error), state));
+                            }
+                        }
+                        if state.changed.changed().await.is_err() {
+                            state.failed(&StreamError::Unavailable);
+                            return Some((Err(StreamError::Unavailable), state));
+                        }
+                    }
+                }))
+                .boxed())
+        })
+        .await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -936,35 +894,38 @@ impl StreamProvider for LocalStream {
             .await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.commit",
-        skip_all,
-        fields(items = request.mutations.len(), outcome = Empty, error.kind = Empty)
-    )]
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        obs::finish(
-            self.exclusive(|stream| async move {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.commit",
+            items = request.mutations.len(),
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        span.scope(async {
+            self.exclusive(&span, |stream| async move {
                 let frame = stream.prepare(&Command::Commit(request.clone()))?;
                 let outcome = stream.inner.provider.commit(request).await?;
                 stream.persist(frame).await?;
                 Ok(outcome)
             })
-            .await,
-        )
+            .await
+        })
+        .await
     }
 
-    #[tracing::instrument(
-        name = "acyclic.stream.commit",
-        skip_all,
-        fields(items = request.mutations.len(), outcome = Empty, error.kind = Empty)
-    )]
     async fn commit_before(
         &self,
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        obs::finish(
-            self.exclusive(move |stream| async move {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.commit",
+            items = request.mutations.len(),
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        span.scope(async {
+            self.exclusive(&span, move |stream| async move {
                 let frame = stream.prepare(&Command::Commit(request.clone()))?;
                 let outcome = stream
                     .inner
@@ -974,8 +935,9 @@ impl StreamProvider for LocalStream {
                 stream.persist(frame).await?;
                 Ok(outcome)
             })
-            .await,
-        )
+            .await
+        })
+        .await
     }
 
     async fn read_commit(
@@ -987,12 +949,40 @@ impl StreamProvider for LocalStream {
     }
 }
 
+/// Reads are caller-owned; cancellation while waiting for visibility is terminal.
+struct ReadObservation {
+    span: obs::OwnedSpan,
+    finished: bool,
+}
+impl Drop for ReadObservation {
+    fn drop(&mut self) {
+        if !self.finished {
+            obs::failed(&self.span, "cancelled");
+        }
+    }
+}
+
 struct FollowState {
     provider: LocalStream,
     path: StreamPath,
     next: u64,
     changed: watch::Receiver<u64>,
     done: bool,
+    span: obs::OwnedSpan,
+}
+impl FollowState {
+    fn failed(&mut self, error: &StreamError) {
+        self.done = true;
+        self.span.record("terminal", "error");
+        obs::failed(&self.span, error.code());
+    }
+}
+impl Drop for FollowState {
+    fn drop(&mut self) {
+        if !self.done {
+            self.span.record("terminal", "dropped");
+        }
+    }
 }
 
 struct Journal {
@@ -1017,6 +1007,7 @@ struct Journal {
     /// Whether a flush is under way; see [`LocalStream::await_durable`].
     syncing: bool,
     root: PathBuf,
+    torn_tail: Option<u64>,
 }
 
 impl Drop for Journal {
@@ -1031,11 +1022,7 @@ struct PreparedFrame {
 }
 
 impl PreparedFrame {
-    fn encode(
-        command: &Command,
-        store_time: u64,
-        committed_at_millis: u64,
-    ) -> Result<Self, LocalStreamError> {
+    fn encode(command: &Command, committed_at_millis: u64) -> Result<Self, LocalStreamError> {
         let journal = journal_command(command);
         if journal.encoded_len() > MAX_COMMAND_BYTES {
             return Err(LocalStreamError::InvalidLimits);
@@ -1051,7 +1038,6 @@ impl PreparedFrame {
             .ok_or(LocalStreamError::InvalidLimits)?;
         let mut encoded = Vec::with_capacity(capacity);
         encoded.extend_from_slice(&length);
-        encoded.extend_from_slice(&store_time.to_le_bytes());
         encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
         journal
             .encode(&mut encoded)
@@ -1066,24 +1052,31 @@ impl PreparedFrame {
     }
 }
 
+/// The blocking worker waits without releasing ownership; replay never authorizes
+/// truncation or restart after a rejected semantic prefix.
+fn validate_recovery(recovered: &mpsc::Sender<Recovered>) -> Result<bool, LocalStreamError> {
+    let (complete, validation) = tokio::sync::oneshot::channel();
+    recovered
+        .blocking_send(Recovered::Validate(complete))
+        .map_err(|_| LocalStreamError::Executor)?;
+    validation
+        .blocking_recv()
+        .map_err(|_| LocalStreamError::Executor)
+}
+
 impl Journal {
     fn open(
         root: &Path,
         limits: LocalStreamLimits,
         recovered: &mpsc::Sender<Recovered>,
+        span: &tracing::Span,
     ) -> Result<Self, LocalStreamError> {
         let lock = lock_root(root, limits)?;
-        // A snapshot still being written was never installed.
-        match std::fs::remove_file(root.join(SNAPSHOT_TEMPORARY)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
-            _ => {}
-        }
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
                 recovered
                     .blocking_send(Recovered::State {
                         encoded: snapshot.state,
-                        store_time: snapshot.store_time,
                     })
                     .map_err(|_| LocalStreamError::Executor)?;
                 snapshot.epoch
@@ -1110,6 +1103,7 @@ impl Journal {
             synced: 0,
             syncing: false,
             root: root.to_path_buf(),
+            torn_tail: None,
         };
         let header_bytes =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -1128,7 +1122,16 @@ impl Journal {
             // Every frame follows a whole header, so a journal holding less
             // than a valid header never acknowledged one: its creation or
             // restart was torn, and it starts again.
-            None | Some(None) if length <= header_bytes => {
+            None => {
+                journal.file.seek(SeekFrom::Start(0))?;
+                let mut partial = Vec::new();
+                journal.file.read_to_end(&mut partial)?;
+                if !encode_header(limits, epoch)?.starts_with(&partial) {
+                    return Err(LocalStreamError::Corrupt);
+                }
+                if !validate_recovery(recovered)? {
+                    return Ok(journal);
+                }
                 journal.restart(epoch)?;
                 sync_directory(&path, limits.durability)?;
                 return Ok(journal);
@@ -1136,13 +1139,31 @@ impl Journal {
             Some(Some(found)) if found == epoch => {}
             // The snapshot for the next epoch landed before the journal
             // restarted, so it already holds every frame here.
-            Some(Some(found)) if found < epoch => {
+            Some(Some(found)) if found.checked_add(1) == Some(epoch) => {
+                if !validate_recovery(recovered)? {
+                    return Ok(journal);
+                }
                 journal.restart(epoch)?;
                 return Ok(journal);
             }
             _ => return Err(LocalStreamError::Corrupt),
         }
-        journal.replay(length, recovered)?;
+        journal.replay(length, recovered, span)?;
+        if !validate_recovery(recovered)? {
+            return Ok(journal);
+        }
+        if let Some(frame_start) = journal.torn_tail {
+            match acyclic_native_runtime::recover_log_tail(
+                &mut journal.file,
+                frame_start,
+                maximum_frame_bytes(),
+                native_durability(limits.durability),
+                frame_is_valid,
+            )? {
+                acyclic_native_runtime::LogTail::Torn => {}
+                acyclic_native_runtime::LogTail::Corrupt => return Err(LocalStreamError::Corrupt),
+            }
+        }
         // Frames a crashed process wrote but never flushed are replayed, so
         // they are made durable before anything can observe them.
         sync_file_data(&journal.file, limits.durability)?;
@@ -1155,6 +1176,7 @@ impl Journal {
         &mut self,
         length: u64,
         recovered: &mpsc::Sender<Recovered>,
+        span: &tracing::Span,
     ) -> Result<(), LocalStreamError> {
         let limits = self.limits;
         let mut operations = 0_u64;
@@ -1164,28 +1186,14 @@ impl Journal {
         while valid_length < total_length {
             let frame_start = valid_length;
             let Some(frame) = read_frame(&mut self.file, total_length - frame_start)? else {
-                // An invalid frame is a torn append exactly when nothing valid
-                // follows it; power loss can leave one zero-filled or garbage.
-                match acyclic_native_runtime::recover_log_tail(
-                    &mut self.file,
-                    frame_start,
-                    maximum_frame_bytes(),
-                    native_durability(limits.durability),
-                    frame_is_valid,
-                )? {
-                    acyclic_native_runtime::LogTail::Torn => break,
-                    acyclic_native_runtime::LogTail::Corrupt => {
-                        return Err(LocalStreamError::Corrupt);
-                    }
-                }
+                // Repair is deferred until semantic replay has accepted every prefix frame.
+                self.torn_tail = Some(frame_start);
+                break;
             };
             // An intact frame was written whole, so one that does not decode
             // may be a committed command: fail closed.
-            let (store_time, command) = frame
+            let (committed_at_millis, command) = frame
                 .command
-                .split_first_chunk::<8>()
-                .ok_or(LocalStreamError::Corrupt)?;
-            let (committed_at_millis, command) = command
                 .split_first_chunk::<8>()
                 .ok_or(LocalStreamError::Corrupt)?;
             let command = decode_command(command).map_err(|_| LocalStreamError::Corrupt)?;
@@ -1195,7 +1203,6 @@ impl Journal {
             }
             recovered
                 .blocking_send(Recovered::Command {
-                    store_time: u64::from_le_bytes(*store_time),
                     committed_at_millis: u64::from_le_bytes(*committed_at_millis),
                     command,
                 })
@@ -1208,8 +1215,8 @@ impl Journal {
             return Err(LocalStreamError::InvalidLimits);
         }
         self.file.seek(SeekFrom::End(0))?;
-        obs::record("frames", operations);
-        obs::record("bytes", valid_length);
+        obs::record(span, "frames", operations);
+        obs::record(span, "bytes", valid_length);
         self.operations = operations;
         self.bytes = valid_length;
         Ok(())
@@ -1238,13 +1245,13 @@ impl Journal {
     /// Makes `state`, which holds every frame so far, the snapshot the
     /// journal follows, then empties the journal. The snapshot is durable
     /// under its final name before the journal loses a frame.
-    fn compact(&mut self, state: &[u8], store_time: u64) -> Result<(), LocalStreamError> {
+    fn compact(&mut self, state: &[u8]) -> Result<(), LocalStreamError> {
         let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
         let temporary = self.root.join(SNAPSHOT_TEMPORARY);
         let snapshot = self.root.join(SNAPSHOT_FILE);
         {
             let mut file = File::create(&temporary)?;
-            file.write_all(&encode_snapshot(self.limits, epoch, store_time, state)?)?;
+            file.write_all(&encode_snapshot(self.limits, epoch, state)?)?;
             sync_file(&file, self.limits.durability)?;
         }
         std::fs::rename(&temporary, &snapshot)?;
@@ -1310,7 +1317,7 @@ fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<File, LocalStream
     Ok(lock)
 }
 
-/// The largest frame the journal holds: length prefix, store time, command
+/// The largest frame the journal holds: length prefix, commit timestamp, command
 /// and checksum.
 fn maximum_frame_bytes() -> usize {
     4 + FRAME_TIME_BYTES + MAX_COMMAND_BYTES + FRAME_CHECKSUM_BYTES
@@ -1321,7 +1328,7 @@ fn frame_bytes(length_bytes: &[u8; 4]) -> u64 {
     4 + u64::from(u32::from_le_bytes(*length_bytes)) + FRAME_CHECKSUM_BYTES as u64
 }
 
-/// The store time and command length a frame's prefix declares, if the
+/// The commit timestamp and command length a frame's prefix declares, if the
 /// journal can hold it.
 fn command_length(length_bytes: [u8; 4]) -> Option<usize> {
     usize::try_from(u32::from_le_bytes(length_bytes))
@@ -1456,7 +1463,6 @@ fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Option<u64> {
 
 struct Snapshot {
     epoch: u64,
-    store_time: u64,
     state: Vec<u8>,
 }
 
@@ -1470,14 +1476,12 @@ fn snapshot_checksum(body: &[u8]) -> [u8; 32] {
 fn encode_snapshot(
     limits: LocalStreamLimits,
     epoch: u64,
-    store_time: u64,
     state: &[u8],
 ) -> Result<Vec<u8>, LocalStreamError> {
     let mut encoded = Vec::with_capacity(SNAPSHOT_HEADER_BYTES + state.len() + 32);
     encoded.extend_from_slice(SNAPSHOT_MAGIC);
     encoded.extend_from_slice(&encode_limits(limits)?);
     encoded.extend_from_slice(&epoch.to_le_bytes());
-    encoded.extend_from_slice(&store_time.to_le_bytes());
     encoded.extend_from_slice(state);
     let checksum = snapshot_checksum(&encoded);
     encoded.extend_from_slice(&checksum);
@@ -1513,12 +1517,9 @@ fn read_snapshot(
     let (epoch, rest) = rest
         .split_first_chunk::<8>()
         .ok_or(LocalStreamError::Corrupt)?;
-    let (store_time, state) = rest
-        .split_first_chunk::<8>()
-        .ok_or(LocalStreamError::Corrupt)?;
+    let state = rest;
     Ok(Some(Snapshot {
         epoch: u64::from_le_bytes(*epoch),
-        store_time: u64::from_le_bytes(*store_time),
         state: state.to_vec(),
     }))
 }
@@ -1532,12 +1533,21 @@ fn frame_checksum(length: &[u8; 4], command: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "fixture byte offsets and captured field lookups intentionally fail the test if expected evidence is absent"
+)]
 mod tests {
     use super::*;
 
     #[test]
     fn cancelled_real_open_retains_ownership_until_journal_open_stops()
     -> Result<(), Box<dyn std::error::Error>> {
+        use tracing::instrument::WithSubscriber as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .max_blocking_threads(1)
@@ -1564,10 +1574,17 @@ mod tests {
                     .map_err(|_| "journal-open test hook was poisoned")?;
                 *hook = Some((root.clone(), submitted_tx));
             }
-            let opening = tokio::spawn(async move {
-                LocalStream::open_with_ownership_anchor(root, LocalStreamLimits::default(), anchor)
+            let opening = tokio::spawn(
+                async move {
+                    LocalStream::open_with_ownership_anchor(
+                        root,
+                        LocalStreamLimits::default(),
+                        anchor,
+                    )
                     .await
-            });
+                }
+                .with_subscriber(dispatch),
+            );
 
             // The only blocking worker is occupied, so the real Journal::open submitted by the
             // independently owned initialization cannot have completed when its caller is
@@ -1597,6 +1614,12 @@ mod tests {
                 ownership_retained,
                 "caller cancellation must not release ownership from active Journal::open"
             );
+            let fields = captured.fields("acyclic.stream.open");
+            assert_eq!(
+                fields["outcome"], "ok",
+                "detached work owns its successful completion"
+            );
+            assert!(!fields.contains_key("error.kind"));
             Ok::<_, Box<dyn std::error::Error>>(())
         })
     }
@@ -1607,6 +1630,11 @@ mod tests {
         let _serial = PERSIST_BLOCKER_TESTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use tracing::instrument::WithSubscriber as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .max_blocking_threads(1)
@@ -1633,19 +1661,22 @@ mod tests {
                     .map_err(|_| "journal-persist test hook was poisoned")?;
                 *hook = Some((journal_identity, started_tx, release_rx));
             }
-            let appending = tokio::spawn({
-                let provider = provider.clone();
-                async move {
-                    provider
-                        .append(AppendRequest {
-                            path: StreamPath::new("cancelled-persist")?,
-                            records: vec![Bytes::from_static(b"record")],
-                            if_tail: Some(0),
-                            idempotency_key: None,
-                        })
-                        .await
+            let appending = tokio::spawn(
+                {
+                    let provider = provider.clone();
+                    async move {
+                        provider
+                            .append(AppendRequest {
+                                path: StreamPath::new("cancelled-persist")?,
+                                records: vec![Bytes::from_static(b"record")],
+                                if_tail: Some(0),
+                                idempotency_key: None,
+                            })
+                            .await
+                    }
                 }
-            });
+                .with_subscriber(dispatch),
+            );
 
             started_rx.recv()?;
             appending.abort();
@@ -1662,6 +1693,12 @@ mod tests {
                 Arc::clone(&lifecycle).lock_owned(),
             )
             .await?;
+            let fields = captured.fields("acyclic.stream.append");
+            assert_eq!(
+                fields["outcome"], "ok",
+                "detached work owns its successful completion"
+            );
+            assert!(!fields.contains_key("error.kind"));
             Ok::<_, Box<dyn std::error::Error>>(())
         })
     }
@@ -1944,7 +1981,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_snapshot_and_post_expiry_journal_recover_above_live_receipt_limits()
+    async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let path = directory.path().join(JOURNAL_FILE);
+        let command = Command::Append(AppendRequest {
+            path: StreamPath::new("partial")?,
+            records: vec![Bytes::from_static(b"record")],
+            if_tail: Some(0),
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"partial"))?),
+        });
+        let frame = PreparedFrame::encode(&command, 42)?;
+        for cut in 0..=frame.encoded.len() {
+            let mut bytes = encode_header(limits, 0)?;
+            bytes.extend_from_slice(&frame.encoded[..cut]);
+            std::fs::write(&path, &bytes)?;
+            let reopened = LocalStream::open(directory.path(), limits).await?;
+            if cut == frame.encoded.len() {
+                assert_eq!(reopened.tail(StreamPath::new("partial")?).await?, 1);
+            } else {
+                assert_eq!(
+                    reopened.tail(StreamPath::new("partial")?).await,
+                    Err(StreamError::NotFound)
+                );
+            }
+            drop(reopened);
+            assert_eq!(
+                std::fs::metadata(&path)?.len(),
+                u64::try_from(if cut == frame.encoded.len() {
+                    bytes.len()
+                } else {
+                    HEADER_BYTES
+                })?
+            );
+        }
+        // A whole checksummed noncanonical command is never a torn append.
+        let mut payload = 42_u64.to_le_bytes().to_vec();
+        payload.extend_from_slice(&journal_command(&command).encode_to_vec());
+        payload.extend_from_slice(&[0x78, 0]);
+        let length = u32::try_from(payload.len())?.to_le_bytes();
+        let mut bytes = encode_header(limits, 0)?;
+        bytes.extend_from_slice(&length);
+        bytes.extend_from_slice(&payload);
+        bytes.extend_from_slice(&frame_checksum(&length, &payload));
+        std::fs::write(&path, &bytes)?;
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::Corrupt)
+        ));
+        assert_eq!(std::fs::read(&path)?, bytes);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let journal_path = directory.path().join(JOURNAL_FILE);
+        let snapshot_path = directory.path().join(SNAPSHOT_FILE);
+        let mut obsolete = encode_header(limits, 0)?;
+        obsolete[22] = b'4';
+        for header in [obsolete, vec![0; HEADER_BYTES], encode_header(limits, 2)?] {
+            std::fs::write(&journal_path, &header)?;
+            for _ in 0..2 {
+                assert!(matches!(
+                    LocalStream::open(directory.path(), limits).await,
+                    Err(LocalStreamError::Corrupt)
+                ));
+                assert_eq!(std::fs::read(&journal_path)?, header);
+            }
+        }
+        // A checksummed snapshot with invalid semantic state must not authorize
+        // discarding an earlier epoch's complete journal.
+        let header = encode_header(limits, 0)?;
+        std::fs::write(&journal_path, &header)?;
+        let invalid = encode_snapshot(limits, 1, b"invalid state")?;
+        std::fs::write(&snapshot_path, &invalid)?;
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::Corrupt)
+        ));
+        assert_eq!(std::fs::read(&journal_path)?, header);
+        assert_eq!(std::fs::read(&snapshot_path)?, invalid);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let limits = LocalStreamLimits {
@@ -1957,75 +2082,43 @@ mod tests {
         };
         let provider = LocalStream::open(directory.path(), limits).await?;
         let first = AppendRequest {
-            path: StreamPath::new("legacy/capacity")?,
+            path: StreamPath::new("capacity/replay")?,
             records: vec![Bytes::from_static(b"first")],
             if_tail: Some(0),
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"legacy-first"))?),
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"first"))?),
         };
-        let first_outcome = provider.append(first.clone()).await?;
-        let expiry = crate::MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
-        let snapshot = provider
-            .inner
-            .provider
-            .encode_legacy_deadline_fixture(expiry)
-            .await;
-        let second = AppendRequest {
-            records: vec![Bytes::from_static(b"second")],
-            if_tail: Some(1),
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"legacy-second"))?),
-            ..first.clone()
-        };
-        let baseline = MemoryStream::new(limits.memory);
-        baseline.install_state(&snapshot).await?;
-        assert_eq!(
-            replay(&baseline, Command::Append(second.clone())).await,
-            Err(StreamError::Capacity)
-        );
-        // An old writer expired the snapshot receipt and admitted this intact
-        // journal command. Write exactly that old disk format, without running
-        // the new fail-closed live admission rule.
-        let frame = PreparedFrame::encode(&Command::Append(second.clone()), expiry + 1, 1)?;
-        {
-            let mut journal = provider
-                .inner
-                .journal
-                .journal
-                .lock()
-                .map_err(|_| "journal poisoned")?;
-            journal.compact(&snapshot, 0)?;
-            journal.append(&frame, true)?;
-        }
-        drop(provider);
-        let reopened = LocalStream::open(directory.path(), limits).await?;
-        assert_eq!(reopened.tail(first.path.clone()).await?, 2);
-        assert_eq!(reopened.append(first.clone()).await?, first_outcome);
-        let second_outcome = reopened.append(second.clone()).await?;
-        let mut fresh = second.clone();
-        fresh.idempotency_key = Some(IdempotencyKey::new(Bytes::from_static(b"fresh"))?);
-        fresh.if_tail = Some(2);
-        assert_eq!(reopened.append(fresh).await, Err(StreamError::Capacity));
-        let records = reopened
-            .read(ReadRequest {
-                path: first.path.clone(),
-                from: 0,
-                limit: 2,
-            })
-            .await?
-            .collect::<Vec<_>>()
-            .await;
-        assert_eq!(records.into_iter().collect::<Result<Vec<_>, _>>()?.len(), 2);
-        let snapshot = reopened.inner.provider.encode_state().await;
-        reopened
+        let outcome = provider.append(first.clone()).await?;
+        let state = provider.inner.provider.encode_state().await;
+        provider
             .inner
             .journal
             .journal
             .lock()
-            .map_err(|_| "journal poisoned")?
-            .compact(&snapshot, expiry + 1)?;
-        drop(reopened);
-        let again = LocalStream::open(directory.path(), limits).await?;
-        assert_eq!(again.append(first).await?, first_outcome);
-        assert_eq!(again.append(second).await?, second_outcome);
+            .map_err(|_| "poisoned")?
+            .compact(&state)?;
+        drop(provider);
+        let second = AppendRequest {
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"second"))?),
+            if_tail: Some(1),
+            ..first.clone()
+        };
+        let path = directory.path().join(JOURNAL_FILE);
+        let before = std::fs::read(&path)?;
+        let frame = PreparedFrame::encode(&Command::Append(second), 1)?;
+        let mut damaged = before.clone();
+        damaged.extend_from_slice(&frame.encoded);
+        damaged.extend_from_slice(&[9, 8, 7]);
+        std::fs::write(&path, &damaged)?;
+        for _ in 0..2 {
+            assert!(matches!(
+                LocalStream::open(directory.path(), limits).await,
+                Err(LocalStreamError::Replay(StreamError::Capacity))
+            ));
+            assert_eq!(std::fs::read(&path)?, damaged);
+        }
+        std::fs::write(&path, before)?;
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(reopened.append(first).await?, outcome);
         Ok(())
     }
 
@@ -2033,7 +2126,13 @@ mod tests {
     async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let clock = Arc::new(TestClock::default());
+        let provider = LocalStream::open_with_clock(
+            directory.path(),
+            LocalStreamLimits::default(),
+            clock.clone(),
+        )
+        .await?;
         let request = AppendRequest {
             path: StreamPath::new("retained/local")?,
             records: vec![Bytes::from_static(b"once")],
@@ -2041,7 +2140,7 @@ mod tests {
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"local-once"))?),
         };
         let first = provider.append(request.clone()).await?;
-        provider.inner.clock.time().base = u64::MAX;
+        clock.0.store(u64::MAX, Ordering::SeqCst);
         assert_eq!(provider.append(request.clone()).await?, first);
         drop(provider);
         let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -2134,11 +2233,16 @@ mod tests {
     async fn a_journal_torn_before_its_header_completed_is_created_again()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        std::fs::write(
-            directory.path().join("stream.journal"),
-            HEADER_MAGIC.get(..3).ok_or("header magic")?,
-        )?;
-        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let path = directory.path().join(JOURNAL_FILE);
+        let limits = LocalStreamLimits::default();
+        let header = encode_header(limits, 0)?;
+        for cut in 0..header.len() {
+            std::fs::write(&path, &header[..cut])?;
+            let provider = LocalStream::open(directory.path(), limits).await?;
+            drop(provider);
+            assert_eq!(std::fs::read(&path)?, header);
+        }
+        let provider = LocalStream::open(directory.path(), limits).await?;
         conformance::verify(&provider)
             .await
             .map_err(std::io::Error::other)?;
@@ -2248,6 +2352,180 @@ mod tests {
             event.record(&mut Fields(&mut fields));
             self.0.lock().unwrap().push(("event", fields));
         }
+    }
+
+    #[tokio::test]
+    async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = obs::tests::Capture::default();
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(captured.clone())
+            .with(tracing_subscriber::filter::filter_fn(|metadata| {
+                !metadata.name().starts_with("acyclic.stream")
+            }));
+        let _default = tracing::subscriber::set_default(subscriber);
+        let parent = tracing::info_span!(
+            "caller",
+            outcome = "caller",
+            error.kind = "caller",
+            frames = 77,
+            bytes = 88,
+            batch_len = 99,
+            rev = 66
+        );
+        async {
+            let directory = tempfile::tempdir()?;
+            let provider =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            let request = AppendRequest {
+                path: StreamPath::new("traced")?,
+                records: vec![Bytes::from_static(b"record")],
+                if_tail: None,
+                idempotency_key: None,
+            };
+            provider.append(request).await?;
+            provider.flush()?;
+            assert!(
+                provider
+                    .read(ReadRequest {
+                        path: StreamPath::new("missing")?,
+                        from: 0,
+                        limit: 1
+                    })
+                    .await
+                    .is_err()
+            );
+            drop(provider);
+            let reopened =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            assert_eq!(reopened.tail(StreamPath::new("traced")?).await?, 1);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .instrument(parent)
+        .await?;
+        let fields = captured.fields("caller");
+        for (field, value) in [
+            ("outcome", "caller"),
+            ("error.kind", "caller"),
+            ("frames", "77"),
+            ("bytes", "88"),
+            ("batch_len", "99"),
+            ("rev", "66"),
+        ] {
+            assert_eq!(fields[field], value);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_follow_observes_lifetime_drop_and_late_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        for late_error in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let provider =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            let path = StreamPath::new("follow")?;
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::from_static(b"record")],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+            let captured = obs::tests::Capture::default();
+            let mut records = tracing::subscriber::with_default(
+                tracing_subscriber::Registry::default().with(captured.clone()),
+                || {
+                    let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                    parent.scope(async { provider.follow(path, 1).await })
+                },
+            )
+            .await?;
+            assert!(
+                !captured
+                    .fields("acyclic.stream.follow")
+                    .contains_key("outcome")
+            );
+            assert_eq!(captured.closed("acyclic.stream.follow"), 0);
+            let other = obs::tests::Capture::default();
+            let _default = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(other.clone()),
+            );
+            let parent = tracing::info_span!("foreign_parent");
+            let _entered = parent.enter();
+            if late_error {
+                provider.inner.poison();
+                assert_eq!(
+                    records.next().await.unwrap().unwrap_err(),
+                    StreamError::Unavailable
+                );
+                assert!(records.next().await.is_none());
+            } else {
+                assert!(futures::poll!(records.next()).is_pending());
+            }
+            drop(records);
+            let fields = captured.fields("acyclic.stream.follow");
+            assert_eq!(
+                fields["terminal"],
+                if late_error { "error" } else { "dropped" }
+            );
+            if late_error {
+                assert_eq!(fields["outcome"], "err");
+                assert_eq!(fields["error.kind"], "unavailable");
+            } else {
+                assert!(!fields.contains_key("outcome"));
+                assert!(!fields.contains_key("error.kind"));
+            }
+            assert_eq!(captured.closed("acyclic.stream.follow"), 1);
+            assert_eq!(captured.closed("origin_parent"), 1);
+            assert_eq!(other.closed("foreign_parent"), 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_local_read_records_error_and_closes_origin_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let visibility = provider.inner.visibility.write().await;
+        let captured = obs::tests::Capture::default();
+        let future = tracing::subscriber::with_default(
+            tracing_subscriber::Registry::default().with(captured.clone()),
+            || {
+                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                parent.scope(async {
+                    provider
+                        .read(ReadRequest {
+                            path: StreamPath::new("pending")?,
+                            from: 0,
+                            limit: 1,
+                        })
+                        .await
+                })
+            },
+        );
+        let mut future = Box::pin(future);
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        let other = obs::tests::Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(other.clone()),
+        );
+        let parent = tracing::info_span!("foreign_parent");
+        let _entered = parent.enter();
+        drop(future);
+        assert_eq!(
+            captured.fields("acyclic.stream.read")["error.kind"],
+            "cancelled"
+        );
+        assert_eq!(captured.closed("acyclic.stream.read"), 1);
+        assert_eq!(captured.closed("origin_parent"), 1);
+        assert_eq!(other.closed("foreign_parent"), 0);
+        drop(visibility);
+        Ok(())
     }
 
     #[tokio::test]
@@ -2452,7 +2730,6 @@ mod tests {
                 idempotency_key: None,
             }),
             0,
-            0,
         )?;
         let valid = PreparedFrame::encode(
             &Command::Append(AppendRequest {
@@ -2462,16 +2739,17 @@ mod tests {
                 idempotency_key: None,
             }),
             0,
-            0,
         )?;
         let journal_path = directory.path().join("stream.journal");
-        let mut journal = OpenOptions::new().append(true).open(journal_path)?;
+        let mut journal = OpenOptions::new().append(true).open(&journal_path)?;
         journal.write_all(&invalid.encoded)?;
         for _ in 0..REPLAY_PIPELINE_COMMANDS * 4 {
             journal.write_all(&valid.encoded)?;
         }
+        journal.write_all(&[9, 8, 7])?;
         journal.sync_all()?;
         drop(journal);
+        let before = std::fs::read(&journal_path)?;
 
         for _ in 0..2 {
             let result = tokio::time::timeout(
@@ -2483,6 +2761,7 @@ mod tests {
                 result,
                 Err(LocalStreamError::Replay(StreamError::NotFound))
             ));
+            assert_eq!(std::fs::read(&journal_path)?, before);
         }
         Ok(())
     }
@@ -2726,7 +3005,10 @@ mod tests {
         let reopened = LocalStream::open(directory.path(), limits).await?;
         assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 4);
         drop(reopened);
-        assert!(!directory.path().join(SNAPSHOT_TEMPORARY).exists());
+        assert_eq!(
+            std::fs::read(directory.path().join(SNAPSHOT_TEMPORARY))?,
+            b"torn"
+        );
         assert_eq!(
             std::fs::metadata(&journal)?.len(),
             u64::try_from(HEADER_BYTES)?

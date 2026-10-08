@@ -10,7 +10,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{collections::VecDeque, net::IpAddr, time::Duration};
-use tracing::field::Empty;
+use tracing::{Span, field::Empty};
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
@@ -85,19 +85,31 @@ impl HttpStream {
             maximum,
         })
     }
-    #[tracing::instrument(
-        name = "acyclic.stream.http.call",
-        skip_all,
-        fields(route = route, http.status = Empty, bytes = Empty, outcome = Empty, error.kind = Empty)
-    )]
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
-        obs::finish(self.request_inner(route, bytes).await)
+        let mut observation = HttpObservation {
+            span: obs::OwnedSpan::new(tracing::info_span!(
+                "acyclic.stream.http.call",
+                route,
+                http.status = Empty,
+                bytes = Empty,
+                outcome = Empty,
+                error.kind = Empty
+            )),
+            finished: false,
+        };
+        let result = observation
+            .span
+            .scope(self.request_inner(route, bytes, &observation.span))
+            .await;
+        observation.finished = true;
+        obs::finish(&observation.span, result)
     }
 
     async fn request_inner(
         &self,
         route: &'static str,
         bytes: Vec<u8>,
+        span: &Span,
     ) -> Result<Value, StreamError> {
         let body = http_codec::encode(route, &bytes).map_err(contract_error)?;
         let url = self
@@ -114,7 +126,7 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?;
         let success = response.status().is_success();
-        obs::record("http.status", response.status().as_u16());
+        obs::record(span, "http.status", response.status().as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -132,7 +144,7 @@ impl HttpStream {
             }
             body.extend_from_slice(&chunk);
         }
-        obs::record("bytes", body.len());
+        obs::record(span, "bytes", body.len());
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value
@@ -255,6 +267,97 @@ impl HttpStream {
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
+    // Keep clock control local to follow: HTTP request deadlines retain their real
+    // transport clock, while tests can observe and release each idle wait.
+    async fn follow_with_delay<D, F>(
+        &self,
+        path: StreamPath,
+        from: u64,
+        delay: D,
+    ) -> Result<RecordStream, StreamError>
+    where
+        D: FnMut(Duration) -> F + Send + 'static,
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut observation = FollowObservation::new(from);
+        let tail = observation.span.scope(self.tail(path.clone())).await;
+        match tail {
+            Ok(tail) if from <= tail => {}
+            Ok(_) => {
+                observation.failed(&StreamError::OutOfRange);
+                return Err(StreamError::OutOfRange);
+            }
+            Err(error) => {
+                observation.failed(&error);
+                return Err(error);
+            }
+        }
+        observation.span.record("phase", "consumer");
+        let context = observation.span.clone();
+        let follow = stream::try_unfold(
+            (
+                self.clone(),
+                path,
+                from,
+                VecDeque::<Record>::new(),
+                delay,
+                observation,
+            ),
+            |(provider, path, mut next, mut queued, mut delay, mut observation)| async move {
+                let result = async {
+                    loop {
+                        if let Some(record) = queued.pop_front() {
+                            next = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::Unavailable)?;
+                            if !observation.span.is_disabled() {
+                                observation
+                                    .span
+                                    .record("rev", next)
+                                    .record("queued", queued.len())
+                                    .record("phase", "consumer");
+                            }
+                            return Ok(record);
+                        }
+                        observation.span.record("phase", "read");
+                        let poll = obs::OwnedSpan::new(tracing::trace_span!(
+                            "acyclic.stream.http.follow.poll"
+                        ));
+                        queued = poll
+                            .scope(provider.read_page(
+                                ReadRequest {
+                                    path: path.clone(),
+                                    from: next,
+                                    limit: 256,
+                                },
+                                false,
+                            ))
+                            .await?
+                            .into();
+                        observation.span.record("queued", queued.len());
+                        if queued.is_empty() {
+                            observation.span.record("phase", "sleep");
+                            let sleep = obs::OwnedSpan::new(tracing::debug_span!(
+                                "acyclic.stream.http.follow.sleep",
+                                delay_ms = 250_u64
+                            ));
+                            sleep.scope(delay(Duration::from_millis(250))).await;
+                        }
+                    }
+                }
+                .await;
+                if let Err(error) = &result {
+                    observation.failed(error);
+                }
+                Ok(Some((
+                    result?,
+                    (provider, path, next, queued, delay, observation),
+                )))
+            },
+        );
+        Ok(context.scope_mode(follow, !context.is_disabled()).boxed())
+    }
     async fn commit_request(
         &self,
         request: CommitRequest,
@@ -358,38 +461,7 @@ impl StreamProvider for HttpStream {
         Ok(stream::iter(self.read_page(request, true).await?.into_iter().map(Ok)).boxed())
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        if from > self.tail(path.clone()).await? {
-            return Err(StreamError::OutOfRange);
-        }
-        Ok(stream::try_unfold(
-            (self.clone(), path, from, VecDeque::<Record>::new()),
-            |(provider, path, mut next, mut queued)| async move {
-                loop {
-                    if let Some(record) = queued.pop_front() {
-                        next = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::Unavailable)?;
-                        return Ok(Some((record, (provider, path, next, queued))));
-                    }
-                    queued = provider
-                        .read_page(
-                            ReadRequest {
-                                path: path.clone(),
-                                from: next,
-                                limit: 256,
-                            },
-                            false,
-                        )
-                        .await?
-                        .into();
-                    if queued.is_empty() {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
-                }
-            },
-        )
-        .boxed())
+        self.follow_with_delay(path, from, tokio::time::sleep).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         let limit = request.limit;
@@ -467,6 +539,57 @@ impl StreamProvider for HttpStream {
             return Err(StreamError::Unavailable);
         }
         Ok(envelope)
+    }
+}
+// Dropping a pending physical HTTP request cancels that request, independently
+// of whether a logical follow cursor has completed.
+struct HttpObservation {
+    span: obs::OwnedSpan,
+    finished: bool,
+}
+impl Drop for HttpObservation {
+    fn drop(&mut self) {
+        if !self.finished {
+            obs::failed(&self.span, "cancelled");
+        }
+    }
+}
+
+// The observation lives with the cursor, including an in-flight read or idle
+// wait. Dropping a cursor says nothing about why its consumer stopped.
+struct FollowObservation {
+    span: obs::OwnedSpan,
+    terminal: bool,
+}
+impl FollowObservation {
+    fn new(from: u64) -> Self {
+        Self {
+            span: obs::OwnedSpan::new_with_filtered_context(
+                tracing::info_span!(
+                    "acyclic.stream.http.follow",
+                    rev = from,
+                    queued = 0_u64,
+                    phase = "tail",
+                    terminal = Empty,
+                    outcome = Empty,
+                    error.kind = Empty
+                ),
+                false,
+            ),
+            terminal: false,
+        }
+    }
+    fn failed(&mut self, error: &StreamError) {
+        self.span.record("terminal", "error");
+        obs::failed(&self.span, error.code());
+        self.terminal = true;
+    }
+}
+impl Drop for FollowObservation {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.span.record("terminal", "dropped");
+        }
     }
 }
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
@@ -620,4 +743,75 @@ mod tests {
             assert!(HttpStream::new(endpoint, "t", 1).is_ok());
         }
     }
+
+    #[tokio::test]
+    async fn filtered_http_failure_does_not_record_on_its_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{StreamError, StreamPath, StreamProvider};
+        use tracing::{Instrument, instrument::WithSubscriber};
+        use tracing_subscriber::{Layer, layer::Context, prelude::*};
+
+        struct ParentMustNotBeRecorded;
+        impl<S> Layer<S> for ParentMustNotBeRecorded
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_record(
+                &self,
+                id: &tracing::span::Id,
+                _: &tracing::span::Record<'_>,
+                context: Context<'_, S>,
+            ) {
+                if let Some(span) = context.span(id) {
+                    assert_ne!(
+                        span.metadata().name(),
+                        "test.parent",
+                        "filtered HTTP completion mutated its caller"
+                    );
+                }
+            }
+        }
+        let subscriber = tracing_subscriber::registry().with(ParentMustNotBeRecorded.with_filter(
+            tracing_subscriber::filter::filter_fn(|metadata| metadata.name() == "test.parent"),
+        ));
+        async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let provider = HttpStream::new(
+                &format!("http://{}", listener.local_addr()?),
+                "fixture-token",
+                1024,
+            )?;
+            let server = tokio::spawn(async move {
+                let connection = listener.accept().await;
+                assert!(
+                    connection.is_ok(),
+                    "loopback fixture could not accept the request"
+                );
+                // Closing before a response forces the request completion error path.
+            });
+            let parent = tracing::info_span!(
+                "test.parent",
+                outcome = "sentinel",
+                error.kind = "sentinel",
+                bytes = 777_u64,
+                http.status = 777_u64
+            );
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                provider
+                    .tail(StreamPath::new("filtered/test")?)
+                    .instrument(parent),
+            )
+            .await?;
+            tokio::time::timeout(std::time::Duration::from_secs(10), server).await??;
+            assert_eq!(result, Err(StreamError::Unavailable));
+            Ok(())
+        }
+        .with_subscriber(subscriber)
+        .await
+    }
 }
+
+#[cfg(test)]
+#[path = "http_follow_tests.rs"]
+mod follow_tests;

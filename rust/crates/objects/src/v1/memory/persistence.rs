@@ -1,0 +1,1155 @@
+//! Private v1 state deltas. Bodies remain authenticated physical references.
+use super::super::response;
+use super::*;
+use crate::LocalObjectsLimits;
+use crate::body::{LocalBodyLocation, LocalBodyReference};
+use crate::physical::native_durability;
+use fs2::FileExt;
+use std::collections::BTreeSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+const MAGIC: &[u8] = b"ACYCLIC-OBJECTS-V1-LOCAL\0\x01";
+pub(super) const RECORD_LIMIT: usize = 2 * 1024 * 1024;
+const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Failure to open or recover logical Objects storage.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalOpenError {
+    /// Invalid capacity or durability configuration.
+    #[error("invalid local Objects v1 configuration")]
+    Invalid,
+    /// A complete durable record or referenced body is corrupt.
+    #[error("corrupt local Objects v1 store")]
+    Corrupt,
+    /// Another owner has this exact root open.
+    #[error("local Objects v1 store already has an owner")]
+    AlreadyOwned,
+    /// A native worker or cursor entropy source could not complete.
+    #[error("local Objects v1 unavailable")]
+    Unavailable,
+    /// Host I/O failed.
+    #[error("local Objects v1 I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct Header {
+    #[prost(uint64, tag = "1")]
+    object_bytes: u64,
+    #[prost(uint64, tag = "2")]
+    total_bytes: u64,
+    #[prost(uint64, tag = "3")]
+    operations: u64,
+    #[prost(uint64, tag = "4")]
+    journal_bytes: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    cursor_key: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct Delta {
+    #[prost(uint64, tag = "1")]
+    sequence: u64,
+    #[prost(uint64, tag = "2")]
+    ordinal: u64,
+    #[prost(message, repeated, tag = "3")]
+    buckets: Vec<BucketChange>,
+    #[prost(message, repeated, tag = "4")]
+    objects: Vec<ObjectChange>,
+    #[prost(message, repeated, tag = "5")]
+    uploads: Vec<UploadChange>,
+    #[prost(message, repeated, tag = "6")]
+    parts: Vec<PartChange>,
+    #[prost(message, repeated, tag = "7")]
+    receipts: Vec<ReceiptChange>,
+    #[prost(bytes = "vec", tag = "8")]
+    inline_data: Vec<u8>,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+struct BucketChange {
+    #[prost(string, tag = "1")]
+    name: String,
+    #[prost(message, optional, tag = "2")]
+    info: Option<wire::Bucket>,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+struct ObjectChange {
+    #[prost(string, tag = "1")]
+    bucket: String,
+    #[prost(string, tag = "2")]
+    key: String,
+    #[prost(message, optional, tag = "3")]
+    info: Option<wire::ObjectInfo>,
+    #[prost(message, repeated, tag = "4")]
+    bodies: Vec<BodyRecord>,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+struct UploadChange {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(bool, tag = "2")]
+    deleted: bool,
+    #[prost(string, tag = "3")]
+    bucket: String,
+    #[prost(string, tag = "4")]
+    key: String,
+    #[prost(message, optional, tag = "5")]
+    metadata: Option<wire::ObjectMetadata>,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+struct PartChange {
+    #[prost(string, tag = "1")]
+    upload: String,
+    #[prost(uint32, tag = "2")]
+    number: u32,
+    #[prost(message, optional, tag = "3")]
+    receipt: Option<wire::UploadedPart>,
+    #[prost(message, repeated, tag = "4")]
+    bodies: Vec<BodyRecord>,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+struct ReceiptChange {
+    #[prost(string, tag = "1")]
+    key: String,
+    #[prost(bytes = "vec", tag = "2")]
+    digest: Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    response: Vec<u8>,
+    #[prost(uint32, tag = "4")]
+    kind: u32,
+}
+#[derive(Clone, PartialEq, prost::Message)]
+struct BodyRecord {
+    #[prost(bytes = "vec", tag = "1")]
+    segment: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    digest: Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    length: u64,
+    #[prost(fixed64, tag = "4")]
+    offset: u64,
+    #[prost(bool, tag = "5")]
+    journal: bool,
+}
+
+struct Tail {
+    file: File,
+    bytes: u64,
+    operations: u64,
+    inline_bytes: u64,
+}
+pub(super) struct Journal {
+    root: Arc<crate::physical::LocalRoot>,
+    tail: Mutex<Tail>,
+    limits: LocalObjectsLimits,
+    header: Header,
+    poisoned: AtomicBool,
+    _owner: File,
+    _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
+    #[cfg(test)]
+    fault_bytes: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    fault_sync: AtomicBool,
+    #[cfg(test)]
+    fault_checkpoint: std::sync::atomic::AtomicU64,
+}
+
+impl Drop for Journal {
+    fn drop(&mut self) {
+        // A child between fork and exec may still hold this open file
+        // description. Release ownership when our last journal user finishes,
+        // rather than waiting for every inherited descriptor to close.
+        let _ = FileExt::unlock(&self._owner);
+    }
+}
+
+mod checkpoint;
+mod inline;
+
+#[cfg(test)]
+mod tests;
+
+pub(super) fn response_kind<R>() -> Result<u32, Error> {
+    match std::any::type_name::<R>().rsplit("::").next() {
+        Some("Bucket") => Ok(1),
+        Some("ObjectInfo") => Ok(2),
+        Some("DeleteBucketResponse") => Ok(3),
+        Some("DeleteObjectResponse") => Ok(4),
+        Some("MultipartUpload") => Ok(5),
+        Some("UploadedPart") => Ok(6),
+        Some("AbortMultipartResponse") => Ok(7),
+        _ => Err(Unavailable.into()),
+    }
+}
+
+/// An upper bound on the bytes one put adds to a durable record: its inline
+/// body, plus its object change and retry receipt. Each of those holds at most
+/// the request's bucket, key, metadata and identity, a 66-byte `ETag` and
+/// fixed-width fields; a larger body adds only a segment reference.
+pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &Bytes) -> usize {
+    let inline = if body.len() <= inline::LIMIT {
+        body.len()
+    } else {
+        0
+    };
+    inline
+        .saturating_add(query.encoded_len().saturating_mul(3))
+        .saturating_add(1024)
+}
+
+fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {
+    acyclic_native_runtime::sync_file(file, native_durability(limits.durability))
+}
+fn corrupt<T>(_: T) -> LocalOpenError {
+    LocalOpenError::Corrupt
+}
+
+impl MemoryObjects {
+    pub(in crate::v1) fn local_maintenance_due(&self) -> Result<bool, Error> {
+        let _state = self.lock_state()?;
+        let journal = self.journal.as_ref().ok_or(Error::from(Unavailable))?;
+        journal.maintenance_due()
+    }
+    pub(in crate::v1) fn compact_local_if_due(&self) -> Result<(), LocalOpenError> {
+        obs::scoped(&obs::span!(DEBUG, "acyclic.objects.compact"), || {
+            let mut state = self.lock_state().map_err(|_| LocalOpenError::Unavailable)?;
+            let journal = self.journal.as_ref().ok_or(LocalOpenError::Unavailable)?;
+            // Another admitted maintainer may already have compacted this journal.
+            if !journal
+                .maintenance_due()
+                .map_err(|_| LocalOpenError::Unavailable)?
+            {
+                return Ok(());
+            }
+            let mut next = state.clone();
+            journal.materialize_inline(&mut next)?;
+            journal.compact(&next)?;
+            *state = next;
+            Ok(())
+        })
+    }
+    pub(in crate::v1) fn collect_local_garbage(
+        &self,
+        maximum_candidates: u64,
+    ) -> Result<crate::LocalObjectsGarbageCollection, LocalOpenError> {
+        obs::scoped(
+            &obs::span!(
+                INFO,
+                "acyclic.objects.collect_garbage",
+                segments = obs::Empty,
+                reclaimed = obs::Empty
+            ),
+            || {
+                let mut state = self.lock_state().map_err(|_| LocalOpenError::Unavailable)?;
+                let journal = self.journal.as_ref().ok_or(LocalOpenError::Unavailable)?;
+                let mut next = state.clone();
+                journal.materialize_inline(&mut next)?;
+                let mut references = BTreeSet::new();
+                for bucket in next.buckets.values() {
+                    for object in bucket.objects.values() {
+                        object.body.local_references(&mut references);
+                    }
+                }
+                for upload in next.uploads.values() {
+                    for (_, body) in upload.parts.values() {
+                        body.local_references(&mut references);
+                    }
+                }
+                let mut report = crate::physical::collect_physical_garbage(
+                    &journal.root.path,
+                    &references,
+                    maximum_candidates,
+                    journal.limits.maximum_object_bytes,
+                    journal.limits.durability,
+                )
+                .map_err(|error| match error {
+                    crate::physical::PhysicalError::Invalid(_) => LocalOpenError::Invalid,
+                    crate::physical::PhysicalError::Io(error) => LocalOpenError::Io(error),
+                    crate::physical::PhysicalError::Corrupt => LocalOpenError::Corrupt,
+                })?;
+                report.journal_bytes_reclaimed = journal.compact(&next)?;
+                *state = next;
+                obs::record!(
+                    "segments" = report.segments_removed,
+                    "reclaimed" = report.journal_bytes_reclaimed,
+                );
+                Ok(report)
+            },
+        )
+    }
+}
+
+pub(crate) fn open(
+    root: PathBuf,
+    limits: LocalObjectsLimits,
+    anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
+) -> Result<MemoryObjects, LocalOpenError> {
+    let span = obs::span!(
+        INFO,
+        "acyclic.objects.open",
+        frames = obs::Empty,
+        bytes = obs::Empty
+    );
+    obs::scoped(&span, || {
+        if limits.maximum_object_bytes == 0
+            || limits.maximum_object_bytes > limits.maximum_bytes
+            || limits.maximum_journal_operations == 0
+            || limits.maximum_journal_bytes < 256
+        {
+            return Err(LocalOpenError::Invalid);
+        }
+        let options = MemoryOptions {
+            maximum_bytes: usize::try_from(limits.maximum_bytes)
+                .map_err(|_| LocalOpenError::Invalid)?,
+            maximum_entries: usize::MAX,
+        };
+        fs::create_dir_all(root.join("segments"))?;
+        let owner = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join("owner.lock"))?;
+        owner.try_lock_exclusive().map_err(|error| {
+            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                LocalOpenError::AlreadyOwned
+            } else {
+                LocalOpenError::Io(error)
+            }
+        })?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join("mutations.log"))?;
+        let header = load_header(&mut file, &root, limits, getrandom::fill)?;
+        let root = Arc::new(crate::physical::LocalRoot::new(root));
+        let (state, operations, inline_bytes) = replay(&mut file, &root, options, limits)?;
+        let bytes = file.stream_position()?;
+        obs::record!("frames" = operations, "bytes" = bytes);
+        let mut references = BTreeSet::new();
+        for bucket in state.buckets.values() {
+            for object in bucket.objects.values() {
+                object.body.local_references(&mut references);
+            }
+        }
+        for upload in state.uploads.values() {
+            for (_, body) in upload.parts.values() {
+                body.local_references(&mut references);
+            }
+        }
+        crate::physical::validate_referenced_segments(
+            &root.path,
+            &references,
+            limits.maximum_object_bytes,
+        )
+        .map_err(corrupt)?;
+        let key = header.cursor_key.as_slice().try_into().map_err(corrupt)?;
+        Ok(MemoryObjects {
+            state: Arc::new(Mutex::new(state)),
+            options,
+            token_key: Arc::new(Mutex::new(Some(key))),
+            defer_local: false,
+            journal: Some(Arc::new(Journal {
+                root,
+                limits,
+                header,
+                tail: Mutex::new(Tail {
+                    file,
+                    bytes,
+                    operations,
+                    inline_bytes,
+                }),
+                poisoned: AtomicBool::new(false),
+                _owner: owner,
+                _anchor: anchor,
+                #[cfg(test)]
+                fault_bytes: std::sync::atomic::AtomicU64::new(u64::MAX),
+                #[cfg(test)]
+                fault_sync: AtomicBool::new(false),
+                #[cfg(test)]
+                fault_checkpoint: std::sync::atomic::AtomicU64::new(0),
+            })),
+        })
+    })
+}
+
+fn load_header(
+    file: &mut File,
+    root: &Path,
+    limits: LocalObjectsLimits,
+    fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
+) -> Result<Header, LocalOpenError> {
+    if file.metadata()?.len() == 0 {
+        let key = fresh_cursor_key(fill).map_err(|_| LocalOpenError::Unavailable)?;
+        let header = Header {
+            object_bytes: limits.maximum_object_bytes,
+            total_bytes: limits.maximum_bytes,
+            operations: limits.maximum_journal_operations,
+            journal_bytes: limits.maximum_journal_bytes,
+            cursor_key: key.to_vec(),
+        };
+        let encoded = header.encode_to_vec();
+        let length = u32::try_from(encoded.len()).map_err(corrupt)?;
+        file.write_all(MAGIC)?;
+        file.write_all(&length.to_le_bytes())?;
+        file.write_all(blake3::hash(&encoded).as_bytes())?;
+        file.write_all(&encoded)?;
+        sync(file, limits)?;
+        acyclic_native_runtime::sync_parent(root, native_durability(limits.durability))?;
+        return Ok(header);
+    }
+    let mut magic = vec![0; MAGIC.len()];
+    file.read_exact(&mut magic).map_err(corrupt)?;
+    if magic != MAGIC {
+        return Err(LocalOpenError::Corrupt);
+    }
+    let mut length = [0; 4];
+    file.read_exact(&mut length).map_err(corrupt)?;
+    let length = u32::from_le_bytes(length) as usize;
+    if !(1..=512).contains(&length) {
+        return Err(LocalOpenError::Corrupt);
+    }
+    let mut digest = [0; 32];
+    file.read_exact(&mut digest).map_err(corrupt)?;
+    let mut encoded = vec![0; length];
+    file.read_exact(&mut encoded).map_err(corrupt)?;
+    if *blake3::hash(&encoded).as_bytes() != digest {
+        return Err(LocalOpenError::Corrupt);
+    }
+    let header = Header::decode(encoded.as_slice()).map_err(corrupt)?;
+    if header.encode_to_vec() != encoded
+        || header.cursor_key.len() != 32
+        || header.object_bytes != limits.maximum_object_bytes
+        || header.total_bytes != limits.maximum_bytes
+        || header.operations != limits.maximum_journal_operations
+        || header.journal_bytes != limits.maximum_journal_bytes
+    {
+        return Err(LocalOpenError::Invalid);
+    }
+    Ok(header)
+}
+
+fn replay(
+    file: &mut File,
+    root: &Arc<crate::physical::LocalRoot>,
+    options: MemoryOptions,
+    limits: LocalObjectsLimits,
+) -> Result<(State, u64, u64), LocalOpenError> {
+    obs::scoped(&obs::span!(DEBUG, "acyclic.objects.journal.replay"), || {
+        let mut state = State::default();
+        let mut operations = 0;
+        let mut inline_bytes = 0_u64;
+        let mut inline_bodies = BTreeMap::new();
+        let end = file.metadata()?.len();
+        if end > limits.maximum_journal_bytes {
+            return Err(LocalOpenError::Corrupt);
+        }
+        loop {
+            let start = file.stream_position()?;
+            if start == end {
+                return Ok((state, operations, inline_bytes));
+            }
+            let mut prefix = [0; 36];
+            if let Err(error) = file.read_exact(&mut prefix) {
+                return repair_tail(file, start, error, limits)
+                    .map(|()| (state, operations, inline_bytes));
+            }
+            let size = u32::from_le_bytes(
+                prefix
+                    .get(..4)
+                    .ok_or(LocalOpenError::Corrupt)?
+                    .try_into()
+                    .map_err(corrupt)?,
+            ) as usize;
+            if !(1..=RECORD_LIMIT).contains(&size) {
+                return Err(LocalOpenError::Corrupt);
+            }
+            let mut encoded = vec![0; size];
+            if let Err(error) = file.read_exact(&mut encoded) {
+                return repair_tail(file, start, error, limits)
+                    .map(|()| (state, operations, inline_bytes));
+            }
+            if blake3::hash(&encoded).as_bytes().as_slice()
+                != prefix.get(4..).ok_or(LocalOpenError::Corrupt)?
+            {
+                return Err(LocalOpenError::Corrupt);
+            }
+            let delta = Delta::decode(encoded.as_slice()).map_err(corrupt)?;
+            if delta.encode_to_vec() != encoded
+                || delta.ordinal != operations + 1
+                || operations >= limits.maximum_journal_operations
+            {
+                return Err(LocalOpenError::Corrupt);
+            }
+            inline::authenticate(&delta, start, &encoded, &mut inline_bodies)?;
+            inline_bytes = inline_bytes.saturating_add(delta.inline_data.len() as u64);
+            apply(&mut state, delta, root, options, limits)?;
+            operations += 1;
+        }
+    })
+}
+fn repair_tail(
+    file: &mut File,
+    start: u64,
+    error: std::io::Error,
+    limits: LocalObjectsLimits,
+) -> Result<(), LocalOpenError> {
+    if error.kind() != std::io::ErrorKind::UnexpectedEof {
+        return Err(error.into());
+    }
+    file.set_len(start)?;
+    file.seek(SeekFrom::Start(start))?;
+    sync(file, limits)?;
+    Ok(())
+}
+
+impl Journal {
+    fn maintenance_due(&self) -> Result<bool, Error> {
+        let tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
+        Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
+            && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
+    }
+    pub(super) fn validate_bodies(&self, state: &State) -> Result<(), Error> {
+        let bodies = state
+            .buckets
+            .values()
+            .flat_map(|bucket| bucket.objects.values())
+            .map(|object| &object.body)
+            .chain(
+                state
+                    .uploads
+                    .values()
+                    .flat_map(|upload| upload.parts.values())
+                    .map(|(_, body)| body),
+            );
+        if bodies
+            .into_iter()
+            .any(|body| body.len() as u64 > self.limits.maximum_object_bytes)
+        {
+            return Err(QuotaExceeded.into());
+        }
+        Ok(())
+    }
+    pub(super) fn check(&self) -> Result<(), Error> {
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(Unavailable.into())
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn commit(&self, before: &State, next: &mut State) -> Result<(), Error> {
+        obs::scoped(
+            &obs::span!(DEBUG, "acyclic.objects.journal.commit", bytes = obs::Empty),
+            || {
+                self.check()?;
+                let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
+                if tail.operations >= self.limits.maximum_journal_operations {
+                    return Err(QuotaExceeded.into());
+                }
+                let mut inline_data = Vec::new();
+                // Only an object this mutation added or replaced can hold a body not yet
+                // persisted: the committed state holds none. Walking just those keeps a
+                // commit proportional to its change rather than to the store, and leaves
+                // every other subtree shared with `before`, so `difference` skips it too.
+                for (name, bucket) in &mut next.buckets {
+                    let keys = changed_keys(before.buckets.get(name), bucket);
+                    for key in keys {
+                        let object = bucket
+                            .objects
+                            .get_mut(&key)
+                            .ok_or(Error::from(Unavailable))?;
+                        if object.body.len() as u64 > self.limits.maximum_object_bytes {
+                            return Err(QuotaExceeded.into());
+                        }
+                        object.body = self.prepare_inline(&object.body, &mut inline_data)?;
+                    }
+                }
+                for upload in next.uploads.values_mut() {
+                    for (_, body) in upload.parts.values_mut() {
+                        *body = self.prepare_inline(body, &mut inline_data)?;
+                    }
+                }
+                let mut delta = difference(before, next, tail.operations + 1)?;
+                delta.inline_data = inline_data;
+                inline::place(&mut delta, next, tail.bytes)?;
+                let record = delta.encode_to_vec();
+                let end = tail
+                    .bytes
+                    .checked_add(36 + record.len() as u64)
+                    .ok_or(Error::from(QuotaExceeded))?;
+                if record.len() > RECORD_LIMIT || end > self.limits.maximum_journal_bytes {
+                    return Err(QuotaExceeded.into());
+                }
+                let mut frame = Vec::with_capacity(36 + record.len());
+                frame.extend_from_slice(
+                    &u32::try_from(record.len())
+                        .map_err(|_| Error::from(QuotaExceeded))?
+                        .to_le_bytes(),
+                );
+                frame.extend_from_slice(blake3::hash(&record).as_bytes());
+                frame.extend_from_slice(&record);
+                obs::record!("bytes" = frame.len());
+                if self.write(&mut tail.file, &frame).is_err() {
+                    self.poisoned.store(true, Ordering::Release);
+                    return Err(Unavailable.into());
+                }
+                tail.bytes = end;
+                tail.operations += 1;
+                tail.inline_bytes = tail
+                    .inline_bytes
+                    .saturating_add(delta.inline_data.len() as u64);
+                Ok(())
+            },
+        )
+    }
+    fn external(&self, body: &StoredBody) -> Result<StoredBody, Error> {
+        match body {
+            StoredBody::Memory(bytes) => {
+                if bytes.len() as u64 > self.limits.maximum_object_bytes {
+                    return Err(QuotaExceeded.into());
+                }
+                let digest = *blake3::hash(bytes).as_bytes();
+                let (id, offsets) = crate::physical::persist_segment(
+                    &self.root.path,
+                    &[(digest, bytes.clone())],
+                    self.limits.durability,
+                )
+                .map_err(|_| Error::from(Unavailable))?;
+                Ok(StoredBody::Local {
+                    root: Arc::clone(&self.root),
+                    digest,
+                    length: bytes.len(),
+                    location: LocalBodyLocation::Segment {
+                        id,
+                        offset: *offsets.first().ok_or(Error::from(Unavailable))?,
+                    },
+                })
+            }
+            StoredBody::Composite { parts, length } => Ok(StoredBody::Composite {
+                parts: parts
+                    .iter()
+                    .map(|part| self.external(part))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+                length: *length,
+            }),
+            StoredBody::Local { .. } => Ok(body.clone()),
+        }
+    }
+    fn write(&self, file: &mut File, frame: &[u8]) -> std::io::Result<()> {
+        obs::scoped(
+            &obs::span!(
+                DEBUG,
+                "acyclic.objects.journal.append",
+                bytes = frame.len(),
+                fsyncs = 1
+            ),
+            || {
+                #[cfg(test)]
+                {
+                    let cut = self.fault_bytes.swap(u64::MAX, Ordering::AcqRel);
+                    if cut != u64::MAX {
+                        let count = usize::try_from(cut).unwrap_or(frame.len()).min(frame.len());
+                        file.write_all(
+                            frame
+                                .get(..count)
+                                .ok_or_else(|| std::io::Error::other("invalid fault point"))?,
+                        )?;
+                        sync(file, self.limits)?;
+                        return Err(std::io::Error::other("injected journal write failure"));
+                    }
+                }
+                file.write_all(frame)?;
+                #[cfg(test)]
+                if self.fault_sync.swap(false, Ordering::AcqRel) {
+                    return Err(std::io::Error::other("injected journal sync failure"));
+                }
+                sync(file, self.limits)
+            },
+        )
+    }
+}
+
+fn bodies(body: &StoredBody) -> Result<Vec<BodyRecord>, Error> {
+    let mut refs = BTreeSet::<LocalBodyReference>::new();
+    // Preserve leaf order and repeated leaves; a set would change concatenation.
+    fn ordered(body: &StoredBody, out: &mut Vec<BodyRecord>) -> Result<(), Error> {
+        match body {
+            StoredBody::Local {
+                digest,
+                length,
+                location: LocalBodyLocation::Segment { id, offset },
+                ..
+            } => {
+                out.push(BodyRecord {
+                    segment: id.to_vec(),
+                    digest: digest.to_vec(),
+                    length: *length as u64,
+                    offset: *offset,
+                    journal: false,
+                });
+                Ok(())
+            }
+            StoredBody::Local {
+                digest,
+                length,
+                location: LocalBodyLocation::Journal { offset },
+                ..
+            } => {
+                out.push(BodyRecord {
+                    segment: Vec::new(),
+                    digest: digest.to_vec(),
+                    length: *length as u64,
+                    offset: *offset,
+                    journal: true,
+                });
+                Ok(())
+            }
+            StoredBody::Composite { parts, .. } => {
+                for part in parts.iter() {
+                    ordered(part, out)?;
+                }
+                Ok(())
+            }
+            _ => Err(Unavailable.into()),
+        }
+    }
+    body.local_references(&mut refs);
+    let mut out = Vec::with_capacity(refs.len());
+    ordered(body, &mut out)?;
+    Ok(out)
+}
+
+/// Keys of `next`'s objects that are new or differ from `before`'s, in key order.
+fn changed_keys(before: Option<&Bucket>, next: &Bucket) -> Vec<String> {
+    match before {
+        Some(before) => before
+            .objects
+            .diff(&next.objects)
+            .filter_map(|item| match item {
+                imbl::ordmap::DiffItem::Add(key, _)
+                | imbl::ordmap::DiffItem::Update { new: (key, _), .. } => Some(key.clone()),
+                imbl::ordmap::DiffItem::Remove(..) => None,
+            })
+            .collect(),
+        None => next.objects.keys().cloned().collect(),
+    }
+}
+
+/// Bucket and object changes from `before` to `next`, into `delta`.
+fn bucket_changes(before: &State, next: &State, delta: &mut Delta) -> Result<(), Error> {
+    let changed = |key: &String, value: &Stored| -> Result<ObjectChange, Error> {
+        Ok(ObjectChange {
+            bucket: String::new(),
+            key: key.clone(),
+            info: Some(value.info.clone()),
+            bodies: bodies(&value.body)?,
+        })
+    };
+    // Removals follow every addition and replacement, bucket by bucket.
+    let mut removed = Vec::new();
+    for (name, bucket) in &next.buckets {
+        let old = before.buckets.get(name);
+        if old.is_none_or(|old| old.info != bucket.info) {
+            delta.buckets.push(BucketChange {
+                name: name.clone(),
+                info: Some(bucket.info.clone()),
+            });
+        }
+        let Some(old) = old else {
+            for (key, value) in &bucket.objects {
+                delta.objects.push(ObjectChange {
+                    bucket: name.clone(),
+                    ..changed(key, value)?
+                });
+            }
+            continue;
+        };
+        for item in old.objects.diff(&bucket.objects) {
+            match item {
+                imbl::ordmap::DiffItem::Add(key, value) => delta.objects.push(ObjectChange {
+                    bucket: name.clone(),
+                    ..changed(key, value)?
+                }),
+                imbl::ordmap::DiffItem::Update {
+                    old: (_, old),
+                    new: (key, value),
+                } => {
+                    let refs = bodies(&value.body)?;
+                    if old.info != value.info || bodies(&old.body)? != refs {
+                        delta.objects.push(ObjectChange {
+                            bucket: name.clone(),
+                            key: key.clone(),
+                            info: Some(value.info.clone()),
+                            bodies: refs,
+                        });
+                    }
+                }
+                imbl::ordmap::DiffItem::Remove(key, _) => removed.push(ObjectChange {
+                    bucket: name.clone(),
+                    key: key.clone(),
+                    ..Default::default()
+                }),
+            }
+        }
+    }
+    delta.objects.extend(removed);
+    for name in before
+        .buckets
+        .keys()
+        .filter(|name| !next.buckets.contains_key(*name))
+    {
+        delta.buckets.push(BucketChange {
+            name: name.clone(),
+            info: None,
+        });
+    }
+    Ok(())
+}
+
+/// The journal record taking `before` to `next`. Object maps are compared with
+/// `OrdMap::diff`, which skips every subtree the two states share, so the cost
+/// follows the change, not the number of stored objects.
+fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error> {
+    let mut delta = Delta {
+        sequence: next.sequence,
+        ordinal,
+        ..Default::default()
+    };
+    bucket_changes(before, next, &mut delta)?;
+    for (id, upload) in &next.uploads {
+        let old = before.uploads.get(id);
+        if old.is_none() {
+            delta.uploads.push(UploadChange {
+                id: id.clone(),
+                bucket: upload.bucket.clone(),
+                key: upload.key.clone(),
+                metadata: upload.metadata.clone(),
+                deleted: false,
+            });
+        }
+        for (number, (receipt, body)) in &upload.parts {
+            let refs = bodies(body)?;
+            if old
+                .and_then(|old| old.parts.get(number))
+                .is_none_or(|(old, _)| old != receipt)
+            {
+                delta.parts.push(PartChange {
+                    upload: id.clone(),
+                    number: *number,
+                    receipt: Some(receipt.clone()),
+                    bodies: refs,
+                });
+            }
+        }
+    }
+    for id in before
+        .uploads
+        .keys()
+        .filter(|id| !next.uploads.contains_key(*id))
+    {
+        delta.uploads.push(UploadChange {
+            id: id.clone(),
+            deleted: true,
+            ..Default::default()
+        });
+    }
+    // Receipts are only ever added.
+    for item in before.receipts.diff(&next.receipts) {
+        if let imbl::ordmap::DiffItem::Add(key, receipt) = item {
+            delta.receipts.push(ReceiptChange {
+                key: key.clone(),
+                digest: receipt.digest.to_vec(),
+                response: receipt.response.clone(),
+                kind: receipt.kind,
+            });
+        }
+    }
+    Ok(delta)
+}
+
+fn restore_body(
+    records: Vec<BodyRecord>,
+    root: &Arc<crate::physical::LocalRoot>,
+    expected: u64,
+) -> Result<StoredBody, LocalOpenError> {
+    if records.is_empty() || records.len() > 10_000 {
+        return Err(LocalOpenError::Corrupt);
+    }
+    let mut length = 0usize;
+    let mut leaves = Vec::with_capacity(records.len());
+    for value in records {
+        let count = usize::try_from(value.length).map_err(corrupt)?;
+        length = length.checked_add(count).ok_or(LocalOpenError::Corrupt)?;
+        if value.offset < 68
+            || value.journal && (count > inline::LIMIT || !value.segment.is_empty())
+        {
+            return Err(LocalOpenError::Corrupt);
+        }
+        leaves.push(StoredBody::Local {
+            root: Arc::clone(root),
+            digest: value.digest.as_slice().try_into().map_err(corrupt)?,
+            length: count,
+            location: if value.journal {
+                LocalBodyLocation::Journal {
+                    offset: value.offset,
+                }
+            } else {
+                LocalBodyLocation::Segment {
+                    id: value.segment.as_slice().try_into().map_err(corrupt)?,
+                    offset: value.offset,
+                }
+            },
+        });
+    }
+    if length as u64 != expected {
+        return Err(LocalOpenError::Corrupt);
+    }
+    Ok(StoredBody::Composite {
+        parts: leaves.into(),
+        length,
+    })
+}
+
+fn apply(
+    state: &mut State,
+    delta: Delta,
+    root: &Arc<crate::physical::LocalRoot>,
+    options: MemoryOptions,
+    limits: LocalObjectsLimits,
+) -> Result<(), LocalOpenError> {
+    if delta.sequence < state.sequence {
+        return Err(LocalOpenError::Corrupt);
+    }
+    let mut next = state.clone();
+    next.sequence = delta.sequence;
+    let mut seen = BTreeSet::new();
+    for value in delta.buckets {
+        if !seen.insert(value.name.clone()) {
+            return Err(LocalOpenError::Corrupt);
+        }
+        if let Some(info) = value.info {
+            response::bucket(
+                &info,
+                &wire::BucketRef {
+                    name: value.name.clone(),
+                },
+            )
+            .map_err(corrupt)?;
+            if next.buckets.contains_key(&value.name) {
+                return Err(LocalOpenError::Corrupt);
+            }
+            next.buckets.insert(
+                value.name,
+                Bucket {
+                    info,
+                    objects: OrdMap::new(),
+                },
+            );
+        } else if next
+            .buckets
+            .remove(&value.name)
+            .is_none_or(|bucket| !bucket.objects.is_empty())
+        {
+            return Err(LocalOpenError::Corrupt);
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for value in delta.objects {
+        request::key(&value.key).map_err(corrupt)?;
+        if !seen.insert((value.bucket.clone(), value.key.clone())) {
+            return Err(LocalOpenError::Corrupt);
+        }
+        let bucket = next
+            .buckets
+            .get_mut(&value.bucket)
+            .ok_or(LocalOpenError::Corrupt)?;
+        if let Some(info) = value.info {
+            response::object_info(&info).map_err(corrupt)?;
+            if info.size > limits.maximum_object_bytes {
+                return Err(LocalOpenError::Corrupt);
+            }
+            let body = restore_body(value.bodies, root, info.size)?;
+            bucket.objects.insert(value.key, Stored { info, body });
+        } else if !value.bodies.is_empty() || bucket.objects.remove(&value.key).is_none() {
+            return Err(LocalOpenError::Corrupt);
+        }
+    }
+    apply_uploads(&mut next, delta.uploads)?;
+    apply_parts(&mut next, delta.parts, root, limits)?;
+    apply_receipts(&mut next, delta.receipts)?;
+    validate_state(state, &mut next, options)?;
+    *state = next;
+    Ok(())
+}
+
+fn apply_uploads(next: &mut State, changes: Vec<UploadChange>) -> Result<(), LocalOpenError> {
+    let mut seen = BTreeSet::new();
+    for value in changes {
+        request::upload_id(&value.id).map_err(corrupt)?;
+        if !seen.insert(value.id.clone()) {
+            return Err(LocalOpenError::Corrupt);
+        }
+        if value.deleted {
+            if !value.bucket.is_empty()
+                || !value.key.is_empty()
+                || value.metadata.is_some()
+                || next.uploads.remove(&value.id).is_none()
+            {
+                return Err(LocalOpenError::Corrupt);
+            }
+        } else {
+            request::key(&value.key).map_err(corrupt)?;
+            request::metadata(&value.metadata).map_err(corrupt)?;
+            if !next.buckets.contains_key(&value.bucket) || next.uploads.contains_key(&value.id) {
+                return Err(LocalOpenError::Corrupt);
+            }
+            next.uploads.insert(
+                value.id,
+                Upload {
+                    bucket: value.bucket,
+                    key: value.key,
+                    metadata: value.metadata,
+                    parts: BTreeMap::new(),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn apply_parts(
+    next: &mut State,
+    changes: Vec<PartChange>,
+    root: &Arc<crate::physical::LocalRoot>,
+    limits: LocalObjectsLimits,
+) -> Result<(), LocalOpenError> {
+    let mut seen = BTreeSet::new();
+    for value in changes {
+        if !seen.insert((value.upload.clone(), value.number)) {
+            return Err(LocalOpenError::Corrupt);
+        }
+        let upload = next
+            .uploads
+            .get_mut(&value.upload)
+            .ok_or(LocalOpenError::Corrupt)?;
+        let receipt = value.receipt.ok_or(LocalOpenError::Corrupt)?;
+        let query = wire::UploadPartHeader {
+            bucket: Some(wire::BucketRef {
+                name: upload.bucket.clone(),
+            }),
+            object_key: upload.key.clone(),
+            upload_id: value.upload,
+            part_number: value.number,
+            mutation: None,
+        };
+        response::validate_binary(
+            "multipart/upload-part",
+            &query.encode_to_vec(),
+            &receipt.encode_to_vec(),
+            receipt.size,
+        )
+        .map_err(corrupt)?;
+        if receipt.size > limits.maximum_object_bytes {
+            return Err(LocalOpenError::Corrupt);
+        }
+        let body = restore_body(value.bodies, root, receipt.size)?;
+        upload.parts.insert(value.number, (receipt, body));
+    }
+    Ok(())
+}
+
+fn apply_receipts(next: &mut State, changes: Vec<ReceiptChange>) -> Result<(), LocalOpenError> {
+    for value in changes {
+        request::identity(&Some(wire::MutationIdentity {
+            idempotency_key: value.key.clone(),
+        }))
+        .map_err(corrupt)?;
+        validate_receipt(value.kind, &value.response)?;
+        let receipt = Receipt {
+            digest: value.digest.as_slice().try_into().map_err(corrupt)?,
+            response: value.response,
+            kind: value.kind,
+        };
+        if next.receipts.insert(value.key, receipt).is_some() {
+            return Err(LocalOpenError::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+fn validate_state(
+    before: &State,
+    next: &mut State,
+    options: MemoryOptions,
+) -> Result<(), LocalOpenError> {
+    let size = super::stored_bytes(before, next).ok_or(LocalOpenError::Corrupt)?;
+    if size > options.maximum_bytes
+        || next
+            .uploads
+            .values()
+            .any(|upload| !next.buckets.contains_key(&upload.bucket))
+    {
+        return Err(LocalOpenError::Corrupt);
+    }
+    Ok(())
+}
+
+fn validate_receipt(kind: u32, bytes: &[u8]) -> Result<(), LocalOpenError> {
+    macro_rules! checked {
+        ($ty:ident) => {{
+            let value = wire::$ty::decode(bytes).map_err(corrupt)?;
+            if value.encode_to_vec() != bytes {
+                return Err(LocalOpenError::Corrupt);
+            }
+            value
+        }};
+    }
+    match kind {
+        1 => {
+            let value = checked!(Bucket);
+            response::bucket(
+                &value,
+                value.bucket.as_ref().ok_or(LocalOpenError::Corrupt)?,
+            )
+            .map_err(corrupt)?;
+        }
+        2 => {
+            response::object_info(&checked!(ObjectInfo)).map_err(corrupt)?;
+        }
+        3 => {
+            checked!(DeleteBucketResponse);
+        }
+        4 => {
+            checked!(DeleteObjectResponse);
+        }
+        5 => {
+            request::upload_id(&checked!(MultipartUpload).upload_id).map_err(corrupt)?;
+        }
+        6 => {
+            let part = checked!(UploadedPart);
+            let reply = wire::ListPartsResponse {
+                parts: vec![part],
+                ..Default::default()
+            };
+            response::parts(
+                &wire::ListPartsRequest {
+                    page_size: 1,
+                    ..Default::default()
+                },
+                &reply,
+            )
+            .map_err(corrupt)?;
+        }
+        7 => {
+            checked!(AbortMultipartResponse);
+        }
+        _ => return Err(LocalOpenError::Corrupt),
+    }
+    Ok(())
+}

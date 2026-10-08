@@ -74,7 +74,7 @@ use crate::storage::{
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-use acyclic_objects::v2::ObjectsProvider as _;
+use acyclic_objects::v1::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
@@ -1021,7 +1021,7 @@ pub type LocalAuthorityBackend =
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalObjectBackend = crate::staged_objects::StagedObjects<
     crate::cache::CachedObjectStore<
-        crate::LogicalObjectStore<acyclic_objects::v2::local::LocalObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::local::LocalObjects>,
     >,
 >;
 
@@ -1049,7 +1049,7 @@ pub type MemoryAuthorityBackend =
 
 #[cfg(all(feature = "memory", feature = "distributed"))]
 /// Filesystem object adapter backed by the public in-memory Objects provider.
-pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>;
+pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
 
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -1801,11 +1801,11 @@ pub enum FsError {
     /// Durable local Objects initialization or recovery failed.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error(transparent)]
-    LocalObjects(#[from] acyclic_objects::v2::local::LocalOpenError),
+    LocalObjects(#[from] acyclic_objects::v1::local::LocalOpenError),
     /// The canonical filesystem Objects bucket could not be opened.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem Objects bucket initialization failed: {0}")]
-    LocalObjectsBucket(acyclic_objects::v2::Error),
+    LocalObjectsBucket(acyclic_objects::v1::Error),
     /// Local provider root setup failed before either canonical provider opened.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
@@ -2141,7 +2141,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
 impl
     Fs<
         crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >
 {
     /// Creates the deterministic infrastructure-free composition from the exact public reference
@@ -2149,7 +2149,7 @@ impl
     #[must_use]
     pub fn memory() -> Self {
         let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
     }
 
@@ -2160,8 +2160,8 @@ impl
     #[must_use]
     pub fn from_memory_providers(
         stream: std::sync::Arc<acyclic_stream::MemoryStream>,
-        objects: std::sync::Arc<acyclic_objects::v2::MemoryObjects>,
-        bucket: acyclic_objects::v2::wire::BucketRef,
+        objects: std::sync::Arc<acyclic_objects::v1::MemoryObjects>,
+        bucket: acyclic_objects::v1::wire::BucketRef,
     ) -> Self {
         Self::new(
             crate::distributed::StreamAuthorityStore::new(stream),
@@ -2283,7 +2283,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let maximum_object_bytes = objects.maximum_object_bytes;
             let objects = std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
-                    acyclic_objects::v2::local::LocalObjects::open_with_ownership_anchor(
+                    acyclic_objects::v1::local::LocalObjects::open_with_ownership_anchor(
                         root.join("objects"),
                         objects,
                         ownership.clone(),
@@ -2291,23 +2291,23 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     .await?
                 }
                 None => {
-                    acyclic_objects::v2::local::LocalObjects::open(root.join("objects"), objects)
+                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects)
                         .await?
                 }
             });
-            let bucket = acyclic_objects::v2::wire::BucketRef {
+            let bucket = acyclic_objects::v1::wire::BucketRef {
                 name: "filesystem-objects".to_owned(),
             };
             match objects
-                .head_bucket(acyclic_objects::v2::wire::HeadBucketRequest {
+                .head_bucket(acyclic_objects::v1::wire::HeadBucketRequest {
                     bucket: Some(bucket.clone()),
                 })
                 .await
             {
                 Ok(_) => {}
-                Err(error) if error.code == acyclic_objects::v2::wire::ErrorCode::NotFound => {
+                Err(error) if error.code == acyclic_objects::v1::wire::ErrorCode::NotFound => {
                     objects
-                        .create_bucket(acyclic_objects::v2::wire::CreateBucketRequest {
+                        .create_bucket(acyclic_objects::v1::wire::CreateBucketRequest {
                             name: bucket.name.clone(),
                             mutation: None,
                         })
@@ -2453,7 +2453,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         loop {
             cancellation.check()?;
             let page = provider
-                .list(acyclic_objects::v2::wire::ListObjectsRequest {
+                .list(acyclic_objects::v1::wire::ListObjectsRequest {
                     bucket: Some(bucket.clone()),
                     prefix: "fs/v1/".to_owned(),
                     page_size: 256,
@@ -2503,12 +2503,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 };
                 collecting.sweeping(object);
                 let deleted = provider
-                    .delete(acyclic_objects::v2::wire::DeleteObjectRequest {
+                    .delete(acyclic_objects::v1::wire::DeleteObjectRequest {
                         bucket: Some(bucket.clone()),
                         object_key: crate::distributed::object_key(object),
-                        preconditions: Some(acyclic_objects::v2::wire::Preconditions {
+                        preconditions: Some(acyclic_objects::v1::wire::Preconditions {
                             condition: Some(
-                                acyclic_objects::v2::wire::preconditions::Condition::IfMatch(etag),
+                                acyclic_objects::v1::wire::preconditions::Condition::IfMatch(etag),
                             ),
                         }),
                         mutation: None,
@@ -9279,7 +9279,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// `parent_components` come from an already-admitted path's own prefix,
     /// so reconstructing it cannot exceed the same volume's bounds; if it
     /// somehow did, this returns `Ok(None)` rather than inventing an
-    /// unrelated error — callers fall back to their own exact-match result.
+    /// unrelated error â€” callers fall back to their own exact-match result.
     async fn find_case_folded_sibling(
         &mut self,
         parent_components: &[LogicalName],

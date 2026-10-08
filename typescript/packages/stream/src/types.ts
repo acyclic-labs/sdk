@@ -14,8 +14,8 @@ import type {
   ForkRequest as WireForkRequest, ReadRequest as WireReadRequest,
   Record as WireRecord, TailConflict as WireTailConflict,
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
-} from "../generated/proto/stream/v2/stream_pb.js";
-import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
+} from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
 import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 export { TOKEN_OPERATIONS } from "./token-operations.js";

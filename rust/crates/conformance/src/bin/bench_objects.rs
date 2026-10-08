@@ -1,6 +1,6 @@
-//! Measure current-key publication and bounded logical Objects v2 pagination.
+//! Measure current-key publication and bounded logical Objects v1 pagination.
 
-use acyclic_objects::v2::{MemoryObjects, ObjectsProvider, wire};
+use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
 use bytes::Bytes;
 use std::time::Instant;
 
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({
-            "schema": 2, "contract": "acyclic.objects.v2", "os": std::env::consts::OS,
+            "schema": 2, "contract": "acyclic.objects.v1", "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH, "objects": count, "mode": "keys",
             "page_size": page_size, "put_ms": put_ms, "first_page_ms": first_page_ms,
             "remaining_pages_ms": started.elapsed().as_secs_f64() * 1000.0,

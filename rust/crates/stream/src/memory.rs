@@ -57,20 +57,6 @@ impl Default for MemoryLimits {
     }
 }
 
-/// A retention clock that never advances.
-#[cfg(target_arch = "wasm32")]
-struct StoppedClock;
-
-#[cfg(target_arch = "wasm32")]
-impl UnixMillisClock for StoppedClock {
-    fn now_unix_millis(&self) -> u64 {
-        0
-    }
-}
-
-#[cfg(test)]
-const RETENTION_MILLIS: u64 = crate::MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
-
 /// Deterministic process-local provider. It retains each idempotency result and committed
 /// envelope indefinitely within explicit capacity limits. It deliberately claims
 /// no crash recovery; `LocalStream` supplies persistence when enabled.
@@ -82,8 +68,6 @@ pub struct MemoryStream {
     clock: Arc<dyn UnixMillisClock>,
     /// Clock whose sampled commit time is recorded in each new record.
     commit_clock: Arc<dyn UnixMillisClock>,
-    /// Legacy journal clock; retained outcomes no longer expire.
-    retention: Arc<dyn UnixMillisClock>,
 }
 
 impl Default for MemoryStream {
@@ -104,72 +88,21 @@ impl MemoryStream {
         Ok(cursor.next_record())
     }
 
-    #[cfg(feature = "local")]
-    pub(crate) async fn recovery_limits(
-        &mut self,
-        live: MemoryLimits,
-        maximum_commands: usize,
-    ) -> Result<(), StreamError> {
-        let state = self.state.read().await;
-        // Old journals could admit new outcomes after timed eviction. Recovery
-        // retains every surviving snapshot outcome plus at most one outcome and
-        // envelope per bounded journal command. Live admission keeps its limits.
-        self.limits = MemoryLimits {
-            commits: state
-                .commits
-                .len()
-                .checked_add(maximum_commands)
-                .ok_or(StreamError::Capacity)?
-                .max(live.commits),
-            idempotency_results: state
-                .replays
-                .len()
-                .checked_add(maximum_commands)
-                .ok_or(StreamError::Capacity)?
-                .max(live.idempotency_results),
-            ..live
-        };
-        Ok(())
-    }
-
-    #[cfg(feature = "local")]
-    pub(crate) fn finish_recovery(&mut self, live: MemoryLimits) {
-        self.limits = live;
-    }
-
     /// Constructs one bounded independent provider.
     #[must_use]
     pub fn new(limits: MemoryLimits) -> Self {
-        // A browser has no system clock std can read; a page-lived provider
-        // there retains everything, within its capacity.
-        #[cfg(target_arch = "wasm32")]
-        let retention: Arc<dyn UnixMillisClock> = Arc::new(StoppedClock);
-        #[cfg(not(target_arch = "wasm32"))]
-        let retention: Arc<dyn UnixMillisClock> = Arc::new(SystemUnixMillisClock);
-        Self::new_with_clocks(limits, Arc::new(SystemUnixMillisClock), retention)
+        Self::new_with_clock(limits, Arc::new(SystemUnixMillisClock))
     }
 
     /// Constructs a provider with an injected trusted clock.
     #[must_use]
     pub fn new_with_clock(limits: MemoryLimits, clock: Arc<dyn UnixMillisClock>) -> Self {
-        Self::new_with_clocks(limits, Arc::clone(&clock), clock)
-    }
-
-    /// Constructs a provider with the legacy journal clock kept separate from
-    /// the trusted deadline clock. Clock samples never evict retry outcomes.
-    #[must_use]
-    pub(crate) fn new_with_clocks(
-        limits: MemoryLimits,
-        clock: Arc<dyn UnixMillisClock>,
-        retention: Arc<dyn UnixMillisClock>,
-    ) -> Self {
-        Self::new_with_commit_clock(limits, Arc::clone(&clock), retention, clock)
+        Self::new_with_commit_clock(limits, Arc::clone(&clock), clock)
     }
 
     pub(crate) fn new_with_commit_clock(
         limits: MemoryLimits,
         clock: Arc<dyn UnixMillisClock>,
-        retention: Arc<dyn UnixMillisClock>,
         commit_clock: Arc<dyn UnixMillisClock>,
     ) -> Self {
         Self {
@@ -177,16 +110,7 @@ impl MemoryStream {
             limits,
             clock,
             commit_clock,
-            retention,
         }
-    }
-
-    /// Takes the state and samples the legacy journal clock. Time never frees
-    /// an admitted retry identity or its immutable envelope.
-    async fn mutate(&self) -> (tokio::sync::RwLockWriteGuard<'_, State>, u64) {
-        let state = self.state.write().await;
-        let now = self.retention.now_unix_millis();
-        (state, now)
     }
 
     async fn commit_inner(
@@ -197,7 +121,7 @@ impl MemoryStream {
         normalize_commit(&mut request)?;
         validate_commit_shape(&request)?;
         let digest = commit_digest(&request);
-        let (mut state, now) = self.mutate().await;
+        let mut state = self.state.write().await;
         if let Some(result) = replay_commit(&state, &request.idempotency_key, digest)? {
             return Ok(result);
         }
@@ -210,7 +134,6 @@ impl MemoryStream {
             let result = CommitOutcome::Conflict(conflicts);
             retain(
                 &mut state,
-                now,
                 None,
                 Some(request.idempotency_key),
                 digest,
@@ -253,7 +176,6 @@ impl MemoryStream {
         state.last_committed_at_micros = committed_at_micros;
         retain(
             &mut state,
-            now,
             Some(envelope),
             Some(request.idempotency_key),
             digest,
@@ -268,7 +190,7 @@ struct State {
     paths: BTreeMap<StreamPath, PathState>,
     commits: BTreeMap<CommitId, CommittedEnvelope>,
     replays: BTreeMap<Bytes, Replay>,
-    /// Snapshot receipt inventory, preserving the existing local disk format.
+    /// Indefinite receipt inventory used by the current snapshot codec.
     retained: VecDeque<Retained>,
     path_bytes: usize,
     /// Records and payload bytes retained, each counted once however many
@@ -276,7 +198,7 @@ struct State {
     record_count: usize,
     payload_bytes: usize,
     decision: u64,
-    /// High-water mark survives trimming, deletion, and snapshot restoration.
+    /// High-water mark survives clock rollback and snapshot restoration.
     last_committed_at_micros: u64,
     hierarchy_version: CommitId,
 }
@@ -302,13 +224,12 @@ impl Drop for State {
     }
 }
 
-/// One snapshot entry. `until` is legacy disk metadata, never an eviction rule.
+/// One indefinitely retained snapshot entry.
 #[cfg_attr(
     not(feature = "local"),
     allow(dead_code, reason = "only local snapshots read the retained fields")
 )]
 struct Retained {
-    until: u64,
     replay: Option<Bytes>,
     commit: Option<CommitId>,
 }
@@ -373,7 +294,7 @@ impl StreamProvider for MemoryStream {
         validate_records(&request.records)?;
         validate_append_size(&request)?;
         let digest = append_digest(&request);
-        let (mut state, now) = self.mutate().await;
+        let mut state = self.state.write().await;
         if let Some(result) = replay_append(&state, request.idempotency_key.as_ref(), digest)? {
             return Ok(result);
         }
@@ -386,7 +307,6 @@ impl StreamProvider for MemoryStream {
             let result = AppendOutcome::TailConflict { actual_tail };
             retain(
                 &mut state,
-                now,
                 None,
                 request.idempotency_key,
                 digest,
@@ -443,7 +363,6 @@ impl StreamProvider for MemoryStream {
         state.last_committed_at_micros = committed_at_micros;
         retain(
             &mut state,
-            now,
             Some(envelope),
             request.idempotency_key,
             digest,
@@ -458,7 +377,7 @@ impl StreamProvider for MemoryStream {
         }
         validate_fork_size(&request)?;
         let digest = fork_digest(&request);
-        let (mut state, now) = self.mutate().await;
+        let mut state = self.state.write().await;
         if let Some(result) = replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
             return Ok(result);
         }
@@ -509,7 +428,6 @@ impl StreamProvider for MemoryStream {
         };
         retain(
             &mut state,
-            now,
             Some(envelope),
             request.idempotency_key,
             digest,
@@ -1130,11 +1048,9 @@ fn admit_replay(
     }
 }
 
-/// Retains what one mutation made at `now`: its envelope, when it
-/// committed, and its result, when it has an identity to replay under.
+/// Retains a mutation envelope and its replay result indefinitely.
 fn retain(
     state: &mut State,
-    _now: u64,
     envelope: Option<CommittedEnvelope>,
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
@@ -1151,11 +1067,7 @@ fn retain(
         key
     });
     if commit.is_some() || replay.is_some() {
-        state.retained.push_back(Retained {
-            until: u64::MAX,
-            replay,
-            commit,
-        });
+        state.retained.push_back(Retained { replay, commit });
     }
 }
 
@@ -2045,7 +1957,7 @@ mod tests {
         let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
             return Err(StreamError::Unavailable);
         };
-        clock.0.store(RETENTION_MILLIS - 1, Ordering::SeqCst);
+        clock.0.store(1, Ordering::SeqCst);
         assert_eq!(
             provider.append(append(b"second")).await,
             Err(StreamError::Capacity),
@@ -2059,7 +1971,7 @@ mod tests {
         );
         assert!(provider.read_commit(first.commit_id).await.is_ok());
 
-        for now in [RETENTION_MILLIS, RETENTION_MILLIS * 365, u64::MAX] {
+        for now in [0, 1, 24 * 60 * 60 * 1_000, u64::MAX] {
             clock.0.store(now, Ordering::SeqCst);
             assert_eq!(
                 provider.append(append(b"second")).await,

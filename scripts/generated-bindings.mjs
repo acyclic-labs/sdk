@@ -9,8 +9,8 @@ export const packagedTypeScriptBindings = [
   ["validation/v1/options_pb", ["inference"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
-  ["objects/v2/objects_pb", ["objects"]],
-  ["stream/v2/stream_pb", ["stream"]],
+  ["objects/v1/objects_pb", ["objects"]],
+  ["stream/v1/stream_pb", ["stream"]],
   ["actors/v1/actors_pb", ["actors"]],
   ["workers/v1/workers_pb", ["workers"]],
 ];
@@ -26,14 +26,14 @@ export const compatibilityArtifacts = {
     conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
   },
   stream: {
-    schemaDigest: "rust/crates/stream/proto/stream/v2/stream.proto",
-    descriptorDigest: "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+    schemaDigest: "rust/crates/stream/proto/stream/v1/stream.proto",
+    descriptorDigest: "rust/crates/stream/proto/stream/v1/stream_descriptor.bin",
     conformanceDigest: "conformance/vectors/stream.json",
   },
   objects: {
-    schemaDigest: "proto/objects/v2/objects.proto",
-    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
-    conformanceDigest: "conformance/vectors/objects-v2.json",
+    schemaDigest: "proto/objects/v1/objects.proto",
+    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
+    conformanceDigest: "conformance/vectors/objects-v1.json",
   },
   machines: {
     schemaDigest: "proto/machines/v1/machines.proto",
@@ -55,20 +55,9 @@ export const compatibilityArtifacts = {
   },
 };
 
-// Released contracts remain immutable historical evidence after their clients
-// retire. They are verified separately from the active family metadata.
-export const historicalCompatibilityArtifacts = {
-  "compatibility/objects/v1/manifest.json": {
-    schemaDigest: "proto/objects/v1/objects.proto",
-    descriptorDigest: "compatibility/objects/v1/objects_descriptor.bin",
-    conformanceDigest: "conformance/vectors/objects.json",
-  },
-};
-
 export const generatedDescriptors = [
   ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
-  ["proto/objects/v1", "compatibility/objects/v1/objects_descriptor.bin"],
-  ["proto/objects/v2", "rust/crates/objects/src/generated/acyclic-objects-v2.bin"],
+  ["proto/objects/v1", "rust/crates/objects/src/generated/acyclic-objects-v1.bin"],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
   ["proto/actors", compatibilityArtifacts.actors.descriptorDigest],
@@ -77,8 +66,8 @@ export const generatedDescriptors = [
 ];
 
 export const packagedRustBindings = [
-  ["acyclic/objects/v2/acyclic.objects.v2.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.rs"],
-  ["acyclic/objects/v2/acyclic.objects.v2.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs"],
+  ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
+  ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
   ["acyclic/actors/v1/acyclic.actors.v1.rs", "rust/crates/actors/src/generated/acyclic.actors.v1.rs"],
@@ -100,9 +89,8 @@ export const packagedSourceCopies = [
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
-  ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
-  ["conformance/vectors/objects-v2.json", "rust/crates/objects/conformance/objects-v2.json"],
-  ["conformance/vectors/objects-v2.json", "rust/crates/conformance/vectors/objects-v2.json"],
+  ["conformance/vectors/objects-v1.json", "rust/crates/objects/conformance/objects-v1.json"],
+  ["conformance/vectors/objects-v1.json", "rust/crates/conformance/vectors/objects-v1.json"],
   ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
@@ -110,13 +98,15 @@ export const packagedSourceCopies = [
 // Objects and Machines compile their tonic glue only under the `grpc` feature.
 /** @type {Record<string, string | undefined>} */
 const grpcGatedRust = {
-  "acyclic/objects/v2/acyclic.objects.v2.rs": 'include!("acyclic.objects.v2.tonic.rs");',
+  "acyclic/objects/v1/acyclic.objects.v1.rs": 'include!("acyclic.objects.v1.tonic.rs");',
   "acyclic/machines/v1/acyclic.machines.v1.rs": 'include!("acyclic.machines.v1.tonic.rs");',
 };
 export const normalizeGeneratedRust = (relative, source) => {
   const normalized = `${source.trimEnd()}\n`;
   const include = grpcGatedRust[relative];
-  return include ? normalized.replace(include, `#[cfg(feature = "grpc")]\n${include}`) : normalized;
+  const gate = relative.startsWith("acyclic/objects/")
+    ? 'all(feature = "grpc", not(target_arch = "wasm32"))' : 'feature = "grpc"';
+  return include ? normalized.replace(include, `#[cfg(${gate})]\n${include}`) : normalized;
 };
 
 export const normalizeGeneratedTypeScript = source => `${source.trimEnd()}\n`;

@@ -1,14 +1,14 @@
 import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
-import * as wire from "../generated/proto/stream/v2/stream_pb.js";
+import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, commitId, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
+import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
 
 export interface StreamGrpcOptions {
@@ -19,7 +19,7 @@ export interface StreamGrpcOptions {
   readonly observer?: AcyclicObserver;
 }
 
-/** Complete Stream v2 gRPC client, including streaming reads/follow and atomic Commit. */
+/** Complete Stream v1 gRPC client, including streaming reads/follow and atomic Commit. */
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");

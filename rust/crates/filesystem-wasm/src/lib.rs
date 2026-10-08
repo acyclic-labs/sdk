@@ -63,7 +63,7 @@ mod bindings {
     type IndexedDbObjects = CachedObjectStore<IndexedDbObjectStore>;
     type OpfsObjects = CachedObjectStore<OpfsAcceleratedObjectStore>;
     type MemoryAuthority = StreamAuthorityStore<acyclic_stream::MemoryStream>;
-    type MemoryObjects = CachedObjectStore<LogicalObjectStore<acyclic_objects::v2::MemoryObjects>>;
+    type MemoryObjects = CachedObjectStore<LogicalObjectStore<acyclic_objects::v1::MemoryObjects>>;
 
     fn wire_error(error: impl std::fmt::Display) -> JsValue {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
@@ -6811,9 +6811,9 @@ mod bindings {
         if maximum_bytes == 0 {
             return Err(js_error("invalid memory byte limit"));
         }
-        let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_bucket(
+        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_bucket(
             "acyclic-fs-wasm-memory",
-            acyclic_objects::v2::MemoryOptions {
+            acyclic_objects::v1::MemoryOptions {
                 maximum_bytes,
                 maximum_entries: usize::MAX,
             },

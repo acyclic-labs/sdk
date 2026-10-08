@@ -1014,26 +1014,26 @@ mod tests {
     use crate::LogicalObjectStore;
     use crate::kernel::DecodeLimits;
     use crate::storage::{ObjectKind, object_digest};
-    use acyclic_objects::v2::ObjectsProvider as _;
+    use acyclic_objects::v1::ObjectsProvider as _;
     use std::sync::Arc;
 
-    type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::v2::local::LocalObjects>>;
+    type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::v1::local::LocalObjects>>;
 
     async fn open_staged(
         directory: &Path,
     ) -> Result<
-        (LocalStaged, Arc<acyclic_objects::v2::local::LocalObjects>),
+        (LocalStaged, Arc<acyclic_objects::v1::local::LocalObjects>),
         Box<dyn std::error::Error>,
     > {
         let provider = Arc::new(
-            acyclic_objects::v2::local::LocalObjects::open(
+            acyclic_objects::v1::local::LocalObjects::open(
                 directory.join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
             )
             .await?,
         );
         let bucket = provider
-            .create_bucket(acyclic_objects::v2::wire::CreateBucketRequest {
+            .create_bucket(acyclic_objects::v1::wire::CreateBucketRequest {
                 name: "staged-test".to_owned(),
                 mutation: None,
             })
@@ -1052,16 +1052,16 @@ mod tests {
         directory: &Path,
         objects: &[ObjectId],
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let reopened = acyclic_objects::v2::local::LocalObjects::open(
+        let reopened = acyclic_objects::v1::local::LocalObjects::open(
             directory.join("objects"),
             acyclic_objects::LocalObjectsLimits::default(),
         )
         .await?;
-        let bucket = acyclic_objects::v2::wire::BucketRef {
+        let bucket = acyclic_objects::v1::wire::BucketRef {
             name: "staged-test".to_owned(),
         };
         reopened
-            .head_bucket(acyclic_objects::v2::wire::HeadBucketRequest {
+            .head_bucket(acyclic_objects::v1::wire::HeadBucketRequest {
                 bucket: Some(bucket.clone()),
             })
             .await?;
@@ -1395,8 +1395,8 @@ mod tests {
         let (gate, _) = collecting.sweepable(vec![shared]).await;
         collecting.sweeping(shared);
         provider
-            .delete(acyclic_objects::v2::wire::DeleteObjectRequest {
-                bucket: Some(acyclic_objects::v2::wire::BucketRef {
+            .delete(acyclic_objects::v1::wire::DeleteObjectRequest {
+                bucket: Some(acyclic_objects::v1::wire::BucketRef {
                     name: "staged-test".to_owned(),
                 }),
                 object_key: crate::distributed::object_key(shared),

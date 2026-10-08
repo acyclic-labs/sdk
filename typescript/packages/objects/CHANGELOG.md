@@ -4,15 +4,10 @@
 
 ## 0.2.0 - Unreleased
 
-- Breaking candidate: canonical Rust, protobuf, HTTP, Node/Bun gRPC and browser exports use Objects v2. Retire the v1 implementation; preserve published v1 contract digests. Existing v1 local roots are rejected without upgrade or overwrite.
-
-- Move the default, protobuf, HTTP and Node/Bun gRPC exports to logical Objects v2. Retire the v1 TypeScript clients, WASM projections and version/snapshot surface. The candidate version is 0.2.0; released 0.1.5 remains unchanged.
-
-- Enforce caller download limits while framing HTTP responses and cancel oversized selections before reading their bodies. Export v2 protobuf bindings at `./v2/proto`.
-
-- Bind the default v2 browser fetch receiver and qualify the complete HTTP lifecycle in real Chrome.
-
-- Retain `./v2`, `./v2/http`, `./v2/grpc` and `./v2/proto` aliases for consumers that adopted the unreleased logical contract before the canonical export transition.
+- Expose the sole logical Objects v1 contract through canonical Rust, protobuf, HTTP, Node/Bun gRPC and browser exports. Remove historical implementations, readers and compatibility artifacts. Local roots with obsolete format discriminators fail closed without upgrade or overwrite.
+- Export current clients at the default package entry point and `./v1`, `./v1/http`, `./v1/grpc` and `./v1/proto`. The candidate version is 0.2.0; released 0.1.5 remains unchanged.
+- Enforce caller download limits while framing HTTP responses and cancel oversized selections before reading their bodies. Codec zero is invalid; ZSTD is 1 and NONE is 2.
+- Bind the default v1 browser fetch receiver. Browser and Cloud acceptance require qualification of this candidate.
 
 ## 0.1.5 - 2026-09-25
 

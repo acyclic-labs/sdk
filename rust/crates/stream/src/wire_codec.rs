@@ -883,9 +883,11 @@ mod read_response_tests {
         let mut plain = read_response_wire(records(0, 3));
         plain.decoded_length -= 1;
         assert!(read_response_records(plain).is_err());
-        let mut unknown = zstd_read_response(records(0, 3));
-        unknown.codec = 2;
-        assert!(read_response_records(unknown).is_err());
+        for codec in [0, 3] {
+            let mut unknown = read_response_wire(records(0, 3));
+            unknown.codec = codec;
+            assert!(read_response_records(unknown).is_err());
+        }
         let mut corrupt = zstd_read_response(records(0, 30));
         corrupt.data.truncate(corrupt.data.len() / 2);
         assert!(read_response_records(corrupt).is_err());

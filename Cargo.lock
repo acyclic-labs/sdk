@@ -348,6 +348,7 @@ dependencies = [
  "imbl",
  "js-sys",
  "libc",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-reflect",
@@ -364,6 +365,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
+ "tracing-chrome",
  "tracing-subscriber",
 ]
 
@@ -427,6 +429,7 @@ dependencies = [
  "indexed_db_futures",
  "js-sys",
  "libc",
+ "pin-project-lite",
  "proptest",
  "prost",
  "protoc-bin-vendored",

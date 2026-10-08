@@ -22,8 +22,8 @@ try {
   }
 
   const files = JSON.parse(readFileSync(output, "utf8")).file;
-  const stream = files.find(file => file.name === "stream/v2/stream.proto");
-  assert.ok(stream, "Stream v2 descriptor is missing");
+  const stream = files.find(file => file.name === "stream/v1/stream.proto");
+  assert.ok(stream, "Stream v1 descriptor is missing");
   const messages = new Map(stream.messageType.map(message => [message.name, message]));
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
