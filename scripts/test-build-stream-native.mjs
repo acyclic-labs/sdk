@@ -127,8 +127,8 @@ function validBuildInputs() {
     schema: "acyclic.stream.native-build-inputs.v3",
     target: "x86_64-pc-windows-msvc",
     target_dir: "C:/runner/_work/target-stream-native",
-    runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: { command: "bun", args: ["--version"], output: "1.4.2" } } },
-    invocation: { script: "scripts/build-stream-native.mjs", runtime: "C:/Program Files/nodejs/node.exe", args: ["build", "--target", "x86_64-pc-windows-msvc"] },
+    runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: null } },
+    invocation: { script: "scripts/build-stream-native.mjs", runtime: "node", args: ["build", "--target", "x86_64-pc-windows-msvc"] },
     compiler: {
       rustc: { command: "rustc", args: ["--version", "--verbose"], output: "rustc 1.98.1\nhost: x86_64-pc-windows-msvc" },
       cargo: { command: "cargo", args: ["--version", "--verbose"], output: "cargo 1.98.1\nhost: x86_64-pc-windows-msvc" },
@@ -256,11 +256,16 @@ test("native qualification rejects build input identity mutations", () => {
   });
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
 
+  const missingDarwinIdentity = structuredClone(valid);
+  missingDarwinIdentity.target = "aarch64-apple-darwin";
+  missingDarwinIdentity.generator.options.target = missingDarwinIdentity.target;
+  assert.throws(() => assertBuildInputs(missingDarwinIdentity), /missing Apple tool identity/);
+
   const darwinLinker = linkerInputs("aarch64-apple-darwin", {
     CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/usr/bin/clang",
     DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
     SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
-  });
+  }, { attestApple: false });
   assert.equal(darwinLinker.configured.target, "/usr/bin/clang");
   assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
   assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
@@ -278,7 +283,7 @@ test("native qualification normalizes host paths in published build inputs", () 
   });
   assert.equal(normalized.target_dir, "<target-dir>");
   assert.equal(normalized.runtime.node_path, "<runtime>");
-  assert.equal(normalized.invocation.runtime, "bun");
+  assert.equal(normalized.invocation.runtime, "node");
   assert.equal(normalized.generator.options.output_dir, "<output-dir>");
   assert.equal(normalized.generator.options.target_dir, "<target-dir>");
   assert.equal(normalized.linker.actual.rustc, "rustc");
@@ -450,6 +455,17 @@ test("native qualification restores Darwin Apple linker environment", () => {
     if (priorSdkRoot === undefined) delete process.env.SDKROOT;
     else process.env.SDKROOT = priorSdkRoot;
   }
+});
+
+test("native qualification selects the supplied Darwin SDK for clang", () => {
+  const restore = configureDarwinAppleLd("aarch64-apple-darwin", {
+    sdkRoot: "/Applications/Custom SDK.sdk",
+    driver: "/Applications/Custom SDK.sdk/usr/bin/clang",
+    linkerExists: () => true,
+  });
+  assert.equal(process.env.SDKROOT, "/Applications/Custom SDK.sdk");
+  assert.equal(process.env.CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER, "/Applications/Custom SDK.sdk/usr/bin/clang");
+  restore();
 });
 
 test("native qualification refuses a Darwin host without Apple ld", () => {
@@ -654,5 +670,19 @@ test("native builds create a Cargo cache tag only for an empty producer target d
   } finally {
     await rm(empty, { recursive: true, force: true });
     await rm(populated, { recursive: true, force: true });
+  }
+});
+
+test("native builds reject a target directory symlink before creating cache state", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-target-link-test-"));
+  const target = resolve(parent, "target");
+  const destination = resolve(parent, "destination");
+  try {
+    await symlink(destination, target, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(ensureCargoTargetDirectory(target), /symlink or junction/u);
+    assert.equal((await readdir(parent)).includes("target"), true);
+    await assert.rejects(readFile(resolve(target, "CACHEDIR.TAG")));
+  } finally {
+    await rm(parent, { recursive: true, force: true });
   }
 });
