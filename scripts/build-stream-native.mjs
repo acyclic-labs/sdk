@@ -505,7 +505,7 @@ export async function createRustcInvocationCapture(target = "test") {
   };
 }
 
-async function napiGeneratorIdentity() {
+export async function napiGeneratorIdentity() {
   const packagePath = require.resolve("@napi-rs/cli/package.json");
   const entryPath = require.resolve("@napi-rs/cli");
   const packageBytes = await readFile(packagePath);
@@ -1057,7 +1057,7 @@ async function build(options) {
     const packagePath = resolve(temporary, `${randomUUID()}.json`);
     await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
     const runNapiBuild = async () => {
-      const { NapiCli } = await import("@napi-rs/cli");
+      const { NapiCli } = require("@napi-rs/cli");
       const buildResult = await new NapiCli().build({
         cwd: root,
         packageJsonPath: packagePath,

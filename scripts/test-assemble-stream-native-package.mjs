@@ -57,7 +57,7 @@ test("publication verifies all companion archives and retained attestations befo
   Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
   const receipt = { schema: "acyclic.stream.native-build-inputs-receipt.v1", published_build_inputs_sha256: hash(meta.build_inputs), raw_build_inputs: inputs() };
   const entry = { name: companionName, version: "0.2.0", asset: "native/companion.tgz", selected_target: target, os: ["win32"], cpu: ["x64"], artifact: meta.artifact, sha256: "", metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) };
-  const expectedInventory = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, parent: { name: "@acyclic-labs/stream", version: "0.2.0", private: false }, targets: [target], generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, meta.build_inputs.generator[field]])), companions: [{ selected_target: target, name: companionName, main: addon, os: ["win32"], cpu: ["x64"] }] };
+  const expectedInventory = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, source_sha256: meta.source_sha256, source_files: structuredClone(meta.source_files), parent: { name: "@acyclic-labs/stream", version: "0.2.0", private: false }, targets: [target], generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, meta.build_inputs.generator[field]])), companions: [{ selected_target: target, name: companionName, main: addon, os: ["win32"], cpu: ["x64"] }] };
   try {
     await mkdir(join(output, "native"), { recursive: true });
     for (const name of ["binding.cjs", "binding.d.ts"]) await put(join(parent, "generated/native", name), name);
@@ -116,6 +116,29 @@ test("publication verifies all companion archives and retained attestations befo
     Object.assign(entry, originalEntry);
     await json(join(companion, "package.json"), originalCompanion);
     await json(join(parent, "package.json"), originalParent);
+    await seal();
+    await verifyNativeAssembly(output, revision, "0.2.0", expectedInventory);
+    const originalMeta = structuredClone(meta), originalGeneration = structuredClone(generation);
+    for (const changed of ["digest", "files"]) {
+      if (changed === "digest") meta.source_sha256 = generation.source_sha256 = index.source_sha256 = `sha256:${"b".repeat(64)}`;
+      else meta.source_files = generation.source_files = [{ ...meta.source_files[0], path: "forged-source.rs" }];
+      const changedGeneration = JSON.stringify(generation);
+      Object.assign(meta, { generation_sha256: `sha256:${bytesHash(changedGeneration)}` });
+      entry.metadata_sha256 = bytesHash(JSON.stringify(meta));
+      for (const [name, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", changedGeneration]]) {
+        await put(join(companion, name), bytes);
+        await put(join(parent, "generated/native/attestations", target, name), bytes);
+      }
+      await seal();
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /trusted source inventory/);
+      Object.assign(meta, originalMeta); Object.assign(generation, originalGeneration);
+      index.source_sha256 = originalMeta.source_sha256;
+    }
+    entry.metadata_sha256 = originalEntry.metadata_sha256;
+    for (const [name, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", generationBytes]]) {
+      await put(join(companion, name), bytes);
+      await put(join(parent, "generated/native/attestations", target, name), bytes);
+    }
     await seal();
     await verifyNativeAssembly(output, revision, "0.2.0", expectedInventory);
     await assert.rejects(verifyNativeAssembly(output, "2".repeat(40), "0.2.0", expectedInventory), /release/);

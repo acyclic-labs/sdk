@@ -5,12 +5,29 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
 import { assertBuildInputs, assertBundle, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, capturedCompilerIdentity, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, darwinRustObjcopyIdentity, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, prepareBuildOutput, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+
+test("generator identity hashes the loaded maintained CommonJS entry", async () => {
+  const require = createRequire(import.meta.url);
+  const resolved = require.resolve("@napi-rs/cli");
+  const loaded = require("@napi-rs/cli");
+  const cached = require.cache[resolved];
+  assert.ok(cached);
+  assert.equal(cached.exports, loaded);
+  assert.equal(typeof loaded.NapiCli.prototype, "object");
+  assert.equal(typeof new loaded.NapiCli().build, "function");
+  const { napiGeneratorIdentity } = await import("./build-stream-native.mjs");
+  const identity = await napiGeneratorIdentity();
+  assert.equal(identity.entry_sha256, `sha256:${createHash("sha256").update(await readFile(resolved)).digest("hex")}`);
+  const esmEntry = fileURLToPath(import.meta.resolve("@napi-rs/cli"));
+  assert.notEqual(identity.entry_sha256, `sha256:${createHash("sha256").update(await readFile(esmEntry)).digest("hex")}`);
+});
 
 test("native build preparation creates a missing nested parent before Cargo discovery", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "stream-native-prepare-"));

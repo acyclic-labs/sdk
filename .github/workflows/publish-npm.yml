@@ -70,6 +70,18 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
+      - name: Install exact Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install maintained NAPI assembly dependencies
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/stream-native-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/ensure-bun.sh
+          bun install --frozen-lockfile
+
       - name: Download exact successful qualification artifact
         env:
           GH_TOKEN: ${{ github.token }}

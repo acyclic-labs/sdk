@@ -111,7 +111,7 @@ export async function sourceNativeInventory(sourceSha) {
     }));
     await assertSourceSnapshot(source);
     if (run("git", ["rev-parse", "HEAD"]).trim() !== sourceSha) fail("native inventory source changed during generation");
-    return { schema: "acyclic.stream.native-source-inventory.v1", source_commit: sourceSha, parent: { name: manifest.name, version: manifest.version, private: manifest.private }, targets, generator, companions };
+    return { schema: "acyclic.stream.native-source-inventory.v1", source_commit: sourceSha, source_sha256: source.sha256, source_files: source.files, parent: { name: manifest.name, version: manifest.version, private: manifest.private }, targets, generator, companions };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
@@ -125,6 +125,7 @@ export async function verifyNativeAssembly(output, sourceSha, version, expectedI
   const neutral = JSON.parse(parent.get("package/package.json").toString("utf8"));
   if (neutral.name !== assembly.parent.name || neutral.version !== version || neutral.private !== false) fail("neutral parent manifest differs from release identity");
   if (neutral.name !== expectedInventory.parent.name || JSON.stringify(assembly.targets) !== JSON.stringify(expectedInventory.targets)) fail("native assembly differs from trusted Rust source inventory");
+  if (assembly.source_sha256 !== expectedInventory.source_sha256) fail("native assembly source closure differs from trusted source inventory");
   const { parent: ignored, ...index } = assembly;
   if (JSON.stringify(JSON.parse(parent.get("package/generated/native/native-targets.json").toString("utf8"))) !== JSON.stringify(index)) fail("neutral parent assembly index differs");
   if ([...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent contains a native binary");
@@ -147,6 +148,7 @@ export async function verifyNativeAssembly(output, sourceSha, version, expectedI
       originals[name] = JSON.parse(bytes.toString("utf8"));
     }
     const meta = originals["native-targets.json"];
+    if (JSON.stringify(meta.source_files) !== JSON.stringify(expectedInventory.source_files)) fail("native companion source files differ from trusted source inventory");
     if (Object.keys(expectedInventory.generator).some(field => meta.build_inputs.generator[field] !== expectedInventory.generator[field])) fail("native companion generator differs from trusted source inventory");
     const generation = originals["generation-manifest.json"];
     if (meta.schema !== "acyclic.stream.native-targets.v1" || generation.schema !== "acyclic.stream.native-generation.v1" || meta.version !== version || generation.version !== version || meta.selected_target !== entry.selected_target || generation.selected_target !== entry.selected_target || meta.source_revision !== sourceSha || generation.revision !== sourceSha || meta.source_sha256 !== assembly.source_sha256 || generation.source_sha256 !== assembly.source_sha256 || JSON.stringify(meta.targets) !== JSON.stringify(assembly.targets) || JSON.stringify(generation.targets) !== JSON.stringify(assembly.targets) || JSON.stringify(meta.source_files) !== JSON.stringify(generation.source_files) || JSON.stringify(meta.build_inputs) !== JSON.stringify(generation.build_inputs) || JSON.stringify(meta.artifact) !== JSON.stringify(entry.artifact)) fail("native companion original source or target differs");
