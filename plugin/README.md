@@ -98,10 +98,14 @@ expanded). Each destination retains at most 4 MiB in the active log and 4 MiB
 in `service.log.1` (or the supplied filename plus `.1`). The active file's lock
 serializes cooperating writers, including aliases. Oversize records and filesystem failures
 discard diagnostic output; logging never writes to JSON-RPC standard output.
-The archive is best effort and may be partial after a crash or disk failure.
+Rollover copies through one bounded `.1.next` staging file and publishes the
+archive only after copying succeeds. Transient logical retention is at most
+12 MiB per destination; restart removes the reserved staging entry. Logs are
+best effort: individual writes can be partial and no power-loss durability is
+promised. A failed archive copy preserves both published files.
 Oversized existing files and invalid destinations are rejected at startup.
 Explicit PID destinations retain independently.
 Explicit foreground file logging uses the same bound and lock. Foreground
 stderr logging and Chrome trace output keep their existing behavior.
 Log destinations are trusted host configuration: reserve the active and
-archive names, and keep the active file in place while writers are running.
+archive/staging names, and keep the active file in place while writers run.

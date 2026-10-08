@@ -3,10 +3,10 @@
 //! All writers lock the active file itself. Copy-and-truncate rollover keeps
 //! its identity, so even aliases share the same lock across restarts. Each
 //! file is at most `limit` bytes; an oversized write is rejected.
-//! The archive copy may be partial after an I/O failure or process termination.
+//! Copy into one bounded staging file before atomically publishing the archive.
 //! Logs are diagnostic output, so copying does not imply a durability guarantee.
 //! Destinations are trusted host configuration. Writers must reserve the active
-//! and archive names; replacing/unlinking an active file is not supported.
+//! archive and staging names; replacing/unlinking an active file is unsupported.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek as _, Write};
@@ -16,6 +16,7 @@ pub(crate) const LIMIT: u64 = 4 * 1024 * 1024;
 
 pub(crate) struct ServiceLog {
     archive: PathBuf,
+    staged: PathBuf,
     file: File,
     limit: u64,
 }
@@ -40,6 +41,7 @@ impl ServiceLog {
         }
         let mut log = Self {
             archive: suffix(path, ".1"),
+            staged: suffix(path, ".1.next"),
             file: file_options().create(true).open(path)?,
             limit,
         };
@@ -51,7 +53,8 @@ impl ServiceLog {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            size(&log.file, limit).map(|_| ())
+            size(&log.file, limit)?;
+            remove_staged(&log.staged)
         })?;
         Ok(log)
     }
@@ -75,16 +78,13 @@ impl ServiceLog {
         if active_size > self.limit - length {
             // No instrumented filesystem calls here: tracing from its own
             // writer would recursively acquire this lock.
-            // Remove the archive entry, never truncate through an alias.
-            // Exclusive creation then fails closed if somebody replaces it.
-            match fs::remove_file(&self.archive) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            let mut archive = file_options().create_new(true).open(&self.archive)?;
+            remove_staged(&self.staged)?;
+            let mut archive = file_options().create_new(true).open(&self.staged)?;
             self.file.rewind()?;
             io::copy(&mut self.file, &mut archive)?;
+            drop(archive);
+            // Replace the directory entry, never truncate through an alias.
+            fs::rename(&self.staged, &self.archive)?;
             self.file.set_len(0)?;
         }
         self.file.seek(io::SeekFrom::End(0))?;
@@ -130,6 +130,14 @@ fn suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
     PathBuf::from(name)
+}
+
+fn remove_staged(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -241,16 +249,23 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[ignore = "isolated filesystem fault helper"]
-    #[allow(
-        unsafe_code,
-        reason = "resource limit and signal apply only to this subprocess"
-    )]
     fn filesystem_fault_child() {
         let path = PathBuf::from(std::env::var_os("ACYCLIC_TEST_LOG_PATH").expect("log path"));
         let mut log = writer(&path, 32);
+        limit_file_size(8);
+        let error = log
+            .write_all(b"0123456789abcdef")
+            .expect_err("partial filesystem write");
+        assert!(!error.to_string().contains(&path.display().to_string()));
+        assert_eq!(fs::metadata(&path).expect("partial log").len(), 8);
+    }
+
+    #[cfg(unix)]
+    #[allow(unsafe_code, reason = "called only in dedicated fault subprocesses")]
+    fn limit_file_size(bytes: libc::rlim_t) {
         let limit = libc::rlimit {
-            rlim_cur: 8,
-            rlim_max: 8,
+            rlim_cur: bytes,
+            rlim_max: bytes,
         };
         // SAFETY: valid fixed-size limit pointer, with no retained references;
         // this helper runs only in a dedicated process that exits afterwards.
@@ -260,11 +275,65 @@ mod tests {
             unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) },
             libc::SIG_ERR
         );
-        let error = log
-            .write_all(b"0123456789abcdef")
-            .expect_err("partial filesystem write");
-        assert!(!error.to_string().contains(&path.display().to_string()));
-        assert_eq!(fs::metadata(&path).expect("partial log").len(), 8);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "isolated archive-copy failure helper"]
+    fn archive_fault_child() {
+        let path = PathBuf::from(std::env::var_os("ACYCLIC_TEST_LOG_PATH").expect("log path"));
+        let mut log = writer(&path, 16);
+        log.write_all(b"0123456789abcdef").expect("fill active");
+        fs::write(suffix(&path, ".1"), b"past").expect("published archive");
+        limit_file_size(8);
+        assert!(log.write_all(b"new").is_err());
+        assert_eq!(
+            fs::read(&path).expect("active preserved"),
+            b"0123456789abcdef"
+        );
+        assert_eq!(
+            fs::read(suffix(&path, ".1")).expect("archive preserved"),
+            b"past"
+        );
+        assert!(
+            fs::metadata(suffix(&path, ".1.next"))
+                .expect("partial stage")
+                .len()
+                <= 16
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_copy_failure_preserves_published_logs_and_restart_recovers() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("service.log");
+        let output = run_child(&path, "service_log::tests::archive_fault_child");
+        assert!(output.status.success(), "{output:?}");
+        let mut restarted = writer(&path, 16);
+        assert!(!suffix(&path, ".1.next").exists());
+        restarted.write_all(b"restart").expect("recovered rollover");
+        assert_eq!(
+            fs::read(suffix(&path, ".1")).expect("archive"),
+            b"0123456789abcdef"
+        );
+        assert_eq!(fs::read(&path).expect("active"), b"restart");
+    }
+
+    #[test]
+    fn restart_discards_only_the_reserved_unpublished_stage() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("service.log");
+        fs::write(&path, b"active").expect("active");
+        fs::write(suffix(&path, ".1"), b"archive").expect("archive");
+        fs::write(suffix(&path, ".1.next"), b"partial").expect("interrupted stage");
+        drop(writer(&path, 8));
+        assert!(!suffix(&path, ".1.next").exists());
+        assert_eq!(fs::read(&path).expect("active preserved"), b"active");
+        assert_eq!(
+            fs::read(suffix(&path, ".1")).expect("archive preserved"),
+            b"archive"
+        );
     }
 
     #[cfg(unix)]
