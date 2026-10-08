@@ -46,7 +46,7 @@ test("locked Harness inventory fails closed until exact semantic assertions exis
   assert.deepEqual(harnessCaseMarkers.map(([, name]) => name), cases.map(item => item.name));
   const pending = harnessCaseMarkers.filter(([, , required]) => !required.length);
   assert.deepEqual(pending.map(([, name]) => name), [
-    "join-preserves-child-slot-order", "quorum-fails-when-threshold-is-unreachable", "custom-executor-owns-the-whole-turn-loop",
+    "join-preserves-child-slot-order", "quorum-fails-when-threshold-is-unreachable", "custom-executor-owns-the-whole-turn-loop", "pagination-is-bounded-and-rebase-safe",
   ]);
   assert.throws(() => registerCases(locked, "harness", harnessCaseMarkers), /no executable evidence/);
   for (const marker of pending) {
@@ -190,5 +190,13 @@ test("runner rejects stale source and substituted package inputs before qualific
     reject(/package checksum does not match CONFORMANCE-EVIDENCE.json/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed or skipped provider scenarios cannot become passing integration evidence", () => {
+  for (const status of ["FAILED", "ignored"]) {
+    const value = evidence(transcript.replace("... ok", `... ${status}`));
+    assert.deepEqual(value.rust_provider_tests, []);
+    assert.throws(() => verifyProviderTests(value), /not executed/);
   }
 });

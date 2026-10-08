@@ -183,7 +183,7 @@ const parsedReceipt = JSON.parse(receipt);
 verifyQualificationReceipt(report, parsedReceipt, hash(reportBytes));
 assertSource();
 if (JSON.stringify(archiveNames()) !== JSON.stringify(artifacts)) throw new Error("package archive set changed during execution");
-if (readFileSync(reportPath, "utf8") !== reportBytes) throw new Error("conformance report changed during validation");
+if (!readFileSync(reportPath).equals(Buffer.from(reportBytes))) throw new Error("conformance report changed during validation");
 if (readFileSync(resolve(artifactDirectory, "SHA256SUMS"), "utf8") !== packageChecksums) {
   throw new Error("package checksum inventory changed during execution");
 }
