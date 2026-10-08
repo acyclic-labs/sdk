@@ -221,6 +221,7 @@ impl ModelProvider for CapturingModel {
     fn generate<'a>(
         &'a self,
         request: acyclic_harness::model::PreparedModelRequest,
+        _dispatch: acyclic_harness::model::ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>> {
         self.0
             .lock()
@@ -240,6 +241,7 @@ impl ModelProvider for TextModel {
     fn generate<'a>(
         &'a self,
         _: acyclic_harness::model::PreparedModelRequest,
+        _dispatch: acyclic_harness::model::ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(stream::iter(vec![

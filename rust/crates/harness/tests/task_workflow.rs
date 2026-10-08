@@ -178,7 +178,11 @@ impl ToolProjection for InterruptedTool {
 }
 
 impl ModelProvider for InterruptedModel {
-    fn generate<'a>(&'a self, request: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        request: PreparedModelRequest,
+        _dispatch: acyclic_harness::model::ModelDispatch,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         self.output_tokens.store(
             u64::from(request.request().max_output_tokens.unwrap_or(0)),
             Ordering::SeqCst,

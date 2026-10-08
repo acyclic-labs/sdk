@@ -3978,7 +3978,8 @@ impl TaskContext {
             .map_or(self.scope.limits().model_steps, |bound| {
                 bound.min(self.scope.limits().model_steps)
             });
-        self.model_steps
+        let step = self
+            .model_steps
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 (used < step_bound).then_some(used + 1)
             })
@@ -3993,7 +3994,13 @@ impl TaskContext {
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
-        let mut stream = binding.provider.generate(request);
+        let dispatch = crate::model::ModelDispatch {
+            operation_id: self.task_id,
+            step: u32::try_from(step)
+                .map_err(|_| Error::Invalid("model step exceeds portable bound".into()))?,
+            request_digest: request.manifest().request_digest,
+        };
+        let mut stream = binding.provider.generate(request, dispatch);
         loop {
             let next = match deadline {
                 Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
@@ -6623,6 +6630,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
+            _dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             let request = request.request().clone();
             let Ok(mut requests) = self.requests.lock() else {

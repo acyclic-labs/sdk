@@ -865,7 +865,14 @@ impl StockExecutor {
                 }
                 Err(error) => return Err(error),
             }
-            let mut stream = self.provider.generate(request);
+            let mut stream = self.provider.generate(
+                request,
+                crate::model::ModelDispatch {
+                    operation_id: input.operation_id,
+                    step,
+                    request_digest,
+                },
+            );
             let mut observed = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event?;
@@ -1850,6 +1857,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
+            _dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             let request = request.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1906,6 +1914,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
+            _dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             assert_eq!(
                 request.bytes(),
@@ -1955,13 +1964,17 @@ mod tests {
     struct RecoverableModel {
         generate_calls: AtomicUsize,
         reconcile_calls: AtomicUsize,
+        dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
     }
 
     impl ModelProvider for RecoverableModel {
         fn generate<'a>(
             &'a self,
-            _: crate::model::PreparedModelRequest,
+            request: crate::model::PreparedModelRequest,
+            dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+            assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+            self.dispatches.lock().unwrap().push(dispatch);
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(
                 (0..70)
@@ -1980,6 +1993,12 @@ mod tests {
             &'a self,
             attempt: ModelAttempt,
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            assert!(
+                self.dispatches
+                    .lock()
+                    .unwrap()
+                    .contains(&attempt.dispatch())
+            );
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
                 if attempt.observed
@@ -2257,6 +2276,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
+            _dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             self.0
                 .lock()
@@ -3350,6 +3370,7 @@ mod tests {
         let model = Arc::new(RecoverableModel {
             generate_calls: AtomicUsize::new(0),
             reconcile_calls: AtomicUsize::new(0),
+            dispatches: Mutex::new(Vec::new()),
         });
         let executor = StockExecutor::new(
             Model::new("example", "recoverable", "1", Value::Null)?,
