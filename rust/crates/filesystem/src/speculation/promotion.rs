@@ -798,6 +798,7 @@ fn checked_increment(value: u64) -> Result<u64, PromotionSpeculatorError> {
         .ok_or(PromotionSpeculatorError::Overflow)
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/promotion.rs"]
 mod tests;

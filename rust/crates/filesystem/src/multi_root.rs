@@ -2647,7 +2647,8 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod tests {
     use super::*;
     use crate::{Digest, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot};

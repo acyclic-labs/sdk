@@ -5718,7 +5718,8 @@ impl GitCompatStore for MemoryGitCompatStore {
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 mod tests {
     use super::*;
     use crate::kernel::{FileMetadata, MetadataField};

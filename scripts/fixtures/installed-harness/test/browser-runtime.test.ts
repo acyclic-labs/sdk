@@ -2,7 +2,7 @@ import "fake-indexeddb/auto";
 import { expect, test } from "bun:test";
 import {
   BrowserTaskAuthority, BrowserTaskRegistry, BrowserTaskRuntime,
-  initializeBrowserRuntime, type BrowserTaskOptions,
+  initializeBrowserRuntime, type BrowserTaskOptions, type BrowserWorkLease,
 } from "@acyclic-labs/harness/browser";
 
 // Package-resolution/consumer qualification. Real Chromium tests separately
@@ -31,8 +31,11 @@ test("installed browser entry executes the ordinary registered runtime", async (
       "operation:declare", "operation:observe", "operation:cancel", "operation:wake", "task:spawn:installed.complete@1",
       owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
     ]);
+    const outputSchema: BrowserWorkLease["operation"]["entrypoint"]["result_schema"] = {
+      type: "integer", default: { sha256: "literal", byte_length: 7n, media_type: "literal" },
+    };
     registry.registerMachine({ name: "installed.complete", version: "1", digest: new Array(32).fill(41),
-      state_schema: { type: "integer" }, input_schema: { type: "integer" }, output_schema: { type: "integer" }, requirements: [] },
+      state_schema: { type: "integer" }, input_schema: { type: "integer" }, output_schema: outputSchema, requirements: [] },
     (input: unknown) => input, (state: unknown) => ({ state, commands: [], status: { kind: "completed", value: state } }));
     runtime = await BrowserTaskRuntime.open(options, owner, registry, scope);
     await runtime.initializeVolume();

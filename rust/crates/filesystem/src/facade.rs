@@ -44,7 +44,8 @@ use crate::kernel::{
     read_blob_range_async, read_file_range_async, retention_authority_id, seek_extent_async,
     volume_authority_id,
 };
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 use crate::kernel::{
     FileTableMutation, TreeMutation, file_table_mutation,
     merge_directory_record_async as merge_directory_record, merge_file_fields, resolve_three,

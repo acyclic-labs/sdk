@@ -760,7 +760,7 @@ export interface EntrypointRef {
     /**
      * JSON Schema for the durable result value.
      */
-    result_schema: WasmToolJsonSchema;
+    result_schema: WasmModelJsonSchema;
 }
 
 /**
@@ -893,9 +893,9 @@ export interface WasmMachineDefinition {
     name: string;
     version: string;
     digest: number[];
-    state_schema: WasmToolJsonSchema;
-    input_schema: WasmToolJsonSchema;
-    output_schema: WasmToolJsonSchema;
+    state_schema: WasmModelJsonSchema;
+    input_schema: WasmModelJsonSchema;
+    output_schema: WasmModelJsonSchema;
     requirements: string[];
 }
 

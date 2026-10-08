@@ -9,6 +9,13 @@ const describe = value => JSON.stringify(value, (_, item) => typeof item === "bi
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const id = crypto.randomUUID();
 const effectKey = `harness-tool-effect-${id}`;
+const remote = new URL(location.href).searchParams.get("profile") === "http";
+const remotePath = `/__harness-fixture/tool/${id}`;
+const callRemote = async (method, invocation) => {
+  const response = await fetch(`${remotePath}/${method}`, { method: "POST", body: JSON.stringify(invocation) });
+  if (!response.ok) throw new Error(`remote provider rejected ${method}: ${response.status}`);
+  return response.json();
+};
 let fixture;
 let runtime;
 try {
@@ -19,13 +26,15 @@ try {
   const definition = { name: "test.effect", revision: "1", description: "Retained browser effect",
     input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
     output_schema: { type: "string" } };
-  fixture.registry.registerTool(definition, invocation => {
+  fixture.registry.registerTool(definition, async invocation => {
     executions++;
+    if (remote) return callRemote("execute", invocation);
     assert(localStorage.getItem(effectKey) === null, "uncertain effect was redispatched");
     localStorage.setItem(effectKey, JSON.stringify({ operation_id: invocation.operation_id, arguments: invocation.arguments }));
     throw new Error("acknowledgment lost after durable effect");
-  }, invocation => {
+  }, async invocation => {
     reconciliations++;
+    if (remote) return callRemote("reconcile", invocation);
     const effect = JSON.parse(localStorage.getItem(effectKey));
     assert(effect.operation_id === invocation.operation_id, "reconciliation substituted invocation identity");
     assert(effect.arguments.value === invocation.arguments.value, "reconciliation substituted arguments");
@@ -61,8 +70,14 @@ try {
   assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "durable terminal result differs");
   const duplicate = await runtime.workerTick(worker, null, 128, 4);
   assert(duplicate.work === null && executions === 1 && reconciliations === 1, "duplicate wake repeated effect recovery");
+  if (remote) {
+    const receipt = await (await fetch(`${remotePath}/inspect`)).json();
+    assert(receipt.executions === 1 && receipt.intent && receipt.result, "remote receiver lacks one durable intent/result");
+    const changed = await fetch(`${remotePath}/reconcile`, { method: "POST", body: JSON.stringify({ operation_id: "changed", arguments: { value: "different" } }) });
+    assert(changed.status === 409, "remote receiver accepted changed retry intent");
+  }
   result.dataset.status = "passed";
-  result.textContent = "pinned tool, lost acknowledgment, reopen, exact reconciliation and duplicate wake passed";
+  result.textContent = `${remote ? "HTTP" : "local"} pinned tool, lost acknowledgment, reopen, exact reconciliation and duplicate wake passed`;
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);

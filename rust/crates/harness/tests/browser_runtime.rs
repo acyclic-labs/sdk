@@ -4,6 +4,7 @@
 use acyclic_harness::{
     Capabilities, Outcome,
     conversation::Limits,
+    live::TaskGroup,
     runtime::{Bindings, RuntimeScope, TaskDefinition, TaskRunLimits},
 };
 use std::{cell::Cell, rc::Rc};
@@ -91,5 +92,39 @@ async fn registered_live_tasks_use_the_browser_executor_and_release_cancelled_ca
         Outcome::Succeeded(8)
     );
     assert_eq!(observed.get(), 1);
+    Ok(())
+}
+
+#[wasm_bindgen_test]
+async fn parent_group_cancels_browser_descendants_and_closes_admission() -> Result<(), JsValue> {
+    let root = TaskGroup::new(1);
+    let child = root.child(1);
+    let grandchild = child.child(1);
+    let child_dropped = Rc::new(Cell::new(false));
+    let grandchild_dropped = Rc::new(Cell::new(false));
+    let pending = |dropped| {
+        let signal = DropSignal(dropped);
+        async move {
+            let _signal = signal;
+            std::future::pending::<()>().await;
+        }
+    };
+    let first = child.spawn(pending(child_dropped.clone())).await;
+    let second = grandchild.spawn(pending(grandchild_dropped.clone())).await;
+    JsFuture::from(js_sys::Promise::resolve(&JsValue::UNDEFINED)).await?;
+    root.cancel();
+    assert_eq!(first.result().await, Outcome::Cancelled);
+    assert_eq!(second.result().await, Outcome::Cancelled);
+    assert!(child_dropped.get() && grandchild_dropped.get());
+    let polled = Rc::new(Cell::new(false));
+    let captured = polled.clone();
+    let rejected = grandchild
+        .try_spawn(async move { captured.set(true) })
+        .await;
+    assert!(matches!(
+        rejected,
+        acyclic_harness::Admission::Rejected { .. }
+    ));
+    assert!(!polled.get(), "closed subtree executed rejected work");
     Ok(())
 }

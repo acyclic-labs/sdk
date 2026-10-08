@@ -5738,6 +5738,7 @@ fn regular_file_bytes(record: crate::kernel::FileRecord) -> Result<u64, Workspac
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/workspace.rs"]
 mod tests;

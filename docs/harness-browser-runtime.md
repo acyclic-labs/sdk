@@ -1,190 +1,100 @@
 # Slice I: portable ordinary-task execution
 
-Initial inspected main: `4e3ed22bdc2137a93cccdd66a3cbb815acf897cc`, tree
-`845c26a40bce308aed750ef71e4369069e622e4c`; rebased onto main
-`8b547b48ca` after the Filesystem boundary landings, then `5d2336e299` after
-shared durability/tracing and qualification updates, and `08a5b8ea79` after
-Rust-owned policy initialization and Objects/Stream codec-frame changes.
-Work is unqualified until
-final-source execution and landing evidence replaces the pending entries below.
+Base main: `08a5b8ea796a3b85aeee3e56a79d0439ae68247f`. Draft PR:
+https://github.com/acyclic-labs/sdk/pull/274. This is a qualification record,
+not a readiness or landing claim. Receipts below identify their source scope;
+the latest source still requires final native/installed checks and macOS execution.
 
-| Invariant | Production mechanism | Assumptions | Verification | Evidence |
-|---|---|---|---|---|
-| Browser tasks execute without a Tokio runtime | Existing `TaskGroup`, platform join adapter using `wasm_bindgen_futures::spawn_local`; same group semaphore/cancellation tree | Browser event loop available; live stack is not durable | Actual Chromium execution of a registered non-Send task, cancellation and capacity release without LocalSet | `target-i-rust-browser-run-2.log`: one Rust integration test passed; final-source rerun required |
-| Caller deadlines and waits preserve total duration | Existing task limits, platform timers; signed-32-bit timer chunks preserve complete duration | Host timer/clock are trusted; suspended tabs provide no liveness guarantee | Native/browser timeout, cancellation and worker timer execution | Pending |
-| Exact sender intent precedes receiver acknowledgment | Original intent stream retains exact sender/recipient/payload/revisions; one Stream commit appends receiver bytes and receipt pointer, plus the existing owner fence for owned send | Same admitted Stream provider; authority and payload availability remain valid; message operation IDs are globally unique | Changed content, mixed concurrent routes, lost acknowledgment, restart and stale lease tests | Intermediate native worker suite passed; expanded negative controls and final source pending |
-| No uncertain effect replay | Existing task command host, stock model/tool resolver and workflow/execution journals | Provider reconciliation capability declared; unknown remains indeterminate | Real provider dispatch/receipt faults and restart | Pending affected-source execution |
-| No browser scheduler or store | Existing `FilesystemTaskRuntime`, task registry/accounting, BrowserStream and real IndexedDB Filesystem providers; generated browser binding calls ordinary runtime methods | IndexedDB durability/quota/platform semantics; no cross-provider atomicity | Chromium provider tests, reload, two tabs and worker; installed composition pending | Six owning-provider Rust tests passed in `target-i-rust-browser-run-2.log`; worker termination/concurrent-tab/duplicate-wake/reopen passed in `target-i-browser-multitab-2.log`; final-source rerun required |
-| Model observation differs from consumption | Mail publication retains durable delivery; retained request/consumption cursor belongs to ordinary workflow/request journals | PR6 supplies topology and consumption policy | Consumer qualification after PR6; no simulated swarm | Deferred full-default fork/merge composition to PR6/8 |
+## Production mechanisms and boundaries
 
-## Reuse and deletion audit
+| Invariant | Mechanism | Assumptions and limits |
+|---|---|---|
+| Same ordinary-task semantics in native and browser runtimes | Existing TaskRegistry, AgentHarness, TaskGroup, scheduler/accounting and workflow/execution/conversation journals; platform executor/timer adapters | Native futures remain Send; browser futures may be local. Live task stacks are not durable. |
+| Cancellation releases task capacity and destroys pending work | Existing cancellation tree and semaphore; browser abortable futures and completion channels | Browser event loop available. Provider transports must honor AbortSignal for transport liveness. |
+| Caller deadlines preserve total duration | Existing task limits; browser timers use signed-32-bit chunks and retain the full duration | Trusted host clock/timers; suspended tabs have no liveness guarantee. Persistent worker/stock-task deadline composition remains explicitly Unsupported. |
+| Exact intent precedes receiver acknowledgment | Original intent stream binds sender, recipient, exact payload and schema/route revisions; one Stream commit appends receiver bytes and receipt pointer | Same admitted Stream provider; valid authority and payload availability; globally unique message operation IDs. No cross-provider atomicity claim. |
+| Exact retries do not redispatch uncertain effects | Existing task command host, stock model/tool resolver and retained workflow/execution journals | Provider reconciliation capability is explicit; unknown remains indeterminate. Receipt confirms delivery, not model consumption. |
+| Fenced browser recovery | Existing BrowserStream and IndexedDB Filesystem providers, ordinary coordinator owner conditions and retained leases | IndexedDB durability/quota semantics; transport and wakeups do not own semantic state. |
 
-The platform adapter owns only task executor and timer operations. It creates no
-task IDs, registry, scheduler, journal, durable state or admission policy. Native
-tasks retain Tokio joins; browser tasks use abortable futures and completion
-channels under the existing `TaskGroup` lifecycle. Replaced direct runtime timer
-and local-executor calls are removed. Completion streams use the existing
-platform-aware stream type.
+The platform adapter creates no task IDs, registry, scheduler, journal or
+admission policy. Native tasks retain Tokio joins. Browser tasks use
+wasm_bindgen_futures::spawn_local under the existing TaskGroup lifecycle.
+Replaced direct timer/local-executor calls are removed.
 
-Both mail publication paths use one atomic receiver publication and receipt
-append in the original intent stream. The replaced mailbox history scan is
-removed. Exact retries read the pointer and verify the receiver record, while
-the first intent binds sender, recipient, payload and route/schema revisions.
-Owned publication includes the existing coordinator condition and verifies its
-lease before returning. A receipt confirms delivery, not effect settlement or
-model consumption. There is no extra acknowledgment ledger or retry engine.
+Mail publication removes the previous mailbox history scan. Exact retries read
+the receipt pointer and verify the receiver bytes. Owned publication includes
+the existing coordinator condition and checks the lease before returning.
+There is no extra acknowledgment ledger, mailbox registry or retry engine.
 
-The existing IndexedDB authority/object providers and codec were moved into
-`acyclic-fs` under an optional `browser` feature. `acyclic-fs-wasm` reexports them;
-database schema, recovery, authority and publication fencing remain unchanged.
-Harness does not depend on the unpublished bindings crate. Its package's
-`./browser` entry reexports generated Rust runtime bindings and shared WASM
-initialization. Host machines, tools and model callbacks are trusted explicit
-providers, not confined code. Model events are pulled individually; the stock
-executor owns admission and journals. Dropping the iterator aborts the supplied
-signal; a host provider must honor cancellation for transport liveness.
+The existing IndexedDB authority/object providers and codec moved into
+acyclic-fs under its optional browser feature. acyclic-fs-wasm reexports those
+same providers; database schema and publication/recovery fencing are unchanged.
+Harness does not depend on the unpublished bindings crate. Its browser entry
+reexports generated Rust bindings and shared WASM initialization.
 
-## Receipts and claim boundaries
+Machines, tools and models are explicit trusted host providers. There is no
+default native process/filesystem provider or confinement claim. Model events
+are pulled individually, with admission and journals owned by the stock
+executor. B's independent signed fbaea4d355 dispatch seam is integrated without
+its unfinished ModelPurpose/context work. Generation receives canonical request
+bytes, a separate dispatch identity and AbortSignal. The callback selects
+operation_id, step and request_digest from existing WasmModelAttemptWire;
+dispatch metadata is not inserted into the canonical request.
 
-`target-i-wasm-check.log` failed in the Windows sandbox because the bundled
-protocol compiler could not load DLLs (OS error 623). The unsandboxed retry
-`target-i-wasm-check-unsandboxed.log` found an owned-send integration compile
-failure, which was repaired without removing its fencing checks.
-`target-i-wasm-check-2.log` passed compilation of the real Harness with
-`wasm,filesystem` for `wasm32-unknown-unknown`. Compilation is implementation
-evidence only; it does not establish browser execution, durability, liveness,
-fault correctness, installed consumer usability or formal correspondence.
+Public worker, lease, tick, outcome, inbox and option declarations derive from
+Rust. Generic values and schema literals reuse the existing bigint-capable
+WasmModelJsonValue/WasmModelJsonSchema types. Only admitted FileRef lengths use
+the existing exact Number projection. Lease schema/model literals are not
+structurally rewritten. Maps use the existing serializer's object representation.
 
-All final-source production, fault, bounded formal, Windows, Linux/WSL, macOS,
-Chromium/WASM, generated and installed-consumer receipts remain required. No
-unrestricted proof, confinement, native mount or cross-provider atomicity claim.
+Full-default topology, steering and durable consumption policy remain PR6/8
+composition, through ordinary task/request journals. This slice supplies
+transport/provider adapters and does not simulate a complete swarm.
 
-Intermediate `target-i-native-mail-receipts.log` passed 234 unit and 20 actual
-durable-local worker integration tests, including concurrent owned/unowned mail
-publication, lost acknowledgment before checkpoint, provider reopen, stale leases,
-cancellation and uncertain model/tool reconciliation. Later binding/clock edits
-require affected tests to be rerun. `target-i-model-bindings-check-2.log` passed
-the WASM target check before those clock/cancellation edits. Browser fixture
-setup failures (unconstrained input schema, capability treated as a component
-dependency) are retained in `target-i-browser-task-2.log` and `-3.log`; they are
-not execution qualification. The later browser/build process handles disappeared
-without terminal receipts; matching worktree processes were absent, so those
-attempts provide no passing evidence. No PR or merge is claimed.
+## Qualification receipts
 
-Later intermediate execution receipts: `target-i-native-mail-authority-3.log`
-passed 235 unit and 20 durable-local worker tests, including sender and recipient
-read-authority checks and exact sender/recipient/payload identity conflicts.
-`target-i-browser-clippy-2.log` passed strict browser-target lint.
-`target-i-rust-browser-run-2.log` passed one ordinary live-task Rust integration
-test and all six moved IndexedDB provider tests in actual Chromium, driven
-through the official wasm-bindgen test server. The first direct-glue attempt in
-`target-i-rust-browser-run-1.log` failed because it omitted the runner's invocation
-hook and startup suppression; it is retained and provides no passing evidence.
+| Source scope | Check | Receipt |
+|---|---|---|
+| a3cc66123d | Windows strict native all-target lint; 237 Harness unit and 20 durable-worker tests | target-i-native-dispatch-clippy-2.log; target-i-native-dispatch-2.log |
+| Frozen a3cc66123d archive | Linux/WSL strict lint; 237 unit and 20 durable-worker tests | target-i-linux-candidate-a3cc66123d-3.log |
+| a3cc66123d packaged closure | 291 Rust tests, 47 installed TypeScript tests, seven hashed artifacts | target-i-installed-full-candidate-3.log; target/i-harness-package-candidate/CONFORMANCE-EVIDENCE.json and SHA256SUMS |
+| Current declaration correction | Actual tarball strict TypeScript assignment of bigint schema literals and Succeeded: 7n; installed browser task execution | target-i-installed-browser-types-final-2.log; target-i-installed-browser-types-final-run-2.log |
+| Current Filesystem test-guard repair | Strict all-target/all-feature Filesystem lint | target-i-filesystem-all-feature-clippy-1.log |
+| Current owning Filesystem browser source | Six actual Rust IndexedDB tests in Chromium, zero ignored | target-i-fs-browser-final-1.log |
+| Current generated browser artifact and fixtures | Eight Chromium pages: wire/discovery, initialization retry, timer reload, worker termination/tab fencing, local and HTTP tool recovery, model dispatch/reconciliation, mail faults | target-i-browser-final-contract-1.log |
+| Production canonical mail intent, included in native/installed suites above | 64 intent combinations and six field-removal negative controls | target-i-mail-bounded-model-2.log |
 
-The concurrent-tab fixture initially exposed a physical Stream idempotency-key
-collision between distinct envelopes for the same logical wake. Physical commit
-keys now bind exact envelope bytes; the existing coordinator revision and logical
-retained intent still own semantic deduplication. The failure is retained in
-`target-i-browser-multitab.log`, and the affected fixture passed in
-`target-i-browser-multitab-2.log`. This is bounded fault-test evidence, not a proof.
+The finite mail check uses production MailEvent and the canonical codec: two
+choices each for sender, recipient, message ID, schema revision, route revision
+and payload yield 64 distinct intents. Removing any one field aliases the
+domain to 32 identities. Revision 2 probes binding only and is not a supported
+inbox revision. This is bounded identity/codec evidence, not an unrestricted
+trace proof, hash injectivity proof or transport-liveness proof.
 
-Native test dependencies are target-gated so they do not enable Mio on WASM.
-Memory-only unit fixtures are feature-gated with `memory`; their assertions remain
-unchanged and the default native suite must pass before final qualification.
+The HTTP fixture is an explicit test provider. It fsyncs external-effect intent
+and result files, deliberately loses the response, and reconciles the original
+exact invocation after browser runtime reopen. Changed content is rejected;
+inspection confirms one execution. These files do not add an SDK journal or
+production transport policy. This receipt does not prove server-crash recovery
+or power-loss durability of directory entries.
 
-`target-i-filesystem-native-tests-1.log` passed the pre-rebase default native
-Filesystem suite: 1,150 passed, zero failed, 36 ignored host-dependent tests.
-The two process-crash/power-loss core-store tests and million-path admission test
-ran to completion; their long-running notices were not treated as failures or
-grounds to restart. This receipt preserves native fixture coverage but needs
-replacement after the shared main Filesystem changes.
+The losing concurrent admission fixture verifies the existing retained
+Conflict attempt: no machine transition occurs, and resuming its stale fence
+still fails. Exactly one winner, durable completion, duplicate-wake suppression
+and reopen remain required. Pure machine transitions may be evaluated again
+during validation and do not establish an external-effect dispatch count.
 
-On the rebased runtime, `target-i-browser-build-6.log` regenerated shipped WASM
-and declarations. `target-i-browser-rebased-1.log` passed ordinary timer reload
-and concurrent-tab/worker recovery, but failed the new tool fixture's incorrect
-assertion that uncertain work must have no outcome. `Outcome::Indeterminate` is
-the existing nonterminal reconciliation state. The corrected fixture passed in
-`target-i-browser-tool-2.log`: a localStorage-backed tool effect executed once,
-lost acknowledgment, reopened the real providers, reconciled the exact original
-invocation once, and remained unchanged on duplicate wake.
-`target-i-browser-model-1.log` passed canonical model request binding, retained
-observed prefix, AbortSignal/iterator cleanup, provider reopen and reconciliation
-without a second generation call. These are concrete bounded fault tests; final
-Rust-derived worker/lease/result contracts and installed consumers are still
-being qualified.
+Failed receipts are retained. The first Linux native codegen run hit an LLVM
+stack fault; the passing retry used rustc's recommended RUST_MIN_STACK=16777216
+for compiler threads, without changing production resource limits.
+PR run 37709699301 passed gate and TypeScript jobs but failed policy; Windows
+was skipped. The policy failure arose from Clippy not recognizing combined
+test/feature guards. Separate equivalent cfg attributes preserve assertions
+and pass strict Filesystem lint; a fresh pushed-source CI run is still required.
 
-`target-i-native-rebased-2.log` passed 236 Harness unit tests and 20 durable
-worker integration tests on the `5d2336e299` base. Browser artifacts built in
-`target-i-browser-build-8.log` and `-10.log` add Rust-derived worker, retained
-lease, admission, tick, outcome and inbox types. Only admitted FileRef lengths
-use the existing exact Number projection; lease schemas and model literals are
-not structurally rewritten. `target-i-browser-contracts-2.log` passed mail,
-tool and model recovery, including a descriptor-shaped schema literal and the
-typed inbox FileRef. Map declarations use Tsify's object representation to match
-the existing browser serializer.
-
-An isolated tarball consumer imported `@acyclic-labs/harness/browser` and ran
-an ordinary registered task in `target-i-installed-browser-run-1.log`; strict
-TypeScript checking, including generated declarations, passed in
-`target-i-installed-browser-types-2.log`. Fake IndexedDB there qualifies package
-resolution/composition, not browser storage durability; Chromium receipts above
-cover the actual platform provider. These receipts precede the final outcome
-and inbox declaration additions and the later main policy-boundary landing.
-
-The bounded identity check uses the production `MailEvent` and canonical codec,
-with two choices for sender, recipient, message ID, schema revision, route
-revision and payload: 64 distinct canonical intents. Removing any one field is
-a negative control that aliases the domain to 32 identities. It checks exact
-byte binding and decode/redelivery within that finite domain. Revision 2 probes
-binding only and is not a supported inbox revision. It makes no claim about
-unbounded traces, hash injectivity, transport liveness or storage atomicity;
-provider and restart tests supply separate implementation evidence. The initial
-compile failure in `target-i-mail-bounded-model-1.log` is retained; the repaired
-check passed in `target-i-mail-bounded-model-2.log` (one bounded-domain test,
-236 other tests filtered). The repaired browser lint still requires a passing
-receipt after main reconciliation.
-
-The current-main refresh passed strict browser library lint in
-`target-i-browser-clippy-5.log`. Main's UTF-16 validation now compares the
-browser's numeric code units directly against surrogate ranges, without lossy
-integer casts. The browser integration additionally tests a real scoped task
-deadline and destruction of its pending future; its execution receipt remains
-pending. The combined browser driver includes main's initialization-failure and
-retry page.
-
-`target-i-typescript-main273-2.log` passed all 241 Harness TypeScript tests after
-rebuilding the changed Objects WASM/TypeScript dependency. The prior 240-pass,
-one-failure receipt is retained in `target-i-typescript-main273-1.log`; the
-failed Objects consumer used stale bindings missing the new body decoder.
-Browser outcome declarations now reuse `WasmModelJsonValue`, which admits the
-existing bigint integer representation. An installed-consumer assignment of
-`Succeeded: 7n` checks that declaration rather than relying only on runtime
-equality.
-
-The inspected macOS test host has 372 MiB free. No slice I build was dispatched
-there, and no other owner's files were removed. macOS execution, installed
-full-package gates and final landing remain open; intermediate passes do not
-establish readiness.
-
-B's independent signed `fbaea4d355` provider seam was integrated without its
-unfinished ModelPurpose/context changes. Browser generation receives canonical
-request bytes, a separate dispatch identity and AbortSignal. Its callback type
-selects the three dispatch fields from the existing Rust-derived
-`WasmModelAttemptWire`; no second client identity schema is introduced. The
-browser fault fixture compares fresh and recovered operation, step and digest
-and rejects dispatch fields in the canonical request object. Integrated-source
-native/WASM/browser receipts remain pending.
-
-`target-i-browser-main273-1.log` passed actual Rust live-task cancellation,
-deadline destruction, initialization retry, timer reload, tool/model recovery
-and mail faults. Its wire/discovery page lacked the built Filesystem dependency.
-Its concurrent-tab assertion also wrongly rejected the documented retained
-attempt returned after a losing admission CAS. The fixture now verifies that
-such an attempt ran no machine code and that resuming the stale fence is
-rejected; exactly one winner, durable completion and no duplicate wake execution
-remain mandatory. This corrected fixture has not yet supplied a passing receipt.
-
-The Windows refresh crossed the independent provider contract integration and
-compiled mismatched library/test signatures. `target-i-native-main273-1.log`
-retains that failure; the affected run was stopped and is not qualification.
-The integrated source is frozen for its native/browser checks.
+The actual browser parent/descendant cancellation test is currently compiling.
+Final-source native, WASM lint, generated and full installed-consumer receipts,
+successful required CI, macOS and landed-tree verification remain open.
+The inspected macOS host ivar has about 316 MiB free; no slice I build was
+dispatched and no other owner's files were removed. No unrestricted proof,
+native mount, confinement or cross-provider atomicity claim is made.

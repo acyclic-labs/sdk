@@ -184,11 +184,11 @@ struct WasmMachineDefinition {
     name: String,
     version: String,
     digest: Vec<u8>,
-    #[tsify(type = "WasmToolJsonSchema")]
+    #[tsify(type = "WasmModelJsonSchema")]
     state_schema: Value,
-    #[tsify(type = "WasmToolJsonSchema")]
+    #[tsify(type = "WasmModelJsonSchema")]
     input_schema: Value,
-    #[tsify(type = "WasmToolJsonSchema")]
+    #[tsify(type = "WasmModelJsonSchema")]
     output_schema: Value,
     requirements: Vec<String>,
 }

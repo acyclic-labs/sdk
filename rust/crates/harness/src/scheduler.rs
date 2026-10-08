@@ -20,7 +20,7 @@ pub struct EntrypointRef {
     /// Digest of the state/input schema and implementation contract.
     pub digest: [u8; 32],
     /// JSON Schema for the durable result value.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonSchema"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub result_schema: Value,
 }
 
