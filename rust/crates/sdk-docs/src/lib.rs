@@ -441,10 +441,23 @@ fn build_data_inner(
             )));
         }
         format_versions.insert(krate.format_version);
-        let family = if let Some(binary) = binary {
-            historical::binary_family(&repository_root, &generated_sources, &krate, binary)?
+        let family_root = if let Some(scope) = historical {
+            historical::package_root(&repository_root, scope, metadata)?
         } else {
-            build_family(&repository_root, &generated_sources, path, &bytes, &krate)?
+            repository_root.clone()
+        };
+        if historical.is_some_and(|scope| {
+            matches!(
+                &scope.captured_source,
+                Some(historical::CapturedSource::RegistryArchives { .. })
+            )
+        }) {
+            historical::validate_relative_package_spans(&family_root, &krate)?;
+        }
+        let family = if let Some(binary) = binary {
+            historical::binary_family(&family_root, &generated_sources, &krate, binary)?
+        } else {
+            build_family(&family_root, &generated_sources, path, &bytes, &krate)?
         };
         if family.crate_name != metadata.crate_name {
             return Err(Error::Invalid(format!(

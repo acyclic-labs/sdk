@@ -1244,18 +1244,24 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
         "{}",
         String::from_utf8_lossy(&packed.stderr)
     );
-    write_registry_transport(&support, &archive);
+    write_registry_transport(&support);
     (fixture, support)
 }
 
-fn write_registry_transport(support: &Path, archive: &Path) {
-    let response = serde_json::to_string(&json!({"version":{"crate":"demo","num":"1.0.0","checksum":hash_file(archive).trim_start_matches("sha256:"),"yanked":false}})).unwrap();
+fn write_registry_transport(support: &Path) {
+    let mut responses = fs::read_dir(support.join("registry")).unwrap().map(|entry| {
+        let archive = entry.unwrap().path();
+        let package = archive.file_stem().unwrap().to_str().unwrap().strip_suffix("-1.0.0").unwrap().to_owned();
+        let response = serde_json::to_string(&json!({"version":{"crate":package,"num":"1.0.0","checksum":hash_file(&archive).trim_start_matches("sha256:"),"yanked":false}})).unwrap();
+        (package, response)
+    }).collect::<Vec<_>>();
+    responses.sort();
     // Subprocess fixture for the real registry command boundary. No network
     // requests or authored documentation JSON enter this qualification test.
     let curl_source = support.join("fixture-curl.rs");
     fs::write(
         &curl_source,
-        format!("fn main() {{ let args: Vec<_> = std::env::args().collect(); assert!(args.windows(2).any(|pair| pair[0] == \"--user-agent\" && pair[1].starts_with(\"acyclic-sdk-docs/\") && pair[1].contains(\"https://github.com/acyclic-labs/sdk\"))); print!(\"{{}}\\n200\", {response:?}); }}"),
+        format!("fn main() {{ let args: Vec<_> = std::env::args().collect(); assert!(args.windows(2).any(|pair| pair[0] == \"--user-agent\" && pair[1].starts_with(\"acyclic-sdk-docs/\") && pair[1].contains(\"https://github.com/acyclic-labs/sdk\"))); let responses = {responses:?}; let (_, response) = responses.iter().find(|(name, _)| args.last().unwrap().ends_with(&format!(\"/{{}}/1.0.0\", name))).unwrap(); print!(\"{{}}\\n200\", response); }}"),
     )
     .unwrap();
     let curl = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
@@ -1316,9 +1322,21 @@ fn registry_archive_fixture(
     mutation: Option<&str>,
     publisher_vcs: bool,
 ) -> (Fixture, PathBuf) {
+    registry_archive_fixture_named(dirty, published_lock, mutation, publisher_vcs, "demo")
+}
+
+fn registry_archive_fixture_named(
+    dirty: bool,
+    published_lock: bool,
+    mutation: Option<&str>,
+    publisher_vcs: bool,
+    package_name: &str,
+) -> (Fixture, PathBuf) {
     let (fixture, support) = historical_fixture(None);
     let package = fixture.root.join("rust/crates/demo");
-    let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(package.join("Cargo.toml"))
+        .unwrap()
+        .replace("name = \"demo\"", &format!("name = {package_name:?}"));
     fs::write(package.join("Cargo.toml"), manifest.replace("[package]\n", "[package]\ninclude = [\"Cargo.toml\", \"README.md\", \"src/**\", \"examples/**\", \"descriptor.bin\", \"input.json\", \"schema.proto\"]\n")).unwrap();
     let original = fs::read_to_string(package.join("src/lib.rs")).unwrap();
     fs::write(
@@ -1348,13 +1366,13 @@ fn registry_archive_fixture(
     fs::create_dir_all(&unpack).unwrap();
     let extracted = Command::new("tar")
         .arg("-xf")
-        .arg(support.join("package-target/package/demo-1.0.0.crate"))
+        .arg(support.join(format!("package-target/package/{package_name}-1.0.0.crate")))
         .arg("-C")
         .arg(&unpack)
         .output()
         .unwrap();
     assert!(extracted.status.success(), "{}", output_message(&extracted));
-    let source = unpack.join("demo-1.0.0");
+    let source = unpack.join(format!("{package_name}-1.0.0"));
     fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
     if !publisher_vcs {
         fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
@@ -1362,18 +1380,77 @@ fn registry_archive_fixture(
     if !published_lock {
         fs::remove_file(source.join("Cargo.lock")).unwrap();
     }
-    let archive = support.join("registry/demo-1.0.0.crate");
+    let archive = support.join(format!("registry/{package_name}-1.0.0.crate"));
     let packed = Command::new("tar")
         .args(["-cf"])
         .arg(&archive)
         .arg("-C")
         .arg(&unpack)
-        .arg("demo-1.0.0")
+        .arg(format!("{package_name}-1.0.0"))
         .output()
         .unwrap();
     assert!(packed.status.success(), "{}", output_message(&packed));
-    write_registry_transport(&support, &archive);
+    if package_name != "demo" {
+        fs::remove_file(support.join("registry/demo-1.0.0.crate")).unwrap();
+    }
+    write_registry_transport(&support);
     (fixture, support)
+}
+
+#[test]
+fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
+    let fixtures = ["demo-a", "demo-b", "demo-c"]
+        .map(|name| registry_archive_fixture_named(false, true, None, true, name));
+    let (fixture, support) = &fixtures[0];
+    for (index, (_, other)) in fixtures.iter().enumerate().skip(1) {
+        let name = ["demo-a", "demo-b", "demo-c"][index];
+        fs::copy(
+            other.join(format!("registry/{name}-1.0.0.crate")),
+            support.join(format!("registry/{name}-1.0.0.crate")),
+        )
+        .unwrap();
+    }
+    write_registry_transport(support);
+    let generated = run_historical_generate_mode(fixture, support, Some("registry-archives"));
+    assert!(generated.status.success(), "{}", output_message(&generated));
+    let output = fixture.output.join("releases/1.0.0");
+    let data: Value =
+        serde_json::from_slice(&fs::read(output.join("sdk-docs-data.v2.json")).unwrap()).unwrap();
+    assert_eq!(
+        data["source"]["releasedPackages"].as_array().unwrap().len(),
+        3
+    );
+    for (family, package) in data["families"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(["demo-a", "demo-b", "demo-c"])
+    {
+        let item = family["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == "ArchiveOnly")
+            .unwrap();
+        assert_eq!(
+            item["source"]["path"],
+            format!("releases/1.0.0/sources/{package}-1.0.0/src/lib.rs")
+        );
+        assert!(fixture
+            .output
+            .join(item["source"]["path"].as_str().unwrap())
+            .is_file());
+    }
+    let drift = run_drift(&Fixture {
+        root: fixture.root.clone(),
+        rustdoc: output.join(".rustdoc"),
+        output: output.clone(),
+    });
+    assert!(drift.status.success(), "{}", output_message(&drift));
+    for (fixture, _) in fixtures {
+        let _ = fs::remove_dir_all(fixture.root);
+        let _ = fs::remove_dir_all(fixture.output);
+    }
 }
 
 #[test]

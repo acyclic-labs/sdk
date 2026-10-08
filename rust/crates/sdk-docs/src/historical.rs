@@ -131,6 +131,71 @@ pub fn build(input: &BuildInput, scope: &Input) -> Result<DocsData, Error> {
     build_data_inner(input, Some(scope))
 }
 
+/// Cargo runs in each original normalized package, so relative native spans
+/// belong to that exact captured owner rather than the aggregate imports root.
+pub(super) fn package_root(
+    root: &Path,
+    scope: &Input,
+    metadata: &PackageMetadata,
+) -> Result<PathBuf, Error> {
+    let Some(captured) = &scope.captured_source else {
+        return Ok(root.to_path_buf());
+    };
+    let CapturedSource::RegistryArchives { archives } = captured else {
+        return Ok(root.to_path_buf());
+    };
+    captured.revision()?;
+    let archive = archives
+        .iter()
+        .find(|archive| {
+            archive.package == metadata.package_name && archive.version == metadata.version
+        })
+        .ok_or_else(|| Error::Invalid("Rustdoc owner has no captured registry archive".into()))?;
+    let owner = root.join(format!("{}-{}", archive.package, archive.version));
+    reject_reparse_ancestors(&owner)?;
+    let owner = owner.canonicalize().map_err(|error| {
+        Error::Invalid(format!(
+            "captured archive package root is unavailable: {}: {error}",
+            owner.display()
+        ))
+    })?;
+    if !owner.starts_with(root) || !owner.is_dir() {
+        return Err(Error::Invalid(
+            "captured archive package root escapes imports".into(),
+        ));
+    }
+    Ok(owner)
+}
+
+pub(super) fn validate_relative_package_spans(root: &Path, krate: &Crate) -> Result<(), Error> {
+    for span in krate
+        .index
+        .values()
+        .filter(|item| item.crate_id == 0)
+        .filter_map(|item| item.span.as_ref())
+    {
+        if span.filename.is_absolute() {
+            continue; // Absolute generated spans retain the existing digest attestation boundary.
+        }
+        let source = root.join(&span.filename);
+        reject_reparse_ancestors(&source)?;
+        if span
+            .filename
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+            || !source
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(root) && path.is_file())
+        {
+            return Err(Error::Invalid(format!(
+                "archive relative Rustdoc span has no exact owner source: {}",
+                span.filename.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Write immutable files; publish only after the producer's full drift check.
 pub fn write_bundle(data: &DocsData, output: &Path, publish: bool) -> Result<(), Error> {
     let stable = Version::parse(&data.version)
@@ -414,9 +479,40 @@ mod tests {
         input.source_state = "registry-archives".into();
         scope.released_packages[0].source_revision = publisher.clone();
         scope.captured_source = Some(captured.clone());
+        let package = root.path().join("demo-cli-0.1.0");
+        fs::create_dir(&package).unwrap();
+        fs::rename(root.path().join("cli"), package.join("cli")).unwrap();
+        scope.binaries[0].source_file = package.join("cli/src/main.rs");
+        scope.binaries[0].readme = Some(package.join("cli/README.md"));
         let data = build(&input, &scope).unwrap();
         assert_ne!(data.source.revision, publisher);
         assert_eq!(data.source.captured_source.as_ref(), Some(&captured));
+        let mut wrong_owner = input.clone();
+        wrong_owner.package_metadata[0].package_name = "unregistered-owner".into();
+        assert!(build(&wrong_owner, &scope)
+            .unwrap_err()
+            .to_string()
+            .contains("no captured registry archive"));
+        let hidden = root.path().join("hidden-package");
+        fs::rename(&package, &hidden).unwrap();
+        assert!(build(&input, &scope)
+            .unwrap_err()
+            .to_string()
+            .contains("archive package root is unavailable"));
+        fs::rename(hidden, &package).unwrap();
+        let original = fs::read(&input.rustdoc_files[0]).unwrap();
+        let mut malformed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        malformed["index"]["0"]["span"]["filename"] = "missing/main.rs".into();
+        fs::write(
+            &input.rustdoc_files[0],
+            serde_json::to_vec(&malformed).unwrap(),
+        )
+        .unwrap();
+        assert!(build(&input, &scope)
+            .unwrap_err()
+            .to_string()
+            .contains("no exact owner source"));
+        fs::write(&input.rustdoc_files[0], original).unwrap();
         let mut false_git = data.clone();
         false_git.source.captured_source = Some(CapturedSource::Git {
             revision: publisher,
