@@ -426,7 +426,84 @@ async fn exercise_transfer_deadlines(
         .code,
         wire::ErrorCode::NotFound
     );
+    exercise_multipart_deadlines(client, &bucket).await?;
     exercise_download_deadline(client, bucket).await
+}
+
+async fn exercise_multipart_deadlines(
+    client: &GrpcObjects,
+    bucket: &wire::BucketRef,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
+    let extended = client
+        .clone()
+        .with_transfer_timeout(Duration::from_secs(45))?;
+    let short = client
+        .clone()
+        .with_transfer_timeout(Duration::from_millis(80))?;
+    let upload = extended
+        .create_multipart(wire::CreateMultipartRequest {
+            bucket: Some(bucket.clone()),
+            object_key: "multipart-deadlines".into(),
+            ..Default::default()
+        })
+        .await?;
+    let header = |part_number| wire::UploadPartHeader {
+        bucket: Some(bucket.clone()),
+        object_key: "multipart-deadlines".into(),
+        upload_id: upload.upload_id.clone(),
+        part_number,
+        mutation: None,
+    };
+    // Multipart has a separate authenticated request path. Cross the ordinary
+    // 30-second metadata ceiling through the real TLS part-upload RPC too.
+    let part = extended
+        .upload_part_stream(
+            header(1),
+            stream::once(async {
+                tokio::time::sleep(Duration::from_secs(31)).await;
+                Ok(Bytes::from_static(b"part"))
+            })
+            .boxed(),
+        )
+        .await?;
+    assert_eq!(part.size, 4);
+    let incomplete = stream::iter([Ok(Bytes::from_static(b"partial"))])
+        .chain(stream::once(async {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            Ok(Bytes::from_static(b"tail"))
+        }))
+        .boxed();
+    assert_eq!(
+        short
+            .upload_part_stream(header(2), incomplete)
+            .await
+            .err()
+            .ok_or("short multipart deadline did not cancel the part")?
+            .code,
+        wire::ErrorCode::Unavailable
+    );
+    // Even after the delayed source could have completed, only the exact
+    // acknowledged first part is staged; partial input cannot publish part 2.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let parts = extended
+        .list_parts(wire::ListPartsRequest {
+            bucket: Some(bucket.clone()),
+            object_key: "multipart-deadlines".into(),
+            upload_id: upload.upload_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(parts.parts, vec![part]);
+    extended
+        .abort_multipart(wire::AbortMultipartRequest {
+            bucket: Some(bucket.clone()),
+            object_key: "multipart-deadlines".into(),
+            upload_id: upload.upload_id,
+            mutation: None,
+        })
+        .await?;
+    Ok(())
 }
 
 async fn exercise_download_deadline(
