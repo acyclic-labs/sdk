@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { isDeepStrictEqual } from "node:util";
 import { tarEntries } from "./archive-utils.mjs";
 import { assertBundle, assertExactInventory, assertSelectedArtifact, assertSourceSnapshot, rustMetadata, sourceSnapshot } from "./build-actors-native.mjs";
 
@@ -60,6 +61,10 @@ export async function assertCommonBindings(bundles) {
   }
 }
 
+export function qualifiedCompanionManifest(manifest) {
+  return { ...manifest, files: [...manifest.files, "native-targets.json", "generation-manifest.json"], private: false };
+}
+
 export async function sourceNativeInventory(sourceSha) {
   if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("native inventory source differs from checkout");
   const source = await sourceSnapshot();
@@ -74,7 +79,7 @@ export async function sourceNativeInventory(sourceSha) {
     await new NapiCli().createNpmDirs({ cwd: temporary, npmDir });
     const companions = await Promise.all(targets.map(async selected_target => {
       const generated = JSON.parse(await readFile(join(npmDir, parseTriple(selected_target).platformArchABI, "package.json"), "utf8"));
-      return { selected_target, name: generated.name, main: generated.main, os: generated.os, cpu: generated.cpu, libc: generated.libc };
+      return { selected_target, name: generated.name, main: generated.main, os: generated.os, cpu: generated.cpu, libc: generated.libc, manifest: qualifiedCompanionManifest(generated) };
     }));
     await assertSourceSnapshot(source);
     if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("native inventory source changed during generation");
@@ -101,6 +106,10 @@ export async function verifyNativeAssembly(output, sourceSha, version, expectedI
   if (neutral.name !== assembly.parent.name || neutral.version !== version || neutral.private !== false || [...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent manifest or binary inventory differs");
   const { parent: ignored, ...index } = assembly;
   if (JSON.stringify(JSON.parse(parent.get("package/generated/native/native-targets.json").toString("utf8"))) !== JSON.stringify(index)) fail("neutral parent assembly index differs");
+  const nativeFiles = new Set(["binding.cjs", "binding.d.ts", "native-targets.json"].map(name => `package/generated/native/${name}`));
+  for (const target of expectedInventory.targets) for (const name of ["native-targets.json", "generation-manifest.json"]) nativeFiles.add(`package/generated/native/attestations/${target}/${name}`);
+  const retainedFiles = [...parent.keys()].filter(path => path.startsWith("package/generated/native/"));
+  if (retainedFiles.length !== nativeFiles.size || retainedFiles.some(path => !nativeFiles.has(path))) fail("neutral parent native file inventory differs");
   const metadata = [];
   const dependencies = {};
   for (const entry of assembly.companions) {
@@ -108,7 +117,7 @@ export async function verifyNativeAssembly(output, sourceSha, version, expectedI
     const files = archiveFiles(join(output, entry.asset));
     const manifest = JSON.parse(files.get("package/package.json").toString("utf8"));
     const expected = expectedInventory.companions.find(item => item.selected_target === entry.selected_target);
-    if (!expected || ["name", "main", "os", "cpu", "libc"].some(field => JSON.stringify(manifest[field]) !== JSON.stringify(expected[field])) || manifest.name !== entry.name || manifest.version !== version || manifest.private !== false || ["os", "cpu", "libc"].some(field => JSON.stringify(manifest[field]) !== JSON.stringify(entry[field]))) fail("native companion differs from maintained source target mapping");
+    if (!expected || !isDeepStrictEqual(manifest, expected.manifest) || manifest.name !== entry.name || manifest.version !== version || manifest.private !== false || ["os", "cpu", "libc"].some(field => JSON.stringify(manifest[field]) !== JSON.stringify(entry[field]))) fail("native companion differs from maintained source target mapping");
     const originals = {};
     for (const name of ["native-targets.json", "generation-manifest.json"]) {
       const bytes = files.get(`package/${name}`);
@@ -274,10 +283,8 @@ async function main() {
       for (const name of ["native-targets.json", "generation-manifest.json"]) {
         await cp(join(bundle.path, name), join(attestation, name));
         await cp(join(bundle.path, name), join(companionRoot, name));
-        companionManifest.files.push(name);
       }
-      companionManifest.private = false;
-      await writeFile(join(companionRoot, "package.json"), `${JSON.stringify(companionManifest, null, 2)}\n`);
+      await writeFile(join(companionRoot, "package.json"), `${JSON.stringify(qualifiedCompanionManifest(companionManifest), null, 2)}\n`);
       const archive = `actors-native/${run("npm", ["pack", "--ignore-scripts", "--pack-destination", companionOutput, "--silent"], { cwd: companionRoot })}`;
       companions.push({ name: companionManifest.name, version: companionManifest.version, asset: archive, selected_target: bundle.metadata.selected_target, os: companionManifest.os, cpu: companionManifest.cpu, libc: companionManifest.libc, artifact: bundle.metadata.artifact, generation_sha256: bundle.metadata.generation_sha256, sha256: digest(join(output, archive)) });
     }

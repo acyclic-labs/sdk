@@ -82,7 +82,8 @@ test("archive verification binds parent, companion, original source and actual a
     await mkdir(join(parent, "generated/native/attestations", target), { recursive: true });
     await mkdir(companion, { recursive: true });
     const artifacts = ["binding.cjs", "binding.d.ts", main].map(path => ({ path: `generated/native/${path}`, sha256: `sha256:${hash(Buffer.from(path))}`, bytes: Buffer.byteLength(path) }));
-    const inventory = { schema: "acyclic.actors.native-source-inventory.v1", source_commit: source, source_sha256: "sha256:source", source_files: [{ path: "contract.rs", sha256: "sha256:contract", bytes: 10 }], parent: { name: "@acyclic-labs/actors", version, private: false }, targets: [target], companions: [{ selected_target: target, name, main, os: ["fixture"], cpu: ["fixture"] }] };
+    const companionManifest = { name, version, private: false, main, os: ["fixture"], cpu: ["fixture"] };
+    const inventory = { schema: "acyclic.actors.native-source-inventory.v1", source_commit: source, source_sha256: "sha256:source", source_files: [{ path: "contract.rs", sha256: "sha256:contract", bytes: 10 }], parent: { name: "@acyclic-labs/actors", version, private: false }, targets: [target], companions: [{ selected_target: target, name, main, os: ["fixture"], cpu: ["fixture"], manifest: companionManifest }] };
     const generation = { schema: "acyclic.actors.native-generation.v1", package: "acyclic-actors-napi", version, revision: source, selected_target: target, targets: [target], source_sha256: inventory.source_sha256, source_files: inventory.source_files, artifacts };
     const generationBytes = JSON.stringify(generation);
     const meta = { ...generation, schema: "acyclic.actors.native-targets.v1", source_revision: source, artifact: artifacts[2], generation_sha256: `sha256:${hash(generationBytes)}` };
@@ -107,6 +108,15 @@ test("archive verification binds parent, companion, original source and actual a
     };
     const verify = () => verifyNativeAssembly(output, source, version, inventory);
     await seal(); await verify();
+    // Rehash both archives and receipts so admission cannot rely on outer digests.
+    for (const mutation of [{ scripts: { install: "node -e process.exit(1)" } }, { dependencies: { "unqualified-runtime-dependency": "*" } }]) {
+      await json(join(companion, "package.json"), { ...companionManifest, ...mutation }); await seal();
+      await assert.rejects(verify(), /maintained source target mapping/);
+    }
+    await json(join(companion, "package.json"), companionManifest);
+    await writeFile(join(parent, "generated/native/unqualified-receipt.json"), "{}"); await seal();
+    await assert.rejects(verify(), /neutral parent native file inventory differs/);
+    await rm(join(parent, "generated/native/unqualified-receipt.json")); await seal(); await verify();
     await assert.rejects(verifyNativeAssembly(output, source, version), /trusted native source inventory/);
     await writeFile(join(companion, main), "tampered binary"); await seal();
     await assert.rejects(verify(), /original native artifact digest differs/);
