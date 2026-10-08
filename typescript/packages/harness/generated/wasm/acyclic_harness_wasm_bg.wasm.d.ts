@@ -25,6 +25,7 @@ export const encodeCanonicalJson: (a: any) => [number, number, number, number];
 export const encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
 export const fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const forkSeedFromReport: (a: any) => [number, number, number];
+export const mcpModelDefinitions: (a: any, b: number, c: number) => [number, number, number];
 export const parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
 export const prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
 export const prepareModelRequest: (a: any, b: any) => [number, number, number, number];

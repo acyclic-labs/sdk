@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import init, { validateMcpCatalog, searchMcpCatalog }
+import init, { validateMcpCatalog, searchMcpCatalog, mcpModelDefinitions }
   from "../generated/wasm/acyclic_harness_wasm.js";
 
 await init({ module_or_path: readFileSync(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)) });
 
 const tool = name => ({ name, description: `Find ${name}`, inputSchema: { type: "object" },
   outputSchema: { type: "object", minProperties: 1, required: ["value"], properties: { value: { type: "integer" } } } });
-const catalog = { server: "fixture", revision: "1", tools: [tool("c"), tool("a"), tool("b")] };
+const catalog = { server: "fixture", revision: "1", schema_exposure: { kind: "eager" },
+  discovery: "search", tools: [tool("c"), tool("a"), tool("b")] };
 
 test("MCP WASM uses the native schema and bounded catalog rules", () => {
   validateMcpCatalog(catalog, 3, 8192);
@@ -19,6 +20,19 @@ test("MCP WASM uses the native schema and bounded catalog rules", () => {
   ]) assert.throws(() => validateMcpCatalog(invalid, 3, 8192));
   assert.throws(() => validateMcpCatalog(catalog, 2, 8192));
   assert.throws(() => validateMcpCatalog(catalog, 3, 1));
+});
+
+test("MCP WASM exposure and discovery are explicit independent host policies", () => {
+  assert.deepEqual(mcpModelDefinitions(catalog, 3, 8192).map(tool => tool.name),
+    ["mcp.fixture.a", "mcp.fixture.b", "mcp.fixture.c"]);
+  const selected = { ...catalog, schema_exposure: { kind: "selected", names: ["b"] } };
+  assert.deepEqual(mcpModelDefinitions(selected, 3, 8192).map(tool => tool.name), ["mcp.fixture.b"]);
+  assert.equal(searchMcpCatalog(selected, "", undefined, 3, 3, 8192).length, 3);
+  assert.deepEqual(mcpModelDefinitions({ ...selected, schema_exposure: { kind: "selected", names: [] } }, 3, 8192), []);
+  assert.throws(() => searchMcpCatalog({ ...selected, discovery: "disabled" }, "", undefined, 3, 3, 8192));
+  for (const names of [["absent"], ["a", "a"]]) {
+    assert.throws(() => validateMcpCatalog({ ...selected, schema_exposure: { kind: "selected", names } }, 3, 8192));
+  }
 });
 
 test("MCP WASM search is ordered and retains the canonical remote output contract", () => {

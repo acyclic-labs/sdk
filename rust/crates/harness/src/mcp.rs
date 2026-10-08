@@ -138,6 +138,32 @@ pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
     ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>>;
 }
 
+/// Explicit model schema exposure for an installed complete catalog.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum McpSchemaExposure {
+    /// Publish every schema at the next admission.
+    Eager,
+    /// Publish only these distinct server-local names. Hidden revisions remain
+    /// available for explicit typed host admission and existing in-flight calls.
+    Selected {
+        /// Exact names from the complete catalog; empty means no model schemas.
+        names: Vec<String>,
+    },
+}
+
+/// Host-selected local discovery policy; neither variant grants call authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum McpDiscoveryPolicy {
+    /// Decline discovery, including direct local search calls.
+    Disabled,
+    /// Permit bounded deterministic search over this pinned complete catalog.
+    Search,
+}
+
 /// Bounded immutable remote catalog. The existing `ToolRegistry` is the only
 /// execution registry; this value is a validated registration input.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -148,6 +174,10 @@ pub struct McpCatalog {
     pub server: String,
     /// Exact transport/configuration/catalog revision selected by the host.
     pub revision: String,
+    /// Explicit schema selection pinned with this configuration revision.
+    pub schema_exposure: McpSchemaExposure,
+    /// Explicit local discovery selection; notifications cannot change it.
+    pub discovery: McpDiscoveryPolicy,
     /// Complete bounded catalog, not a partially fetched `tools/list` page.
     pub tools: Vec<McpToolDefinition>,
 }
@@ -190,7 +220,48 @@ impl McpCatalog {
                 crate::contract::compile_json_schema(schema, "MCP output")?;
             }
         }
+        if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
+            let mut unique = BTreeSet::new();
+            for name in selected {
+                if !names.contains(name) {
+                    return Err(Error::Invalid("MCP exposure names an absent tool".into()));
+                }
+                if !unique.insert(name) {
+                    return Err(Error::Conflict("duplicate MCP exposure name".into()));
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn selected_tools(&self) -> impl Iterator<Item = &McpToolDefinition> {
+        let names: Option<BTreeSet<&str>> = match &self.schema_exposure {
+            McpSchemaExposure::Eager => None,
+            McpSchemaExposure::Selected { names } => {
+                Some(names.iter().map(String::as_str).collect())
+            }
+        };
+        self.tools.iter().filter(move |tool| {
+            names
+                .as_ref()
+                .is_none_or(|names| names.contains(tool.name.as_str()))
+        })
+    }
+
+    /// Returns only host-selected model schemas without changing authority or
+    /// the complete discovery catalog. Both policies must validate first.
+    pub fn model_definitions(
+        &self,
+        maximum_tools: u32,
+        maximum_bytes: u32,
+    ) -> Result<Vec<ToolDefinition>> {
+        self.validate(maximum_tools, maximum_bytes)?;
+        let mut definitions = self
+            .selected_tools()
+            .map(|remote| self.definition(remote))
+            .collect::<Result<Vec<_>>>()?;
+        definitions.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(definitions)
     }
 
     fn definition(&self, remote: &McpToolDefinition) -> Result<ToolDefinition> {
@@ -251,7 +322,7 @@ impl McpCatalog {
             .collect::<std::collections::BTreeMap<_, _>>();
         let expected = previous
             .into_iter()
-            .flat_map(|old| old.tools.iter().map(|remote| old.definition(remote)))
+            .flat_map(|old| old.selected_tools().map(|remote| old.definition(remote)))
             .map(|definition| definition.map(|definition| (definition.name.clone(), definition)))
             .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
         if selected != expected {
@@ -260,6 +331,13 @@ impl McpCatalog {
             ));
         }
         let mut next = registry.clone();
+        next.pin_catalog_revision(
+            &prefix,
+            previous
+                .map(crate::contract::canonical_json_digest)
+                .transpose()?,
+            crate::contract::canonical_json_digest(self)?,
+        )?;
         if let Some(old) = previous {
             for remote in &old.tools {
                 let definition = old.definition(remote)?;
@@ -277,6 +355,10 @@ impl McpCatalog {
                 }),
                 projection: Arc::clone(projection),
             })?;
+            next.withdraw_model_tool(&definition.name);
+        }
+        for remote in self.selected_tools() {
+            let definition = self.definition(remote)?;
             next.select_model_version(&definition.name, &definition.revision)?;
         }
         *registry = next;
@@ -294,6 +376,11 @@ impl McpCatalog {
         maximum_bytes: u32,
     ) -> Result<Vec<ToolDefinition>> {
         self.validate(maximum_tools, maximum_bytes)?;
+        if self.discovery == McpDiscoveryPolicy::Disabled {
+            return Err(Error::Unsupported(
+                "MCP discovery disabled by host policy".into(),
+            ));
+        }
         if maximum_results == 0 {
             return Err(Error::Invalid(
                 "MCP search needs a positive result allowance".into(),
@@ -428,7 +515,8 @@ mod tests {
         }
     }
     fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
-        McpCatalog { server:"fixture".into(), revision:revision.into(), tools:names.iter().map(|name| McpToolDefinition {
+        McpCatalog { server:"fixture".into(), revision:revision.into(), schema_exposure:McpSchemaExposure::Eager,
+            discovery:McpDiscoveryPolicy::Search, tools:names.iter().map(|name| McpToolDefinition {
             name:(*name).into(), title:None, description:format!("Find {name}"), input_schema:json!({"type":"object"}),
             output_schema:Some(json!({"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}})) }).collect() }
     }
@@ -668,9 +756,8 @@ mod tests {
                         replacement & (1 << index) != 0
                     );
                 }
-                // Negative control: replacing the new selection using an old
-                // nonempty catalog must fail without changing its digest.
-                if initial != 0 {
+                // The registry stamp also rejects stale empty catalog inputs.
+                {
                     let before = registry.definitions()?;
                     assert!(
                         catalog("3", &[])
@@ -681,6 +768,85 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Result<()> {
+        let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
+        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let names = ["a", "b", "c"];
+        let selected = |revision: &str, mask: u8| {
+            let mut value = catalog(revision, &names);
+            value.schema_exposure = McpSchemaExposure::Selected {
+                names: names
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << *index) != 0)
+                    .map(|(_, name)| (*name).into())
+                    .collect(),
+            };
+            value
+        };
+        for initial in 0_u8..8 {
+            for replacement in 0_u8..8 {
+                let old = selected("1", initial);
+                let new = selected("2", replacement);
+                let mut registry = ToolRegistry::new();
+                old.install(&mut registry, None, &transport, &projection, 3, 8192)?;
+                assert_eq!(registry.definitions()?, old.model_definitions(3, 8192)?);
+                new.install(&mut registry, Some(&old), &transport, &projection, 3, 8192)?;
+                assert_eq!(registry.definitions()?, new.model_definitions(3, 8192)?);
+                assert_eq!(
+                    registry.definitions()?.len(),
+                    replacement.count_ones() as usize
+                );
+                assert_eq!(new.search("", None, 3, 3, 8192)?.len(), 3);
+                for name in names {
+                    assert!(
+                        registry
+                            .get_version(&format!("mcp.fixture.{name}"), "1")
+                            .is_some()
+                    );
+                    assert!(
+                        registry
+                            .get_version(&format!("mcp.fixture.{name}"), "2")
+                            .is_some()
+                    );
+                }
+                let before = registry.definitions()?;
+                assert!(
+                    selected("3", replacement)
+                        .install(&mut registry, Some(&old), &transport, &projection, 3, 8192)
+                        .is_err()
+                );
+                assert!(
+                    selected("3", replacement)
+                        .install(&mut registry, None, &transport, &projection, 3, 8192)
+                        .is_err()
+                );
+                assert_eq!(registry.definitions()?, before);
+            }
+        }
+        let mut invalid = selected("1", 1);
+        let mut registry = ToolRegistry::new();
+        for names in [vec!["absent".into()], vec!["a".into(), "a".into()]] {
+            invalid.schema_exposure = McpSchemaExposure::Selected { names };
+            assert!(
+                invalid
+                    .install(&mut registry, None, &transport, &projection, 3, 8192)
+                    .is_err()
+            );
+            assert!(registry.definitions()?.is_empty());
+        }
+        let mut disabled = selected("1", 0);
+        disabled.discovery = McpDiscoveryPolicy::Disabled;
+        disabled.install(&mut registry, None, &transport, &projection, 3, 8192)?;
+        assert!(registry.definitions()?.is_empty());
+        assert!(matches!(
+            disabled.search("", None, 3, 3, 8192),
+            Err(Error::Unsupported(_))
+        ));
         Ok(())
     }
 }

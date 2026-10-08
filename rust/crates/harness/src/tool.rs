@@ -205,6 +205,7 @@ pub struct Tool {
 pub struct ToolRegistry {
     versions: BTreeMap<(String, String), Tool>,
     selected: BTreeMap<String, Option<String>>,
+    catalog_revisions: BTreeMap<String, [u8; 32]>,
 }
 
 impl ToolRegistry {
@@ -214,6 +215,7 @@ impl ToolRegistry {
         Self {
             versions: BTreeMap::new(),
             selected: BTreeMap::new(),
+            catalog_revisions: BTreeMap::new(),
         }
     }
 
@@ -257,6 +259,23 @@ impl ToolRegistry {
     /// Existing invocations continue to resolve through `get_version`.
     pub fn withdraw_model_tool(&mut self, name: &str) {
         self.selected.remove(name);
+    }
+
+    /// Pins complete dynamic installation identity, including empty visibility.
+    /// Callers mutate a cloned registry and publish it only after batch validation.
+    pub(crate) fn pin_catalog_revision(
+        &mut self,
+        namespace: &str,
+        expected: Option<[u8; 32]>,
+        revision: [u8; 32],
+    ) -> Result<()> {
+        if self.catalog_revisions.get(namespace).copied() != expected {
+            return Err(Error::Conflict(
+                "dynamic catalog installation changed".into(),
+            ));
+        }
+        self.catalog_revisions.insert(namespace.into(), revision);
+        Ok(())
     }
 
     /// Installs an agent-selected tool after exact scope and durable approval checks.

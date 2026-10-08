@@ -328,6 +328,14 @@ export interface McpCatalog {
      */
     revision: string;
     /**
+     * Explicit schema selection pinned with this configuration revision.
+     */
+    schema_exposure: McpSchemaExposure;
+    /**
+     * Explicit local discovery selection; notifications cannot change it.
+     */
+    discovery: McpDiscoveryPolicy;
+    /**
      * Complete bounded catalog, not a partially fetched `tools/list` page.
      */
     tools: McpToolDefinition[];
@@ -413,6 +421,11 @@ export interface ContextDiscoveryLimits {
 }
 
 /**
+ * Explicit model schema exposure for an installed complete catalog.
+ */
+export type McpSchemaExposure = { kind: "eager" } | { kind: "selected"; names: string[] };
+
+/**
  * Frontmatter only; the body is not fetched or injected by discovery.
  */
 export interface SkillMetadata {
@@ -451,6 +464,11 @@ export interface ContextSelection {
      */
     representation: ContextRepresentation;
 }
+
+/**
+ * Host-selected local discovery policy; neither variant grants call authority.
+ */
+export type McpDiscoveryPolicy = "disabled" | "search";
 
 /**
  * Immutable discovery revision. Serialize this value through the existing admitted
@@ -1197,6 +1215,11 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 export function forkSeedFromReport(report: any): any;
 
 /**
+ * Projects the host-selected schema exposure through the ordinary model wire.
+ */
+export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
+
+/**
  * Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
  */
 export function parseSkillMetadata(prefix: Uint8Array, source: PinnedContextPath): SkillMetadata;
@@ -1445,6 +1468,7 @@ export interface InitOutput {
     readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly mcpModelDefinitions: (a: any, b: number, c: number) => [number, number, number];
     readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];

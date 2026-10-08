@@ -11,7 +11,7 @@ use acyclic_harness::{
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
     interaction::{Interaction, InteractionOutcome},
     mcp::{
-        McpCatalog, McpToolDefinition, McpToolTransport,
+        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolTransport,
         http::{HttpMcpTransport, NativeMcpHttpProvider},
     },
     resources::ProviderRef,
@@ -164,6 +164,8 @@ fn catalog() -> McpCatalog {
     McpCatalog {
         server: "fixture".into(),
         revision: "1".into(),
+        schema_exposure: McpSchemaExposure::Eager,
+        discovery: McpDiscoveryPolicy::Search,
         tools: vec![McpToolDefinition {
             name: "echo".into(),
             title: None,

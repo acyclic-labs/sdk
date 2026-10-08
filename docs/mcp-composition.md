@@ -10,6 +10,15 @@ consumer-selected server namespace is one component (no dots), independent of
 the remote implementation name. Successful replacement changes future model
 selection, retains removed/old revisions, and rejects a stale previous catalog.
 Each executor retains its exact remote name, schema and transport binding.
+The host must explicitly choose `schema_exposure` (`eager` or distinct selected
+remote names) and `discovery` (`disabled` or bounded local `search`). Selection
+changes model-visible schemas, not the complete catalog or retained executors.
+Discovery can find a hidden schema but supplies no call grant. Both policies are
+pinned by the host configuration revision and must be explicitly reloaded.
+The existing registry retains the complete catalog digest, including policies,
+so stale replacement fails even when visibility and catalog contents are empty.
+Rust `model_definitions` and generated `mcpModelDefinitions` return the same
+canonical exposure projection; no JavaScript selection engine is introduced.
 Remote output schemas validate `structuredContent`; the canonical Harness result
 is the MCP content/result envelope. Consumers supply the ordinary result
 projection. D owns generic variant and projection changes.
@@ -68,6 +77,7 @@ protocol library. Those controls are not qualified by the current stream tests.
 | --- | --- |
 | Registry selected value is `Option<revision>` | Distinguishes ambiguous replacement from explicit withdrawal while retaining admitted versions |
 | Catalog clone before publication | A failed batch cannot partially alter the next model-visible catalog |
+| Catalog digest in the existing registry | Empty/hidden visibility must still reject stale complete-catalog and policy replacement |
 | Separate remote schema and canonical result envelope | MCP structured output differs from ordered multimodal content |
 | Library SSE parser with pre-parser byte bound | Established framing implementation handles split UTF-8/CRLF; no unbounded hydration before admission bounds |
 | Shared `rmcp` JSON-RPC boundary | HTTP and stdio enforce the same response identity and notification contracts |
@@ -89,7 +99,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | --- | --- | --- | --- | --- |
 | Atomic reload and retained revision | `McpCatalog::install`, `ToolRegistry` | Host retains installed catalog/configuration identity | Exhaustive replacement subsets; stale/malformed/duplicate controls; actual in-flight call | Pending |
 | No authority by discovery | Catalog search, executor authorization | Ordinary runtime owns signed scope/task admission | Missing/wrong grant; admitted executor integration | Pending |
-| Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Selected-schema mode pending |
+| Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
 | Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Not implemented |
@@ -151,3 +161,21 @@ selected catalog size. It does not claim indexed discovery or unbounded scale.
 The WASM facade validates/searches catalogs and executes HTTP through the shared
 Rust transport. Node WHATWG fixtures exercise the browser provider, including
 task/deadline abort and uncertain responses; those are not Chromium receipts.
+
+### Explicit policy development checkpoint
+
+Eager and selected schema exposure and disabled/search discovery now have required
+Rust-derived fields and the same canonical native/WASM projection. In addition
+to the 64 catalog membership transitions, the production registry test enumerates
+64 selected-visibility transitions over a complete three-tool catalog, checks
+every old/new executor revision remains retained, rejects stale/absent previous
+catalogs even for empty visibility, and includes missing/duplicate-name controls.
+The existing empty-catalog stale control now runs for every catalog subset.
+
+Windows library tests with `filesystem-local,mcp-http`: 251 passed, zero failed/
+ignored. The disk-reopen fault matrix also passed. Strict Clippy over library and
+all test targets passed. WASM rebuilt successfully and six Node catalog/browser
+bridge tests passed, including eager/selected/empty exposure and independent
+discovery controls. The isolated browser-provider TypeScript check passed.
+These checks are development evidence; final-source cross-platform, installed,
+Chromium and native stdio gates and the registry seam owner review remain open.

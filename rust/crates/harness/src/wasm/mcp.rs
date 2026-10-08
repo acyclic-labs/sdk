@@ -19,6 +19,21 @@ pub fn validate_mcp_catalog(
 
 mod browser;
 
+/// Projects the host-selected schema exposure through the ordinary model wire.
+#[wasm_bindgen(js_name = mcpModelDefinitions, unchecked_return_type = "WasmModelToolDefinitionWire[]")]
+pub fn mcp_model_definitions(
+    #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
+    maximum_tools: u32,
+    maximum_bytes: u32,
+) -> Result<JsValue, JsValue> {
+    let catalog: McpCatalog = from_js(catalog)?;
+    definitions_to_js(
+        catalog
+            .model_definitions(maximum_tools, maximum_bytes)
+            .map_err(js_error)?,
+    )
+}
+
 /// Searches a pinned catalog without network I/O or authority changes.
 #[wasm_bindgen(js_name = searchMcpCatalog, unchecked_return_type = "WasmModelToolDefinitionWire[]")]
 pub fn search_mcp_catalog(
@@ -39,6 +54,10 @@ pub fn search_mcp_catalog(
             maximum_bytes,
         )
         .map_err(js_error)?;
+    definitions_to_js(definitions)
+}
+
+fn definitions_to_js(definitions: Vec<crate::tool::ToolDefinition>) -> Result<JsValue, JsValue> {
     let wire = definitions
         .into_iter()
         .map(|definition| WasmModelToolDefinitionWire {
