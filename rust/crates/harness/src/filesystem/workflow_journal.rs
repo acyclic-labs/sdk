@@ -1,6 +1,7 @@
 //! Ref-only Stream journal for pinned resumable workflow transitions.
 
 use super::{FilesystemHost, InternalContentClass};
+use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeRef},
@@ -514,7 +515,8 @@ where
         &'a self,
         admission: WorkflowAdmission,
     ) -> BoxFuture<'a, Result<WorkflowAdmission>> {
-        Box::pin(async move {
+        let span = obs_span!("acyclic.harness.workflow.admit");
+        traced(span, async move {
             admission.validate()?;
             if let Some(owner) = &self.owner {
                 if &admission != owner.workflow_admission() {
@@ -606,7 +608,8 @@ where
     }
 
     fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
-        Box::pin(self.replay_records(after, maximum, true))
+        let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
+        traced(span, self.replay_records(after, maximum, true))
     }
 
     fn commit<'a>(
@@ -615,7 +618,8 @@ where
         idempotency_key: IdempotencyKey,
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>> {
-        Box::pin(async move {
+        let span = obs_span!("acyclic.harness.workflow.commit", rev = expected_revision);
+        traced(span, async move {
             if let Some(owner) = &self.owner {
                 owner.verify(false).await?;
             }
