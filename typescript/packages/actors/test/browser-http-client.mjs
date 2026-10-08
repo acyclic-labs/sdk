@@ -70,8 +70,9 @@ try {
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   const cancellation = new AbortController();
   const pending = actors.inspectActor({ actorId: "cancel" }, { signal: cancellation.signal });
-  setTimeout(() => cancellation.abort(), 0);
+  globalThis.abortActorsRequest = () => cancellation.abort();
   await assert.rejects(pending, error => error.code === "cancelled");
+  delete globalThis.abortActorsRequest;
   const inspectJob = WorkersService.methods.find(method => method.name === "InspectJob");
   await assert.rejects(new HttpWorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.status === 403 && typeof error.code === "number");
   await assert.rejects(new HttpWorkersClient({ ...options, maximumResponseBytes: 8 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.message === "response exceeds configured bound");

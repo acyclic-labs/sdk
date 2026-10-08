@@ -36,6 +36,8 @@ await MemoryObjectsV2.create();
 const objects = new ObjectsV2Memory(64n * 1024n * 1024n, 10000);
 const stream = new MemoryStreamProvider();
 const seen = new Set();
+let cancellationDispatched = false;
+let cancellationClosed = false;
 const byteValue = value => new Uint8Array(Buffer.from(value, "base64"));
 function revive(name, value) {
   if (value === null) return value;
@@ -123,7 +125,13 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
       assert.equal(data[0] & 0x80, 0);
       assert.equal(frameLength, data.length - 5);
       const input = fromBinary(method.input, data.subarray(5));
-      if (input.actorId === "cancel") await new Promise(resolveDelay => setTimeout(resolveDelay, 5000));
+      if (input.actorId === "cancel") {
+        assert.equal(cancellationDispatched, false, "one cancellation request must dispatch");
+        cancellationDispatched = true;
+        await new Promise(resolveClose => response.once("close", resolveClose));
+        cancellationClosed = !response.writableEnded;
+        return;
+      }
       seen.add(`${ActorsService.typeName}/${method.name}`);
       const body = toBinary(method.output, create(method.output, actorWorkerResponse(method, input)));
       response.writeHead(200, { "content-type": "application/grpc-web+proto", "access-control-expose-headers": "grpc-status,grpc-message" });
@@ -206,10 +214,16 @@ try {
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/actors/test/browser-http.html` }, sessionId);
   const result = await until("browser HTTP conformance", async () => {
     if (errors.length) throw new Error(errors.join("\n"));
+    if (cancellationDispatched && !cancellationClosed) {
+      await send("Runtime.evaluate", { expression: "globalThis.abortActorsRequest?.()" }, sessionId);
+    }
     const value = await send("Runtime.evaluate", { expression: "globalThis.sdkHttpResult", returnByValue: true }, sessionId);
     return value.result.value;
   }, 120000);
   assert.equal(result.status, "passed", result.detail);
+  await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
+  assert.equal(cancellationDispatched, true);
+  console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
   assert.equal(seen.size, 38, `expected 13 Objects, 15 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);

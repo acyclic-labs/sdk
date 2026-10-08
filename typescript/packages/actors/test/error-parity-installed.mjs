@@ -35,7 +35,8 @@ try {
   const { ActorsClient } = await import("@acyclic-labs/actors");
   const endpoint = `https://localhost:${server.address().port}`;
   const options = { endpoint, token: "conformance", caCertificate: Buffer.from(identity.certificate) };
-  await invalidArgument(() => new ActorsClient({ ...options, endpoint: "http://localhost" }).transport);
+  // Browser transport permits loopback HTTP for tests; non-loopback HTTP is invalid on both targets.
+  await invalidArgument(() => new ActorsClient({ ...options, endpoint: "http://actors.example" }).transport);
   await invalidArgument(() => new ActorsClient({ ...options, token: "bad\nheader" }).transport);
   const client = new ActorsClient(options);
   assert.equal(await client.transport, mode === "native" ? "grpc" : "grpc-web");
