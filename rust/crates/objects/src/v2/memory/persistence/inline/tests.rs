@@ -194,13 +194,31 @@ async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_rec
         .lock()
         .map_err(|_| "tail poisoned")?
         .operations;
-    assert_eq!(after, before + 2);
+    assert_eq!(after, before + 1);
+    // Puts whose bounded bytes exceed one record split across records.
+    let results = core
+        .put_batch(
+            (0..40)
+                .map(|number| (put(&format!("split-{number}")), Bytes::from(vec![7; LIMIT])))
+                .collect(),
+        )
+        .await;
+    assert!(results.iter().all(Result::is_ok));
+    let journal = core.journal.as_ref().ok_or("missing journal")?;
+    assert_eq!(
+        journal.tail.lock().map_err(|_| "tail poisoned")?.operations,
+        after + 2
+    );
     assert_eq!(fs::read_dir(root.path().join("segments"))?.count(), 0);
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
         core.get(get("batch-8"), LIMIT as u64).await?.body,
         Bytes::from(vec![42; LIMIT])
+    );
+    assert_eq!(
+        core.get(get("split-39"), LIMIT as u64).await?.body,
+        Bytes::from(vec![7; LIMIT])
     );
     assert_eq!(
         core.get(get("overwritten"), 4).await?.body,

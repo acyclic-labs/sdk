@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAGIC: &[u8] = b"ACYCLIC-OBJECTS-V2-LOCAL\0\x01";
-const RECORD_LIMIT: usize = 2 * 1024 * 1024;
+pub(super) const RECORD_LIMIT: usize = 2 * 1024 * 1024;
 const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Failure to open or recover logical Objects storage.
@@ -183,6 +183,21 @@ pub(super) fn response_kind<R>() -> Result<u32, Error> {
         Some("AbortMultipartResponse") => Ok(7),
         _ => Err(Unavailable.into()),
     }
+}
+
+/// An upper bound on the bytes one put adds to a durable record: its inline
+/// body, plus its object change and retry receipt. Each of those holds at most
+/// the request's bucket, key, metadata and identity, a 66-byte `ETag` and
+/// fixed-width fields; a larger body adds only a segment reference.
+pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &Bytes) -> usize {
+    let inline = if body.len() <= inline::LIMIT {
+        body.len()
+    } else {
+        0
+    };
+    inline
+        .saturating_add(query.encoded_len().saturating_mul(3))
+        .saturating_add(1024)
 }
 
 fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {
