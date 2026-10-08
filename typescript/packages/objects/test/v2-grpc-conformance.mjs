@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { zstdCompressSync } from "node:zlib";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
@@ -24,7 +25,7 @@ if (process.argv.includes("--client")) {
     const bucket = { name: "bounded.inputs" };
     await client.createBucket(create(wire.CreateBucketRequestSchema, { name: bucket.name }));
     const streamed = create(wire.PutObjectHeaderSchema, { bucket, objectKey: "streamed" });
-    const payload = new Uint8Array(135000).fill(7);
+    const payload = new Uint8Array(135000).map((_, index) => index % 251);
     async function* source() { yield new Uint8Array(0); yield payload; }
     assert.equal((await client.putStream(streamed, source())).size, 135000n);
     assert.deepEqual((await client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "streamed" }), 135000n)).body, payload);
@@ -87,7 +88,15 @@ if (process.argv.includes("--client")) {
             try {
               check(context);
               const result = await memory.invoke(routes[method.name], toBinary(method.input, query), new Uint8Array(0), 64n * 1024n * 1024n);
-              for (const frame of result) yield fromBinary(method.output, frame);
+              // Compress every other frame so downloads reassemble mixed codecs in order.
+              for (const [index, frame] of result.entries()) {
+                const message = fromBinary(method.output, frame);
+                if (message.frame?.case === "body" && index % 2 === 1) {
+                  const { data } = message.frame.value;
+                  message.frame.value = create(wire.BodySchema, { codec: wire.Codec.ZSTD, data: zstdCompressSync(data), decodedLength: BigInt(data.length) });
+                }
+                yield message;
+              }
             } catch (error) { throw failure(error); }
           };
         } else implementation[method.localName] = async (query, context) => {

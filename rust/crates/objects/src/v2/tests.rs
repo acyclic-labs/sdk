@@ -170,7 +170,7 @@ pub(super) async fn exercise_streaming<'a>(
             mutation: None,
         })
         .await?;
-    let bytes = Bytes::from(vec![42; 135_000]);
+    let bytes = Bytes::from((0..=250u8).cycle().take(135_000).collect::<Vec<_>>());
     provider.put(put("stream"), bytes.clone()).await?;
     let mut selected = get(self::get("stream"), 135_000).await?;
     assert_eq!(

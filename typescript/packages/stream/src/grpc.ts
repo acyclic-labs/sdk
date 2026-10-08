@@ -4,7 +4,7 @@ import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, commitId, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
@@ -77,10 +77,12 @@ export class GrpcStreamProvider implements StreamProvider {
     let count = 0;
     try {
       for await (const response of this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)))) {
-        if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const record = checkedRecord(response.record, next);
-        next = record.sequence + 1n;
-        yield record;
+        for (const value of readResponseRecords(response)) {
+          if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
+          const record = checkedRecord(value, next);
+          next = record.sequence + 1n;
+          yield record;
+        }
       }
     } catch (error) { throw providerError(error, "read"); }
   }
@@ -91,10 +93,12 @@ export class GrpcStreamProvider implements StreamProvider {
     let next = request.from;
     try {
       for await (const response of this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal })) {
-        if (options.signal?.aborted) return;
-        const record = checkedRecord(response.record, next);
-        next = record.sequence + 1n;
-        yield record;
+        for (const value of readResponseRecords(response)) {
+          if (options.signal?.aborted) return;
+          const record = checkedRecord(value, next);
+          next = record.sequence + 1n;
+          yield record;
+        }
       }
     } catch (error) {
       if (options.signal?.aborted) return;

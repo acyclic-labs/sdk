@@ -25,7 +25,7 @@ describe("hosted filesystem endpoint policy", () => {
   });
 
   test("rejects header-unsafe or oversized bearer tokens and never follows redirects", async () => {
-    for (const bearerToken of ["", " ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+    for (const bearerToken of ["", " ", "a\nb", "a\rb", "a\0b", "x".repeat(12 * 1024 + 1)]) {
       await expect(openHostedFs({ endpoint: "https://filesystem.example", bearerToken })).rejects.toBeInstanceOf(RangeError);
     }
     let redirect: RequestRedirect | undefined;

@@ -132,9 +132,18 @@ impl wire::objects_service_server::ObjectsService for Fixture {
                 })),
             }));
         }
-        for bytes in selected.body.chunks(65536).filter(|_| !terminal_error) {
+        // Alternate codecs so every download reassembles mixed frames in order.
+        for (index, bytes) in selected.body.chunks(65536).enumerate() {
+            if terminal_error {
+                break;
+            }
+            let body = if index % 2 == 0 {
+                super::response::plain_body(bytes.to_vec())
+            } else {
+                super::response::zstd_body(bytes)
+            };
             frames.push(Ok(wire::GetObjectResponse {
-                frame: Some(wire::get_object_response::Frame::Body(bytes.to_vec())),
+                frame: Some(wire::get_object_response::Frame::Body(body)),
             }));
         }
         Ok(Response::new(stream::iter(frames)))

@@ -171,6 +171,22 @@ pub struct GetObjectHeader {
     #[prost(message, optional, tag = "2")]
     pub content_range: ::core::option::Option<ContentRange>,
 }
+/// One body frame. data decodes under codec to exactly decoded_length bytes, which
+/// follow the previous frame's bytes in the selected representation. Before it
+/// allocates or decompresses, a client rejects decoded_length above the bytes
+/// still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
+/// above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
+/// other decoded length and an unknown codec. A server chooses the codec
+/// independently for every frame.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Body {
+    #[prost(enumeration = "Codec", tag = "1")]
+    pub codec: i32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub decoded_length: u64,
+}
 /// Exactly one metadata header first. The body belongs to that complete representation.
 /// A terminal semantic error can follow the header when an HTTP stream is already open.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -184,8 +200,8 @@ pub mod get_object_response {
     pub enum Frame {
         #[prost(message, tag = "1")]
         Header(super::GetObjectHeader),
-        #[prost(bytes, tag = "2")]
-        Body(::prost::alloc::vec::Vec<u8>),
+        #[prost(message, tag = "2")]
+        Body(super::Body),
         #[prost(message, tag = "3")]
         Error(super::ErrorDetail),
     }
@@ -385,6 +401,8 @@ pub enum ObjectsLimit {
     MaxPageEntries = 1000,
     MaxBodyFrameBytes = 65536,
     MaxMultipartParts = 10000,
+    /// Bound on one compressed Body's decoded_length: one whole stored block.
+    MaxBodyDecodedBytes = 8388608,
 }
 impl ObjectsLimit {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -400,6 +418,7 @@ impl ObjectsLimit {
             Self::MaxPageEntries => "OBJECTS_LIMIT_MAX_PAGE_ENTRIES",
             Self::MaxBodyFrameBytes => "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES",
             Self::MaxMultipartParts => "OBJECTS_LIMIT_MAX_MULTIPART_PARTS",
+            Self::MaxBodyDecodedBytes => "OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -412,6 +431,36 @@ impl ObjectsLimit {
             "OBJECTS_LIMIT_MAX_PAGE_ENTRIES" => Some(Self::MaxPageEntries),
             "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES" => Some(Self::MaxBodyFrameBytes),
             "OBJECTS_LIMIT_MAX_MULTIPART_PARTS" => Some(Self::MaxMultipartParts),
+            "OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES" => Some(Self::MaxBodyDecodedBytes),
+            _ => None,
+        }
+    }
+}
+/// Encoding of one body frame's data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Codec {
+    /// data is the decoded bytes themselves.
+    None = 0,
+    /// data is one or more complete Zstandard frames.
+    Zstd = 1,
+}
+impl Codec {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::None => "CODEC_NONE",
+            Self::Zstd => "CODEC_ZSTD",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CODEC_NONE" => Some(Self::None),
+            "CODEC_ZSTD" => Some(Self::Zstd),
             _ => None,
         }
     }
