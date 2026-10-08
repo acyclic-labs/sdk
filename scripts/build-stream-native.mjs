@@ -229,7 +229,9 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
   if (typeof target === "string" && target.endsWith("-apple-darwin")) {
     // NAPI-RS emits a dylib-backed addon on Darwin. Keep its Mach-O install
     // name relocatable so the package never embeds the producer's Cargo path.
-    flags.push("-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-Wl,-reproducible");
+    // Apple's UUID hashes Cargo's path-dependent output leaf name even after
+    // stripping. These release addons ship no dSYM; omit that diagnostic ID.
+    flags.push("-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-Wl,-no_uuid");
   }
   return flags.join("\x1f");
 }
