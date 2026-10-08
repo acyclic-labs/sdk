@@ -84,7 +84,8 @@ export function validateInferenceHttpPath(path: string): void {
 export function deriveInferenceHttpRoutes(): readonly InferenceHttpRoute[] {
   const declared: Readonly<Record<string, readonly [string, string]>> = HTTP_ROUTES;
   const methods = inferenceServices.flatMap(service => service.methods);
-  if (methods.length !== Object.keys(declared).length) {
+  if (methods.length !== Object.keys(declared).length ||
+      new Set(methods.map(method => `${method.parent.typeName}.${method.name}`)).size !== methods.length) {
     throw new Error("inference Rust HTTP routes do not cover the generated descriptors");
   }
   return Object.freeze(methods.map(method => {

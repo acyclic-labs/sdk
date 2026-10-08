@@ -92,6 +92,18 @@ test("Rust route association rejects descriptor identity and streaming drift", (
   expect(deriveInferenceHttpRoutes()).toHaveLength(14);
 });
 
+test("Rust route association rejects duplicate descriptor identities", () => {
+  const routes = deriveInferenceHttpRoutes();
+  const method = routes[2]!.method as unknown as { name: string };
+  const previous = method.name;
+  try {
+    method.name = routes[1]!.method.name;
+    expect(() => deriveInferenceHttpRoutes()).toThrow("do not cover the generated descriptors");
+  } finally {
+    method.name = previous;
+  }
+});
+
 test("public safe-path validation preserves URL-safe segment acceptance", () => {
   for (const path of ["Models/List2", "models/model.v2", "runs/run_id~latest", "safe/a-b"]) {
     expect(() => validateInferenceHttpPath(path)).not.toThrow();
