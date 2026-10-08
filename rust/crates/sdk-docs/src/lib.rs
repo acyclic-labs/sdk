@@ -13,6 +13,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+/// Native projections and immutable identities for historical releases.
+pub mod historical;
 mod public_api;
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;
@@ -43,6 +45,8 @@ pub enum Channel {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released_packages: Vec<historical::ReleasedPackage>,
     pub revision: String,
     pub source_state: String,
     /// Digest of the trusted source manifest supplied by the generation launcher.
@@ -198,6 +202,8 @@ pub struct DocsData {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionEntry {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released_packages: Vec<historical::ReleasedPackage>,
     pub version: String,
     pub channel: Channel,
     pub revision: String,
@@ -208,6 +214,8 @@ pub struct VersionEntry {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionIndex {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_prereleases: Vec<VersionEntry>,
     pub schema: String,
     pub latest: Option<VersionEntry>,
     pub releases: Vec<VersionEntry>,
@@ -268,6 +276,13 @@ impl From<serde_json::Error> for Error {
 
 /// Build a stable public data projection from one or more typed rustdoc JSON files.
 pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
+    build_data_inner(input, None)
+}
+
+fn build_data_inner(
+    input: &BuildInput,
+    historical: Option<&historical::Input>,
+) -> Result<DocsData, Error> {
     if input.version.trim().is_empty() {
         return Err(Error::Invalid("version must not be empty".into()));
     }
@@ -277,7 +292,11 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         ));
     }
     if input.channel == Channel::Release {
-        stable_version(&input.version)?;
+        if historical.is_some() {
+            Version::parse(&input.version).map_err(|e| Error::Invalid(e.to_string()))?;
+        } else {
+            stable_version(&input.version)?;
+        }
     }
     if input.revision.len() < 40
         || input.revision.len() > 64
@@ -383,14 +402,24 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             }
             _ => {}
         }
-        if krate.includes_private {
+        let binary = historical.and_then(|scope| {
+            scope
+                .binaries
+                .iter()
+                .find(|binary| binary.rustdoc_file == *path)
+        });
+        if krate.includes_private && binary.is_none() {
             return Err(Error::Invalid(format!(
                 "{} includes private rustdoc items; public-api requires normal public JSON",
                 path.display()
             )));
         }
         format_versions.insert(krate.format_version);
-        let family = build_family(&repository_root, &generated_sources, path, &bytes, &krate)?;
+        let family = if let Some(binary) = binary {
+            historical::binary_family(&repository_root, &krate, binary)?
+        } else {
+            build_family(&repository_root, &generated_sources, path, &bytes, &krate)?
+        };
         if family.crate_name != metadata.crate_name {
             return Err(Error::Invalid(format!(
                 "{} has Rust crate {}, but Cargo metadata names {}",
@@ -429,6 +458,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         version: input.version.clone(),
         channel: input.channel.clone(),
         source: SourceInfo {
+            released_packages: Vec::new(),
             revision: input.revision.clone(),
             source_state: input.source_state.clone(),
             source_sha256: input.source_sha256.clone(),
@@ -441,6 +471,11 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         search,
         families,
     };
+    let mut data = data;
+    if let Some(historical) = historical {
+        data.source.released_packages = historical.released_packages.clone();
+        historical::validate_release_identity(&data)?;
+    }
     validate_source_info(&data.source, &input.channel)?;
     Ok(data)
 }
@@ -549,7 +584,7 @@ pub fn merge_profile_catalog(data: &mut DocsData, variant: DocsData) -> Result<(
 /// A persistent output-directory lock serializes concurrent publications
 /// across index validation, bundle writes, and index replacement.
 pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Result<(), Error> {
-    write_bundle_inner(data, output_dir, mark_latest, true)
+    write_bundle_inner(data, output_dir, mark_latest, true, false)
 }
 
 /// Write immutable data without admitting it into the version catalog.
@@ -559,7 +594,7 @@ pub fn write_bundle_files(
     output_dir: &Path,
     mark_latest: bool,
 ) -> Result<(), Error> {
-    write_bundle_inner(data, output_dir, mark_latest, false)
+    write_bundle_inner(data, output_dir, mark_latest, false, false)
 }
 
 fn write_bundle_inner(
@@ -567,6 +602,7 @@ fn write_bundle_inner(
     output_dir: &Path,
     mark_latest: bool,
     publish: bool,
+    historical: bool,
 ) -> Result<(), Error> {
     if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
         return Err(Error::Invalid(
@@ -574,7 +610,14 @@ fn write_bundle_inner(
         ));
     }
     if data.channel == Channel::Release {
-        stable_version(&data.version)?;
+        if historical {
+            historical::validate_release_identity(data)?;
+        } else {
+            stable_version(&data.version)?;
+        }
+    }
+    if !data.source.released_packages.is_empty() {
+        historical::validate_release_identity(data)?;
     }
     if mark_latest && data.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
@@ -609,6 +652,7 @@ fn write_bundle_inner(
         }
     }
     let entry = VersionEntry {
+        released_packages: data.source.released_packages.clone(),
         version: data.version.clone(),
         channel: data.channel.clone(),
         revision: data.source.revision.clone(),
@@ -655,6 +699,7 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
         serde_json::from_slice::<VersionIndex>(&fs::read(&index_path)?)?
     } else {
         VersionIndex {
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: Vec::new(),
@@ -691,8 +736,26 @@ fn lock_publication(output_dir: &Path) -> Result<File, Error> {
 }
 
 fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(), Error> {
+    let mut prereleases = HashSet::new();
+    for entry in &index.historical_prereleases {
+        if Version::parse(&entry.version)
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .pre
+            .is_empty()
+            || entry.released_packages.is_empty()
+        {
+            return Err(Error::Invalid(
+                "historical prerelease requires a released prerelease identity".into(),
+            ));
+        }
+        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        if !prereleases.insert(&entry.version) {
+            return Err(Error::Invalid("duplicate historical prerelease".into()));
+        }
+    }
     let mut release_versions = HashSet::new();
     for entry in &index.releases {
+        stable_version(&entry.version)?;
         validate_version_entry(entry, &Channel::Release, output_dir)?;
         if !release_versions.insert(entry.version.as_str()) {
             return Err(Error::Invalid(format!(
@@ -705,6 +768,7 @@ fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(),
         validate_version_entry(preview, &Channel::Preview, output_dir)?;
     }
     if let Some(latest) = &index.latest {
+        stable_version(&latest.version)?;
         validate_version_entry(latest, &Channel::Release, output_dir)?;
         let Some(release) = index
             .releases
@@ -765,7 +829,11 @@ fn validate_version_entry(
     }
     match entry.channel {
         Channel::Release => {
-            stable_version(&entry.version)?;
+            if entry.released_packages.is_empty() {
+                stable_version(&entry.version)?;
+            } else {
+                Version::parse(&entry.version).map_err(|e| Error::Invalid(e.to_string()))?;
+            }
         }
         Channel::Preview => {
             safe_version(&entry.version)?;
@@ -870,6 +938,14 @@ fn validate_version_entry(
             entry.version
         )));
     }
+    if data.source.released_packages != entry.released_packages {
+        return Err(Error::Invalid(
+            "version index released package identities differ from immutable data".into(),
+        ));
+    }
+    if !entry.released_packages.is_empty() {
+        historical::validate_release_identity(&data)?;
+    }
     validate_source_info(&data.source, &data.channel)?;
     validate_navigation(&data)?;
     Ok(())
@@ -952,6 +1028,35 @@ fn merge_version_index(
     mark_latest: bool,
 ) -> Result<VersionIndex, Error> {
     validate_version_index(&index, output_dir)?;
+    if entry.channel == Channel::Release
+        && !Version::parse(&entry.version)
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .pre
+            .is_empty()
+    {
+        if entry.released_packages.is_empty() || mark_latest {
+            return Err(Error::Invalid(
+                "historical prereleases cannot be stable latest".into(),
+            ));
+        }
+        if let Some(existing) = index
+            .historical_prereleases
+            .iter()
+            .find(|item| item.version == entry.version)
+        {
+            if existing != entry {
+                return Err(Error::Invalid(
+                    "refusing to rewrite historical prerelease identity or digest".into(),
+                ));
+            }
+        } else {
+            index.historical_prereleases.push(entry.clone());
+            index
+                .historical_prereleases
+                .sort_by(|a, b| a.version.cmp(&b.version));
+        }
+        return Ok(index);
+    }
     if entry.channel == Channel::Release {
         if let Some(existing) = index
             .releases
@@ -2193,6 +2298,7 @@ mod tests {
     #[test]
     fn profile_catalog_union_retains_feature_only_items() {
         let source = SourceInfo {
+            released_packages: Vec::new(),
             revision: "a".repeat(40),
             source_state: "working-tree".into(),
             source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
@@ -2568,6 +2674,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -2966,6 +3073,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "working-tree".into(),
                 source_sha256: None,
@@ -3016,6 +3124,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
@@ -3059,6 +3168,7 @@ mod tests {
             .expect("old data parent should be creatable");
         fs::write(&old_path, &old_bytes).expect("old data should be writable");
         let old_entry = VersionEntry {
+            released_packages: Vec::new(),
             version: "1.0.0".into(),
             channel: Channel::Release,
             revision: "a".repeat(40),
@@ -3066,6 +3176,7 @@ mod tests {
             data_sha256: sha256_hex(&old_bytes),
         };
         let old_index = VersionIndex {
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: Some(old_entry.clone()),
             releases: vec![old_entry],
@@ -3083,6 +3194,7 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "d".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "e".repeat(64))),
@@ -3106,6 +3218,7 @@ mod tests {
         let same_version = DocsData {
             version: "1.0.0".into(),
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "d".repeat(40),
                 ..new_data.source.clone()
             },
@@ -3163,6 +3276,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3201,6 +3315,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3235,9 +3350,11 @@ mod tests {
         let _ = fs::remove_dir_all(&output);
         fs::create_dir_all(&output).expect("output directory should be creatable");
         let malformed = VersionIndex {
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: vec![VersionEntry {
+                released_packages: Vec::new(),
                 version: "1.0.0".into(),
                 channel: Channel::Release,
                 revision: "a".repeat(40),
@@ -3259,6 +3376,7 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "b".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
@@ -3316,6 +3434,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3455,6 +3574,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3513,6 +3633,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: "1".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3605,6 +3726,7 @@ mod tests {
     #[test]
     fn version_index_latest_must_be_the_maximum_release() {
         let entry = |version: &str| VersionEntry {
+            released_packages: Vec::new(),
             version: version.into(),
             channel: Channel::Release,
             revision: "a".repeat(40),
@@ -3612,6 +3734,7 @@ mod tests {
             data_sha256: "b".repeat(64),
         };
         let stale = VersionIndex {
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: Some(entry("1.0.0")),
             releases: vec![entry("1.0.0"), entry("2.0.0")],
@@ -3622,6 +3745,7 @@ mod tests {
         assert!(error.to_string().contains("maximum release 2.0.0"));
 
         let missing = VersionIndex {
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: vec![entry("1.0.0")],
@@ -3643,6 +3767,7 @@ mod tests {
             version: version.into(),
             channel: Channel::Release,
             source: SourceInfo {
+                released_packages: Vec::new(),
                 revision: revision.to_string().repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", revision.to_string().repeat(64))),

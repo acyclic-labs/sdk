@@ -349,6 +349,37 @@ pub fn execute_profile_with_cargo(
     output_json: impl AsRef<Path>,
     cargo_path: Option<&Path>,
 ) -> Result<RustdocObservation, ProfileError> {
+    execute_target_profile_with_cargo(
+        manifest,
+        metadata,
+        profile,
+        available_targets,
+        target_dir,
+        output_json,
+        cargo_path,
+        &RustdocTarget::Library,
+    )
+}
+
+/// A Cargo-owned target; binary receipts are for source guides, never public API extraction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RustdocTarget {
+    Library,
+    Binary(String),
+}
+
+// Preserve the existing seven-argument Cargo boundary while adding explicit target ownership.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_target_profile_with_cargo(
+    manifest: impl AsRef<Path>,
+    metadata: &Metadata,
+    profile: &ProfileSpec,
+    available_targets: &BTreeSet<String>,
+    target_dir: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    cargo_path: Option<&Path>,
+    rustdoc_target: &RustdocTarget,
+) -> Result<RustdocObservation, ProfileError> {
     if !available_targets.contains(&profile.target) {
         return Err(ProfileError::UnsupportedTarget {
             target: profile.target.clone(),
@@ -356,6 +387,17 @@ pub fn execute_profile_with_cargo(
     }
     let package = package_by_name(metadata, &profile.package)
         .ok_or_else(|| ProfileError::UnknownPackage(profile.package.clone()))?;
+    if let RustdocTarget::Binary(name) = rustdoc_target {
+        if !package
+            .targets
+            .iter()
+            .any(|target| target.name == *name && target.kind.contains(&TargetKind::Bin))
+        {
+            return Err(ProfileError::InvalidRustdoc(
+                "binary target is absent from Cargo metadata".into(),
+            ));
+        }
+    }
     for feature in &profile.features {
         if !package.features.contains_key(feature) {
             return Err(ProfileError::InvalidFeature {
@@ -397,8 +439,16 @@ pub fn execute_profile_with_cargo(
         .arg("--manifest-path")
         .arg(manifest.as_ref())
         .arg("--package")
-        .arg(&profile.package)
-        .arg("--lib")
+        .arg(&profile.package);
+    match rustdoc_target {
+        RustdocTarget::Library => {
+            command.arg("--lib");
+        }
+        RustdocTarget::Binary(name) => {
+            command.args(["--bin", name]);
+        }
+    }
+    command
         .arg("--target")
         .arg(&profile.target)
         .env("CARGO_TARGET_DIR", target_dir)
@@ -448,7 +498,11 @@ pub fn execute_profile_with_cargo(
         })
         .map(|target| target.name.as_str())
         .unwrap_or(profile.package.as_str());
-    let filename = format!("{}.json", library_name.replace('-', "_"));
+    let receipt_name = match rustdoc_target {
+        RustdocTarget::Library => library_name,
+        RustdocTarget::Binary(name) => name,
+    };
+    let filename = format!("{}.json", receipt_name.replace('-', "_"));
     let generated = target_dir.join(&profile.target).join("doc").join(filename);
     if !generated.is_file() {
         return Err(ProfileError::InvalidRustdoc(format!(
@@ -462,7 +516,10 @@ pub fn execute_profile_with_cargo(
             output_json.as_ref().display()
         ))
     })?;
-    observe_rustdoc(output_json)
+    match rustdoc_target {
+        RustdocTarget::Library => observe_rustdoc(output_json),
+        RustdocTarget::Binary(_) => observe_binary_rustdoc(output_json),
+    }
 }
 
 pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, ProfileError> {
@@ -595,6 +652,24 @@ pub struct RustdocObservation {
 
 pub fn observe_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservation, ProfileError> {
     let receipt = read_public_receipt(path)?;
+    observe_receipt(receipt)
+}
+
+/// Read a native binary receipt without exposing its private implementation as API.
+pub fn observe_binary_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservation, ProfileError> {
+    let receipt: RustdocCrate = serde_json::from_slice(
+        &fs::read(path).map_err(|e| ProfileError::InvalidRustdoc(e.to_string()))?,
+    )
+    .map_err(|e| ProfileError::InvalidRustdoc(e.to_string()))?;
+    if receipt.format_version != FORMAT_VERSION {
+        return Err(ProfileError::InvalidRustdoc(
+            "binary Rustdoc requires format 60".into(),
+        ));
+    }
+    observe_receipt(receipt)
+}
+
+fn observe_receipt(receipt: RustdocCrate) -> Result<RustdocObservation, ProfileError> {
     let root = receipt.index.get(&receipt.root).ok_or_else(|| {
         ProfileError::InvalidRustdoc(format!("root item {} is absent from index", receipt.root.0))
     })?;
@@ -1219,6 +1294,7 @@ mod tests {
             version: "0.2.0".into(),
             channel: crate::Channel::Preview,
             source: crate::SourceInfo {
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "working-tree".into(),
                 source_sha256: None,
