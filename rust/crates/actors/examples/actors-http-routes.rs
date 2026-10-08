@@ -36,6 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(parent)?;
             std::fs::write(parent.join("readonly.ts"), render_readonly())?;
             std::fs::write(parent.join("nominal.ts"), render_nominal())?;
+            <acyclic_actors::client::ErrorMetadata as ts_rs::TS>::export_all(
+                &ts_rs::Config::default().with_out_dir(parent),
+            )?;
             let semantic_root = parent.join("semantic");
             if semantic_root.exists() {
                 fs::remove_dir_all(&semantic_root)?;

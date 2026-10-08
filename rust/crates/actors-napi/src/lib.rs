@@ -16,7 +16,7 @@ const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Structured Rust-owned error metadata.
 #[napi(object)]
-#[derive(Clone, Default, Serialize)]
+#[derive(Default, Serialize)]
 pub struct NativeActorsErrorMetadata {
     /// Stable category.
     pub code: String,
@@ -42,6 +42,14 @@ pub struct NativeActorsErrorMetadata {
     #[serde(rename = "contractCode", skip_serializing_if = "Option::is_none")]
     /// Contract category.
     pub contract_code: Option<String>,
+    /// Exact status detail bytes, including malformed payloads.
+    #[napi(js_name = "rawDetails")]
+    #[serde(
+        rename = "rawDetails",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_raw_details"
+    )]
+    pub raw_details: Option<Buffer>,
 }
 
 /// Result envelope used by generated TypeScript adapters.
@@ -140,42 +148,27 @@ pub fn current_head_marker(value: bool) -> Result<bool> {
         .map_err(|error| napi_error(nominal_error(error)))
 }
 
+fn serialize_raw_details<S: serde::Serializer>(
+    value: &Option<Buffer>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match value {
+        Some(value) => serializer.serialize_bytes(value.as_ref()),
+        None => serializer.serialize_none(),
+    }
+}
+
 fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
-    let code = error.code_name();
-    match error {
-        client::Error::Configuration(message) | client::Error::Transport(message) => {
-            NativeActorsErrorMetadata {
-                code: code.to_owned(),
-                message,
-                ..Default::default()
-            }
-        }
-        client::Error::Contract(error) => NativeActorsErrorMetadata {
-            code: code.to_owned(),
-            message: error.to_string(),
-            contract_code: Some(code.to_owned()),
-            ..Default::default()
-        },
-        client::Error::Semantic(error) => nominal_error(error),
-        client::Error::Service { grpc_code, detail } => NativeActorsErrorMetadata {
-            code: code.to_owned(),
-            message: detail.as_ref().map_or_else(
-                || String::from("Actors service failure"),
-                |value| value.message.clone(),
-            ),
-            grpc_code: Some(grpc_code),
-            grpc_name: Some(code.to_owned()),
-            service_code: detail.as_ref().map(|value| value.code),
-            service_message: detail.map(|value| value.message),
-            ..Default::default()
-        },
-        client::Error::Cancelled => NativeActorsErrorMetadata {
-            code: code.to_owned(),
-            message: String::from("Actors operation cancelled"),
-            grpc_code: Some(1),
-            grpc_name: Some(code.to_owned()),
-            ..Default::default()
-        },
+    let metadata = error.metadata();
+    NativeActorsErrorMetadata {
+        code: metadata.code,
+        message: metadata.message,
+        grpc_code: metadata.grpc_code,
+        grpc_name: metadata.grpc_name,
+        service_code: metadata.service_code,
+        service_message: metadata.service_message,
+        contract_code: metadata.contract_code,
+        raw_details: metadata.raw_details.map(Buffer::from),
     }
 }
 
@@ -218,6 +211,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_metadata_preserves_original_message_unknown_code_and_bytes() {
+        let metadata = client_error(client::Error::Service {
+            grpc_code: 7,
+            message: String::from("original grpc diagnostic"),
+            raw_details: vec![255, 0],
+            detail: Some(wire::Error {
+                code: 99,
+                message: String::from("future detail"),
+            }),
+        });
+        assert_eq!(metadata.message, "original grpc diagnostic");
+        assert_eq!(metadata.service_code, Some(99));
+        assert_eq!(metadata.service_message.as_deref(), Some("future detail"));
+        assert_eq!(
+            metadata.raw_details.as_ref().map(AsRef::as_ref),
+            Some([255, 0].as_slice())
+        );
+        let json = serde_json::to_value(&metadata).expect("metadata must serialize");
+        assert_eq!(json.get("rawDetails"), Some(&serde_json::json!([255, 0])));
+    }
 
     #[test]
     fn malformed_wire_returns_structured_invalid_argument() {

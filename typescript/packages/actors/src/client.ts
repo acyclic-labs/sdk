@@ -16,6 +16,7 @@ import {
   CurrentHeadMarker,
   type ActorsNominalBinding,
 } from "./generated/nominal.js";
+import type { ErrorMetadata } from "./generated/ErrorMetadata.js";
 import type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export { ActorId, CodeSha256, PositiveU64, CurrentHeadMarker } from "./generated/nominal.js";
@@ -49,9 +50,11 @@ export interface ActorsOptions {
   readonly observer?: AcyclicObserver;
 }
 
+export type ActorsErrorMetadata = ReadonlySemantic<ErrorMetadata>;
+
 /** Errors raised after Rust has returned a structured operation failure. */
 export class ActorsTransportError extends Error {
-  constructor(message: string, readonly code = "actors_error") { super(message); }
+  constructor(message: string, readonly code = "actors_error", readonly metadata?: ActorsErrorMetadata) { super(message); }
 }
 
 /** Typed Actors client backed by one Rust implementation on every platform. */
@@ -79,10 +82,10 @@ export class ActorsClient {
   async #call<Request, Response>(method: ActorsMethod, request: Request, options?: ActorsCallOptions): Promise<Response> {
     const operation = method.localName as Operation;
     const encoded = toBinary(method.input, create(method.input, toWireSemantic(request) as MessageShape<typeof method.input>));
-    throwIfAborted(options?.signal);
-    const client = await this.#connection(options?.signal);
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
+      throwIfAborted(options?.signal);
+      const client = await this.#connection(options?.signal);
       const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
       return normalizeSemantic(fromBinary(method.output, response), method.output) as Response;
@@ -218,7 +221,7 @@ function nativeBinding(): ActorsRustBinding {
 interface NativeActorsResult<T> {
   readonly value?: T | null;
   readonly client?: T | null;
-  readonly error?: { readonly code?: string; readonly message?: string } | null;
+  readonly error?: ActorsErrorMetadata | null;
 }
 
 type NativeActorsMethods = {
@@ -275,7 +278,7 @@ async function nativeResult<T>(result: Promise<NativeActorsResult<T>>, key: "val
   const value = outcome[key];
   if (value !== undefined && value !== null) return value;
   const error = outcome.error;
-  throw new ActorsTransportError(error?.message ?? "Actors operation failed", error?.code ?? "actors_error");
+  throw new ActorsTransportError(error?.message ?? "Actors operation failed", error?.code ?? "actors_error", error ?? undefined);
 }
 
 function wasmBinding(): ActorsRustBinding {

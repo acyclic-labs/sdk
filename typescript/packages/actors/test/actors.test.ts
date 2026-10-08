@@ -150,6 +150,27 @@ describe("Rust-backed Actors client", () => {
     finish?.(new Uint8Array());
   });
 
+  test("observes connection failure and includes the pending connection duration", async () => {
+    const events: OperationEvent[] = [];
+    let elapsed = 0;
+    const client = new ActorsClient({
+      endpoint: "https://actors.example.test", token: "secret",
+      observer: { onOperation: event => events.push(event) },
+      binding: { connect: async () => {
+        const start = performance.now();
+        await new Promise(resolve => setTimeout(resolve, 20));
+        elapsed = performance.now() - start;
+        throw Object.assign(new Error("connect rejected"), { code: "unavailable" });
+      } },
+    });
+    await expect(client.inspectActor({ actorId: "actor-a" as semantic.ActorId })).rejects.toMatchObject({ code: "unavailable" });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ family: "actors", op: "inspectActor", ok: false, code: "unavailable" });
+    expect(events[0]!.durationMs).toBeGreaterThanOrEqual(elapsed);
+    expect(events[0]!.requestBytes).toBeGreaterThan(0);
+    expect(events[0]!.responseBytes).toBeUndefined();
+  });
+
   test("does not cancel a shared pending connection for another caller", async () => {
     let releaseConnect!: (client: Awaited<ReturnType<ActorsRustBinding["connect"]>>) => void;
     let connectionSignal!: AbortSignal;
@@ -159,12 +180,16 @@ describe("Rust-backed Actors client", () => {
         return new Promise(resolve => { releaseConnect = resolve; });
       },
     };
-    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding });
+    const events: OperationEvent[] = [];
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding, observer: { onOperation: event => events.push(event) } });
     const firstController = new AbortController();
     const secondController = new AbortController();
     const first = client.inspectActor({ actorId: "first" as semantic.ActorId }, { signal: firstController.signal });
     const second = client.inspectActor({ actorId: "second" as semantic.ActorId }, { signal: secondController.signal });
 
+    const waitStarted = performance.now();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const waited = performance.now() - waitStarted;
     firstController.abort();
     await expect(first).rejects.toMatchObject({ code: "cancelled" });
     expect(connectionSignal.aborted).toBe(false);
@@ -172,6 +197,8 @@ describe("Rust-backed Actors client", () => {
     releaseConnect({ transport: "test", inspectActor: async () => new Uint8Array() });
     await second;
     expect(connectionSignal.aborted).toBe(false);
+    expect(events.map(event => [event.ok, event.code])).toEqual([[false, "cancelled"], [true, undefined]]);
+    expect(events.every(event => event.durationMs >= waited)).toBe(true);
   });
 
   test("reconnects after the final pending connection waiter aborts", async () => {

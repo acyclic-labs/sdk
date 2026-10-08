@@ -21,8 +21,15 @@ fn js_error(code: &str, message: impl std::fmt::Display) -> JsValue {
 }
 
 fn map_error(error: client::Error) -> JsValue {
-    let code = error.code_name();
-    js_error(code, error)
+    let metadata = error.metadata();
+    let error = js_error(&metadata.code, &metadata.message);
+    match serde_wasm_bindgen::to_value(&metadata) {
+        Ok(metadata) => {
+            let _ = Reflect::set(&error, &JsValue::from_str("metadata"), &metadata);
+            error
+        }
+        Err(error) => js_error("internal", error),
+    }
 }
 
 fn nominal_error(error: domain::DomainError) -> JsValue {

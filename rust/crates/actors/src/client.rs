@@ -24,10 +24,14 @@ pub enum Error {
     #[error("Actors transport failure: {0}")]
     Transport(String),
     /// The service rejected an operation and may have supplied semantic detail.
-    #[error("Actors service failure")]
+    #[error("{message}")]
     Service {
         /// Numeric gRPC status code.
         grpc_code: i32,
+        /// Original gRPC status message.
+        message: String,
+        /// Exact gRPC status detail bytes, including malformed payloads.
+        raw_details: Vec<u8>,
         /// Rust-owned semantic error detail, when present.
         detail: Option<wire::Error>,
     },
@@ -42,7 +46,71 @@ pub enum Error {
     Cancelled,
 }
 
+/// Lossless Rust-owned diagnostic projection shared by both JavaScript bridges.
+#[derive(Clone, Debug, Default, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", optional_fields = nullable)]
+pub struct ErrorMetadata {
+    /// Stable SDK error category.
+    pub code: String,
+    /// Original status message or canonical admission diagnostic.
+    pub message: String,
+    /// Numeric gRPC status reported by the maintained transport.
+    pub grpc_code: Option<i32>,
+    /// Canonical gRPC category.
+    pub grpc_name: Option<String>,
+    /// Decoded int32 service code, including future values unknown to this SDK version.
+    pub service_code: Option<i32>,
+    /// Decoded service diagnostic, separate from the gRPC status message.
+    pub service_message: Option<String>,
+    /// Canonical admission category, when applicable.
+    pub contract_code: Option<String>,
+    /// Exact detail bytes for service failures, including empty details.
+    #[serde(with = "serde_bytes")]
+    #[ts(optional, type = "Uint8Array | null")]
+    pub raw_details: Option<Vec<u8>>,
+}
+
 impl Error {
+    /// Project diagnostics without discarding transport or service information.
+    #[must_use]
+    pub fn metadata(self) -> ErrorMetadata {
+        let code = self.code_name().to_owned();
+        let mut metadata = ErrorMetadata {
+            code: code.clone(),
+            ..ErrorMetadata::default()
+        };
+        match self {
+            Self::Configuration(message) | Self::Transport(message) => {
+                metadata.message = message;
+            }
+            Self::Service {
+                grpc_code,
+                detail,
+                raw_details,
+                message,
+            } => {
+                metadata.message = message;
+                metadata.grpc_code = Some(grpc_code);
+                metadata.grpc_name = Some(code);
+                metadata.service_code = detail.as_ref().map(|value| value.code);
+                metadata.service_message = detail.map(|value| value.message);
+                metadata.raw_details = Some(raw_details);
+            }
+            Self::Contract(error) => {
+                metadata.message = error.to_string();
+                metadata.contract_code = Some(code);
+            }
+            Self::Cancelled => {
+                metadata.message = String::from("Actors operation cancelled");
+                metadata.grpc_code = Some(1);
+                metadata.grpc_name = Some(code);
+            }
+            Self::Semantic(error) => metadata.message = error.to_string(),
+        }
+        metadata
+    }
+
     /// Returns the stable cross-platform error code exposed by SDK bridges.
     #[must_use]
     pub const fn code_name(&self) -> &'static str {
@@ -99,6 +167,8 @@ type GeneratedClient<T> = wire::actors_service_client::ActorsServiceClient<T>;
 fn service_error(status: tonic::Status) -> Error {
     Error::Service {
         grpc_code: status.code() as i32,
+        message: status.message().to_owned(),
+        raw_details: status.details().to_vec(),
         detail: if status.details().is_empty() {
             None
         } else {
@@ -530,12 +600,48 @@ mod tests {
                 Error::Service {
                     grpc_code,
                     detail: Some(actual),
+                    message,
+                    raw_details,
                 } => {
+                    assert_eq!(message, "service rejected request");
+                    assert_eq!(raw_details, detail.encode_to_vec());
                     assert_eq!(grpc_code, status_code as i32);
                     assert_eq!(actual.code, detail_code);
                     assert_eq!(actual.message, format!("detail-{detail_code}"));
                 }
                 other => panic!("expected structured service error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn service_metadata_preserves_status_message_and_lossless_detail_bytes() {
+        let decoded = wire::Error {
+            code: 99,
+            message: String::from("future service detail"),
+        }
+        .encode_to_vec();
+        for bytes in [decoded, Vec::new(), vec![255, 0]] {
+            let status = tonic::Status::with_details(
+                tonic::Code::PermissionDenied,
+                "original grpc diagnostic",
+                bytes.clone().into(),
+            );
+            let error = service_error(status);
+            let metadata = error.metadata();
+            assert_eq!(metadata.code, "permission_denied");
+            assert_eq!(metadata.message, "original grpc diagnostic");
+            assert_eq!(metadata.grpc_code, Some(7));
+            assert_eq!(metadata.raw_details, Some(bytes.clone()));
+            if bytes.first() == Some(&8) {
+                assert_eq!(metadata.service_code, Some(99));
+                assert_eq!(
+                    metadata.service_message.as_deref(),
+                    Some("future service detail")
+                );
+            } else {
+                assert!(metadata.service_code.is_none());
+                assert!(metadata.service_message.is_none());
             }
         }
     }
@@ -553,8 +659,15 @@ mod tests {
 
         for status in statuses {
             let expected_code = status.code() as i32;
-            match service_error(status) {
-                Error::Service { grpc_code, detail } => {
+            match service_error(status.clone()) {
+                Error::Service {
+                    grpc_code,
+                    detail,
+                    message,
+                    raw_details,
+                } => {
+                    assert_eq!(message, status.message());
+                    assert_eq!(raw_details, status.details());
                     assert_eq!(grpc_code, expected_code);
                     assert!(detail.is_none());
                 }
@@ -586,6 +699,8 @@ mod tests {
         ] {
             let error = Error::Service {
                 grpc_code: code,
+                message: String::new(),
+                raw_details: Vec::new(),
                 detail: None,
             };
             assert_eq!(error.code_name(), name);
