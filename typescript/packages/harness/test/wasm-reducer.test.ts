@@ -3,6 +3,15 @@ import { DEFAULT_LIMITS, Harness, MemoryConversation, NativeContracts, parseIden
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "../src/conversation-page-contract.js";
+import { exerciseCheckpoint } from "./checkpoint-consumer.mjs";
+
+test("authenticated Rust checkpoint restores state and exact retries through WASM", async () => {
+  const options = { authority: { kind: "task" as const, id: "checkpoint-consumer" },
+    issuerId: "checkpoint-consumer", issuerKey: new Uint8Array(32).fill(23) };
+  const harness = await Harness.create(options);
+  try { await exerciseCheckpoint(Harness, harness, options, await NativeContracts.create()); }
+  finally { harness.free(); }
+});
 
 test("WASM turn planner emits a fresh selection and rejects stale retry state", async () => {
   const agent = "08080808-0808-0808-0808-080808080808" as AgentId;

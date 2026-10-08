@@ -77,7 +77,7 @@ impl<P: StreamProvider> HistoryReader<P> {
 
     /// Captures a committed boundary once for explicit archival traversal.
     pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
-        let through_revision = self.stream.tail().await?;
+        let through_revision = self.committed_tail().await?;
         if after_revision > through_revision {
             return Err(Error::Invalid(
                 "history cursor exceeds committed tail".into(),
@@ -105,7 +105,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "history read bounds or cursor are invalid".into(),
             ));
         }
-        if cursor.through_revision > self.stream.tail().await? {
+        if cursor.through_revision > self.committed_tail().await? {
             return Err(Error::Invalid(
                 "history cursor exceeds committed tail".into(),
             ));
@@ -152,6 +152,14 @@ impl<P: StreamProvider> HistoryReader<P> {
             events,
             cursor: next,
         })
+    }
+
+    async fn committed_tail(&self) -> Result<u64> {
+        match self.stream.tail().await {
+            Ok(tail) => Ok(tail),
+            Err(acyclic_stream::StreamError::NotFound) => Ok(0),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 

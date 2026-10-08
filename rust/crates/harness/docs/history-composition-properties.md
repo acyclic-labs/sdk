@@ -832,3 +832,198 @@ browser runtime reader/publication bridge; the pure browser pages above do not
 qualify that missing consumer. These receipts also precede adoption of main
 `a10e2b24c53201a321ff567835ab960a80a309bc` (#280/#281); relevant final-source provider
 and generated-contract checks must be refreshed after that integration.
+
+
+## Main provider/contract reconciliation after operation indexing
+
+Signed merge `d023c64da0837fa5c3ce8870456153aabd405a94` incorporates actual main
+`a10e2b24c53201a321ff567835ab960a80a309bc` (#280 Objects bounded streaming deadlines
+and #281 Rust-derived Filesystem transaction types) without Harness source
+conflicts. The nine owning operation-index sources still match their recorded
+hashes. Four changed provider/contract inputs are pinned in
+`target/b-operation-index-main-provider-source-hashes.json`.
+
+Merged-source strict native lint passed in
+`target-b-clippy-operation-index-main.log`; native 276 library, nine continuation
+and two fork tests passed in `target-b-native-operation-index-main.log`. Strict
+WASM lint passed in `target-b-clippy-operation-index-main-wasm.log`. Fresh isolated
+Filesystem and Harness generation passed in
+`target-b-wasm-operation-index-main-filesystem.log` and
+`target-b-wasm-operation-index-main-harness.log`. Eight matching installed artifact
+hashes are in `target/b-operation-index-main-artifact-hashes.json`. The fresh Filesystem
+JS/WASM pair differs from main's checked-in pair; the JS difference is an internal
+closure shim index and public declarations match. Preserve the qualified matching pair together.
+
+Filesystem package/type tests and Harness package/type tests passed in
+`target-b-types-operation-index-main.log`; all 248 Harness Bun tests/1347
+expectations passed in `target-b-bun-operation-index-main.log`. Chromium passed
+Filesystem smoke, multitab, publication, OPFS publication, and Harness wire/54
+pure compaction checks in `target-b-browser-operation-index-main.log`. That run's
+Stream page initially failed to load missing `stream/dist` modules. After
+`target-b-types-operation-index-main-stream.log` rebuilt that required dependency,
+the unchanged Stream page passed in `target-b-browser-operation-index-main-stream.log`.
+The failed full-page run remains a failure receipt; the separate passing page
+receipt closes the dependency failure without weakening any assertions.
+
+Actual-main handoff `91e6935b7727f8a47b7c6ac58ca26ca67d0c974e` (#283 Inference
+terminal policy/routes and lockfile/generated contracts) arrived during these
+checks. It is not included in the merged-source receipts above and must be
+accounted for in subsequent final-source qualification. These component/main
+integration checks do not close compact cold hydration, resident retry/history
+release, a compiled browser history/publication bridge, default browser canonical
+continuation, fork policies, 10,000 default turns or full release/PR qualification.
+
+## Authenticated projection restoration (format 3; qualification in progress)
+
+Snapshot format 3 captures the reducer projection and retained event cache under
+one domain-separated keyed BLAKE3 attestation using the existing aggregate issuer.
+The public canonical state digest covers the authority, revision, event cache and
+projection. The keyed proof additionally binds issuer identity and audience.
+Only the reducer's checkpoint constructor emits this proof. Restoration verifies
+both digest and proof before installing the projection, and never invokes
+historical payload transitions. The original installed registry bindings are
+pinned by complete canonical binding digests (schema, implementation, fork
+policy, dependencies and configuration schema); added namespaces are allowed.
+Format 2 is unsupported. No historical restoration adapter is retained.
+
+Structured-key configuration and fork maps use ordered entry arrays in the
+private serialized projection. UUID-keyed maps retain their normal representation.
+The public TypeScript projection remains opaque and is admitted by compiled Rust.
+Retry intents rebuild from the authenticated event cache, avoiding a second
+serialized copy of every event. No issuer key is serialized.
+
+Bounded property tests now restore through canonical JSON and compare the result
+with both the original reducer and full event replay. Existing configuration and
+fork tests round-trip their real projections through JSON before checking pinned
+activation and duplicate-fork behavior. Adversarial tests reject a forged
+projection/revision despite recomputing the public digest, mismatched issuer
+key/identity/audience, missing original bindings, and changed schema,
+implementation, fork policy, dependency graph or configuration schema. These
+are bounded tests. Authentication assumes the existing host-managed issuer key
+is secret and admitted reducer state is the only checkpoint producer.
+
+Current source includes signed main integration 06247354a6ee21bdcfa7fa47886196fb7784cb07
+of #283/91e693. `target-b-clippy-authenticated-snapshot-qualified.log` passes strict
+native lint; `target-b-native-authenticated-snapshot.log` passes 279 library,
+nine continuation and two recursive-fork tests. Earlier unused-import and
+redundant-clone failures remain in their original logs; neither required a
+weakened check. `target-b-types-authenticated-snapshot-final.log` passes Harness
+package/type tests after adding the shared consumer declaration. Eight current
+source/lockfile pins in `target/b-authenticated-snapshot-source-hashes.json`
+remained unchanged through the terminal native run. Shared installed-WASM
+checkpoint tests have been added for Bun and Chromium, but fresh generation,
+WASM lint and those consumer executions are pending the coordinated Windows
+build window. The old installed artifact does not qualify this changed source.
+
+Simplification: the restoration loop that applied every historical event and
+its public-digest-only trust boundary are removed. A private typed projection
+preserves each current reducer field; explicit construction keeps new reducer
+fields visible to compilation. The remaining cache-derived retry index avoids
+redundant serialized events. Cache release is deliberately still unfinished:
+event retention, conversation serialization/index reconstruction, effects,
+forks, interactions and initial Stream opening can still grow with lifetime.
+This change removes transition replay, but does not establish bounded cold
+hydration. Compact resident state, compiled browser history/publication,
+default browser continuation, fork policies, 10,000 default-turn performance,
+full release qualification and owned PR/verified landing remain open.
+
+The subsequent normal-command audit found MemoryConversation.#apply constructing
+an entire snapshot solely for authority/revision. WasmReducer.head and the typed
+Harness.head now read only that pair, and command construction uses it. The shared
+checkpoint consumer compares the cheap head with fresh and post-admission state.
+The previous package/type receipt predates this new generated method and does not
+qualify it. No lightweight head is represented as proof of full bounded turns:
+MemoryConversation still has lifetime conversation/event consumers to replace.
+
+The runtime owner confirmed its browser provider is the existing Rust
+BrowserStream (rather than a JS provider callback). New wasm/history.rs therefore
+forwards directly to HistoryReader and StreamAggregate over BrowserStream and
+StreamClient. The aggregate executes the existing atomic event/location commit,
+exact retry and reconciliation paths; the reader performs the existing cursor,
+byte/count, event-attestation and shared-commit checks. A typed browser-history.ts
+facade forwards data, without a JS reducer, cursor admission or publication
+engine. Browser Aggregate opening accepts an optional format-3 checkpoint; model
+content, fork and merge adapters remain explicit in the owning runtime. This
+bridge does not itself install default model execution.
+
+The authored Chromium consumer exercises indexed publication, pinning before a
+later append, bounded/terminal pages, reopen from checkpoint plus canonical suffix,
+old-operation retry/reconciliation without another revision, changed retry key,
+cold operation lookup, failed-page cursor preservation and wrong-issuer rejection.
+Both new .mjs consumers pass node syntax checks. Runtime execution is still
+UNQUALIFIED: central shared-host scheduling holds subsequent heavy builds, the
+tracked old artifact lacks these new exports, and generated/package/browser gates
+must run against the fresh matching pair. The wasm feature now activates the
+existing Stream wasm adapter; the changed feature graph also requires its affected
+native check. Prior 279/9/2 native evidence remains valid for the unchanged core
+checkpoint implementation only. Initial BrowserStream provider recovery remains
+subject to that provider's bounded journal recovery and capacity, not a new
+constant-work recovery claim. No competing provider codec or runtime owner edit
+was introduced; remote/custom-provider transport stays an explicit future adapter.
+
+The browser bridge also forwards all six MemoryLimits ceilings when supplied,
+so it can reopen the runtime owner's journals with matching persisted limits.
+Default memory ceilings are used only when the caller omits that configuration.
+The browser fixture supplies smaller explicit capacities and reuses them across
+reader/aggregate reopen; this is authored coverage awaiting execution, not a
+passing receipt. No configuration change is silently substituted on reopen.
+
+The pre-qualification reader audit found a fresh aggregate inconsistency:
+StreamAggregate opens a missing canonical path at revision zero, while archival
+pinning previously returned NotFound. HistoryReader now treats only that provider
+NotFound tail as zero; other provider errors propagate. A cursor asserting a
+positive committed boundary still fails against an absent path. The native
+real-provider fixture pins an empty terminal cursor without writes/record reads,
+publishes the first event, verifies the old zero boundary remains terminal and
+reads the first event through a new boundary. The browser consumer authors the
+same empty-to-first-publication case, plus two concurrent aggregate handles,
+stale CAS rejection and a one-event refresh before a fresh command. These new
+cases await the queued native/WASM/browser qualification; the earlier 279 library
+receipt does not cover this reader fix.
+
+### Bounded browser bridge qualification after main integration
+
+The central functional window qualified the pending bridge on signed base
+80ecf341a5e376871e643c1d88d0c61de95e71b8, which integrates main #279/1d79a736.
+One BelowNormal build worker used only this checkout's caches and separate
+windows-B-functional reservation. The initial 15-minute compile budget was
+explicitly extended to 12:38:05 UTC; all work completed before that cutoff.
+
+Strict native Clippy passed in 1m57s. The focused native empty-history test
+passed (one run, 279 filtered out); its affected provider/Harness build took
+13m39s. No unchanged full native suite was repeated. Strict WASM Clippy passed
+in 39.62s, and isolated Harness generation passed in 1m46s. All four installed
+files matched the isolated producer hashes, including JS
+187DCE92BB6140C79CA55C153B9DEFE33E84BD3D0156E8895A066DE1AA98792C and WASM
+BEB88CB8FA61A7D4D2D958FD346E84458A1DCF105F4120DE18BED26B2F6FF1C8.
+Runtime artifacts remain build-generated as required by the Harness ignore rules;
+the changed generated declarations are committed.
+
+Final Harness package/type checks passed. Bun passed 249 tests with 1,347
+assertions. The actual Chromium wire page passed the shared checkpoint-forgery
+and browser-history assertions, including the empty pinned cursor, canonical
+suffix restore, indexed retries/reconciliation, competing stale publication and
+bounded refresh. The original sandbox dependency-resolution failure is retained
+separately from the successful dependency-access run. Chromium's first failure
+was opaque because its catch read only error.message. Preserving String(error)
+exposed an extra authority field: the new facade incorrectly declared the wire
+Command while forwarding the existing owner-bound core Command body. The facade
+now declares CanonicalCommand without that field, the browser fixture uses that
+body, and compile-time consumers check execute/reconcile signatures. Corrected
+type, Bun and Chromium checks all passed without changing or rebuilding Rust.
+
+Receipts are target-b-functional-{native-clippy,empty-history,wasm-clippy,
+generation,types-canonical-command,bun-canonical-command,chromium-qualified}.log.
+Failed browser receipts retain the opaque and diagnostic failures. Local
+manifests record source/lock hashes, the conservative 603-file Rust inventory,
+matching artifact hashes, rustc 1.98.1/48a229cea and its executable hash,
+wasm-bindgen 0.2.117 and its executable hash, observed background load and live
+session/process identities. All native/WASM source inputs remained unchanged
+through their terminal runs. Known B process roots and children drained, the
+finite browser runner closed and awaited Chrome without cleanup warnings, and
+only B's verified separate reservation was removed.
+
+This is focused functional evidence. Compact resident/cold state, runtime-owner
+adoption and default browser continuation, complete fork policies, default-turn
+10,000-operation evidence, full production/release gates, the owned PR and
+verified landing remain required.

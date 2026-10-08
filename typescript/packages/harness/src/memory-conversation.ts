@@ -567,10 +567,10 @@ export class MemoryConversation {
   }
 
   #apply<Action extends { readonly kind: string }>(operation: OperationId, label: string, action: Action): void {
-    const snapshot = this.#core.snapshot();
-    const command: Command<Action> = { authority: snapshot.authority,
+    const [authority, revision] = this.#core.head();
+    const command: Command<Action> = { authority,
       operation_id: operation, idempotency_key: `conversation:${operation}:${label}`,
-      expected_revision: snapshot.revision, scope: this.#scope, causal_parent: null, action };
+      expected_revision: revision, scope: this.#scope, causal_parent: null, action };
     this.#core.apply(command);
   }
 

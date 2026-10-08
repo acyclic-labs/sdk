@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod snapshot;
+pub use snapshot::Snapshot;
+
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -902,22 +905,6 @@ pub enum ApplyResult {
     },
 }
 
-/// Versioned acceleration record; canonical events remain authoritative.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Snapshot {
-    /// Snapshot format version.
-    pub format_version: u32,
-    /// Aggregate represented by the snapshot.
-    pub authority: Authority,
-    /// Last included event revision.
-    pub revision: u64,
-    /// Canonical events included in this portable v2 snapshot.
-    pub events: Vec<Event>,
-    /// Digest over all preceding fields.
-    pub state_digest: [u8; 32],
-}
-
 /// Explicit treatment of one extension's state at a child fork.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1139,7 +1126,7 @@ impl ExtensionConfiguration {
 }
 
 /// Immutable schema and implementation binding for one extension version.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct ExtensionBinding {
     schema: Value,
     schema_digest: [u8; 32],
@@ -2278,47 +2265,6 @@ impl Reducer {
         Ok(())
     }
 
-    /// Creates a portable, integrity-checked restoration accelerator.
-    pub fn snapshot(&self) -> Result<Snapshot> {
-        let mut snapshot = Snapshot {
-            format_version: 2,
-            authority: self.authority.clone(),
-            revision: self.revision,
-            events: self.events.clone(),
-            state_digest: [0; 32],
-        };
-        snapshot.state_digest = snapshot_digest(&snapshot)?;
-        Ok(snapshot)
-    }
-
-    /// Restores deterministic state after validating snapshot integrity.
-    pub fn restore(
-        snapshot: Snapshot,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-    ) -> Result<Self> {
-        if snapshot.format_version != 2 {
-            return Err(Error::Unsupported(format!(
-                "snapshot format {}",
-                snapshot.format_version
-            )));
-        }
-        if snapshot_digest(&snapshot)? != snapshot.state_digest {
-            return Err(Error::Invalid("snapshot digest mismatch".into()));
-        }
-        authority_verifier.verify_audience(&snapshot.authority)?;
-        let mut reducer = Self::new(snapshot.authority, authority_verifier, schemas);
-        for event in snapshot.events {
-            reducer.apply_committed(event)?;
-        }
-        if reducer.revision != snapshot.revision {
-            return Err(Error::Invalid(
-                "snapshot revision does not match its events".into(),
-            ));
-        }
-        Ok(reducer)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per Action variant, each independently validating and building \
@@ -3261,15 +3207,6 @@ fn validate_effect_observation(
     Ok(())
 }
 
-fn snapshot_digest(snapshot: &Snapshot) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(
-        snapshot.format_version,
-        &snapshot.authority,
-        snapshot.revision,
-        &snapshot.events,
-    ))
-}
-
 fn json_digest(value: &Value) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(value)
 }
@@ -3411,8 +3348,12 @@ mod tests {
                 }
             }
             // (c) restoring a snapshot equals replaying every committed event.
+            let wire = crate::contract::canonical_json_bytes(&reducer.snapshot().map_err(fail)?)
+                .map_err(fail)?;
+            let decoded = crate::contract::json_from_slice(&wire)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
             let restored = Reducer::restore(
-                reducer.snapshot().map_err(fail)?,
+                decoded,
                 authority.clone(),
                 schemas(),
             )
@@ -3610,7 +3551,10 @@ resolve_interaction interaction_resolved interaction:resolve";
         })?;
         assert_eq!(reducer.active_configurations()[0].content, first);
         assert_eq!(reducer.extension_admission()?, Some(admitted));
-        let restored = Reducer::restore(reducer.snapshot()?, issuer.verifier(), registry)?;
+        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;
+        let snapshot = crate::contract::json_from_slice(&wire)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored = Reducer::restore(snapshot, issuer.verifier(), registry)?;
         assert_eq!(
             restored.active_configurations(),
             reducer.active_configurations()
@@ -4988,6 +4932,12 @@ resolve_interaction interaction_resolved interaction:resolve";
         ));
         reducer.apply_committed(event)?;
         assert_eq!(reducer.fork(&child), Some(&seed));
+        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;
+        let snapshot = crate::contract::json_from_slice(&wire)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored = Reducer::restore(snapshot, issuer().verifier(), schemas())?;
+        assert_eq!(restored, reducer);
+        reducer = restored;
         let mut reused_private = seed;
         reused_private.operation_id = operation(9);
         reused_private.child.id = "conversation-3".into();

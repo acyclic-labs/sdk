@@ -1629,6 +1629,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
+        let cursor = reader.pin(0).await?;
+        let limits = HistoryReadLimits {
+            maximum_events: 1,
+            maximum_bytes: 65_536,
+        };
+        assert_eq!(cursor.through_revision, 0);
+        assert!(reader.read_page(&cursor, limits).await?.events.is_empty());
+        assert!(matches!(reader.pin(1).await, Err(Error::Invalid(_))));
+        let future = HistoryCursor {
+            through_revision: 1,
+            ..cursor.clone()
+        };
+        assert!(matches!(
+            reader.read_page(&future, limits).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        provider.forbid_writes.store(false, Ordering::SeqCst);
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        writer.execute(command(1)?).await?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        assert!(reader.read_page(&cursor, limits).await?.events.is_empty());
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        let current = reader.pin(0).await?;
+        let page = reader.read_page(&current, limits).await?;
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.cursor.after_revision, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore() -> Result<()>
     {
         use std::sync::atomic::Ordering;

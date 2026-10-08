@@ -51,6 +51,7 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
 mod mcp;
+mod history;
 
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
@@ -2360,7 +2361,12 @@ impl WasmReducer {
         })
     }
 
-    /// Returns a versioned integrity-checked restoration snapshot.
+    /// Returns only authority and revision; command admission needs no snapshot.
+    pub fn head(&self) -> Result<JsValue, JsValue> {
+        to_js(&(self.reducer.authority(), self.reducer.revision()))
+    }
+
+    /// Returns a versioned issuer-authenticated restoration snapshot.
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
         to_js(&self.reducer.snapshot().map_err(js_error)?)
     }
