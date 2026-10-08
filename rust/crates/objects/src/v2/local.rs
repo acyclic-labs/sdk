@@ -12,6 +12,15 @@ pub type LocalOptions = crate::LocalObjectsLimits;
 /// Private physical storage reclamation counters; no public Objects history.
 pub type GarbageCollection = crate::LocalObjectsGarbageCollection;
 
+/// Runs `work` on a native blocking worker inside the caller's span, so its
+/// spans keep their parent.
+fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> acyclic_native_runtime::BlockingIoTask<T> {
+    let span = tracing::Span::current();
+    acyclic_native_runtime::run_blocking_io(move || span.in_scope(work))
+}
+
 /// One owned logical store. Clones share admission, retry receipts and ownership.
 #[derive(Clone)]
 pub struct LocalObjects {
@@ -43,7 +52,7 @@ impl LocalObjects {
         anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self, LocalOpenError> {
         let root = root.as_ref().to_path_buf();
-        acyclic_native_runtime::run_blocking_io(move || {
+        blocking(move || {
             super::memory::persistence::open(root, options, anchor).map(|core| Self {
                 core,
                 body_io: Arc::new(RwLock::new(())),
@@ -59,7 +68,7 @@ impl LocalObjects {
         if self.core.local_maintenance_due()? {
             let lease = self.body_io.clone().write_owned().await;
             let core = self.core.clone();
-            acyclic_native_runtime::run_blocking_io(move || {
+            blocking(move || {
                 let _lease = lease;
                 core.compact_local_if_due()
             })
@@ -69,7 +78,7 @@ impl LocalObjects {
         }
         let core = self.core.clone();
         let lease = self.body_io.clone().read_owned().await;
-        acyclic_native_runtime::run_blocking_io(move || {
+        blocking(move || {
             let _lease = lease;
             action(&core)
         })
@@ -90,7 +99,7 @@ impl LocalObjects {
         }
         let lease = self.body_io.clone().write_owned().await;
         let core = self.core.clone();
-        acyclic_native_runtime::run_blocking_io(move || {
+        blocking(move || {
             let _lease = lease;
             core.collect_local_garbage(maximum_candidates)
         })
@@ -132,10 +141,10 @@ impl ObjectsProvider for LocalObjects {
         // Its core clone keeps the root/anchor alive until physical work ends.
         let core = self.core.clone();
         let body_io = self.body_io.clone();
-        tokio::spawn(async move {
+        tokio::spawn(tracing::Instrument::in_current_span(async move {
             let _lease = body_io.read_owned().await;
             core.get(query, maximum_bytes).await
-        })
+        }))
         .await
         .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
     }
@@ -217,10 +226,10 @@ impl NativeBatchObjects for LocalObjects {
         }
         let core = self.core.clone();
         let body_io = self.body_io.clone();
-        tokio::spawn(async move {
+        tokio::spawn(tracing::Instrument::in_current_span(async move {
             let _lease = body_io.read_owned().await;
             core.get_batch(requests).await
-        })
+        }))
         .await
         .unwrap_or_else(|_| vec![Err(wire::ErrorCode::Unavailable.into()); count])
     }
