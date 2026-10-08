@@ -101,6 +101,69 @@ pub fn fixed_width_metadata() -> Result<String, &'static str> {
     Ok(format!("[{}]", entries.join(",")))
 }
 
+const CLIENT_WIDTH_FIELDS: &[(&str, &str, &str)] = &[
+    ("contextRevision", "ContextView", "revision"),
+    ("mutationRevision", "MutationReceipt", "revision"),
+    (
+        "inspectContextRevision",
+        "InspectContextRequest",
+        "revision",
+    ),
+    ("runId", "RunView", "run_id"),
+    ("inspectRunId", "InspectRunRequest", "run_id"),
+    ("watchRunId", "WatchRunRequest", "run_id"),
+    ("cancelRunId", "InspectRunRequest", "run_id"),
+    ("warmCommitment", "WarmView", "commitment"),
+    ("inspectWarmCommitment", "InspectWarmRequest", "commitment"),
+    ("renewWarmCommitment", "RenewWarmRequest", "commitment"),
+    ("releaseWarmCommitment", "ReleaseWarmRequest", "commitment"),
+    ("executionProfile", "ModelCapability", "execution_profile"),
+    (
+        "requestClientInstance",
+        "RequestIdentity",
+        "client_instance",
+    ),
+    ("requestId", "RequestIdentity", "request_id"),
+    ("evaluationId", "EvaluationView", "evaluation_id"),
+    (
+        "inspectEvaluationId",
+        "InspectEvaluationRequest",
+        "evaluation_id",
+    ),
+    ("evaluationSpecDigest", "EvaluationSpec", "spec_digest"),
+];
+
+/// Return ergonomic client names with widths read from canonical field options.
+pub fn client_widths() -> Result<String, &'static str> {
+    named_widths(CLIENT_WIDTH_FIELDS)
+}
+
+fn named_widths(selectors: &[(&str, &str, &str)]) -> Result<String, &'static str> {
+    let pool = pool().ok_or("inference reflection descriptor is unavailable")?;
+    let mut names = std::collections::BTreeSet::new();
+    let mut entries = Vec::with_capacity(selectors.len());
+    for &(name, message, field) in selectors {
+        if !names.insert(name) {
+            return Err("inference client width name is duplicated");
+        }
+        let message = pool
+            .get_message_by_name(&format!("inference.customer.v1.{message}"))
+            .ok_or("inference client width message is unavailable")?;
+        let field = message
+            .get_field_by_name(field)
+            .ok_or("inference client width field is unavailable")?;
+        if field.kind() != Kind::Bytes {
+            return Err("inference client width field must be bytes");
+        }
+        let width = u32_option(&field.options(), "nonzero_fixed_bytes");
+        if width == 0 {
+            return Err("inference client width must have a positive fixed-byte option");
+        }
+        entries.push(format!(r#""{name}":{width}"#));
+    }
+    Ok(format!("{{{}}}", entries.join(",")))
+}
+
 fn u32_option(message: &DynamicMessage, name: &str) -> u32 {
     match option(message, name) {
         Some(Value::U32(value)) => value,
@@ -645,5 +708,40 @@ mod tests {
             ));
             assert!(!metadata.contains(r#""width":0"#));
         }
+    }
+
+    #[test]
+    fn client_widths_use_canonical_field_options() {
+        let widths = client_widths().expect("all client selectors must resolve");
+        assert!(widths.contains(r#""runId":16"#));
+        assert!(widths.contains(r#""contextRevision":32"#));
+        assert_eq!(widths.matches(':').count(), CLIENT_WIDTH_FIELDS.len());
+    }
+
+    #[test]
+    fn client_widths_reject_missing_nonbytes_unconstrained_and_duplicate_selectors() {
+        assert_eq!(
+            named_widths(&[("test", "Missing", "revision")]),
+            Err("inference client width message is unavailable")
+        );
+        assert_eq!(
+            named_widths(&[("test", "ContextView", "missing")]),
+            Err("inference client width field is unavailable")
+        );
+        assert_eq!(
+            named_widths(&[("test", "ContextView", "model")]),
+            Err("inference client width field must be bytes")
+        );
+        assert_eq!(
+            named_widths(&[("test", "Item", "id")]),
+            Err("inference client width must have a positive fixed-byte option")
+        );
+        assert_eq!(
+            named_widths(&[
+                ("test", "RunView", "run_id"),
+                ("test", "ContextView", "revision")
+            ]),
+            Err("inference client width name is duplicated")
+        );
     }
 }
