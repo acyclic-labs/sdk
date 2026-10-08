@@ -27,9 +27,23 @@ if (`sha256:${hash(manifestBytes)}` !== readFileSync(join(bundle, 'generation-ma
 const manifest = JSON.parse(manifestBytes);
 const receipt = json(join(packages, 'QUALIFICATION.json'));
 if (manifest.sourceState !== 'captured-snapshot' || !/^[0-9a-f]{40}$/.test(manifest.revision) || receipt.revision !== 1 || receipt.source_commit !== manifest.revision) throw new Error('installed packages must match the captured documentation source commit');
-const projections = json(join(bundle, 'sdk-docs-scenario-projections.v1.json')).projections;
-const expected = ['actors', 'stream', 'machines', 'workers', 'objects', 'inference'].map(name => `@acyclic-labs/${name}`);
-if (projections.length !== expected.length || new Set(projections.map(row => row.package)).size !== expected.length || expected.some(name => !projections.some(row => row.package === name && row.language === 'typescript'))) throw new Error('expected exactly the six registered TypeScript projections');
+const boundJson = name => {
+  const bytes = readFileSync(contained(bundle, name));
+  if (manifest.artifacts[name] !== `sha256:${hash(bytes)}`) throw new Error(`scenario sidecar digest differs: ${name}`);
+  return JSON.parse(bytes);
+};
+const projections = boundJson('sdk-docs-scenario-projections.v1.json').projections;
+const scenarios = boundJson('sdk-docs-scenarios.v1.json').scenarios;
+const rustExecutions = boundJson('sdk-docs-scenario-executions.v1.json');
+if (!projections.length || new Set(projections.map(row => row.scenarioId)).size !== projections.length || new Set(projections.map(row => row.package)).size !== projections.length) throw new Error('duplicate or absent registered TypeScript projections');
+for (const row of projections) {
+  const scenario = scenarios.find(source => source.id === row.scenarioId);
+  const execution = rustExecutions.find(result => result.id === row.scenarioId);
+  if (!scenario || !execution || row.language !== 'typescript' || row.package !== `@acyclic-labs/${scenario.family}` || scenario.sourceSha256 !== row.sourceSha256 || execution.sourceSha256 !== row.sourceSha256 || execution.stdoutSha256 !== row.rustOutputSha256 || execution.status !== 'passed') throw new Error(`projection differs from registered Rust scenario execution: ${row.scenarioId}`);
+  const bytes = readFileSync(contained(bundle, row.path));
+  if (`sha256:${hash(bytes)}` !== row.snippetSha256 || manifest.artifacts[row.path] !== row.snippetSha256) throw new Error(`generated snippet digest differs: ${row.path}`);
+}
+const expected = projections.map(row => row.package);
 const archives = receipt.packages.map(row => {
   if (!/^@acyclic-labs\/[a-z][a-z0-9-]*$/.test(row.name) || !/^acyclic-labs-[a-z0-9.-]+\.tgz$/.test(row.asset)) throw new Error('invalid package receipt identity');
   const path = contained(packages, row.asset), bytes = readFileSync(path);

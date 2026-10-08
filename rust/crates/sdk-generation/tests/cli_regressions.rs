@@ -498,6 +498,57 @@ fn output_message(result: &std::process::Output) -> String {
     )
 }
 
+#[test]
+fn scenario_failure_leaves_docs_unadmitted() {
+    let fixture = fixture(false);
+    let result = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "unadmitted-scenario-failure",
+        "preview",
+        false,
+    );
+    assert!(!result.status.success(), "{}", output_message(&result));
+    assert!(
+        output_message(&result).contains("scenario"),
+        "{}",
+        output_message(&result)
+    );
+    assert!(fixture
+        .output
+        .join("preview/unadmitted-scenario-failure/sdk-docs-data.v2.json")
+        .exists());
+    assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+}
+
+#[test]
+fn source_mutation_during_profiles_leaves_docs_unadmitted() {
+    let fixture = feature_profile_fixture();
+    fs::write(fixture.root.join("rust/crates/demo/build.rs"), r#"
+fn main() {
+    use std::io::Write;
+    let path = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("src/lib.rs");
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "// source mutated during profile execution").unwrap();
+}
+"#).unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "source mutation fixture"],
+    );
+    let result = run_generate_execute_profiles(&fixture);
+    assert!(!result.status.success(), "{}", output_message(&result));
+    assert!(
+        output_message(&result).contains("source digest changed"),
+        "{}",
+        output_message(&result)
+    );
+    assert!(fixture.output.join("generation-manifest.v1.json").exists());
+    assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+}
+
 fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_plugin: bool) {
     let fixture = fixture(include_plugin);
     let first = run_generate(

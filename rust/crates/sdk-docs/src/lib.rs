@@ -549,6 +549,25 @@ pub fn merge_profile_catalog(data: &mut DocsData, variant: DocsData) -> Result<(
 /// A persistent output-directory lock serializes concurrent publications
 /// across index validation, bundle writes, and index replacement.
 pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Result<(), Error> {
+    write_bundle_inner(data, output_dir, mark_latest, true)
+}
+
+/// Write immutable data without admitting it into the version catalog.
+/// Producers may qualify sidecars before calling [`write_bundle`] to publish.
+pub fn write_bundle_files(
+    data: &DocsData,
+    output_dir: &Path,
+    mark_latest: bool,
+) -> Result<(), Error> {
+    write_bundle_inner(data, output_dir, mark_latest, false)
+}
+
+fn write_bundle_inner(
+    data: &DocsData,
+    output_dir: &Path,
+    mark_latest: bool,
+    publish: bool,
+) -> Result<(), Error> {
     if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
         return Err(Error::Invalid(
             "cannot publish data with an unsupported docs schema".into(),
@@ -612,11 +631,13 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
         &serde_json::to_vec_pretty(&schemars::schema_for!(VersionIndex))?,
         true,
     )?;
-    atomic_write(
-        &output_dir.join("sdk-docs-versions.v1.json"),
-        &serde_json::to_vec_pretty(&updated_index)?,
-        false,
-    )?;
+    if publish {
+        atomic_write(
+            &output_dir.join("sdk-docs-versions.v1.json"),
+            &serde_json::to_vec_pretty(&updated_index)?,
+            false,
+        )?;
+    }
     Ok(())
 }
 

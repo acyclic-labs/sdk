@@ -5,8 +5,8 @@ use sdk_docs::rustdoc_profiles::{
     ProfileSpec,
 };
 use sdk_docs::{
-    build_data, merge_profile_catalog, rustdoc_digest, scenarios, write_bundle, BuildInput,
-    Channel, GeneratedSource, PackageMetadata,
+    build_data, merge_profile_catalog, rustdoc_digest, scenarios, write_bundle, write_bundle_files,
+    BuildInput, Channel, GeneratedSource, PackageMetadata,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -451,7 +451,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     let availability =
         project_into_docs(&data, &metadata, profile_items, &profiles).map_err(profile_error)?;
     fs::create_dir_all(&output).map_err(io_error)?;
-    write_bundle(&data, &output, input.mark_latest).map_err(docs_error)?;
+    write_bundle_files(&data, &output, input.mark_latest).map_err(docs_error)?;
     for source in generated_source_artifacts {
         let bytes = fs::read(&source.physical_path).map_err(io_error)?;
         if sha256_bytes(&bytes).trim_start_matches("sha256:")
@@ -594,7 +594,10 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         &output.join("generation-manifest.v1.sha256"),
         sha256_bytes(&manifest_bytes).as_bytes(),
     )?;
-    let _ = scenario_artifacts;
+    // Re-read the source closure, revision, receipts and all immutable artifacts
+    // after execution. Failed qualification leaves files unadmitted.
+    drift((root.clone(), output.clone(), rustdoc_dir.clone()))?;
+    write_bundle(&data, &output, input.mark_latest).map_err(docs_error)?;
     println!("generated {}", output.display());
     Ok(())
 }
@@ -1408,6 +1411,9 @@ fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>, CliError> 
     for path in files {
         if path.file_name() == Some(OsStr::new("generation-manifest.v1.json"))
             || path.file_name() == Some(OsStr::new("generation-manifest.v1.sha256"))
+            // The catalog changes as qualified versions are admitted; it is
+            // not an immutable artifact belonging to one generation.
+            || path == output.join("sdk-docs-versions.v1.json")
         {
             continue;
         }
