@@ -16,6 +16,7 @@ const sourceRoots = [
   "Cargo.toml",
   "Cargo.lock",
   "rust-toolchain.toml",
+  ".cargo/config.toml",
   // acyclic-actors links this crate under non-WASM targets. Keep its source
   // in the attestation so a native build cannot silently use another tree.
   "rust/crates/native-runtime",
