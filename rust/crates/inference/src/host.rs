@@ -722,7 +722,6 @@ impl RetainWarm {
         obs::finish(
             async {
                 bounded(&self.request)?;
-                let expected_context = fixed::<32>(&self.request.context)?;
                 contract::validate_retain_request(&self.request)
                     .map_err(|error| Error::Invalid(error.message()))?;
                 let view = self
@@ -731,15 +730,8 @@ impl RetainWarm {
                     .retain(self.client.request(self.request.clone())?)
                     .await?
                     .into_inner();
-                validate_warm_view(&view, Some(expected_context), None)?;
-                if self.request.idle_kv.is_some() != view.idle_kv.is_some() {
-                    return Err(Error::Invalid("retention mode differs"));
-                }
-                if let Some(policy) = &self.request.idle_kv
-                    && view.idle_kv.as_ref().and_then(|idle| idle.policy.as_ref()) != Some(policy)
-                {
-                    return Err(Error::Invalid("idle retention policy differs"));
-                }
+                contract::validate_retain_response(&view, &self.request)
+                    .map_err(|error| Error::Invalid(error.message()))?;
                 Ok(WarmContext {
                     client: self.client.clone(),
                     commitment: fixed(&view.commitment)?,
@@ -863,7 +855,6 @@ impl RenewWarm {
         obs::finish(
             async {
                 bounded(&self.request)?;
-                let commitment = fixed::<32>(&self.request.commitment)?;
                 contract::validate_renew_request(&self.request)
                     .map_err(|error| Error::Invalid(error.message()))?;
                 let view = self
@@ -872,20 +863,8 @@ impl RenewWarm {
                     .renew(self.client.request(self.request.clone())?)
                     .await?
                     .into_inner();
-                validate_warm_view(&view, None, Some(commitment))?;
-                if self.request.idle_timeout_ms.is_some() != view.idle_kv.is_some() {
-                    return Err(Error::Invalid("renewal retention mode differs"));
-                }
-                if let Some(timeout) = self.request.idle_timeout_ms
-                    && view
-                        .idle_kv
-                        .as_ref()
-                        .and_then(|idle| idle.policy.as_ref())
-                        .map(|policy| policy.idle_timeout_ms)
-                        != Some(timeout)
-                {
-                    return Err(Error::Invalid("idle renewal timeout differs"));
-                }
+                contract::validate_renew_response(&view, &self.request)
+                    .map_err(|error| Error::Invalid(error.message()))?;
                 Ok(view)
             }
             .await,
@@ -1233,6 +1212,143 @@ mod tests {
     use super::*;
     use crate::DESCRIPTOR;
     use prost::Message;
+
+    struct WarmFixture(std::sync::Mutex<wire::WarmView>);
+
+    #[tonic::async_trait]
+    impl wire::warm_contexts_service_server::WarmContextsService for Arc<WarmFixture> {
+        async fn retain(
+            &self,
+            _: Request<wire::RetainWarmRequest>,
+        ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+            self.inspect(Request::new(wire::InspectWarmRequest::default()))
+                .await
+        }
+        async fn renew(
+            &self,
+            _: Request<wire::RenewWarmRequest>,
+        ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+            self.inspect(Request::new(wire::InspectWarmRequest::default()))
+                .await
+        }
+        async fn inspect(
+            &self,
+            _: Request<wire::InspectWarmRequest>,
+        ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+            self.0
+                .lock()
+                .map(|view| tonic::Response::new(view.clone()))
+                .map_err(|_| tonic::Status::internal("fixture lock poisoned"))
+        }
+        async fn release(
+            &self,
+            _: Request<wire::ReleaseWarmRequest>,
+        ) -> Result<tonic::Response<wire::WarmView>, tonic::Status> {
+            Err(tonic::Status::unimplemented("fixture release"))
+        }
+    }
+
+    #[tokio::test]
+    async fn native_warm_operations_reject_substituted_modes_authority_and_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let latency = wire::WarmView {
+            commitment: vec![1; 32],
+            context: vec![2; 32],
+            model_profile: vec![3; 32],
+            latency_profile: vec![6; 32],
+            expires_at_ms: 110,
+            state: wire::WarmState::Active.into(),
+            evidence_digest: vec![4; 32],
+            admission_receipt_id: vec![5; 32],
+            sequence: 1,
+            idle_kv: None,
+        };
+        let mut idle = latency.clone();
+        idle.latency_profile.clear();
+        idle.idle_kv = Some(wire::IdleKvRetention {
+            policy: Some(wire::IdleKvPolicy {
+                profile: vec![6; 32],
+                idle_timeout_ms: 10,
+            }),
+            retained_at_ms: 100,
+            ..Default::default()
+        });
+        let fixture = Arc::new(WarmFixture(std::sync::Mutex::new(latency.clone())));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(
+                    wire::warm_contexts_service_server::WarmContextsServiceServer::new(
+                        fixture.clone(),
+                    ),
+                )
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        let client = Inference(Arc::new(Connection {
+            channel: Endpoint::from_shared(format!("http://{address}"))?
+                .connect()
+                .await?,
+            authorization: authorization("fixture")?,
+            client_instance: [7; 16],
+        }));
+        let context = Context {
+            client: client.clone(),
+            revision: [2; 32],
+        };
+        let warm = WarmContext {
+            client,
+            commitment: [1; 32],
+        };
+        for baseline in [latency.clone(), idle.clone()] {
+            let is_idle = baseline.idle_kv.is_some();
+            let retain = context.retain(if is_idle {
+                Retention::idle_kv([6; 32], 10)
+            } else {
+                Retention::warm_until([6; 32], 110)
+            });
+            let renew = if is_idle {
+                warm.renew_idle(10)
+            } else {
+                warm.renew(110)
+            };
+            for fault in 0..6 {
+                let mut response = baseline.clone();
+                match fault {
+                    1 => response.context = vec![9; 32],
+                    2 => response.commitment = vec![9; 32],
+                    3 => response.expires_at_ms += 1,
+                    5 => response.sequence = 0,
+                    4 => {
+                        response = if is_idle {
+                            latency.clone()
+                        } else {
+                            idle.clone()
+                        }
+                    }
+                    _ => {}
+                }
+                *fixture.0.lock().map_err(|_| "fixture lock poisoned")? = response;
+                assert_eq!(retain.send().await.is_ok(), fault == 0 || fault == 2);
+                assert_eq!(renew.send().await.is_ok(), fault == 0 || fault == 1);
+            }
+            let mut response = baseline;
+            if let Some(policy) = response
+                .idle_kv
+                .as_mut()
+                .and_then(|idle| idle.policy.as_mut())
+            {
+                policy.profile = vec![9; 32];
+            } else {
+                response.latency_profile = vec![9; 32];
+            }
+            *fixture.0.lock().map_err(|_| "fixture lock poisoned")? = response;
+            assert!(retain.send().await.is_err());
+        }
+        server.abort();
+        let _cancelled = server.await;
+        Ok(())
+    }
 
     fn evaluation_spec() -> wire::EvaluationSpec {
         wire::EvaluationSpec {

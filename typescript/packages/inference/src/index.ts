@@ -1,4 +1,4 @@
-import { create, fromJson, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
@@ -145,9 +145,12 @@ export class InferenceClient {
     return receipt;
   }
   async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
-    if (request.idleKv !== undefined) await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
+    request = clone(RetainWarmRequestSchema, request);
+    const expected = request.context.slice();
+    const related = toBinary(RetainWarmRequestSchema, request);
+    await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
     const view = await this.transport.retainWarm(request);
-    await validateContract(request.idleKv === undefined ? "legacy_warm_context" : "idle_warm_context", WarmViewSchema, view, request.context, toBinary(RetainWarmRequestSchema, request));
+    await validateContract("warm_context", WarmViewSchema, view, expected, related);
     return view;
   }
   async inspectWarm(commitment: Uint8Array): Promise<WarmView> {
@@ -157,10 +160,13 @@ export class InferenceClient {
     return view;
   }
   async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
+    request = clone(RenewWarmRequestSchema, request);
+    const expected = request.commitment.slice();
+    const related = toBinary(RenewWarmRequestSchema, request);
     requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
-    if (request.idleTimeoutMs !== undefined) await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
+    await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
     const view = await this.transport.renewWarm(request);
-    await validateContract(request.idleTimeoutMs === undefined ? "legacy_warm_commitment" : "idle_warm_commitment", WarmViewSchema, view, request.commitment, toBinary(RenewWarmRequestSchema, request));
+    await validateContract("warm_commitment", WarmViewSchema, view, expected, related);
     return view;
   }
   async releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
