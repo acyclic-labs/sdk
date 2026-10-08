@@ -151,45 +151,59 @@ fn subscription_start_ingress_and_payload_are_lossless() {
 #[kani::proof]
 #[kani::unwind(40)]
 fn subscription_observation_numeric_projection_is_lossless() {
-    let delivered_cursor: u64 = kani::any();
-    let completed_cursor: u64 = kani::any();
-    let recoverable_cursor: u64 = kani::any();
-    let failed_cursor: Option<u64> = kani::any();
-    let value = super::SubscriptionObservation::try_from(crate::wire::SubscriptionObservation {
+    let cursors: CursorValues = kani::any();
+    let value = super::SubscriptionObservation::try_from(subscription(cursors)).unwrap();
+    assert_subscription_projection(&value, cursors);
+    let wire: crate::wire::SubscriptionObservation = value.into();
+    assert_subscription_wire_projection(&wire, cursors);
+}
+
+type CursorValues = (u64, u64, u64, Option<u64>);
+
+fn subscription(cursors: CursorValues) -> crate::wire::SubscriptionObservation {
+    crate::wire::SubscriptionObservation {
         subscription_id: "s".into(),
         stream_path: "p".into(),
         state: SubscriptionState::Active as i32,
-        delivered_cursor,
-        completed_cursor,
-        recoverable_cursor,
+        delivered_cursor: cursors.0,
+        completed_cursor: cursors.1,
+        recoverable_cursor: cursors.2,
         placement_anchor: false,
         retry_count: 0,
         failure_code: String::new(),
-        failed_cursor,
-    })
-    .unwrap();
-    assert_eq!(value.delivered_cursor(), delivered_cursor);
-    assert_eq!(value.completed_cursor(), completed_cursor);
-    assert_eq!(value.recoverable_cursor(), recoverable_cursor);
-    assert_eq!(value.failed_cursor(), failed_cursor);
-    let wire: crate::wire::SubscriptionObservation = value.into();
-    assert_eq!(wire.delivered_cursor, delivered_cursor);
-    assert_eq!(wire.completed_cursor, completed_cursor);
-    assert_eq!(wire.recoverable_cursor, recoverable_cursor);
-    assert_eq!(wire.failed_cursor, failed_cursor);
+        failed_cursor: cursors.3,
+    }
+}
+
+fn assert_subscription_projection(value: &super::SubscriptionObservation, cursors: CursorValues) {
+    assert_eq!(value.delivered_cursor(), cursors.0);
+    assert_eq!(value.completed_cursor(), cursors.1);
+    assert_eq!(value.recoverable_cursor(), cursors.2);
+    assert_eq!(value.failed_cursor(), cursors.3);
+}
+
+fn assert_subscription_wire_projection(
+    value: &crate::wire::SubscriptionObservation,
+    cursors: CursorValues,
+) {
+    assert_eq!(value.delivered_cursor, cursors.0);
+    assert_eq!(value.completed_cursor, cursors.1);
+    assert_eq!(value.recoverable_cursor, cursors.2);
+    assert_eq!(value.failed_cursor, cursors.3);
 }
 
 fn observation(
     checkpoint_unix_millis: Option<u64>,
     checkpoint_epoch: u64,
     configuration_revision: u64,
+    cursors: Option<CursorValues>,
 ) -> crate::wire::ActorObservation {
     crate::wire::ActorObservation {
         actor_id: "a".into(),
         code_sha256: vec![1; 32].into(),
         home_region: String::new(),
         state: ActorState::Active as i32,
-        subscriptions: Vec::new(),
+        subscriptions: cursors.map(subscription).into_iter().collect(),
         checkpoint_unix_millis,
         checkpoint_epoch,
         configuration_revision,
@@ -201,10 +215,15 @@ fn assert_observation_projection(
     checkpoint_unix_millis: Option<u64>,
     checkpoint_epoch: u64,
     configuration_revision: u64,
+    cursors: Option<CursorValues>,
 ) {
     assert_eq!(value.checkpoint_unix_millis(), checkpoint_unix_millis);
     assert_eq!(value.checkpoint_epoch(), checkpoint_epoch);
     assert_eq!(value.configuration_revision(), configuration_revision);
+    assert_eq!(value.subscriptions().len(), usize::from(cursors.is_some()));
+    if let Some(cursors) = cursors {
+        assert_subscription_projection(&value.subscriptions()[0], cursors);
+    }
 }
 
 fn assert_observation_wire_projection(
@@ -212,10 +231,15 @@ fn assert_observation_wire_projection(
     checkpoint_unix_millis: Option<u64>,
     checkpoint_epoch: u64,
     configuration_revision: u64,
+    cursors: Option<CursorValues>,
 ) {
     assert_eq!(value.checkpoint_unix_millis, checkpoint_unix_millis);
     assert_eq!(value.checkpoint_epoch, checkpoint_epoch);
     assert_eq!(value.configuration_revision, configuration_revision);
+    assert_eq!(value.subscriptions.len(), usize::from(cursors.is_some()));
+    if let Some(cursors) = cursors {
+        assert_subscription_wire_projection(&value.subscriptions[0], cursors);
+    }
 }
 
 #[kani::proof]
@@ -224,39 +248,41 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
     let millis: Option<u64> = kani::any();
     let epoch: u64 = kani::any();
     let revision: u64 = kani::any();
-    let value = super::ActorObservation::try_from(observation(millis, epoch, revision)).unwrap();
-    assert_observation_projection(&value, millis, epoch, revision);
+    let cursors: Option<CursorValues> = kani::any();
+    let value =
+        super::ActorObservation::try_from(observation(millis, epoch, revision, cursors)).unwrap();
+    assert_observation_projection(&value, millis, epoch, revision, cursors);
     let wire: crate::wire::ActorObservation = value.into();
-    assert_observation_wire_projection(&wire, millis, epoch, revision);
+    assert_observation_wire_projection(&wire, millis, epoch, revision, cursors);
 
     let create_present: bool = kani::any();
     let create = super::CreateActorResponse::try_from(crate::wire::CreateActorResponse {
-        actor: create_present.then(|| observation(millis, epoch, revision)),
+        actor: create_present.then(|| observation(millis, epoch, revision, cursors)),
     })
     .unwrap();
     assert_eq!(create.actor().is_some(), create_present);
     if let Some(actor) = create.actor() {
-        assert_observation_projection(actor, millis, epoch, revision);
+        assert_observation_projection(actor, millis, epoch, revision, cursors);
     }
     let wire: crate::wire::CreateActorResponse = create.into();
     assert_eq!(wire.actor.is_some(), create_present);
     if let Some(actor) = wire.actor {
-        assert_observation_wire_projection(&actor, millis, epoch, revision);
+        assert_observation_wire_projection(&actor, millis, epoch, revision, cursors);
     }
 
     let update_present: bool = kani::any();
     let update = super::UpdateActorResponse::try_from(crate::wire::UpdateActorResponse {
-        actor: update_present.then(|| observation(millis, epoch, revision)),
+        actor: update_present.then(|| observation(millis, epoch, revision, cursors)),
     })
     .unwrap();
     assert_eq!(update.actor().is_some(), update_present);
     if let Some(actor) = update.actor() {
-        assert_observation_projection(actor, millis, epoch, revision);
+        assert_observation_projection(actor, millis, epoch, revision, cursors);
     }
     let wire: crate::wire::UpdateActorResponse = update.into();
     assert_eq!(wire.actor.is_some(), update_present);
     if let Some(actor) = wire.actor {
-        assert_observation_wire_projection(&actor, millis, epoch, revision);
+        assert_observation_wire_projection(&actor, millis, epoch, revision, cursors);
     }
 }
 
