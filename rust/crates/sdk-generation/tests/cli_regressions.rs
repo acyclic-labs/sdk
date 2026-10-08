@@ -1023,3 +1023,66 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         "restoring the exact Rust source must restore drift validity"
     );
 }
+
+#[test]
+fn clean_relocated_profile_builds_share_generated_source_content_identity() {
+    let fixture = feature_profile_fixture();
+    fs::write(fixture.root.join("rust/crates/demo/build.rs"),
+        "fn main() { std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), \"pub struct GeneratedWire;\\n\").unwrap(); }\n").unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/demo/src/lib.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\n",
+    )
+    .unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "generated source relocation fixture",
+        ],
+    );
+    let relocated_root = fixture.root.with_extension("relocated");
+    let relocated_output = fixture.output.with_extension("relocated");
+    assert!(Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            fixture.root.to_str().unwrap(),
+            relocated_root.to_str().unwrap()
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let relocated = Fixture {
+        root: relocated_root,
+        rustdoc: relocated_output.join(".rustdoc"),
+        output: relocated_output,
+    };
+    for checkout in [&fixture, &relocated] {
+        assert!(
+            !checkout.output.exists(),
+            "each profile build starts with a fresh output directory"
+        );
+        let result = run_generate_execute_profiles(checkout);
+        assert!(result.status.success(), "{}", output_message(&result));
+        assert!(run_drift_execute_profiles(checkout).status.success());
+    }
+    let path = "preview/feature-profile-catalog/sdk-docs-data.v2.json";
+    assert_eq!(
+        fs::read(fixture.output.join(path)).unwrap(),
+        fs::read(relocated.output.join(path)).unwrap(),
+        "independent clean profile outputs must publish identical content identities and bytes"
+    );
+    assert_eq!(
+        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
+        fs::read(
+            relocated
+                .output
+                .join("sdk-docs-profile-availability.v1.json")
+        )
+        .unwrap()
+    );
+}

@@ -46,11 +46,14 @@ entry. Each [`GeneratedSource`](src/lib.rs) entry identifies the exact physical
 file, a relative logical path such as `generated/actors/wire.rs`, and its
 SHA-256 digest (with or without the `sha256:` prefix). The library canonicalizes
 the physical file, rejects symlink or reparse-point paths, rejects absolute or
-escaping logical paths, rejects duplicate mappings, and verifies the digest
+escaping logical paths, rejects duplicate physical mappings and conflicting
+logical digests, and verifies the digest
 before projection and again after projection. The resulting `SourceSpan.path`
 uses the logical path while retaining Rustdoc's line and column coordinates;
 generated-source inputs are transient and do not add fields to the v2 output
-schema.
+schema. Distinct physical files with identical bytes may share one logical
+path; every physical alias is independently attested and resolves to that
+same published source identity.
 
 Crate-root `//!` documentation becomes a guide at the crate path. Public module
 documentation becomes a guide at that module's Rust path; its title is the

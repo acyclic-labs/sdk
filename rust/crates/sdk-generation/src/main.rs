@@ -1144,34 +1144,7 @@ fn materialize_generated_sources(
         if !physical.is_absolute() {
             continue;
         }
-        let (physical, stable_identity) = if physical.is_file() {
-            let canonical = physical.canonicalize().map_err(io_error)?;
-            let inside_root = canonical.starts_with(root);
-            if inside_root {
-                let relative = canonical
-                    .strip_prefix(root)
-                    .map_err(|_| CliError("generated source escaped the repository root".into()))?;
-                let identity = path_string(relative);
-                (canonical, identity)
-            } else {
-                let basename = physical
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .ok_or_else(|| {
-                        CliError(format!(
-                            "Rustdoc generated source has invalid filename {filename}"
-                        ))
-                    })?;
-                (
-                    // Keep an existing external producer path so sdk-docs can
-                    // resolve the Rustdoc span by its canonical filename.
-                    // Missing external paths are staged below; existing
-                    // profile outputs are already immutable inputs.
-                    canonical,
-                    external_source_identity(&physical, basename),
-                )
-            }
-        } else {
+        if !physical.is_file() {
             validate_restore_path(root, rustdoc_files, &physical)?;
             if !physical.starts_with(root) && !retained_aliases.contains_key(&filename) {
                 return Err(CliError(format!(
@@ -1215,28 +1188,11 @@ fn materialize_generated_sources(
                     return Err(CliError("captured Rustdoc source digest changed".into()));
                 }
             }
-            let identity = if !physical.starts_with(root) {
-                external_source_identity(&physical, basename)
-            } else {
-                candidate
-                    .strip_prefix(root)
-                    .map(path_string)
-                    .unwrap_or_else(|_| {
-                        format!(
-                            "external/{}",
-                            candidate
-                                .file_name()
-                                .and_then(OsStr::to_str)
-                                .unwrap_or("generated-source")
-                        )
-                    })
-            };
             if let Some(parent) = physical.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
             }
             fs::copy(candidate, &physical).map_err(io_error)?;
-            (physical, identity)
-        };
+        }
         let physical = physical.canonicalize().map_err(io_error)?;
         let is_generated = !physical.starts_with(root)
             || physical
@@ -1259,7 +1215,11 @@ fn materialize_generated_sources(
         // differs on every producer host.  The stable source identity keeps
         // distinct basenames separate, while the content digest keeps
         // same-named sources with different bytes separate.
-        let logical_identity = format!("{stable_identity}\0{digest}");
+        let basename = physical
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| CliError("generated source has no filename".into()))?;
+        let logical_identity = format!("{basename}\0{digest}");
         let logical_path = PathBuf::from(format!(
             "generated/rustdoc/{}{}",
             sha256_bytes(logical_identity.as_bytes()).trim_start_matches("sha256:"),
@@ -1272,25 +1232,11 @@ fn materialize_generated_sources(
         };
         // Multiple Rustdoc profiles can spell the same canonical source with
         // equivalent paths (for example, a `./` segment). The publication
-        // manifest contains one stable source entry; retain the first
-        // attested mapping and avoid emitting duplicate logical paths.
-        result.entry(source.logical_path.clone()).or_insert(source);
+        // catalog uses one content identity, but ingestion keeps every
+        // distinct physical alias so all profile source spans can resolve.
+        result.entry(source.physical_path.clone()).or_insert(source);
     }
     Ok(result.into_values().collect())
-}
-
-fn external_source_identity(path: &Path, basename: &str) -> String {
-    let components = path.components().collect::<Vec<_>>();
-    if let Some(index) = components
-        .iter()
-        .position(|part| part.as_os_str() == OsStr::new(".profile-build"))
-    {
-        return format!(
-            "profile-build/{}",
-            path_string(&components[index + 1..].iter().collect::<PathBuf>())
-        );
-    }
-    format!("external/{basename}")
 }
 
 fn validate_restore_path(root: &Path, receipts: &[PathBuf], path: &Path) -> Result<(), CliError> {
@@ -1313,7 +1259,27 @@ fn validate_restore_path(root: &Path, receipts: &[PathBuf], path: &Path) -> Resu
             }
         }
     }
-    if !owned.iter().any(|directory| path.starts_with(directory)) {
+    let comparable = |path: &Path| -> PathBuf {
+        #[cfg(windows)]
+        {
+            let text = path
+                .to_string_lossy()
+                .replace('/', "\\")
+                .to_ascii_lowercase();
+            let text = if let Some(unc) = text.strip_prefix("\\\\?\\unc\\") {
+                format!("\\\\{unc}")
+            } else {
+                text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
+            };
+            PathBuf::from(text)
+        }
+        #[cfg(not(windows))]
+        path.to_path_buf()
+    };
+    if !owned
+        .iter()
+        .any(|directory| comparable(path).starts_with(comparable(directory)))
+    {
         return Err(CliError(format!(
             "Rustdoc restoration is outside owned build directories: {}",
             path.display()
@@ -2030,7 +1996,7 @@ mod tests {
         let sources = materialize_generated_sources(&root, &[receipt]).unwrap();
         assert_eq!(sources.len(), 2);
         assert_eq!(sources[0].sha256, sources[1].sha256);
-        assert_ne!(sources[0].logical_path, sources[1].logical_path);
+        assert_eq!(sources[0].logical_path, sources[1].logical_path);
         assert_ne!(sources[0].physical_path, sources[1].physical_path);
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(output);

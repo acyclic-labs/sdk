@@ -1495,7 +1495,7 @@ fn attest_generated_sources(
     sources: &[GeneratedSource],
 ) -> Result<HashMap<PathBuf, GeneratedSource>, Error> {
     let mut attested = HashMap::new();
-    let mut logical_paths = HashSet::new();
+    let mut logical_paths = HashMap::<String, String>::new();
     let mut physical_paths = HashSet::new();
     for source in sources {
         let logical_path = normalize_generated_logical_path(&source.logical_path)?;
@@ -1504,10 +1504,17 @@ fn attest_generated_sources(
         } else {
             logical_path.clone()
         };
-        if !logical_paths.insert(logical_key) {
-            return Err(Error::Invalid(format!(
-                "generated source logical path is duplicated: {logical_path}"
-            )));
+        validate_generated_sha256(&source.sha256)?;
+        let digest = source
+            .sha256
+            .trim_start_matches("sha256:")
+            .to_ascii_lowercase();
+        if let Some(previous) = logical_paths.insert(logical_key, digest.clone()) {
+            if previous != digest {
+                return Err(Error::Invalid(format!(
+                    "generated source logical path has conflicting digests: {logical_path}"
+                )));
+            }
         }
         let repository_path = repository_root.join(&logical_path);
         reject_reparse_ancestors(&repository_path)?;
@@ -2445,8 +2452,33 @@ mod tests {
         let mut duplicate = generated.clone();
         duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
         let error = attest_generated_sources(&repository_root, &[generated.clone(), duplicate])
-            .expect_err("normalized duplicate logical paths must be rejected");
-        assert!(error.to_string().contains("logical path is duplicated"));
+            .expect_err("duplicate physical paths must be rejected");
+        assert!(error.to_string().contains("physical path is duplicated"));
+
+        let alias_path = external_root.join("alias/wire.rs");
+        fs::create_dir_all(alias_path.parent().unwrap()).unwrap();
+        fs::write(&alias_path, bytes).unwrap();
+        let mut alias = generated.clone();
+        alias.physical_path = alias_path.clone();
+        let aliases =
+            attest_generated_sources(&repository_root, &[generated.clone(), alias.clone()]).expect(
+                "identical independently attested physical aliases share one logical identity",
+            );
+        assert_eq!(aliases.len(), 2);
+        let alias_span = rustdoc_types::Span {
+            filename: alias_path.clone(),
+            begin: (7, 3),
+            end: (8, 9),
+        };
+        assert_eq!(
+            source_span_at_root(&repository_root, &aliases, &alias_span).unwrap(),
+            projected
+        );
+        fs::write(&alias_path, b"pub struct Conflicting;\n").unwrap();
+        alias.sha256 = sha256_hex(b"pub struct Conflicting;\n");
+        let error = attest_generated_sources(&repository_root, &[generated.clone(), alias])
+            .expect_err("one logical identity must never refer to different bytes");
+        assert!(error.to_string().contains("conflicting digests"));
 
         fs::write(&external, b"pub struct Changed;\n").expect("generated source should be mutable");
         let error = attest_generated_sources(&repository_root, &[generated])
