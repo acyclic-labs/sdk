@@ -665,6 +665,16 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
     Box::pin(worker_restart_with_options(command, true, false)).await
 }
 
+// Construct one phase in a short frame that returns before it is polled.
+// Otherwise this large scenario's unoptimized poll frame reserves temporaries
+// for every phase on top of the production call chain's default-thread stack.
+#[inline(never)]
+fn boxed_restart_phase<F: std::future::Future>(
+    create: impl FnOnce() -> F,
+) -> std::pin::Pin<Box<F>> {
+    Box::pin(create())
+}
+
 #[allow(
     clippy::cognitive_complexity,
     reason = "restart ownership and authority boundary cases"
@@ -868,90 +878,58 @@ async fn worker_restart_with_options(
         projection: tool.clone(),
     })?;
     for reopened in [false, true] {
-        let filesystem = Arc::new(FilesystemHost::new(
-            Fs::local(fs_options.clone())
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
-            provider.clone(),
-        )?);
-        if !reopened {
-            filesystem.create_volume(&volume).await?;
-        }
-        let stream = StreamClient::new(Arc::new(
-            LocalStream::open(&stream_root, LocalStreamLimits::default())
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(),
-            volume.clone(),
-            &issuer.verifier(),
-            &signed,
-            65_536,
-        )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(),
-            issuer.verifier(),
-            signed.clone(),
-            65_536,
-        )?);
-        if with_policy && !reopened {
-            Box::pin(async {
-                let mut aggregate = acyclic_harness::store::StreamAggregate::open(
-                    &stream,
-                    conversation_issuer.verifier().audience().clone(),
-                    conversation_issuer.verifier(),
-                    SchemaRegistry::new(),
-                )
-                .await?;
-                aggregate
-                    .execute(Command {
-                        operation_id: OperationId::from_bytes([90; 16]),
-                        idempotency_key: IdempotencyKey::new("worker-approval-bind")?,
-                        expected_revision: 0,
-                        scope: conversation_scope.clone(),
-                        causal_parent: None,
-                        action: Action::BindConversation { agent },
-                    })
-                    .await?;
-                Ok::<(), Error>(())
-            })
-            .await?;
-        }
-        let runtime = FilesystemTaskRuntime::open_with_policy_and_clock(
-            stream.clone(),
-            filesystem.clone(),
-            volume.clone(),
-            issuer.verifier(),
-            signed.clone(),
-            scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            tools.clone(),
-            SessionLimits {
-                active_tasks: 1,
-                total_tasks: if with_child { 2 } else { 1 },
-                depth: if with_child { 2 } else { 1 },
-                model_steps: if with_model_approval { 2 } else { 1 },
-            },
-            1,
-            65_536,
-            clock.clone(),
-            with_policy.then(|| policy.clone() as Arc<dyn ToolPolicy>),
-        )
-        .await?;
-        let runtime = if with_policy {
-            runtime.with_interaction_owner(
-                conversation_issuer.verifier(),
-                SchemaRegistry::new(),
-                conversation_scope.clone(),
+        let (filesystem, stream, payloads, reader, runtime) = boxed_restart_phase(|| async {
+            let filesystem = Arc::new(FilesystemHost::new(
+                Fs::local(fs_options.clone())
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+                provider.clone(),
+            )?);
+            if !reopened {
+                filesystem.create_volume(&volume).await?;
+            }
+            let stream = StreamClient::new(Arc::new(
+                LocalStream::open(&stream_root, LocalStreamLimits::default())
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            ));
+            let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+                filesystem.clone(),
                 volume.clone(),
-            )?
-        } else {
-            runtime
-        };
-        if with_policy && reopened {
-            let wrong = FilesystemTaskRuntime::open_with_policy_and_clock(
+                &issuer.verifier(),
+                &signed,
+                65_536,
+            )?);
+            let reader = Arc::new(FilesystemContentVerifier::new(
+                filesystem.clone(),
+                issuer.verifier(),
+                signed.clone(),
+                65_536,
+            )?);
+            if with_policy && !reopened {
+                Box::pin(async {
+                    let mut aggregate = acyclic_harness::store::StreamAggregate::open(
+                        &stream,
+                        conversation_issuer.verifier().audience().clone(),
+                        conversation_issuer.verifier(),
+                        SchemaRegistry::new(),
+                    )
+                    .await?;
+                    aggregate
+                        .execute(Command {
+                            operation_id: OperationId::from_bytes([90; 16]),
+                            idempotency_key: IdempotencyKey::new("worker-approval-bind")?,
+                            expected_revision: 0,
+                            scope: conversation_scope.clone(),
+                            causal_parent: None,
+                            action: Action::BindConversation { agent },
+                        })
+                        .await?;
+                    Ok::<(), Error>(())
+                })
+                .await?;
+            }
+            let runtime = FilesystemTaskRuntime::open_with_policy_and_clock(
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
@@ -963,30 +941,67 @@ async fn worker_restart_with_options(
                 tools.clone(),
                 SessionLimits {
                     active_tasks: 1,
-                    total_tasks: 1,
-                    depth: 1,
+                    total_tasks: if with_child { 2 } else { 1 },
+                    depth: if with_child { 2 } else { 1 },
                     model_steps: if with_model_approval { 2 } else { 1 },
                 },
                 1,
                 65_536,
                 clock.clone(),
-                Some(Arc::new(RestartPolicy {
-                    evaluated: AtomicUsize::new(0),
-                    digest: [53; 32],
-                })),
+                with_policy.then(|| policy.clone() as Arc<dyn ToolPolicy>),
             )
             .await?;
-            assert!(matches!(
-                wrong.task_host().observe_admission(task).await,
-                Err(Error::Conflict(_))
-            ));
-            drop(wrong);
-            assert_eq!(
-                tool.executed.load(Ordering::SeqCst),
-                usize::from(with_tool && !with_approval_wait)
-            );
-            assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
-        }
+            let runtime = if with_policy {
+                runtime.with_interaction_owner(
+                    conversation_issuer.verifier(),
+                    SchemaRegistry::new(),
+                    conversation_scope.clone(),
+                    volume.clone(),
+                )?
+            } else {
+                runtime
+            };
+            if with_policy && reopened {
+                let wrong = FilesystemTaskRuntime::open_with_policy_and_clock(
+                    stream.clone(),
+                    filesystem.clone(),
+                    volume.clone(),
+                    issuer.verifier(),
+                    signed.clone(),
+                    scope.clone(),
+                    tasks.clone(),
+                    machines.clone(),
+                    tools.clone(),
+                    SessionLimits {
+                        active_tasks: 1,
+                        total_tasks: 1,
+                        depth: 1,
+                        model_steps: if with_model_approval { 2 } else { 1 },
+                    },
+                    1,
+                    65_536,
+                    clock.clone(),
+                    Some(Arc::new(RestartPolicy {
+                        evaluated: AtomicUsize::new(0),
+                        digest: [53; 32],
+                    })),
+                )
+                .await?;
+                assert!(matches!(
+                    wrong.task_host().observe_admission(task).await,
+                    Err(Error::Conflict(_))
+                ));
+                drop(wrong);
+                assert_eq!(
+                    tool.executed.load(Ordering::SeqCst),
+                    usize::from(with_tool && !with_approval_wait)
+                );
+                assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+            }
+            Ok::<_, Error>((filesystem, stream, payloads, reader, runtime))
+        })
+        .await?;
+        boxed_restart_phase(|| async {
         if !reopened {
             let input = if with_child {
                 let admit = serde_json::to_vec(&TaskAdmitCommand {
@@ -1063,9 +1078,12 @@ async fn worker_restart_with_options(
                 Admission::Accepted(_)
             ));
         }
+        Ok::<_, Error>(())
+        }).await?;
         let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
             .await?
             .with_payload_store(payloads.clone());
+        let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
             assert!(!runtime.poll_task_wake(task).await?);
             if with_timer || with_mail_receive || with_child || with_approval_wait {
@@ -1121,7 +1139,7 @@ async fn worker_restart_with_options(
                     Some(Outcome::Cancelled)
                 );
                 assert!(coordinator.pull(&worker).await?.is_none());
-                return Ok(());
+                return Ok(true);
             }
             let retained = coordinator
                 .scheduler()
@@ -1273,70 +1291,81 @@ async fn worker_restart_with_options(
                     .await?;
             }
         }
-        let lease = if !reopened && with_command {
-            let before = stream
-                .stream("harness/v2/coordinator/events")?
-                .tail()
-                .await?;
-            assert!(matches!(
-                runtime.worker_tick(&worker, None, &NoCommands, 1, 0).await,
-                Err(Error::Invalid(_))
-            ));
-            assert_eq!(
-                stream
+        Ok::<_, Error>(false)
+        }).await?;
+        if stop {
+            return Ok(());
+        }
+        let lease = boxed_restart_phase(|| async {
+            let lease = if !reopened && with_command {
+                let before = stream
                     .stream("harness/v2/coordinator/events")?
                     .tail()
-                    .await?,
-                before
-            );
-            let tick = runtime
-                .worker_tick(&worker, None, &runtime.commands(), 1, 1)
-                .await?;
-            assert_eq!(tick.wake.events_read, 1);
-            let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = tick.work
-            else {
-                return Err(Error::NotFound("initial worker tick lease".into()));
+                    .await?;
+                assert!(matches!(
+                    runtime.worker_tick(&worker, None, &NoCommands, 1, 0).await,
+                    Err(Error::Invalid(_))
+                ));
+                assert_eq!(
+                    stream
+                        .stream("harness/v2/coordinator/events")?
+                        .tail()
+                        .await?,
+                    before
+                );
+                let tick = runtime
+                    .worker_tick(&worker, None, &runtime.commands(), 1, 1)
+                    .await?;
+                assert_eq!(tick.wake.events_read, 1);
+                let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) =
+                    tick.work
+                else {
+                    return Err(Error::NotFound("initial worker tick lease".into()));
+                };
+                assert_eq!(lease.operation.operation_id, operation);
+                let idle = runtime
+                    .worker_tick(&worker, tick.wake.cursor, &NoCommands, 1, 1)
+                    .await?;
+                assert!(idle.work.is_none());
+                lease
+            } else if reopened && (uncertain || with_mail_send) {
+                let retained = coordinator
+                    .scheduler()
+                    .operation(operation)
+                    .ok_or_else(|| Error::NotFound("uncertain task".into()))?;
+                assert_eq!(
+                    retained.phase,
+                    if uncertain {
+                        acyclic_harness::scheduler::OperationPhase::Reconciling
+                    } else {
+                        acyclic_harness::scheduler::OperationPhase::Running
+                    }
+                );
+                assert!(retained.reservation.is_some());
+                assert!(coordinator.pull(&worker).await?.is_none());
+                old_lease
+                    .clone()
+                    .ok_or_else(|| Error::NotFound("retained lease".into()))?
+            } else {
+                coordinator
+                    .pull(&worker)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("worker lease".into()))?
             };
-            assert_eq!(lease.operation.operation_id, operation);
-            let idle = runtime
-                .worker_tick(&worker, tick.wake.cursor, &NoCommands, 1, 1)
-                .await?;
-            assert!(idle.work.is_none());
-            lease
-        } else if reopened && (uncertain || with_mail_send) {
-            let retained = coordinator
-                .scheduler()
-                .operation(operation)
-                .ok_or_else(|| Error::NotFound("uncertain task".into()))?;
-            assert_eq!(
-                retained.phase,
-                if uncertain {
-                    acyclic_harness::scheduler::OperationPhase::Reconciling
-                } else {
-                    acyclic_harness::scheduler::OperationPhase::Running
-                }
-            );
-            assert!(retained.reservation.is_some());
-            assert!(coordinator.pull(&worker).await?.is_none());
-            old_lease
-                .clone()
-                .ok_or_else(|| Error::NotFound("retained lease".into()))?
-        } else {
-            coordinator
-                .pull(&worker)
-                .await?
-                .ok_or_else(|| Error::NotFound("worker lease".into()))?
-        };
-        if let Some(old) = &old_lease
-            && !uncertain
-            && !with_mail_send
-        {
-            assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
-            assert!(
-                matches!(runtime.resume_task(old.clone(), &NoCommands, 1).await,
+            if let Some(old) = &old_lease
+                && !uncertain
+                && !with_mail_send
+            {
+                assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
+                assert!(
+                    matches!(runtime.resume_task(old.clone(), &NoCommands, 1).await,
                 TaskWorkerAttempt::Unresolved { lease: attempted, .. } if attempted == *old)
-            );
-        }
+                );
+            }
+            Ok::<_, Error>(lease)
+        })
+        .await?;
+        let Some(outcome) = boxed_restart_phase(|| async {
         let outcome = if with_command {
             if !reopened {
                 assert!(
@@ -1478,7 +1507,7 @@ async fn worker_restart_with_options(
                     // Simulate process loss after committed send, before the
                     // machine consumes its result. All handles drop on continue.
                     old_lease = Some(lease.clone());
-                    continue;
+                    return Ok(None);
                 }
                 if with_timer {
                     let fence = LeaseFence::from(&lease.reservation);
@@ -1643,6 +1672,10 @@ async fn worker_restart_with_options(
             }
         } else {
             runtime.run_task(lease.clone(), &NoCommands, 1).await?
+        };
+        Ok::<_, Error>(Some(outcome))
+        }).await? else {
+            continue;
         };
         let outcome = if with_approval_wait && reopened && !declined {
             assert!(

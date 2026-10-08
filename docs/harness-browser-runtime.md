@@ -260,3 +260,29 @@ SHA256 b7668f216269bc64bcb2678c286c0a99e1c88837b334a3e53606d30d5e5d96da;
 retained root logs remain source-scoped. Missing local package bytes cannot be
 substituted for a qualified retained archive; CI artifact recovery is separate
 from qualification of this integration.
+
+Combined source be554100a7 passed automatic CI 37746363885, strict native
+lint and 249 unit plus 20 worker tests on each of Windows/Linux/macOS, both
+strict WASM checks, generated contracts, TypeScript project/type checks, Buf
+lint and all fourteen Chromium pages. Exact browser provider hashes and the
+rebuilt host-specific Filesystem pair are retained outside Cargo target.
+
+Its installed closure nevertheless failed: the extracted unoptimized Windows
+worker test cancelled_approval_is_not_woken_after_store_reopen overflowed the
+default stack. A pinned unoptimized Linux control independently reproduces
+SIGABRT. Optimized passes cannot substitute for this failed installed gate.
+The shared fixture's stored future is only 27,216 bytes, but PR5's debugger
+measured its unoptimized poll frame at 1,193,968 bytes in the finite nested
+publication chain. This is a fixture frame-allocation issue, not recursion.
+
+The repair separates the existing provider setup, admission, wake/cancellation,
+lease selection and command phases into heap-owned futures constructed in a
+short non-inlined test helper. All 190 assertions and the original sequence
+remain; cancellation exit and crash-after-mail continuation propagate to the
+outer fixture before its original handle drops. No production implementation,
+profile, stack limit or test selection changes. All 20 unoptimized default-stack
+worker cases pass on Linux, Windows and macOS with zero ignored.
+At 916 publication-read samples in the repaired Linux cancellation case, the
+largest observed fixture phase frame is 545,936 bytes and full chain 1,267,936
+bytes, with normal exit. These are scenario measurements, not universal bounds.
+The complete repaired installed closure and final-source matrix remain required.
