@@ -11,7 +11,9 @@ export function copyBytes(value: Uint8Array): Uint8Array {
  */
 export function ownBytes(value: Uint8Array): Uint8Array {
   const { buffer, byteOffset, byteLength } = value;
-  return byteOffset === 0 && byteLength === buffer.byteLength && !(buffer instanceof SharedArrayBuffer)
+  // Browsers without cross-origin isolation have no SharedArrayBuffer global.
+  const shared = typeof SharedArrayBuffer !== "undefined" && buffer instanceof SharedArrayBuffer;
+  return byteOffset === 0 && byteLength === buffer.byteLength && !shared
     ? new Uint8Array(buffer) : copyBytes(value);
 }
 

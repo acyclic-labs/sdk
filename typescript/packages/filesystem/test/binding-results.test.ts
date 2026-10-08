@@ -126,4 +126,15 @@ describe("filesystem binding byte results", () => {
     }
     expect([part[0], whole[0]]).toEqual([1, 1]);
   });
+  test("bulk bytes are owned where SharedArrayBuffer is not defined", () => {
+    const global = globalThis as { SharedArrayBuffer?: unknown };
+    const shared = global.SharedArrayBuffer;
+    delete global.SharedArrayBuffer;
+    try {
+      const whole = new Uint8Array([1, 2, 3]);
+      expect(ownBytes(whole).buffer).toBe(whole.buffer);
+    } finally {
+      global.SharedArrayBuffer = shared;
+    }
+  });
 });
