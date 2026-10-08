@@ -87,6 +87,7 @@ tokio-stream.workspace = true
 tower.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1.48.0", features = ["net", "io-util"] }
 tracing-subscriber.workspace = true
 
 [lints]

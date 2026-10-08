@@ -885,13 +885,107 @@ describe("website Stream contract", () => {
     await expect(next).rejects.toThrow("stop");
     expect(observedSignal).toBe(controller.signal);
 
-    const polling = new AbortController(); let requests = 0; let added = 0; let removed = 0;
-    const add = polling.signal.addEventListener.bind(polling.signal); const remove = polling.signal.removeEventListener.bind(polling.signal);
-    polling.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { added += 1; return add(...args); }) as AbortSignal["addEventListener"];
-    polling.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { removed += 1; return remove(...args); }) as AbortSignal["removeEventListener"];
-    const idle = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => { const route = new URL(String(input)).pathname.split("/").pop(); if (route === "tail") return new Response('"0"'); if (++requests === 3) polling.abort(); return new Response("[]"); } });
-    expect(await idle.follow("events", { from: 0n, signal: polling.signal })[Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined });
-    expect(added).toBe(removed);
+  });
+
+  test("hosted follow bounds idle polling, resets after activity, and clears cancellation resources", async () => {
+    // Every step waits for the actual timer scheduling barrier, without
+    // sleeping or guessing async continuation counts.
+    await ensureStreamWasm();
+    const timeoutDescriptor = Object.getOwnPropertyDescriptor(globalThis, "setTimeout")!;
+    const clearDescriptor = Object.getOwnPropertyDescriptor(globalThis, "clearTimeout")!;
+    type Scheduled = { readonly handle: number; readonly milliseconds: number; readonly finish: () => void };
+    const timers = new Map<number, Scheduled>();
+    const scheduled: Scheduled[] = [];
+    let waiting: ((timer: Scheduled) => void) | undefined;
+    let handle = 0;
+    const nextTimer = () => {
+      const timer = scheduled.shift();
+      return timer === undefined ? new Promise<Scheduled>(resolve => { waiting = resolve; }) : Promise.resolve(timer);
+    };
+    const fire = (timer: Scheduled) => {
+      expect(timers.delete(timer.handle)).toBeTrue();
+      timer.finish();
+    };
+    const polling = new AbortController();
+    let reads = 0; let tails = 0; let added = 0; let removed = 0;
+    const listeners = new Set<Parameters<AbortSignal["addEventListener"]>[1]>();
+    const cursors: unknown[] = [];
+    const add = polling.signal.addEventListener.bind(polling.signal);
+    const remove = polling.signal.removeEventListener.bind(polling.signal);
+    polling.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { added += 1; listeners.add(args[1]); return add(...args); }) as AbortSignal["addEventListener"];
+    polling.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { removed += 1; listeners.delete(args[1]); return remove(...args); }) as AbortSignal["removeEventListener"];
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (input, init) => {
+      expect(init?.signal).toBe(polling.signal);
+      const route = new URL(String(input)).pathname.split("/").pop();
+      if (route === "tail") { tails += 1; return new Response('"0"'); }
+      expect(route).toBe("read");
+      cursors.push(JSON.parse(String(init?.body)).from);
+      reads += 1;
+      return new Response(reads === 9 ? JSON.stringify([{ sequence: "0", value: "AQ==", commitId: encodedCommitId, committedAtMicros: "0" }]) : "[]");
+    } });
+    try {
+      Object.defineProperty(globalThis, "setTimeout", { ...timeoutDescriptor, value: (finish: () => void, milliseconds: number) => {
+        const timer = { handle: ++handle, milliseconds, finish };
+        timers.set(timer.handle, timer);
+        if (waiting === undefined) scheduled.push(timer);
+        else { const resolve = waiting; waiting = undefined; resolve(timer); }
+        return timer.handle;
+      } });
+      Object.defineProperty(globalThis, "clearTimeout", { ...clearDescriptor, value: (timerHandle: number) => { timers.delete(timerHandle); } });
+      const iterator = provider.follow("events", { from: 0n, signal: polling.signal })[Symbol.asyncIterator]();
+      const record = iterator.next();
+      const delays = [25, 50, 100, 200, 400, 800, 1000, 1000];
+      for (const [index, milliseconds] of delays.entries()) {
+        const timer = await nextTimer();
+        expect(timer.milliseconds).toBe(milliseconds);
+        expect(reads).toBe(index + 1);
+        expect(tails).toBe(1);
+        expect(timers.size).toBe(1);
+        expect(listeners.size).toBe(1);
+        expect(added - removed).toBe(1);
+        fire(timer);
+        expect(timers.size).toBe(0);
+        expect(listeners.size).toBe(0);
+        expect(added).toBe(removed);
+      }
+      await expect(record).resolves.toMatchObject({ done: false, value: { sequence: 0n, value: new Uint8Array([1]) } });
+      const pending = iterator.next();
+      const reset = await nextTimer();
+      expect(reset.milliseconds).toBe(25);
+      expect(reads).toBe(10);
+      expect(cursors).toEqual([...Array(9).fill("0"), "1"]);
+      polling.abort();
+      await expect(pending).resolves.toEqual({ done: true, value: undefined });
+      expect(timers.size).toBe(0);
+      expect(listeners.size).toBe(0);
+      expect(added).toBe(removed);
+      expect(await iterator.next()).toEqual({ done: true, value: undefined });
+      expect(reads).toBe(10);
+      expect(tails).toBe(1);
+    } finally {
+      polling.abort();
+      Object.defineProperty(globalThis, "setTimeout", timeoutDescriptor);
+      Object.defineProperty(globalThis, "clearTimeout", clearDescriptor);
+    }
+  });
+
+  test("hosted follow stops on malformed pages and canonical hosted errors", async () => {
+    for (const failure of [
+      { body: "{}", status: 200, code: "invalid_response" },
+      { body: JSON.stringify([{ sequence: "1", value: "AQ==", commitId: encodedCommitId, committedAtMicros: "0" }]), status: 200, code: "invalid_response" },
+      { body: JSON.stringify({ code: "access_denied", message: "revoked" }), status: 403, code: "access_denied" },
+    ]) {
+      const routes: string[] = [];
+      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
+        const route = new URL(String(input)).pathname.split("/").pop()!;
+        routes.push(route);
+        return route === "tail" ? new Response('"0"') : new Response(failure.body, { status: failure.status });
+      } });
+      const iterator = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
+      await expect(iterator.next()).rejects.toMatchObject({ code: failure.code });
+      expect(await iterator.next()).toEqual({ done: true, value: undefined });
+      expect(routes).toEqual(["tail", "read"]);
+    }
   });
 
   test("hosted follow does not fetch when its signal is already aborted", async () => {

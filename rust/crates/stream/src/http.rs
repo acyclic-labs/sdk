@@ -10,7 +10,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{collections::VecDeque, net::IpAddr, time::Duration};
-use tracing::field::Empty;
+use tracing::{Instrument, Span, field::Empty};
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
@@ -255,6 +255,100 @@ impl HttpStream {
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
+    // Keep clock control local to follow: HTTP request deadlines retain their real
+    // transport clock, while tests can observe and release each idle wait.
+    async fn follow_with_delay<D, F>(
+        &self,
+        path: StreamPath,
+        from: u64,
+        delay: D,
+    ) -> Result<RecordStream, StreamError>
+    where
+        D: FnMut(Duration) -> F + Send + 'static,
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut observation = FollowObservation::new(from);
+        let tail = self
+            .tail(path.clone())
+            .instrument(observation.span.clone())
+            .await;
+        match tail {
+            Ok(tail) if from <= tail => {}
+            Ok(_) => {
+                observation.failed(&StreamError::OutOfRange);
+                return Err(StreamError::OutOfRange);
+            }
+            Err(error) => {
+                observation.failed(&error);
+                return Err(error);
+            }
+        }
+        observation.span.record("phase", "consumer");
+        Ok(stream::try_unfold(
+            (
+                self.clone(),
+                path,
+                from,
+                VecDeque::<Record>::new(),
+                delay,
+                observation,
+            ),
+            |(provider, path, mut next, mut queued, mut delay, mut observation)| async move {
+                let span = observation.span.clone();
+                let result = async {
+                    loop {
+                        if let Some(record) = queued.pop_front() {
+                            next = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::Unavailable)?;
+                            if !observation.span.is_disabled() {
+                                observation
+                                    .span
+                                    .record("rev", next)
+                                    .record("queued", queued.len())
+                                    .record("phase", "consumer");
+                            }
+                            return Ok(record);
+                        }
+                        observation.span.record("phase", "read");
+                        queued = provider
+                            .read_page(
+                                ReadRequest {
+                                    path: path.clone(),
+                                    from: next,
+                                    limit: 256,
+                                },
+                                false,
+                            )
+                            .instrument(tracing::trace_span!("acyclic.stream.http.follow.poll"))
+                            .await?
+                            .into();
+                        observation.span.record("queued", queued.len());
+                        if queued.is_empty() {
+                            observation.span.record("phase", "sleep");
+                            delay(Duration::from_millis(250))
+                                .instrument(tracing::debug_span!(
+                                    "acyclic.stream.http.follow.sleep",
+                                    delay_ms = 250_u64
+                                ))
+                                .await;
+                        }
+                    }
+                }
+                .instrument(span)
+                .await;
+                if let Err(error) = &result {
+                    observation.failed(error);
+                }
+                Ok(Some((
+                    result?,
+                    (provider, path, next, queued, delay, observation),
+                )))
+            },
+        )
+        .boxed())
+    }
     async fn commit_request(
         &self,
         request: CommitRequest,
@@ -358,38 +452,7 @@ impl StreamProvider for HttpStream {
         Ok(stream::iter(self.read_page(request, true).await?.into_iter().map(Ok)).boxed())
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        if from > self.tail(path.clone()).await? {
-            return Err(StreamError::OutOfRange);
-        }
-        Ok(stream::try_unfold(
-            (self.clone(), path, from, VecDeque::<Record>::new()),
-            |(provider, path, mut next, mut queued)| async move {
-                loop {
-                    if let Some(record) = queued.pop_front() {
-                        next = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::Unavailable)?;
-                        return Ok(Some((record, (provider, path, next, queued))));
-                    }
-                    queued = provider
-                        .read_page(
-                            ReadRequest {
-                                path: path.clone(),
-                                from: next,
-                                limit: 256,
-                            },
-                            false,
-                        )
-                        .await?
-                        .into();
-                    if queued.is_empty() {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
-                }
-            },
-        )
-        .boxed())
+        self.follow_with_delay(path, from, tokio::time::sleep).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         let limit = request.limit;
@@ -467,6 +530,41 @@ impl StreamProvider for HttpStream {
             return Err(StreamError::Unavailable);
         }
         Ok(envelope)
+    }
+}
+// The observation lives with the cursor, including an in-flight read or idle
+// wait. Dropping a cursor says nothing about why its consumer stopped.
+struct FollowObservation {
+    span: Span,
+    terminal: bool,
+}
+impl FollowObservation {
+    fn new(from: u64) -> Self {
+        Self {
+            span: tracing::info_span!(
+                "acyclic.stream.http.follow",
+                rev = from,
+                queued = 0_u64,
+                phase = "tail",
+                terminal = Empty,
+                outcome = Empty,
+                error.kind = Empty
+            ),
+            terminal: false,
+        }
+    }
+    fn failed(&mut self, error: &StreamError) {
+        self.span.record("terminal", "error");
+        self.span.record("outcome", "err");
+        self.span.record("error.kind", error.code());
+        self.terminal = true;
+    }
+}
+impl Drop for FollowObservation {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.span.record("terminal", "dropped");
+        }
     }
 }
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
@@ -621,3 +719,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "http_follow_tests.rs"]
+mod follow_tests;
