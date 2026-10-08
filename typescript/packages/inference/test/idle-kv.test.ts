@@ -163,6 +163,40 @@ test("warm validation keeps caller authority through concurrent request aliases"
 });
 
 
+test("warm snapshots isolate in-place authority identity and policy mutations before transport", async () => {
+  const retryIdentity = () => ({ clientInstance: bytes(1, 16), requestId: bytes(2, 16) });
+  const retain = create(RetainWarmRequestSchema, { identity: retryIdentity(), context: bytes(4), idleKv: { profile: bytes(6), idleTimeoutMs: 20n } });
+  const renew = create(RenewWarmRequestSchema, { identity: retryIdentity(), commitment: bytes(3), idleTimeoutMs: 20n });
+  const client = new InferenceClient({
+    retainWarm: async (sent: typeof retain) => {
+      expect(sent.context).toEqual(bytes(4));
+      expect(sent.identity).toEqual(create(RetainWarmRequestSchema, { identity: retryIdentity() }).identity);
+      expect(sent.idleKv?.profile).toEqual(bytes(6));
+      expect(sent.idleKv?.idleTimeoutMs).toBe(20n);
+      return view();
+    },
+    renewWarm: async (sent: typeof renew) => {
+      expect(sent.commitment).toEqual(bytes(3));
+      expect(sent.identity).toEqual(create(RenewWarmRequestSchema, { identity: retryIdentity() }).identity);
+      expect(sent.idleTimeoutMs).toBe(20n);
+      return view();
+    },
+  } as never);
+  const retaining = client.retainWarm(retain);
+  retain.context.fill(9);
+  retain.identity!.clientInstance.fill(9);
+  retain.identity!.requestId.fill(10);
+  retain.idleKv!.profile.fill(11);
+  retain.idleKv!.idleTimeoutMs = 30n;
+  expect((await retaining).context).toEqual(bytes(4));
+  const renewing = client.renewWarm(renew);
+  renew.commitment.fill(9);
+  renew.identity!.clientInstance.fill(9);
+  renew.identity!.requestId.fill(10);
+  renew.idleTimeoutMs = 30n;
+  expect((await renewing).commitment).toEqual(bytes(3));
+});
+
 test("invalid authority width rejects before snapshot copies or transport", async () => {
   class CopyTrap extends Uint8Array {
     override slice(): Uint8Array { throw new Error("unexpected authority copy"); }
