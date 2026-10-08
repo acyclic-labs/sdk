@@ -54,6 +54,8 @@ pub enum PublicationStatus {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_source: Option<historical::CapturedSource>,
     #[serde(default)]
     pub publication_status: PublicationStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -213,6 +215,8 @@ pub struct DocsData {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_source: Option<historical::CapturedSource>,
     #[serde(default)]
     pub publication_status: PublicationStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -339,7 +343,14 @@ fn build_data_inner(
     if !matches!(
         input.source_state.as_str(),
         "captured-snapshot" | "working-tree" | "release-tag"
-    ) {
+    ) && !(input.source_state == "registry-archives"
+        && historical.is_some_and(|scope| {
+            matches!(
+                &scope.captured_source,
+                Some(historical::CapturedSource::RegistryArchives { .. })
+            )
+        }))
+    {
         return Err(Error::Invalid(
             "source state must be captured-snapshot, working-tree, or release-tag".into(),
         ));
@@ -431,7 +442,7 @@ fn build_data_inner(
         }
         format_versions.insert(krate.format_version);
         let family = if let Some(binary) = binary {
-            historical::binary_family(&repository_root, &krate, binary)?
+            historical::binary_family(&repository_root, &generated_sources, &krate, binary)?
         } else {
             build_family(&repository_root, &generated_sources, path, &bytes, &krate)?
         };
@@ -473,6 +484,9 @@ fn build_data_inner(
         version: input.version.clone(),
         channel: input.channel.clone(),
         source: SourceInfo {
+            captured_source: Some(historical::CapturedSource::Git {
+                revision: input.revision.clone(),
+            }),
             publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
             revision: input.revision.clone(),
@@ -489,6 +503,9 @@ fn build_data_inner(
     };
     let mut data = data;
     if let Some(historical) = historical {
+        if let Some(captured) = &historical.captured_source {
+            data.source.captured_source = Some(captured.clone());
+        }
         data.source.publication_status = PublicationStatus::RegistryReleased;
         data.source.released_packages = historical.released_packages.clone();
         historical::validate_release_identity(&data)?;
@@ -508,6 +525,7 @@ pub fn merge_profile_catalog(data: &mut DocsData, variant: DocsData) -> Result<(
         || data.version != variant.version
         || data.channel != variant.channel
         || data.source.revision != variant.source.revision
+        || data.source.captured_source != variant.source.captured_source
         || data.source.source_state != variant.source.source_state
         || data.source.source_sha256 != variant.source.source_sha256
         || data.source.generator != variant.source.generator
@@ -677,6 +695,7 @@ fn write_bundle_inner(
         }
     }
     let entry = VersionEntry {
+        captured_source: data.source.captured_source.clone(),
         publication_status: data.source.publication_status.clone(),
         released_packages: data.source.released_packages.clone(),
         version: data.version.clone(),
@@ -1027,6 +1046,11 @@ fn validate_version_entry(
     if data.source.publication_status != entry.publication_status {
         return Err(Error::Invalid(
             "version entry publication status differs from immutable data".into(),
+        ));
+    }
+    if data.source.captured_source != entry.captured_source {
+        return Err(Error::Invalid(
+            "version entry captured source differs from immutable data".into(),
         ));
     }
     if data.source.released_packages != entry.released_packages {
@@ -2221,6 +2245,24 @@ fn validate_source_digest(value: &str) -> Result<(), Error> {
 }
 
 fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Error> {
+    if let Some(captured) = &source.captured_source {
+        if captured.revision()? != source.revision {
+            return Err(Error::Invalid(
+                "captured source identity differs from revision".into(),
+            ));
+        }
+        if matches!(
+            captured,
+            historical::CapturedSource::RegistryArchives { .. }
+        ) && (source.source_state != "registry-archives"
+            || source.publication_status != PublicationStatus::RegistryReleased
+            || *channel != Channel::Release)
+        {
+            return Err(Error::Invalid(
+                "registry archive source requires verified historical release scope".into(),
+            ));
+        }
+    }
     if (source.publication_status == PublicationStatus::RegistryReleased)
         != !source.released_packages.is_empty()
     {
@@ -2239,7 +2281,12 @@ fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Er
     if !matches!(
         source.source_state.as_str(),
         "captured-snapshot" | "working-tree" | "release-tag"
-    ) {
+    ) && !(source.source_state == "registry-archives"
+        && matches!(
+            &source.captured_source,
+            Some(historical::CapturedSource::RegistryArchives { .. })
+        ))
+    {
         return Err(Error::Invalid("unsupported source state".into()));
     }
     if matches!(channel, Channel::Release) && source.source_state == "working-tree" {
@@ -2425,6 +2472,7 @@ mod tests {
     #[test]
     fn profile_catalog_union_retains_feature_only_items() {
         let source = SourceInfo {
+            captured_source: None,
             publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
             revision: "a".repeat(40),
@@ -2802,6 +2850,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3202,6 +3251,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3254,6 +3304,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3299,6 +3350,7 @@ mod tests {
             .expect("old data parent should be creatable");
         fs::write(&old_path, &old_bytes).expect("old data should be writable");
         let old_entry = VersionEntry {
+            captured_source: None,
             publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
             version: "1.0.0".into(),
@@ -3327,6 +3379,7 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "d".repeat(40),
@@ -3352,6 +3405,7 @@ mod tests {
         let same_version = DocsData {
             version: "1.0.0".into(),
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "d".repeat(40),
@@ -3411,6 +3465,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3451,6 +3506,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3492,6 +3548,7 @@ mod tests {
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: vec![VersionEntry {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 version: "1.0.0".into(),
@@ -3515,6 +3572,7 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "b".repeat(40),
@@ -3574,6 +3632,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3715,6 +3774,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
@@ -3775,6 +3835,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "1".repeat(40),
@@ -3869,6 +3930,7 @@ mod tests {
     #[test]
     fn version_index_latest_must_be_the_maximum_release() {
         let entry = |version: &str| VersionEntry {
+            captured_source: None,
             publication_status: PublicationStatus::RegistryReleased,
             released_packages: vec![historical::ReleasedPackage {
                 package: "policy-fixture".into(),
@@ -3920,6 +3982,7 @@ mod tests {
             version: version.into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
                 publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: revision.to_string().repeat(40),

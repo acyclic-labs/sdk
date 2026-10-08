@@ -1244,7 +1244,12 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
         "{}",
         String::from_utf8_lossy(&packed.stderr)
     );
-    let response = serde_json::to_string(&json!({"version":{"crate":"demo","num":"1.0.0","checksum":hash_file(&archive).trim_start_matches("sha256:"),"yanked":false}})).unwrap();
+    write_registry_transport(&support, &archive);
+    (fixture, support)
+}
+
+fn write_registry_transport(support: &Path, archive: &Path) {
+    let response = serde_json::to_string(&json!({"version":{"crate":"demo","num":"1.0.0","checksum":hash_file(archive).trim_start_matches("sha256:"),"yanked":false}})).unwrap();
     // Subprocess fixture for the real registry command boundary. No network
     // requests or authored documentation JSON enter this qualification test.
     let curl_source = support.join("fixture-curl.rs");
@@ -1267,16 +1272,24 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
         "{}",
         String::from_utf8_lossy(&compiled.stderr)
     );
-    (fixture, support)
 }
 
 fn run_historical_generate(fixture: &Fixture, support: &Path) -> std::process::Output {
+    run_historical_generate_mode(fixture, support, None)
+}
+
+fn run_historical_generate_mode(
+    fixture: &Fixture,
+    support: &Path,
+    mode: Option<&str>,
+) -> std::process::Output {
     let path = std::env::join_paths(
         std::iter::once(support.to_owned())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
-    Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    command
         .env("PATH", path)
         .args(["generate", "--root"])
         .arg(&fixture.root)
@@ -1290,9 +1303,199 @@ fn run_historical_generate(fixture: &Fixture, support: &Path) -> std::process::O
             "--execute-profiles",
             "--historical-archives",
         ])
-        .arg(support.join("registry"))
+        .arg(support.join("registry"));
+    if let Some(mode) = mode {
+        command.args(["--historical-source", mode]);
+    }
+    command.output().unwrap()
+}
+
+fn registry_archive_fixture(
+    dirty: bool,
+    published_lock: bool,
+    mutation: Option<&str>,
+) -> (Fixture, PathBuf) {
+    let (fixture, support) = historical_fixture(None);
+    let package = fixture.root.join("rust/crates/demo");
+    let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+    fs::write(package.join("Cargo.toml"), manifest.replace("[package]\n", "[package]\ninclude = [\"Cargo.toml\", \"README.md\", \"src/**\", \"examples/**\", \"descriptor.bin\", \"input.json\", \"schema.proto\"]\n")).unwrap();
+    let original = fs::read_to_string(package.join("src/lib.rs")).unwrap();
+    fs::write(
+        package.join("src/lib.rs"),
+        format!(
+            "{original}\n/// API present only in the published archive.\npub struct ArchiveOnly;\n"
+        ),
+    )
+    .unwrap();
+    let action = mutation.map(|path| format!("std::fs::write(std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\")).join({path:?}), \"changed imported input\").unwrap();")).unwrap_or_default();
+    fs::write(
+        package.join("examples/historical.rs"),
+        format!("fn main() {{ {action} println!(\"archive-example-executed\"); }}\n"),
+    )
+    .unwrap();
+    // Cargo itself creates the normalized manifest and published package lock.
+    let packaged = Command::new("cargo")
+        .current_dir(&fixture.root)
+        .args(["package", "--allow-dirty", "--no-verify", "--manifest-path"])
+        .arg(package.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(support.join("package-target"))
         .output()
-        .unwrap()
+        .unwrap();
+    assert!(packaged.status.success(), "{}", output_message(&packaged));
+    let unpack = support.join("cargo-packaged-source");
+    fs::create_dir_all(&unpack).unwrap();
+    let extracted = Command::new("tar")
+        .arg("-xf")
+        .arg(support.join("package-target/package/demo-1.0.0.crate"))
+        .arg("-C")
+        .arg(&unpack)
+        .output()
+        .unwrap();
+    assert!(extracted.status.success(), "{}", output_message(&extracted));
+    let source = unpack.join("demo-1.0.0");
+    fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
+    if !published_lock {
+        fs::remove_file(source.join("Cargo.lock")).unwrap();
+    }
+    let archive = support.join("registry/demo-1.0.0.crate");
+    let packed = Command::new("tar")
+        .args(["-cf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(&unpack)
+        .arg("demo-1.0.0")
+        .output()
+        .unwrap();
+    assert!(packed.status.success(), "{}", output_message(&packed));
+    write_registry_transport(&support, &archive);
+    (fixture, support)
+}
+
+#[test]
+fn registry_archive_native_source_is_not_a_publisher_git_retag() {
+    for (dirty, published_lock) in [(true, true), (false, false)] {
+        let (fixture, support) = registry_archive_fixture(dirty, published_lock, None);
+        let publisher = git_revision(&fixture.root);
+        let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+        assert!(result.status.success(), "{}", output_message(&result));
+        let output = fixture.output.join("releases/1.0.0");
+        let data: Value =
+            serde_json::from_slice(&fs::read(output.join("sdk-docs-data.v2.json")).unwrap())
+                .unwrap();
+        assert_eq!(data["source"]["capturedSource"]["kind"], "registryArchives");
+        assert_ne!(data["source"]["revision"], publisher);
+        assert_eq!(data["source"]["sourceState"], "registry-archives");
+        let archive = &data["source"]["capturedSource"]["archives"][0];
+        assert_eq!(archive["publisherVcs"]["revision"], publisher);
+        assert_eq!(archive["publisherVcs"]["dirty"], dirty);
+        assert_eq!(
+            archive["resolutionLock"]["kind"],
+            if published_lock {
+                "published"
+            } else {
+                "docsProducer"
+            }
+        );
+        let item = data["families"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == "ArchiveOnly")
+            .unwrap();
+        let source_path = item["source"]["path"].as_str().unwrap();
+        assert!(source_path.starts_with("releases/1.0.0/sources/demo-1.0.0/"));
+        assert!(fixture.output.join(source_path).exists());
+        if !published_lock {
+            let lock = output.join("sources/demo-1.0.0/Cargo.lock");
+            let captured_lock = fs::read(&lock).unwrap();
+            let repeated =
+                run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+            assert!(repeated.status.success(), "{}", output_message(&repeated));
+            assert_eq!(fs::read(&lock).unwrap(), captured_lock);
+        }
+        let imported = Fixture {
+            root: fixture.root.clone(),
+            rustdoc: output.join(".rustdoc"),
+            output: output.clone(),
+        };
+        for path in [
+            "Cargo.lock",
+            "Cargo.toml",
+            "descriptor.bin",
+            "input.json",
+            "schema.proto",
+        ] {
+            let source = output.join("sources/demo-1.0.0").join(path);
+            let original = fs::read(&source).unwrap();
+            fs::write(&source, b"tampered imported source").unwrap();
+            let drift = run_drift(&imported);
+            assert!(!drift.status.success(), "{path} drift was accepted");
+            fs::write(&source, original).unwrap();
+        }
+        fs::write(output.join("sources/demo-1.0.0/stale-extra.bin"), b"stale").unwrap();
+        assert!(!run_drift(&imported).status.success());
+        let _ = fs::remove_dir_all(fixture.root);
+        let _ = fs::remove_dir_all(fixture.output);
+    }
+}
+
+#[test]
+fn historical_source_help_and_flag_contract_are_explicit() {
+    let binary = env!("CARGO_BIN_EXE_sdk-generation");
+    let help = Command::new(binary).arg("help").output().unwrap();
+    assert!(help.status.success());
+    let text = output_message(&help);
+    assert!(text.contains("--historical-archives DIR"));
+    assert!(text.contains("--historical-source git|registry-archives"));
+    for (mode, expected) in [
+        ("registry-archives", "requires --historical-archives"),
+        ("unverified", "unknown historical source"),
+    ] {
+        let rejected = Command::new(binary)
+            .args([
+                "generate",
+                "--root",
+                "missing",
+                "--output",
+                "missing",
+                "--version",
+                "1.0.0",
+                "--execute-profiles",
+                "--channel",
+                "release",
+                "--historical-source",
+                mode,
+            ])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(output_message(&rejected).contains(expected));
+    }
+}
+
+#[test]
+fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
+    let (fixture, support) = registry_archive_fixture(true, true, Some("input.json"));
+    let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+    assert!(!result.status.success());
+    assert!(
+        output_message(&result).contains("source closure changed"),
+        "{}",
+        output_message(&result)
+    );
+    assert_eq!(
+        fs::read(
+            fixture
+                .output
+                .join("releases/1.0.0/sources/demo-1.0.0/input.json")
+        )
+        .unwrap(),
+        b"changed imported input"
+    );
+    assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+    let _ = fs::remove_dir_all(fixture.root);
+    let _ = fs::remove_dir_all(fixture.output);
 }
 
 #[test]

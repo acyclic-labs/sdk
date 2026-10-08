@@ -41,6 +41,14 @@ struct GenerateArgs {
     skip_scenarios: bool,
     execute_profiles: bool,
     historical_archives: Option<PathBuf>,
+    historical_source: HistoricalSource,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HistoricalSource {
+    #[default]
+    Git,
+    RegistryArchives,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,7 +130,7 @@ fn run() -> Result<(), CliError> {
 
 fn print_help() {
     println!(
-        "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios]\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
+        "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios] [--historical-archives DIR] [--historical-source git|registry-archives]\nHistorical archives require --channel release --execute-profiles.\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
     );
 }
 
@@ -138,6 +146,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
             "channel",
             "skip-scenarios",
             "historical-archives",
+            "historical-source",
         ],
     )?;
     let required = |name: &str| {
@@ -168,6 +177,20 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         ));
     }
     let historical_archives = flags.get("historical-archives").map(PathBuf::from);
+    let historical_source = match flags
+        .get("historical-source")
+        .map(String::as_str)
+        .unwrap_or("git")
+    {
+        "git" => HistoricalSource::Git,
+        "registry-archives" => HistoricalSource::RegistryArchives,
+        value => return Err(CliError(format!("unknown historical source `{value}`"))),
+    };
+    if flags.contains_key("historical-source") && historical_archives.is_none() {
+        return Err(CliError(
+            "historical source requires --historical-archives".into(),
+        ));
+    }
     if historical_archives.is_some()
         && (channel != Channel::Release
             || !execute_profiles
@@ -187,6 +210,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         skip_scenarios: flags.contains_key("skip-scenarios"),
         execute_profiles,
         historical_archives,
+        historical_source,
     })
 }
 
@@ -236,7 +260,7 @@ fn parse_flags(
 }
 
 fn generate(args: GenerateArgs) -> Result<(), CliError> {
-    let root = canonical(&args.root)?;
+    let mut root = canonical(&args.root)?;
     let catalog_output = absolute(&args.output)?;
     let output = if args.historical_archives.is_some() {
         catalog_output
@@ -245,7 +269,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     } else {
         catalog_output.clone()
     };
-    if args.historical_archives.is_some() {
+    if args.historical_archives.is_some() && args.historical_source == HistoricalSource::Git {
         let top = Command::new("git")
             .current_dir(&root)
             .args(["rev-parse", "--show-toplevel"])
@@ -271,7 +295,40 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         .execute_profiles
         .then(|| documentation_cargo(&root, args.historical_archives.is_some()))
         .transpose()?;
-    let metadata = load_metadata(&root, cargo_path.as_deref())?;
+    let (metadata, historical_plan, revision) =
+        if args.historical_source == HistoricalSource::RegistryArchives {
+            let (plan, index) = historical::archive_plan(
+                &args.version,
+                args.historical_archives
+                    .as_deref()
+                    .ok_or_else(|| CliError("registry archive mode lacks archives".into()))?,
+                &output.join("sources"),
+                cargo_path
+                    .as_deref()
+                    .ok_or_else(|| CliError("registry archive mode lacks docs Cargo".into()))?,
+            )
+            .map_err(CliError)?;
+            root = canonical(&output.join("sources"))?;
+            let revision = plan
+                .captured_source
+                .as_ref()
+                .ok_or_else(|| CliError("archive captured identity is absent".into()))?
+                .revision()
+                .map_err(docs_error)?;
+            (index, Some(plan), revision)
+        } else {
+            let metadata = load_metadata(&root, cargo_path.as_deref())?;
+            let revision = git_revision(&root)?;
+            let plan = args
+                .historical_archives
+                .as_ref()
+                .map(|archives| {
+                    historical::plan(&metadata, &root, &revision, &args.version, archives)
+                        .map_err(CliError)
+                })
+                .transpose()?;
+            (metadata, plan, revision)
+        };
     if args.channel == Channel::Release && args.historical_archives.is_none() {
         let published = published_packages(&root)?;
         let versions = metadata
@@ -287,35 +344,46 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         .map(toolchain_identity)
         .transpose()?
         .unwrap_or_default();
-    let revision = git_revision(&root)?;
-    let historical_plan = args
-        .historical_archives
-        .as_ref()
-        .map(|archives| {
-            historical::plan(&metadata, &root, &revision, &args.version, archives).map_err(CliError)
-        })
-        .transpose()?;
     let scope = historical_plan
         .as_ref()
-        .map(|plan| historical::Scope::HistoricalRelease {
-            released_packages: plan.released_packages.clone(),
-            archive_source_paths: plan.source_files.keys().cloned().collect(),
+        .map(|plan| {
+            if let Some(captured_source) = &plan.captured_source {
+                historical::Scope::RegistryArchives {
+                    released_packages: plan.released_packages.clone(),
+                    archive_source_paths: plan.source_files.keys().cloned().collect(),
+                    captured_source: captured_source.clone(),
+                    source_root: "sources".into(),
+                }
+            } else {
+                historical::Scope::HistoricalRelease {
+                    released_packages: plan.released_packages.clone(),
+                    archive_source_paths: plan.source_files.keys().cloned().collect(),
+                }
+            }
         })
         .unwrap_or_default();
     let declared_source_toolchain = if scope.is_current() {
         String::new()
+    } else if historical_plan
+        .as_ref()
+        .is_some_and(|plan| plan.captured_source.is_some())
+    {
+        declared_archive_toolchain(&metadata)?
     } else {
         fs::read_to_string(root.join("rust-toolchain.toml")).map_err(io_error)?
     };
-    let source_files = historical::source_file_hashes(&root, &output, scope.archive_source_paths())
-        .map_err(CliError)?;
+    let source_files =
+        historical::scope_source_file_hashes(&root, &output, &scope).map_err(CliError)?;
     let source_sha256 = digest_map(&source_files);
-    let source_state = if args.channel == Channel::Release {
+    let source_state = if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
+        "registry-archives"
+    } else if args.channel == Channel::Release {
         "captured-snapshot"
     } else {
         "working-tree"
     };
-    if args.channel == Channel::Release && git_dirty(&root)? {
+    if args.channel == Channel::Release && source_state != "registry-archives" && git_dirty(&root)?
+    {
         return Err(CliError(
             "release generation requires a clean source checkout".into(),
         ));
@@ -355,7 +423,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             cargo_path
                 .as_deref()
                 .ok_or_else(|| CliError("historical scope has no pinned docs producer".into()))?,
-            &plan.released_packages,
+            plan,
         )?
     } else if args.execute_profiles {
         execute_default_profiles(
@@ -517,11 +585,15 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     }
     rustdoc_files.sort();
     package_metadata.sort_by(|left, right| left.package_name.cmp(&right.package_name));
-    let generated_sources = scope_generated_sources(
-        materialize_generated_sources(&root, &rustdoc_files)?,
-        &catalog_output,
-        &output,
-    )?;
+    let mut sources = materialize_generated_sources(&root, &rustdoc_files)?;
+    if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
+        sources.extend(source_files.iter().map(|(path, sha256)| GeneratedSource {
+            physical_path: root.join(path),
+            logical_path: PathBuf::from("sources").join(path),
+            sha256: sha256.clone(),
+        }));
+    }
+    let generated_sources = scope_generated_sources(sources, &catalog_output, &output)?;
     let input = BuildInput {
         version: args.version.clone(),
         channel: args.channel.clone(),
@@ -536,7 +608,14 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     };
     let historical_input = historical_plan
         .as_ref()
-        .map(|plan| historical_docs_input(&metadata, &executed_profiles, &plan.released_packages))
+        .map(|plan| {
+            historical_docs_input(
+                &metadata,
+                &executed_profiles,
+                &plan.released_packages,
+                plan.captured_source.clone(),
+            )
+        })
         .transpose()?;
     let mut data = if let Some(scope) = &historical_input {
         sdk_docs::historical::build(&input, scope)
@@ -579,15 +658,20 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
                 crate_name: observation.crate_name,
                 version: package.version.to_string(),
             }],
-            generated_sources: scope_generated_sources(
-                materialize_generated_sources(&root, std::slice::from_ref(receipt))?,
-                &catalog_output,
-                &output,
-            )?,
+            generated_sources: if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
+                input.generated_sources.clone()
+            } else {
+                scope_generated_sources(
+                    materialize_generated_sources(&root, std::slice::from_ref(receipt))?,
+                    &catalog_output,
+                    &output,
+                )?
+            },
             mark_latest: false,
         };
         let variant_data = if let Some(scope) = &historical_input {
             let scope = sdk_docs::historical::Input {
+                captured_source: scope.captured_source.clone(),
                 released_packages: scope
                     .released_packages
                     .iter()
@@ -682,13 +766,18 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             .map(|release| release.package.clone())
             .collect::<BTreeSet<_>>();
         let examples = historical::examples(&metadata, &root, &owners).map_err(CliError)?;
-        let executions = historical::execute_examples(
+        let executions = historical::execute_examples_with_metadata(
             &root,
             cargo_path
                 .as_deref()
                 .ok_or_else(|| CliError("historical examples lack pinned docs Cargo".into()))?,
             &output.join(".profile-build"),
             &examples,
+            if plan.owner_metadata.is_empty() {
+                None
+            } else {
+                Some(&plan.owner_metadata)
+            },
         )
         .map_err(CliError)?;
         write_immutable(&scenario_path, &json_bytes(&examples)?)?;
@@ -727,7 +816,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         )?;
         None
     };
-    let pre_manifest_artifacts = artifact_hashes(&output)?;
+    let pre_manifest_artifacts = artifact_hashes_with_scope(&output, &scope)?;
     let release_manifest = release_manifest::build(
         &root,
         &output,
@@ -754,7 +843,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         &release_manifest_path.with_extension("sha256"),
         sha256_bytes(&release_manifest_bytes).as_bytes(),
     )?;
-    let artifacts = artifact_hashes(&output)?;
+    let artifacts = artifact_hashes_with_scope(&output, &scope)?;
     let manifest = GenerationManifest {
         scope,
         declared_source_toolchain,
@@ -807,7 +896,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
 }
 
 fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(), CliError> {
-    let root = canonical(&root)?;
+    let mut root = canonical(&root)?;
     let output = canonical(&output)?;
     let rustdoc_dir = canonical(&rustdoc_dir)?;
     let manifest_path = output.join("generation-manifest.v1.json");
@@ -822,7 +911,34 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
             "generation manifest integrity check failed".into(),
         ));
     }
-    if manifest.revision != git_revision(&root)? {
+    let archive_capture = if let historical::Scope::RegistryArchives {
+        captured_source,
+        source_root,
+        ..
+    } = &manifest.scope
+    {
+        if source_root != "sources"
+            || manifest.channel != Channel::Release
+            || !matches!(
+                captured_source,
+                sdk_docs::historical::CapturedSource::RegistryArchives { .. }
+            )
+        {
+            return Err(CliError(
+                "registry archive scope does not identify its owned captured source".into(),
+            ));
+        }
+        root = canonical(&output.join(source_root))?;
+        Some(captured_source)
+    } else {
+        None
+    };
+    let current_revision = if let Some(captured) = archive_capture {
+        captured.revision().map_err(docs_error)?
+    } else {
+        git_revision(&root)?
+    };
+    if manifest.revision != current_revision {
         return Err(CliError("source revision changed since generation".into()));
     }
     if !manifest.toolchain.is_empty() {
@@ -835,7 +951,9 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
             )));
         }
     }
-    let expected_state = if manifest.channel == Channel::Release {
+    let expected_state = if archive_capture.is_some() {
+        "registry-archives"
+    } else if manifest.channel == Channel::Release {
         "captured-snapshot"
     } else {
         "working-tree"
@@ -846,13 +964,13 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
             manifest.source_state
         )));
     }
-    if manifest.channel == Channel::Release && git_dirty(&root)? {
+    if manifest.channel == Channel::Release && archive_capture.is_none() && git_dirty(&root)? {
         return Err(CliError("release checkout is no longer clean".into()));
     }
     let source_files =
-        historical::source_file_hashes(&root, &output, manifest.scope.archive_source_paths())
-            .map_err(CliError)?;
-    if !manifest.declared_source_toolchain.is_empty()
+        historical::scope_source_file_hashes(&root, &output, &manifest.scope).map_err(CliError)?;
+    if archive_capture.is_none()
+        && !manifest.declared_source_toolchain.is_empty()
         && fs::read_to_string(root.join("rust-toolchain.toml")).map_err(io_error)?
             != manifest.declared_source_toolchain
     {
@@ -871,6 +989,72 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
             "source digest changed since generation at {changed} (expected {}, got {})",
             manifest.source_sha256, digest
         )));
+    }
+    if let historical::Scope::RegistryArchives {
+        released_packages,
+        archive_source_paths,
+        captured_source,
+        ..
+    } = &manifest.scope
+    {
+        let sdk_docs::historical::CapturedSource::RegistryArchives { archives } = captured_source
+        else {
+            return Err(CliError(
+                "registry archive scope has another source authority".into(),
+            ));
+        };
+        let releases: Vec<historical::RegistryVersion> = serde_json::from_slice(
+            &fs::read(output.join("sdk-docs-registry-releases.v1.json")).map_err(io_error)?,
+        )
+        .map_err(|e| CliError(e.to_string()))?;
+        let mut identities = Vec::new();
+        let mut archive_files = BTreeMap::new();
+        let mut inventory = BTreeSet::new();
+        for release in &releases {
+            let identity = archives
+                .iter()
+                .find(|archive| {
+                    archive.package == release.package && archive.version == release.num
+                })
+                .ok_or_else(|| {
+                    CliError(
+                        "retained registry owner is absent from captured archive identity".into(),
+                    )
+                })?;
+            let name = format!("{}-{}.crate", release.package, release.num);
+            if !inventory.insert(name.clone()) {
+                return Err(CliError("duplicate retained registry archive".into()));
+            }
+            let (publisher, files) = historical::verify_imported_archive(
+                &root,
+                release,
+                &output.join("registry-archives").join(name),
+                identity,
+            )
+            .map_err(CliError)?;
+            identities.push(publisher);
+            archive_files.extend(files);
+        }
+        identities.sort_by(|a, b| a.package.cmp(&b.package));
+        if identities.len() != archives.len()
+            || &identities != released_packages
+            || archive_files != source_files
+            || archive_files.keys().cloned().collect::<Vec<_>>() != *archive_source_paths
+        {
+            return Err(CliError(
+                "imported registry archive closure differs from captured scope".into(),
+            ));
+        }
+        historical::validate_archive_inventory(&output.join("registry-archives"), &inventory)
+            .map_err(CliError)?;
+        let cargo = documentation_cargo(&root, true)?;
+        let owners =
+            historical::imported_metadata(&root, captured_source, &cargo).map_err(CliError)?;
+        if declared_archive_toolchain(&historical::owner_index(&owners).map_err(CliError)?)?
+            != manifest.declared_source_toolchain
+        {
+            return Err(CliError("declared archive Cargo toolchain changed".into()));
+        }
     }
     if let historical::Scope::HistoricalRelease {
         released_packages,
@@ -933,7 +1117,7 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
             return Err(CliError(format!("Rustdoc input changed: {path}")));
         }
     }
-    let actual = artifact_hashes(&output)?;
+    let actual = artifact_hashes_with_scope(&output, &manifest.scope)?;
     if actual != manifest.artifacts {
         return Err(CliError(
             "generated artifact digest changed since generation".into(),
@@ -1017,6 +1201,7 @@ fn historical_docs_input(
     metadata: &Metadata,
     profiles: &[ExecutedProfile],
     releases: &[sdk_docs::historical::ReleasedPackage],
+    captured_source: Option<sdk_docs::historical::CapturedSource>,
 ) -> Result<sdk_docs::historical::Input, CliError> {
     let mut binaries = Vec::new();
     for profile in profiles {
@@ -1047,6 +1232,7 @@ fn historical_docs_input(
         }
     }
     Ok(sdk_docs::historical::Input {
+        captured_source,
         released_packages: releases.to_vec(),
         binaries,
     })
@@ -1074,14 +1260,18 @@ fn execute_historical_profiles(
     metadata: &Metadata,
     source_sha256: &str,
     cargo: &Path,
-    releases: &[sdk_docs::historical::ReleasedPackage],
+    plan: &historical::Plan,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     use sdk_docs::rustdoc_profiles::{execute_target_profile_with_cargo, RustdocTarget};
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
-    for release in releases {
+    for release in &plan.released_packages {
+        let execution_metadata = plan
+            .owner_metadata
+            .get(&release.package)
+            .unwrap_or(metadata);
         let package = metadata
             .packages
             .iter()
@@ -1117,7 +1307,7 @@ fn execute_historical_profiles(
         for (target, rustdoc_target) in targets {
             let profiles = if matches!(rustdoc_target, RustdocTarget::Library) {
                 sdk_docs::rustdoc_profiles::profiles_for_package(
-                    metadata,
+                    execution_metadata,
                     package.name.as_ref(),
                     &host,
                     &available,
@@ -1149,8 +1339,12 @@ fn execute_historical_profiles(
                 )
                 .map_err(io_error)?;
                 execute_target_profile_with_cargo(
-                    root.join("Cargo.toml"),
-                    metadata,
+                    if plan.captured_source.is_some() {
+                        package.manifest_path.clone().into_std_path_buf()
+                    } else {
+                        root.join("Cargo.toml")
+                    },
+                    execution_metadata,
                     &spec,
                     &available,
                     output.join(".profile-build"),
@@ -1899,6 +2093,33 @@ fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>, CliError> 
     Ok(result)
 }
 
+fn artifact_hashes_with_scope(
+    output: &Path,
+    scope: &historical::Scope,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let mut artifacts = artifact_hashes(output)?;
+    if matches!(scope, historical::Scope::RegistryArchives { .. }) {
+        // This exact root belongs to the existing compiler-span retention
+        // engine; actual archived inputs live under package-version roots.
+        artifacts.retain(|path, _| !path.starts_with("sources/target/"));
+    }
+    Ok(artifacts)
+}
+
+fn declared_archive_toolchain(metadata: &Metadata) -> Result<String, CliError> {
+    let declarations = metadata
+        .packages
+        .iter()
+        .map(|package| {
+            (
+                package.name.to_string(),
+                package.rust_version.as_ref().map(ToString::to_string),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    serde_json::to_string(&declarations).map_err(|e| CliError(e.to_string()))
+}
+
 fn collect_files(
     root: &Path,
     current: &Path,
@@ -1946,6 +2167,27 @@ fn source_file_hashes(root: &Path, output: &Path) -> Result<BTreeMap<String, Str
     Ok(result)
 }
 
+fn imported_source_file_hashes(
+    root: &Path,
+    output: &Path,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let mut files = Vec::new();
+    collect_source_files_inner(root, root, output, &mut files, true)?;
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            Ok((
+                path_string(
+                    path.strip_prefix(root)
+                        .map_err(|e| CliError(e.to_string()))?,
+                ),
+                sha256_file(&path)?,
+            ))
+        })
+        .collect()
+}
+
 fn digest_map(files: &BTreeMap<String, String>) -> String {
     let mut hasher = Sha256::new();
     for (path, digest) in files {
@@ -1963,9 +2205,48 @@ fn collect_source_files(
     output: &Path,
     files: &mut Vec<PathBuf>,
 ) -> Result<(), CliError> {
+    collect_source_files_inner(root, current, output, files, false)
+}
+
+fn collect_source_files_inner(
+    root: &Path,
+    current: &Path,
+    output: &Path,
+    files: &mut Vec<PathBuf>,
+    all_archive_members: bool,
+) -> Result<(), CliError> {
     for entry in fs::read_dir(current).map_err(io_error)? {
         let path = entry.map_err(io_error)?.path();
-        if path == output || path.starts_with(output) {
+        if !all_archive_members && (path == output || path.starts_with(output)) {
+            continue;
+        }
+        if all_archive_members {
+            if path == root.join("target") {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+            #[cfg(windows)]
+            let reparse = {
+                use std::os::windows::fs::MetadataExt;
+                metadata.file_attributes() & 0x400 != 0
+            };
+            #[cfg(not(windows))]
+            let reparse = false;
+            if metadata.file_type().is_symlink() || reparse || !canonical(&path)?.starts_with(root)
+            {
+                return Err(CliError(
+                    "imported source contains a linked or escaping member".into(),
+                ));
+            }
+            if path.is_dir() {
+                collect_source_files_inner(root, &path, output, files, true)?;
+            } else if path.is_file() {
+                files.push(path);
+            } else {
+                return Err(CliError(
+                    "imported source contains a non-file member".into(),
+                ));
+            }
             continue;
         }
         let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
@@ -1982,7 +2263,7 @@ fn collect_source_files(
             ) {
                 continue;
             }
-            collect_source_files(root, &path, output, files)?;
+            collect_source_files_inner(root, &path, output, files, false)?;
         } else if path.is_file() {
             let relative = path.strip_prefix(root).unwrap_or(&path);
             let components = relative.components().collect::<Vec<_>>();

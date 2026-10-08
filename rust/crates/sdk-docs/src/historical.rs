@@ -13,6 +13,94 @@ pub struct ReleasedPackage {
     pub path_in_vcs: String,
 }
 
+/// Publisher VCS facts embedded in the exact released archive, independent of
+/// the imported source actually compiled by the documentation producer.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublisherVcs {
+    pub revision: String,
+    pub dirty: bool,
+    pub path_in_vcs: String,
+}
+
+/// An immutable registry input and the lock actually used for its Cargo run.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArchiveSource {
+    pub package: String,
+    pub version: String,
+    pub registry_checksum: String,
+    pub publisher_vcs: Option<PublisherVcs>,
+    pub resolution_lock: ResolutionLock,
+}
+
+/// Published locks and newly generated documentation resolutions remain distinct.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ResolutionLock {
+    Published { sha256: String },
+    DocsProducer { sha256: String },
+}
+
+/// Authority of the captured source; archive identities never impersonate Git.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum CapturedSource {
+    Git { revision: String },
+    RegistryArchives { archives: Vec<ArchiveSource> },
+}
+
+impl CapturedSource {
+    pub fn revision(&self) -> Result<String, Error> {
+        match self {
+            Self::Git { revision } => Ok(revision.clone()),
+            Self::RegistryArchives { archives } => {
+                if archives.is_empty()
+                    || archives.windows(2).any(|rows| {
+                        (&rows[0].package, &rows[0].version) >= (&rows[1].package, &rows[1].version)
+                    })
+                {
+                    return Err(Error::Invalid(
+                        "archive source identities must be nonempty, unique and sorted".into(),
+                    ));
+                }
+                for archive in archives {
+                    if archive.package.is_empty() {
+                        return Err(Error::Invalid("archive source package is empty".into()));
+                    }
+                    Version::parse(&archive.version).map_err(|e| Error::Invalid(e.to_string()))?;
+                    validate_source_digest(&format!("sha256:{}", archive.registry_checksum))?;
+                    let sha256 = match &archive.resolution_lock {
+                        ResolutionLock::Published { sha256 }
+                        | ResolutionLock::DocsProducer { sha256 } => sha256,
+                    };
+                    validate_source_digest(sha256)?;
+                    if let Some(vcs) = &archive.publisher_vcs {
+                        if vcs.revision.len() != 40
+                            || !vcs.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        {
+                            return Err(Error::Invalid(
+                                "publisher VCS revision must be an original SHA1".into(),
+                            ));
+                        }
+                        let path = Path::new(&vcs.path_in_vcs);
+                        if path.is_absolute()
+                            || path.components().any(|part| {
+                                matches!(part, Component::ParentDir | Component::Prefix(_))
+                            })
+                        {
+                            return Err(Error::Invalid(
+                                "publisher VCS path escapes its source".into(),
+                            ));
+                        }
+                    }
+                }
+                Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
+            }
+        }
+    }
+}
+
 /// Cargo-derived binary target, whose private implementation is never API data.
 #[derive(Clone, Debug)]
 pub struct BinaryInput {
@@ -26,6 +114,7 @@ pub struct BinaryInput {
 pub struct Input {
     pub released_packages: Vec<ReleasedPackage>,
     pub binaries: Vec<BinaryInput>,
+    pub captured_source: Option<CapturedSource>,
 }
 
 /// Project native historical receipts with separately verified release facts.
@@ -73,10 +162,24 @@ pub(super) fn validate_release_identity(data: &DocsData) -> Result<(), Error> {
     }
     let mut names = HashSet::new();
     for release in &data.source.released_packages {
-        if !names.insert(&release.package)
-            || release.source_revision != data.source.revision
-            || release.version != data.version
-        {
+        let source_matches = match &data.source.captured_source {
+            Some(CapturedSource::RegistryArchives { archives }) => archives.iter().any(|archive| {
+                archive.package == release.package
+                    && archive.version == release.version
+                    && archive.registry_checksum == release.registry_checksum
+                    && archive
+                        .publisher_vcs
+                        .as_ref()
+                        .map(|vcs| (&vcs.revision, &vcs.path_in_vcs))
+                        == if release.source_revision.is_empty() {
+                            None
+                        } else {
+                            Some((&release.source_revision, &release.path_in_vcs))
+                        }
+            }),
+            _ => release.source_revision == data.source.revision,
+        };
+        if !names.insert(&release.package) || !source_matches || release.version != data.version {
             return Err(Error::Invalid(
                 "historical package revision/version/identity differs from native data".into(),
             ));
@@ -116,6 +219,7 @@ pub(super) fn validate_release_identity(data: &DocsData) -> Result<(), Error> {
 
 pub(super) fn binary_family(
     root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
     krate: &Crate,
     binary: &BinaryInput,
 ) -> Result<Family, Error> {
@@ -141,12 +245,13 @@ pub(super) fn binary_family(
         .span
         .as_ref()
         .ok_or_else(|| Error::Invalid("binary Rustdoc root source span is missing".into()))?;
-    let projected = source_span_at_root(root, &HashMap::new(), span)?;
-    if projected.path != normalize_path(relative_source) {
+    let original = source_span_at_root(root, &HashMap::new(), span)?;
+    if original.path != normalize_path(relative_source) {
         return Err(Error::Invalid(
             "binary Rustdoc span differs from Cargo target source".into(),
         ));
     }
+    let projected = source_span_at_root(root, generated_sources, span)?;
     let mut guides = Vec::new();
     if let Some(markdown) = item.docs.as_ref().filter(|value| !value.trim().is_empty()) {
         guides.push(Guide {
@@ -169,7 +274,10 @@ pub(super) fn binary_family(
                 .any(|guide| guide.markdown.trim() == markdown.trim())
         {
             guides.push(Guide {
-                path: normalize_path(path),
+                path: generated_sources
+                    .get(&readme)
+                    .map(|source| normalize_path(&source.logical_path))
+                    .unwrap_or_else(|| normalize_path(path)),
                 title: guide_title(&markdown, &name),
                 markdown,
                 links: BTreeMap::new(),
@@ -231,6 +339,7 @@ mod tests {
             mark_latest: false,
         };
         let scope = Input {
+            captured_source: None,
             released_packages: vec![ReleasedPackage {
                 package: "demo-cli".into(),
                 version: version.into(),
@@ -279,6 +388,54 @@ mod tests {
         let mut wrong_identity = scope;
         wrong_identity.released_packages[0].source_revision = "d".repeat(40);
         assert!(build(&input, &wrong_identity).is_err());
+    }
+
+    #[test]
+    fn archive_capture_keeps_dirty_publisher_vcs_separate_and_binds_catalog_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut input, mut scope) = fixture(root.path(), "0.1.0");
+        let publisher = "f".repeat(40);
+        let captured = CapturedSource::RegistryArchives {
+            archives: vec![ArchiveSource {
+                package: "demo-cli".into(),
+                version: "0.1.0".into(),
+                registry_checksum: "c".repeat(64),
+                publisher_vcs: Some(PublisherVcs {
+                    revision: publisher.clone(),
+                    dirty: true,
+                    path_in_vcs: "cli".into(),
+                }),
+                resolution_lock: ResolutionLock::Published {
+                    sha256: format!("sha256:{}", "d".repeat(64)),
+                },
+            }],
+        };
+        input.revision = captured.revision().unwrap();
+        input.source_state = "registry-archives".into();
+        scope.released_packages[0].source_revision = publisher.clone();
+        scope.captured_source = Some(captured.clone());
+        let data = build(&input, &scope).unwrap();
+        assert_ne!(data.source.revision, publisher);
+        assert_eq!(data.source.captured_source.as_ref(), Some(&captured));
+        let mut false_git = data.clone();
+        false_git.source.captured_source = Some(CapturedSource::Git {
+            revision: publisher,
+        });
+        assert!(validate_source_info(&false_git.source, &false_git.channel).is_err());
+        let mut false_archive = data.clone();
+        false_archive.source.revision = "a".repeat(64);
+        assert!(validate_source_info(&false_archive.source, &false_archive.channel).is_err());
+        let output = tempfile::tempdir().unwrap();
+        write_bundle(&data, output.path(), true).unwrap();
+        let mut index = load_version_index(output.path()).unwrap();
+        index.releases[0].captured_source = Some(CapturedSource::Git {
+            revision: data.source.revision.clone(),
+        });
+        index.latest = Some(index.releases[0].clone());
+        assert!(validate_version_index(&index, output.path())
+            .unwrap_err()
+            .to_string()
+            .contains("captured source differs"));
     }
 
     #[test]

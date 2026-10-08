@@ -1294,6 +1294,7 @@ mod tests {
             version: "0.2.0".into(),
             channel: crate::Channel::Preview,
             source: crate::SourceInfo {
+                captured_source: None,
                 publication_status: crate::PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),

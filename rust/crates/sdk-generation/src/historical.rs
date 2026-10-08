@@ -1,6 +1,8 @@
 //! Historical planning uses released archives and Cargo-owned sources, not legacy docs JSON.
 use cargo_metadata::{Metadata, TargetKind};
-use sdk_docs::historical::ReleasedPackage;
+use sdk_docs::historical::{
+    ArchiveSource, CapturedSource, PublisherVcs, ReleasedPackage, ResolutionLock,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,6 +19,12 @@ pub enum Scope {
         released_packages: Vec<ReleasedPackage>,
         archive_source_paths: Vec<String>,
     },
+    RegistryArchives {
+        released_packages: Vec<ReleasedPackage>,
+        archive_source_paths: Vec<String>,
+        captured_source: CapturedSource,
+        source_root: String,
+    },
 }
 
 impl Scope {
@@ -29,6 +37,10 @@ impl Scope {
             Self::HistoricalRelease {
                 archive_source_paths,
                 ..
+            }
+            | Self::RegistryArchives {
+                archive_source_paths,
+                ..
             } => archive_source_paths,
         }
     }
@@ -39,6 +51,8 @@ pub struct Plan {
     pub released_packages: Vec<ReleasedPackage>,
     pub source_files: BTreeMap<String, String>,
     pub archives: Vec<(std::path::PathBuf, RegistryVersion)>,
+    pub captured_source: Option<CapturedSource>,
+    pub owner_metadata: BTreeMap<String, Metadata>,
 }
 
 /// Query every publishable same-version Cargo owner; missing registry versions
@@ -54,6 +68,8 @@ pub fn plan(
         released_packages: Vec::new(),
         source_files: BTreeMap::new(),
         archives: Vec::new(),
+        captured_source: None,
+        owner_metadata: BTreeMap::new(),
     };
     let mut expected = BTreeSet::new();
     for package in metadata.packages.iter().filter(|package| {
@@ -105,6 +121,354 @@ pub struct RegistryVersion {
     pub num: String,
     pub checksum: String,
     pub yanked: bool,
+}
+
+/// Import actual package archives without rewriting a publisher's manifest or
+/// claiming that its VCS revision identifies the bytes being compiled.
+pub fn archive_plan(
+    version: &str,
+    archive_dir: &Path,
+    source_root: &Path,
+    cargo: &Path,
+) -> Result<(Plan, Metadata), String> {
+    validate_version(version)?;
+    let mut inputs = fs::read_dir(archive_dir)
+        .map_err(|e| e.to_string())?
+        .map(|entry| entry.map(|entry| entry.path()).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    inputs.sort();
+    let mut plan = Plan {
+        released_packages: Vec::new(),
+        source_files: BTreeMap::new(),
+        archives: Vec::new(),
+        captured_source: None,
+        owner_metadata: BTreeMap::new(),
+    };
+    let mut archive_sources = Vec::new();
+    for archive in inputs {
+        let name = archive
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid archive filename")?;
+        let package = name
+            .strip_suffix(&format!("-{version}.crate"))
+            .ok_or("archive inventory differs from requested version")?;
+        if !archive.is_file() {
+            return Err("archive inventory contains a non-file".into());
+        }
+        let release = registry_version(package, version)?;
+        let members = archive_members(&release, &archive)?;
+        let directory = format!("{}-{}", release.package, release.num);
+        for (member, bytes) in &members {
+            let logical = format!("{directory}/{member}");
+            super::write_immutable(&source_root.join(&logical), bytes)
+                .map_err(|e| e.to_string())?;
+            plan.source_files
+                .insert(logical, super::sha256_bytes(bytes));
+        }
+        let manifest = source_root.join(&directory).join("Cargo.toml");
+        if !members.contains_key("Cargo.toml") {
+            return Err("registry archive lacks its normalized Cargo manifest".into());
+        }
+        let lock = manifest.with_file_name("Cargo.lock");
+        let resolution_lock = if members.contains_key("Cargo.lock") {
+            ResolutionLock::Published {
+                sha256: super::sha256_file(&lock).map_err(|e| e.to_string())?,
+            }
+        } else {
+            // Reuse an already captured producer resolution; the locked Cargo
+            // metadata/profile commands below validate it without updating it.
+            if !lock.exists() {
+                command_output(
+                    Command::new(cargo)
+                        .args(["generate-lockfile", "--manifest-path"])
+                        .arg(&manifest),
+                )?;
+            }
+            let digest = super::sha256_file(&lock).map_err(|e| e.to_string())?;
+            plan.source_files
+                .insert(format!("{directory}/Cargo.lock"), digest.clone());
+            ResolutionLock::DocsProducer { sha256: digest }
+        };
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(&manifest, Some(cargo))
+            .map_err(|e| e.to_string())?;
+        let canonical_manifest = manifest.canonicalize().map_err(|e| e.to_string())?;
+        let owner = metadata
+            .packages
+            .iter()
+            .find(|owner| {
+                owner
+                    .manifest_path
+                    .as_std_path()
+                    .canonicalize()
+                    .ok()
+                    .as_deref()
+                    == Some(&canonical_manifest)
+            })
+            .ok_or("archive Cargo metadata has no original package manifest")?;
+        if owner.name.as_ref() != release.package || owner.version.to_string() != release.num {
+            return Err("normalized Cargo package differs from registry release".into());
+        }
+        let publisher_vcs = archive_vcs(&members)?;
+        plan.released_packages.push(ReleasedPackage {
+            package: release.package.clone(),
+            version: release.num.clone(),
+            yanked: release.yanked,
+            registry_checksum: release.checksum.clone(),
+            source_revision: publisher_vcs
+                .as_ref()
+                .map(|vcs| vcs.revision.clone())
+                .unwrap_or_default(),
+            path_in_vcs: publisher_vcs
+                .as_ref()
+                .map(|vcs| vcs.path_in_vcs.clone())
+                .unwrap_or_default(),
+        });
+        archive_sources.push(ArchiveSource {
+            package: release.package.clone(),
+            version: release.num.clone(),
+            registry_checksum: release.checksum.clone(),
+            publisher_vcs,
+            resolution_lock,
+        });
+        if plan
+            .owner_metadata
+            .insert(release.package.clone(), metadata)
+            .is_some()
+        {
+            return Err("duplicate registry archive owner".into());
+        }
+        plan.archives.push((archive, release));
+    }
+    plan.released_packages
+        .sort_by(|a, b| a.package.cmp(&b.package));
+    archive_sources.sort_by(|a, b| (&a.package, &a.version).cmp(&(&b.package, &b.version)));
+    let captured = CapturedSource::RegistryArchives {
+        archives: archive_sources,
+    };
+    captured.revision().map_err(|e| e.to_string())?;
+    plan.captured_source = Some(captured);
+    // This is an owner/target lookup index, not an invented Cargo workspace.
+    // Cargo execution always receives its original per-owner metadata/manifest.
+    let index = owner_index(&plan.owner_metadata)?;
+    Ok((plan, index))
+}
+
+/// Read the whole checksum-verified archive; reject links and escaping members
+/// before writing any imported source. Normalized Cargo inputs remain intact.
+pub fn archive_members(
+    release: &RegistryVersion,
+    archive: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    validate_name(&release.package)?;
+    validate_version(&release.num)?;
+    let expected = format!("sha256:{}", release.checksum);
+    if super::sha256_file(archive).map_err(|e| e.to_string())? != expected {
+        return Err("released registry archive checksum differs".into());
+    }
+    let types = command_output(Command::new("tar").arg("-tvf").arg(archive))?;
+    if String::from_utf8(types)
+        .map_err(|e| e.to_string())?
+        .lines()
+        .any(|line| !line.starts_with('-') && !line.starts_with('d'))
+    {
+        return Err("registry archive contains unsupported linked source members".into());
+    }
+    let listing = String::from_utf8(command_output(Command::new("tar").arg("-tf").arg(archive))?)
+        .map_err(|e| e.to_string())?;
+    let prefix = format!("{}-{}/", release.package, release.num);
+    let mut result = BTreeMap::new();
+    for entry in listing.lines() {
+        let relative = entry
+            .strip_prefix(&prefix)
+            .ok_or("registry archive member escapes package prefix")?;
+        let path = Path::new(relative);
+        if path.is_absolute()
+            || relative.contains(['\\', ':'])
+            || path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+        {
+            return Err("registry archive member escapes imported source".into());
+        }
+        if entry.ends_with('/') {
+            continue;
+        }
+        if relative.is_empty() || result.contains_key(relative) {
+            return Err("duplicate or empty registry archive member".into());
+        }
+        result.insert(
+            relative.into(),
+            command_output(Command::new("tar").arg("-xOf").arg(archive).arg(entry))?,
+        );
+    }
+    if super::sha256_file(archive).map_err(|e| e.to_string())? != expected {
+        return Err("registry archive changed during import".into());
+    }
+    Ok(result)
+}
+
+pub fn archive_vcs(members: &BTreeMap<String, Vec<u8>>) -> Result<Option<PublisherVcs>, String> {
+    let Some(bytes) = members.get(".cargo_vcs_info.json") else {
+        return Ok(None);
+    };
+    #[derive(Deserialize)]
+    struct Git {
+        sha1: String,
+        #[serde(default)]
+        dirty: bool,
+    }
+    #[derive(Deserialize)]
+    struct Vcs {
+        git: Git,
+        path_in_vcs: String,
+    }
+    let vcs: Vcs = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    Ok(Some(PublisherVcs {
+        revision: vcs.git.sha1,
+        dirty: vcs.git.dirty,
+        path_in_vcs: vcs.path_in_vcs,
+    }))
+}
+
+pub fn verify_imported_archive(
+    root: &Path,
+    release: &RegistryVersion,
+    archive: &Path,
+    identity: &ArchiveSource,
+) -> Result<(ReleasedPackage, BTreeMap<String, String>), String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    if identity.package != release.package
+        || identity.version != release.num
+        || identity.registry_checksum != release.checksum
+    {
+        return Err("captured archive identity differs from retained registry facts".into());
+    }
+    let members = archive_members(release, archive)?;
+    let vcs = archive_vcs(&members)?;
+    if vcs != identity.publisher_vcs {
+        return Err("publisher VCS facts differ from exact archive".into());
+    }
+    let directory = format!("{}-{}", release.package, release.num);
+    let mut files = BTreeMap::new();
+    for (member, bytes) in &members {
+        let path = format!("{directory}/{member}");
+        let source = root.join(&path).canonicalize().map_err(|e| e.to_string())?;
+        if !source.starts_with(&root) || fs::read(&source).map_err(|e| e.to_string())? != *bytes {
+            return Err(format!("imported archive source differs: {path}"));
+        }
+        files.insert(path, super::sha256_bytes(bytes));
+    }
+    let lock_path = format!("{directory}/Cargo.lock");
+    let lock_digest = super::sha256_file(&root.join(&lock_path)).map_err(|e| e.to_string())?;
+    match &identity.resolution_lock {
+        ResolutionLock::Published { sha256 }
+            if members.contains_key("Cargo.lock") && *sha256 == lock_digest => {}
+        ResolutionLock::DocsProducer { sha256 }
+            if !members.contains_key("Cargo.lock") && *sha256 == lock_digest =>
+        {
+            files.insert(lock_path, lock_digest);
+        }
+        _ => {
+            return Err(
+                "Cargo resolution lock does not match its published or producer identity".into(),
+            )
+        }
+    }
+    Ok((
+        ReleasedPackage {
+            package: release.package.clone(),
+            version: release.num.clone(),
+            yanked: release.yanked,
+            registry_checksum: release.checksum.clone(),
+            source_revision: vcs
+                .as_ref()
+                .map(|vcs| vcs.revision.clone())
+                .unwrap_or_default(),
+            path_in_vcs: vcs
+                .as_ref()
+                .map(|vcs| vcs.path_in_vcs.clone())
+                .unwrap_or_default(),
+        },
+        files,
+    ))
+}
+
+pub fn imported_metadata(
+    root: &Path,
+    captured: &CapturedSource,
+    cargo: &Path,
+) -> Result<BTreeMap<String, Metadata>, String> {
+    let CapturedSource::RegistryArchives { archives } = captured else {
+        return Err("imported metadata requires registry archive identity".into());
+    };
+    let mut result = BTreeMap::new();
+    for archive in archives {
+        let manifest = root
+            .join(format!("{}-{}", archive.package, archive.version))
+            .join("Cargo.toml");
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(&manifest, Some(cargo))
+            .map_err(|e| e.to_string())?;
+        let canonical = manifest.canonicalize().map_err(|e| e.to_string())?;
+        let owner = metadata
+            .packages
+            .iter()
+            .find(|package| {
+                package
+                    .manifest_path
+                    .as_std_path()
+                    .canonicalize()
+                    .ok()
+                    .as_deref()
+                    == Some(&canonical)
+            })
+            .ok_or("normalized archive manifest is absent from Cargo metadata")?;
+        if owner.name.as_ref() != archive.package || owner.version.to_string() != archive.version {
+            return Err("normalized archive Cargo identity differs from captured source".into());
+        }
+        result.insert(archive.package.clone(), metadata);
+    }
+    Ok(result)
+}
+
+pub fn owner_index(owners: &BTreeMap<String, Metadata>) -> Result<Metadata, String> {
+    let mut index = owners
+        .values()
+        .next()
+        .cloned()
+        .ok_or("no archive Cargo owners")?;
+    index.packages.clear();
+    index.workspace_members.clear();
+    for (name, metadata) in owners {
+        let owner = metadata
+            .packages
+            .iter()
+            .find(|package| package.name.as_ref() == name)
+            .ok_or("archive owner disappeared from Cargo metadata")?;
+        index.packages.push(owner.clone());
+        index.workspace_members.push(owner.id.clone());
+    }
+    Ok(index)
+}
+
+pub fn validate_archive_inventory(
+    directory: &Path,
+    expected: &BTreeSet<String>,
+) -> Result<(), String> {
+    let actual = fs::read_dir(directory)
+        .map_err(|e| e.to_string())?
+        .map(|entry| {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                return Err("retained registry archive inventory contains a non-file".into());
+            }
+            Ok(entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Result<BTreeSet<_>, String>>()?;
+    if &actual != expected {
+        return Err("retained registry archive inventory differs".into());
+    }
+    Ok(())
 }
 
 /// Fetch an actual registry version, retaining yanked historical releases.
@@ -188,26 +552,14 @@ pub fn verify_archive(
     if actual != format!("sha256:{}", release.checksum) {
         return Err("released registry archive checksum differs".into());
     }
-    let entry = format!("{}-{}/.cargo_vcs_info.json", release.package, release.num);
-    let bytes = command_output(Command::new("tar").arg("-xOf").arg(archive).arg(entry))?;
-    #[derive(Deserialize)]
-    struct Git {
-        sha1: String,
-        #[serde(default)]
-        dirty: bool,
-    }
-    #[derive(Deserialize)]
-    struct Vcs {
-        git: Git,
-        path_in_vcs: String,
-    }
-    let vcs: Vcs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if vcs.git.dirty {
+    let members = archive_members(release, archive)?;
+    let vcs = archive_vcs(&members)?.ok_or("clean Git binding requires publisher VCS facts")?;
+    if vcs.dirty {
         return Err(
             "released archive records dirty source; clean Git provenance is not valid".into(),
         );
     }
-    if vcs.git.sha1 != revision
+    if vcs.revision != revision
         || revision.len() != 40
         || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
@@ -242,7 +594,7 @@ pub fn verify_archive(
     {
         return Err("released archive VCS path differs from Cargo package source".into());
     }
-    verify_archive_sources(&root, package, &source, release, archive)?;
+    verify_archive_sources(&root, package, &source, archive, &members)?;
     if super::sha256_file(archive).map_err(|e| e.to_string())? != actual {
         return Err("released archive changed during verification".into());
     }
@@ -262,30 +614,14 @@ fn verify_archive_sources(
     root: &Path,
     package: &cargo_metadata::Package,
     source: &Path,
-    release: &RegistryVersion,
     archive: &Path,
+    members: &BTreeMap<String, Vec<u8>>,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut source_inputs = BTreeMap::new();
-    let prefix = format!("{}-{}/", release.package, release.num);
-    let listing = String::from_utf8(command_output(Command::new("tar").arg("-tf").arg(archive))?)
-        .map_err(|e| e.to_string())?;
     let mut retained = BTreeSet::new();
     let mut has_manifest = false;
-    for entry in listing.lines() {
-        let relative = entry
-            .strip_prefix(&prefix)
-            .ok_or("released archive entry is outside package prefix")?;
-        let path = Path::new(relative);
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
-        {
-            return Err("released archive entry escapes package source".into());
-        }
-        if entry.ends_with('/') {
-            continue;
-        }
+    for (member, released) in members {
+        let relative = member.as_str();
         let original_manifest = relative == "Cargo.toml.orig";
         // Cargo creates the normalized manifest and standalone package lock.
         // The exact archive checksum retains these packaging products; native
@@ -310,8 +646,7 @@ fn verify_archive_sources(
         if !checkout.starts_with(source) {
             return Err("released archive source escapes checkout package".into());
         }
-        let released = command_output(Command::new("tar").arg("-xOf").arg(archive).arg(entry))?;
-        if fs::read(checkout).map_err(|e| e.to_string())? != released {
+        if fs::read(checkout).map_err(|e| e.to_string())? != *released {
             return Err(format!(
                 "released archive source bytes differ from checkout: {relative}"
             ));
@@ -322,7 +657,7 @@ fn verify_archive_sources(
                 .strip_prefix(root)
                 .map_err(|e| e.to_string())?,
         );
-        source_inputs.insert(logical, super::sha256_bytes(&released));
+        source_inputs.insert(logical, super::sha256_bytes(released));
         has_manifest |= original_manifest;
     }
     if !has_manifest {
@@ -389,7 +724,13 @@ pub fn archive_source_files(
         .as_std_path()
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    verify_archive_sources(&root, package, &source, release, archive)
+    verify_archive_sources(
+        &root,
+        package,
+        &source,
+        archive,
+        &archive_members(release, archive)?,
+    )
 }
 
 /// A source-owned example and its exact Cargo invocation inputs.
@@ -479,6 +820,18 @@ pub fn source_file_hashes(
     Ok(files)
 }
 
+pub fn scope_source_file_hashes(
+    root: &Path,
+    output: &Path,
+    scope: &Scope,
+) -> Result<BTreeMap<String, String>, String> {
+    if matches!(scope, Scope::RegistryArchives { .. }) {
+        super::imported_source_file_hashes(root, output).map_err(|e| e.to_string())
+    } else {
+        source_file_hashes(root, output, scope.archive_source_paths())
+    }
+}
+
 /// Run only the actual historical targets; no modern scenario sources are copied.
 pub fn execute_examples(
     root: &Path,
@@ -486,8 +839,25 @@ pub fn execute_examples(
     target_dir: &Path,
     examples: &[Example],
 ) -> Result<Vec<ExampleExecution>, String> {
+    execute_examples_with_metadata(root, cargo, target_dir, examples, None)
+}
+
+pub fn execute_examples_with_metadata(
+    root: &Path,
+    cargo: &Path,
+    target_dir: &Path,
+    examples: &[Example],
+    owner_metadata: Option<&BTreeMap<String, Metadata>>,
+) -> Result<Vec<ExampleExecution>, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let source_files = super::source_file_hashes(&root, target_dir).map_err(|e| e.to_string())?;
+    let capture = || {
+        if owner_metadata.is_some() {
+            super::imported_source_file_hashes(&root, target_dir)
+        } else {
+            super::source_file_hashes(&root, target_dir)
+        }
+    };
+    let source_files = capture().map_err(|e| e.to_string())?;
     let mut results = Vec::new();
     for example in examples {
         let source = root
@@ -503,10 +873,31 @@ pub fn execute_examples(
             return Err("historical example source changed before execution".into());
         }
         let mut command = Command::new(cargo);
+        let manifest = if let Some(owners) = owner_metadata {
+            let metadata = owners
+                .get(&example.package)
+                .ok_or("historical example owner metadata is absent")?;
+            metadata
+                .packages
+                .iter()
+                .find(|package| package.name.as_ref() == example.package)
+                .ok_or("historical example Cargo owner is absent")?
+                .manifest_path
+                .clone()
+                .into_std_path_buf()
+        } else {
+            root.join("Cargo.toml")
+        };
         command
-            .current_dir(&root)
+            .current_dir(if owner_metadata.is_some() {
+                manifest
+                    .parent()
+                    .ok_or("archive example manifest has no parent")?
+            } else {
+                &root
+            })
             .args(["run", "--locked", "--quiet", "--manifest-path"])
-            .arg(root.join("Cargo.toml"))
+            .arg(&manifest)
             .args(["--package", &example.package, "--example", &example.target])
             .arg("--target-dir")
             .arg(target_dir);
@@ -538,8 +929,7 @@ pub fn execute_examples(
         {
             return Err("historical example source changed during execution".into());
         }
-        if super::source_file_hashes(&root, target_dir).map_err(|e| e.to_string())? != source_files
-        {
+        if capture().map_err(|e| e.to_string())? != source_files {
             return Err("historical source closure changed during example execution".into());
         }
         results.push(ExampleExecution {
