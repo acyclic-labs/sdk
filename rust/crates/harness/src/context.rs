@@ -3,7 +3,7 @@
 use crate::contract::next_revision;
 use crate::{
     Result,
-    conversation::{ContentResidencyVerifier, FileRef},
+    conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, Limits},
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
@@ -96,7 +96,7 @@ pub struct CompactionReference {
     pub summary: Option<ContextSummary>,
 }
 
-/// One versioned durable context revision.
+/// Resolved view of one durable context revision. Stream retains only `content`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextRevision {
     /// Stable record format version.
@@ -107,10 +107,23 @@ pub struct ContextRevision {
     pub source: String,
     /// Exact provider implementation revision.
     pub source_revision: String,
+    /// Immutable canonical context payload retained by the owning content provider.
+    pub content: FileRef,
     /// Reconstructable context value.
     pub context: Context,
     /// Present only when this revision deterministically compacts another context.
     pub compaction: Option<CompactionReference>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredContextRevision {
+    format_version: u32,
+    revision: u64,
+    source: String,
+    source_revision: String,
+    context: FileRef,
+    compaction: Option<CompactionReference>,
 }
 
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
@@ -121,6 +134,8 @@ pub struct DurableContextProvider {
     source_revision: String,
     maximum_page_records: u32,
     content_verifier: Arc<dyn ContentResidencyVerifier>,
+    publisher: Option<Arc<dyn ContentPublisher>>,
+    limits: Limits,
 }
 
 impl DurableContextProvider {
@@ -132,9 +147,13 @@ impl DurableContextProvider {
         source_revision: impl Into<String>,
         maximum_page_records: u32,
         content_verifier: Arc<dyn ContentResidencyVerifier>,
+        limits: Limits,
     ) -> Result<Self> {
         let source = source.into();
         let source_revision = source_revision.into();
+        limits.validate()?;
+        crate::contract::validate_component_label(&source, "context source")?;
+        crate::contract::validate_component_label(&source_revision, "context source revision")?;
         if source.trim().is_empty()
             || source_revision.trim().is_empty()
             || maximum_page_records == 0
@@ -150,7 +169,93 @@ impl DurableContextProvider {
             source_revision,
             maximum_page_records,
             content_verifier,
+            publisher: None,
+            limits,
         })
+    }
+
+    /// Installs an owner-bound writer for immutable projection payloads.
+    /// A source can reopen with only a reader; publication requires this binding.
+    pub fn with_publisher(mut self, publisher: Arc<dyn ContentPublisher>) -> Result<Self> {
+        publisher.volume().validate()?;
+        self.publisher = Some(publisher);
+        Ok(self)
+    }
+
+    async fn stage_revision(
+        &self,
+        revision: u64,
+        context: Context,
+        compaction: Option<CompactionReference>,
+        key: &[u8],
+    ) -> Result<(ContextRevision, Bytes)> {
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            crate::Error::Unsupported("durable context publisher is not bound".into())
+        })?;
+        let bytes = crate::contract::canonical_json_bytes(&context)?;
+        if bytes.len() as u64 > self.limits.file_bytes {
+            return Err(crate::Error::Invalid(
+                "context payload exceeds file limit".into(),
+            ));
+        }
+        let digest = crate::contract::canonical_json_digest(&(
+            "harness:context-payload:v1",
+            self.path.as_str(),
+            &self.source,
+            &self.source_revision,
+            revision,
+            key,
+        ))?;
+        let mut identity = [0; 16];
+        for (destination, byte) in identity.iter_mut().zip(digest.iter()) {
+            *destination = *byte;
+        }
+        let operation = crate::OperationId::from_bytes(identity);
+        let content = publisher
+            .stage(
+                operation,
+                &format!("context/projections/{operation}.json"),
+                &bytes,
+                "application/json",
+                "context.json",
+            )
+            .await?;
+        self.limits.validate_file(&content)?;
+        if content.volume() != publisher.volume()
+            || content.descriptor().media_type() != "application/json"
+        {
+            return Err(crate::Error::Unauthorized(
+                "context publisher returned another binding".into(),
+            ));
+        }
+        content.descriptor().verify(&bytes)?;
+        self.content_verifier.verify(&content).await?;
+        let stored = StoredContextRevision {
+            format_version: 5,
+            revision,
+            source: self.source.clone(),
+            source_revision: self.source_revision.clone(),
+            context: content.clone(),
+            compaction,
+        };
+        let encoded = crate::contract::canonical_json_bytes(&stored)?;
+        if encoded.len() > MAX_RECORD_BYTES {
+            return Err(crate::Error::Invalid(
+                "durable context record exceeds Stream limit".into(),
+            ));
+        }
+        Ok((
+            ContextRevision {
+                format_version: stored.format_version,
+                revision,
+                source: stored.source,
+                source_revision: stored.source_revision,
+                content,
+                context,
+                compaction: stored.compaction,
+            },
+            Bytes::from(encoded),
+        ))
     }
 
     /// Appends one immutable context revision with exact retry and tail-CAS semantics.
@@ -161,33 +266,23 @@ impl DurableContextProvider {
         compaction: Option<CompactionReference>,
         idempotency_key: impl Into<Bytes>,
     ) -> Result<ContextRevision> {
-        validate_context_refs(&context, self.content_verifier.as_ref()).await?;
+        validate_context_refs(&context, self.content_verifier.as_ref(), self.limits).await?;
         let revision = next_revision(expected_revision)?;
+        let key_bytes = idempotency_key.into();
+        let key = StreamIdempotencyKey::new(key_bytes.clone())
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         if let Some(reference) = &compaction {
             let source = self.read_revision(expected_revision).await?;
             validate_compaction(reference, &source.context, &context)?;
         }
-        let record = ContextRevision {
-            format_version: 4,
-            revision,
-            source: self.source.clone(),
-            source_revision: self.source_revision.clone(),
-            context,
-            compaction,
-        };
-        let encoded = crate::contract::canonical_json_bytes(&record)?;
-        if encoded.len() > MAX_RECORD_BYTES {
-            return Err(crate::Error::Invalid(
-                "durable context record exceeds Stream limit".into(),
-            ));
-        }
-        let key = StreamIdempotencyKey::new(idempotency_key)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let (record, encoded) = self
+            .stage_revision(revision, context, compaction, &key_bytes)
+            .await?;
         match self
             .provider
             .append(AppendRequest {
                 path: self.path.clone(),
-                records: vec![Bytes::from(encoded)],
+                records: vec![encoded],
                 if_tail: Some(expected_revision),
                 idempotency_key: Some(key),
             })
@@ -223,46 +318,24 @@ impl DurableContextProvider {
     ) -> Result<[ContextRevision; 2]> {
         let source_revision = next_revision(expected_revision)?;
         let compacted_revision = next_revision(source_revision)?;
-        let key = StreamIdempotencyKey::new(idempotency_key)
+        let key_bytes = idempotency_key.into();
+        let key = StreamIdempotencyKey::new(key_bytes.clone())
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         validate_compaction(&reference, &source, &compacted)?;
-        validate_context_refs(&source, self.content_verifier.as_ref()).await?;
-        validate_context_refs(&compacted, self.content_verifier.as_ref()).await?;
-        let pair = [
-            ContextRevision {
-                format_version: 4,
-                revision: source_revision,
-                source: self.source.clone(),
-                source_revision: self.source_revision.clone(),
-                context: source,
-                compaction: None,
-            },
-            ContextRevision {
-                format_version: 4,
-                revision: compacted_revision,
-                source: self.source.clone(),
-                source_revision: self.source_revision.clone(),
-                context: compacted,
-                compaction: Some(reference),
-            },
-        ];
-        let records = pair
-            .iter()
-            .map(|record| {
-                let encoded = crate::contract::canonical_json_bytes(record)?;
-                if encoded.len() > MAX_RECORD_BYTES {
-                    return Err(crate::Error::Invalid(
-                        "durable context record exceeds Stream limit".into(),
-                    ));
-                }
-                Ok(Bytes::from(encoded))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        validate_context_refs(&source, self.content_verifier.as_ref(), self.limits).await?;
+        validate_context_refs(&compacted, self.content_verifier.as_ref(), self.limits).await?;
+        let (source_record, source_bytes) = self
+            .stage_revision(source_revision, source, None, &key_bytes)
+            .await?;
+        let (compacted_record, compacted_bytes) = self
+            .stage_revision(compacted_revision, compacted, Some(reference), &key_bytes)
+            .await?;
+        let pair = [source_record, compacted_record];
         match self
             .provider
             .append(AppendRequest {
                 path: self.path.clone(),
-                records,
+                records: vec![source_bytes, compacted_bytes],
                 if_tail: Some(expected_revision),
                 idempotency_key: Some(key),
             })
@@ -373,10 +446,10 @@ impl DurableContextProvider {
                 "context record exceeds Stream limit".into(),
             ));
         }
-        let revision: ContextRevision = crate::contract::json_from_slice(bytes)
+        let revision: StoredContextRevision = crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&revision)? != bytes
-            || revision.format_version != 4
+            || revision.format_version != 5
             || revision.revision != next_revision(sequence)?
             || revision.source != self.source
             || revision.source_revision != self.source_revision
@@ -385,8 +458,34 @@ impl DurableContextProvider {
                 "durable context identity, revision or canonical bytes are invalid".into(),
             ));
         }
-        validate_context_refs(&revision.context, self.content_verifier.as_ref()).await?;
-        Ok(revision)
+        self.limits.validate_file(&revision.context)?;
+        if revision.context.descriptor().media_type() != "application/json"
+            || revision.context.descriptor().byte_length() > self.limits.render_bytes
+        {
+            return Err(crate::Error::Storage(
+                "context payload descriptor is invalid".into(),
+            ));
+        }
+        self.content_verifier.verify(&revision.context).await?;
+        let payload = self.content_verifier.read(&revision.context).await?;
+        revision.context.descriptor().verify(&payload)?;
+        let context: Context = crate::contract::json_from_slice(&payload)
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        if crate::contract::canonical_json_bytes(&context)? != payload {
+            return Err(crate::Error::Storage(
+                "context payload is not canonical".into(),
+            ));
+        }
+        validate_context_refs(&context, self.content_verifier.as_ref(), self.limits).await?;
+        Ok(ContextRevision {
+            format_version: revision.format_version,
+            revision: revision.revision,
+            source: revision.source,
+            source_revision: revision.source_revision,
+            content: revision.context,
+            context,
+            compaction: revision.compaction,
+        })
     }
 
     async fn read_revision(&self, revision: u64) -> Result<ContextRevision> {
@@ -645,24 +744,11 @@ fn validate_compaction(
 async fn validate_context_refs(
     context: &Context,
     verifier: &dyn ContentResidencyVerifier,
+    limits: Limits,
 ) -> Result<()> {
-    context.validate_current_input()?;
+    validate_projected_context(context, limits)?;
     for message in &context.messages {
-        let parts = match &message.content {
-            ModelContent::Part(part) => std::slice::from_ref(part),
-            ModelContent::Parts(parts) if !parts.is_empty() => parts.as_slice(),
-            _ => {
-                return Err(crate::Error::Invalid(
-                    "durable context contains inline content".into(),
-                ));
-            }
-        };
-        for part in parts {
-            let ModelContentPart::File { file, .. } = part else {
-                return Err(crate::Error::Invalid(
-                    "durable context contains inline content".into(),
-                ));
-            };
+        for file in message.content.file_refs() {
             verifier.verify(file).await?;
         }
     }
@@ -1204,6 +1290,100 @@ mod tests {
 
     struct RefVerifier;
 
+    struct TestPayloadStore {
+        volume: VolumeRef,
+        files: std::sync::Mutex<BTreeMap<String, (FileRef, Vec<u8>)>>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    fn payload_limits() -> Limits {
+        Limits {
+            file_bytes: 1_048_576,
+            render_bytes: 1_048_576,
+            context_messages: 4_096,
+            attachments: 1_024,
+            path_bytes: 4_096,
+            ..Limits::default()
+        }
+    }
+
+    impl TestPayloadStore {
+        fn new() -> Result<Self> {
+            Ok(Self {
+                volume: VolumeRef::new(
+                    ProviderRef::new("test", "filesystem", "2")?,
+                    "context",
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                )?,
+                files: std::sync::Mutex::new(BTreeMap::new()),
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl ContentPublisher for TestPayloadStore {
+        fn volume(&self) -> &VolumeRef {
+            &self.volume
+        }
+
+        fn stage<'a>(
+            &'a self,
+            operation: crate::OperationId,
+            path: &'a str,
+            bytes: &'a [u8],
+            media_type: &'a str,
+            display_name: &'a str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            Box::pin(async move {
+                let reference = FileRef::new(
+                    self.volume.clone(),
+                    path,
+                    operation.to_string(),
+                    FileDescriptor::from_bytes(bytes, media_type)?,
+                    display_name,
+                )?;
+                let mut files = self
+                    .files
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some((retained, body)) = files.get(path) {
+                    if retained != &reference || body != bytes {
+                        return Err(crate::Error::Conflict("payload identity changed".into()));
+                    }
+                    return Ok(retained.clone());
+                }
+                files.insert(path.to_owned(), (reference.clone(), bytes.to_vec()));
+                Ok(reference)
+            })
+        }
+    }
+
+    impl ContentResidencyVerifier for TestPayloadStore {
+        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move { file.validate() })
+        }
+
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            Box::pin(async move {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let files = self
+                    .files
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (reference, bytes) = files
+                    .get(file.path())
+                    .ok_or_else(|| crate::Error::Storage("missing context payload".into()))?;
+                if file != reference {
+                    return Err(crate::Error::Storage(
+                        "context payload reference changed".into(),
+                    ));
+                }
+                Ok(bytes.clone())
+            })
+        }
+    }
+
     struct RemoveInputMarker;
 
     impl ContextStage for RemoveInputMarker {
@@ -1427,12 +1607,22 @@ mod tests {
             metadata: BTreeMap::new(),
             current_input_index: None,
         };
-        let record = ContextRevision {
-            format_version: 4,
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let payload = payloads
+            .stage(
+                crate::OperationId::new(),
+                "context/projections/pinned.json",
+                &crate::contract::canonical_json_bytes(&context)?,
+                "application/json",
+                "context.json",
+            )
+            .await?;
+        let record = StoredContextRevision {
+            format_version: 5,
             revision: 1,
             source: "instructions".into(),
             source_revision: "1".into(),
-            context: context.clone(),
+            context: payload,
             compaction: None,
         };
         let mut records = Vec::new();
@@ -1480,7 +1670,8 @@ mod tests {
                 "instructions",
                 "1",
                 1,
-                Arc::new(RefVerifier),
+                payloads.clone(),
+                payload_limits(),
             )?;
             assert!(provider.revisions(0, 1).await.is_err());
             assert!(
@@ -1493,20 +1684,31 @@ mod tests {
         Ok(())
     }
 
-    struct CountingVerifier(std::sync::atomic::AtomicUsize);
+    struct CountingVerifier {
+        count: std::sync::atomic::AtomicUsize,
+        payloads: Arc<TestPayloadStore>,
+    }
     impl ContentResidencyVerifier for CountingVerifier {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 file.validate()
             })
+        }
+
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            self.payloads.read(file)
         }
     }
 
     #[tokio::test]
     async fn latest_context_work_is_independent_of_retained_revisions() -> Result<()> {
         for retained in [1, 16, 128] {
-            let verifier = Arc::new(CountingVerifier(std::sync::atomic::AtomicUsize::new(0)));
+            let payloads = Arc::new(TestPayloadStore::new()?);
+            let verifier = Arc::new(CountingVerifier {
+                count: std::sync::atomic::AtomicUsize::new(0),
+                payloads: payloads.clone(),
+            });
             let provider = DurableContextProvider::new(
                 Arc::new(MemoryStream::default()),
                 StreamPath::new("bounded/context")
@@ -1515,7 +1717,9 @@ mod tests {
                 "1",
                 7,
                 verifier.clone(),
-            )?;
+                payload_limits(),
+            )?
+            .with_publisher(payloads)?;
             let context = Context {
                 messages: vec![message(ModelRole::System, "pinned")?],
                 metadata: BTreeMap::new(),
@@ -1531,12 +1735,12 @@ mod tests {
                     )
                     .await?;
             }
-            verifier.0.store(0, std::sync::atomic::Ordering::SeqCst);
+            verifier.count.store(0, std::sync::atomic::Ordering::SeqCst);
             let started = std::time::Instant::now();
             assert_eq!(provider.latest().await?, context);
-            assert_eq!(verifier.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(verifier.count.load(std::sync::atomic::Ordering::SeqCst), 2);
             eprintln!(
-                "context retained={retained} verified_refs=1 active_wire_bytes={} elapsed_us={}",
+                "context retained={retained} verified_refs=2 active_wire_bytes={} elapsed_us={}",
                 crate::contract::canonical_json_bytes(&context)?.len(),
                 started.elapsed().as_micros()
             );
@@ -1779,6 +1983,7 @@ mod tests {
     )]
     async fn durable_sources_and_compaction_reopen_exactly() -> Result<()> {
         let stream = Arc::new(MemoryStream::default());
+        let payloads = Arc::new(TestPayloadStore::new()?);
         let path = StreamPath::new("runtime/context/memory")
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let provider = DurableContextProvider::new(
@@ -1787,8 +1992,10 @@ mod tests {
             "memory",
             "1",
             2,
-            Arc::new(RefVerifier),
-        )?;
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads.clone())?;
         assert_eq!(provider.latest().await?, Context::default());
         assert!(
             provider
@@ -1800,10 +2007,10 @@ mod tests {
                             content: ModelContent::Text("secret".into())
                         }],
                         metadata: BTreeMap::new(),
-                        current_input_index: None,
+                        current_input_index: Some(1),
                     },
                     None,
-                    Bytes::from_static(b"inline-rejected")
+                    Bytes::from_static(b"invalid-marker-rejected")
                 )
                 .await
                 .is_err()
@@ -1877,7 +2084,8 @@ mod tests {
             "memory",
             "1",
             2,
-            Arc::new(RefVerifier),
+            payloads.clone(),
+            payload_limits(),
         )?);
         let revisions = reopened.revisions(0, 2).await?;
         assert_eq!(revisions.len(), 2);
@@ -1901,8 +2109,15 @@ mod tests {
             .await?;
         assert_eq!(assembled.messages.len(), 4);
         assert_eq!(assembled.messages[3], message(ModelRole::User, "current")?);
-        let undersized =
-            DurableContextProvider::new(stream, path, "memory", "1", 1, Arc::new(RefVerifier))?;
+        let undersized = DurableContextProvider::new(
+            stream,
+            path,
+            "memory",
+            "1",
+            1,
+            payloads,
+            payload_limits(),
+        )?;
         assert_eq!(undersized.latest().await?, compacted);
         assert_eq!(undersized.revisions(0, 2).await?.len(), 1);
         let second = undersized.revisions(1, 2).await?;
@@ -1914,6 +2129,7 @@ mod tests {
     #[tokio::test]
     async fn continuing_compaction_publishes_and_retries_one_atomic_pair() -> Result<()> {
         let stream = Arc::new(MemoryStream::default());
+        let payloads = Arc::new(TestPayloadStore::new()?);
         let path = StreamPath::new("runtime/context/continuing")
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let provider = DurableContextProvider::new(
@@ -1922,8 +2138,10 @@ mod tests {
             "memory",
             "1",
             1,
-            Arc::new(RefVerifier),
-        )?;
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads.clone())?;
         let source = Context {
             messages: vec![
                 message(ModelRole::User, "one")?,
@@ -1967,8 +2185,16 @@ mod tests {
                 key.clone(),
             )
             .await?;
-        let reopened =
-            DurableContextProvider::new(stream, path, "memory", "1", 1, Arc::new(RefVerifier))?;
+        let reopened = DurableContextProvider::new(
+            stream,
+            path,
+            "memory",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads)?;
         let pair = reopened
             .append_compaction(0, source.clone(), compacted.clone(), reference.clone(), key)
             .await?;
@@ -2034,6 +2260,117 @@ mod tests {
             .await?;
         assert_eq!(reopened.latest().await?, Context::default());
         assert_eq!(reopened.revision(pin.revision).await?, pin);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_payload_missing_corrupt_and_oversized_fail_without_fallback() -> Result<()> {
+        for failure in [0, 1, 2] {
+            let stream = Arc::new(MemoryStream::default());
+            let payloads = Arc::new(TestPayloadStore::new()?);
+            let path = StreamPath::new("context/payload-negatives")
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            let provider = DurableContextProvider::new(
+                stream.clone(),
+                path.clone(),
+                "memory",
+                "1",
+                1,
+                payloads.clone(),
+                payload_limits(),
+            )?
+            .with_publisher(payloads.clone())?;
+            let context = Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("pinned payload".into()),
+                }],
+                ..Context::default()
+            };
+            let published = provider
+                .append(0, context, None, Bytes::from_static(b"payload"))
+                .await?;
+            if failure < 2 {
+                {
+                    let mut files = payloads.files.lock().unwrap();
+                    if failure == 0 {
+                        files.remove(published.content.path());
+                    } else {
+                        let (_, bytes) =
+                            files.get_mut(published.content.path()).ok_or_else(|| {
+                                crate::Error::Storage("payload fixture is missing".into())
+                            })?;
+                        if let Some(first) = bytes.first_mut() {
+                            *first ^= 1;
+                        }
+                    }
+                }
+                assert!(provider.latest().await.is_err());
+            } else {
+                payloads.reads.store(0, std::sync::atomic::Ordering::SeqCst);
+                let reader = DurableContextProvider::new(
+                    stream,
+                    path,
+                    "memory",
+                    "1",
+                    1,
+                    payloads.clone(),
+                    Limits {
+                        render_bytes: 1,
+                        ..payload_limits()
+                    },
+                )?;
+                assert!(reader.latest().await.is_err());
+                assert_eq!(payloads.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_payload_bounds_and_missing_writer_do_not_publish() -> Result<()> {
+        for (file_bytes, render_bytes, writer) in [
+            (128, 1_024, true),
+            (1_024, 128, true),
+            (1_024, 1_024, false),
+        ] {
+            let payloads = Arc::new(TestPayloadStore::new()?);
+            let provider = DurableContextProvider::new(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("context/bounds")
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                "memory",
+                "1",
+                1,
+                payloads.clone(),
+                Limits {
+                    file_bytes,
+                    render_bytes,
+                    ..payload_limits()
+                },
+            )?;
+            let provider = if writer {
+                provider.with_publisher(payloads.clone())?
+            } else {
+                provider
+            };
+            let context = Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("x".repeat(512)),
+                }],
+                current_input_index: Some(0),
+                ..Context::default()
+            };
+            assert!(
+                provider
+                    .append(0, context, None, Bytes::from_static(b"oversized"))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(provider.tail_revision().await?, 0);
+            assert!(payloads.files.lock().unwrap().is_empty());
+        }
         Ok(())
     }
 }

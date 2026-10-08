@@ -370,7 +370,34 @@ This qualifies the explicit existing context-source path and atomic publication
 primitive, not automatic canonical-conversation continuation. The default
 integration must pin its context revision alongside the canonical selection and
 select only later history after the checkpoint watermark. Its retained view must
-not duplicate old current input or instruction stages. Existing durable context
-records accept file parts only; inline instruction/skill text and structured
-tool exchanges require bounded immutable payload references through the existing
-content provider before that default integration can use this primitive.
+not duplicate old current input or instruction stages. Durable context records
+at this checkpoint accepted file parts only; inline instruction/skill text and
+structured tool exchanges required immutable payload references before default
+integration could use this primitive.
+
+The next storage revision closes that representation gap. Stream context format
+5 stores one immutable canonical context payload FileRef, plus bounded revision
+identity and compaction proof. The resolved public ContextRevision contains its
+typed Context and payload ref. There is no format-4 decoding fallback. The same
+owner-bound ContentPublisher stages payloads, and the existing residency reader
+checks descriptor, exact bytes, canonical encoding and every nested file ref.
+Explicit Limits bound payload bytes, context messages, metadata and file paths.
+Read-only reopen needs no writer; publication requires an installed publisher.
+Single and paired publication reuse one payload encoder and the existing CAS.
+
+The native source in `target/b-context-payload-final-source-hashes.json` passed
+258 library tests in `target-b-native-context-payloads-final.log`. The final real
+consumer fixture passed four cases in
+`target-b-native-context-payloads-consumer-final.log`, including a Unicode
+instruction larger than a Stream record and a typed tool exchange which survive
+read-only reopen and ordinary PreparedModelRequest validation unchanged. Direct
+inspection confirms the Stream record contains only the payload ref, not those
+instruction bytes. Missing payload, changed bytes, excessive descriptor size,
+render/file budget exhaustion and absent publisher produce explicit errors;
+excessive descriptor size rejects before reading payload bytes, and failed
+admission leaves both Stream and staged-file counts unchanged. Strict native
+all-target lint passed in `target-b-clippy-context-payloads-native-final.log`;
+strict WASM library lint passed in
+`target-b-clippy-context-payloads-wasm-final.log`. Earlier format-4 receipts remain
+scoped to that previous source. Automatic canonical continuation, cold history
+checkpoints, default fork policies and final runtime/platform gates remain open.
