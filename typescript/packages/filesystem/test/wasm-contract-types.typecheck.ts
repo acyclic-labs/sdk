@@ -18,8 +18,28 @@ import type {
   TreeEntrySnapshot,
   FileRecordSnapshot,
   WasmBindings,
+  TransactionConflict,
+  TransactionRebaseResult,
 } from "../src/contracts.js";
 import type * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
+
+declare const generatedTransaction: GeneratedWasm.BrowserTransaction;
+const transactionCommit: Promise<WorkspaceCommit> = generatedTransaction.commit(undefined);
+const transactionRebase: Promise<TransactionRebaseResult> = generatedTransaction.rebase(16);
+declare const transactionConflict: TransactionConflict;
+const transactionOffset: bigint | undefined = transactionConflict.offset;
+// @ts-expect-error Transaction result fields derive readonly from the generated DTO.
+transactionConflict.region = "content-range";
+// @ts-expect-error A full-width transaction offset never narrows to a number.
+const roundedTransactionOffset: number | undefined = transactionConflict.offset;
+// @ts-expect-error Unpublished transaction conflict regions are rejected.
+const unknownTransactionRegion: TransactionConflict["region"] = "unknown-region";
+// @ts-expect-error Dependency-use names come from the Rust enum.
+const unknownTransactionUse: TransactionConflict["usage"] = "unknown-use";
+// @ts-expect-error Rebase statuses come from the Rust enum.
+const unknownTransactionRebase: TransactionRebaseResult["status"] = "unknown-status";
+void [transactionCommit, transactionRebase, transactionOffset, roundedTransactionOffset,
+  unknownTransactionRegion, unknownTransactionUse, unknownTransactionRebase];
 
 declare const nestedTreeEntry: TreeEntrySnapshot;
 // @ts-expect-error Public filesystem results are deeply readonly.
