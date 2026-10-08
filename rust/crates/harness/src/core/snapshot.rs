@@ -96,10 +96,11 @@ impl Reducer {
         schemas: SchemaRegistry,
     ) -> Result<Self> {
         snapshot.verify(&authority_verifier, &schemas)?;
-        let operation_intents = snapshot
+        let operation_positions = snapshot
             .events
             .iter()
-            .map(|event| (event.operation_id, (event.intent_digest, event.clone())))
+            .enumerate()
+            .map(|(position, event)| (event.operation_id, position))
             .collect();
         let projection = snapshot.projection;
         Ok(Self {
@@ -113,7 +114,7 @@ impl Reducer {
             configured_extensions: projection.configured_extensions.into_iter().collect(),
             active_configurations: projection.active_configurations,
             events: snapshot.events,
-            operation_intents,
+            operation_positions,
             effects: projection.effects,
             forks: projection.forks.into_iter().collect(),
             published_merges: projection.published_merges,

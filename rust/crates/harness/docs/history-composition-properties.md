@@ -1027,3 +1027,37 @@ This is focused functional evidence. Compact resident/cold state, runtime-owner
 adoption and default browser continuation, complete fork policies, default-turn
 10,000-operation evidence, full production/release gates, the owned PR and
 verified landing remain required.
+
+The final B/I join must also qualify the owning browser model-provider adapter.
+At I's qualified d53723a5782470abd595241fb3ee22f054d4ff2f, HostModel forwards
+generate/reconcile only. B's ModelProvider adds context_capacity for the exact
+selected Model and count_tokens for the exact PreparedModelRequest; their trait
+defaults return Unsupported. Consequently the joined source can compile while
+default StockExecutor compaction fails before model dispatch. The owning adapter
+must forward both actual provider hooks and prove the enabled default through
+public browser and installed consumers on the final joined source. Disabled
+compaction and fabricated byte-to-token counts do not satisfy this requirement.
+I acknowledged this seam while preserving its already-qualified source; the bare
+history bridge itself does not require a different dispatch/reconcile contract.
+
+### Checkout recovery and subsequent retention work
+
+The original 1656/sdk checkout was later found absent and unregistered in Git.
+Its signed branch at 4007c54 survived and was recovered at the original path.
+No verified archive or backup of ignored qualification receipts, producer
+artifacts or build caches has been identified. The earlier qualification notes
+are historical reports; they are not a substitute for inspectable retained
+receipts. Final-source artifacts and gates must be regenerated and requalified
+unless an exact source/hash-bound archive is recovered.
+
+Subsequent unqualified source work removes the duplicate Event stored for each
+retry identity: the operation index now points into the sole retained event
+vector, including after snapshot restoration. The existing indexed lookup for
+one admitted context selection is exposed to the WASM consumer. Local normal
+turns, retries and indeterminate-turn checks use it instead of creating a complete
+authenticated snapshot and scanning its events. The turn consumer fixture
+allows only its explicit model audit to read a snapshot, so the prior hidden
+history clones are detectable. Formatting and whitespace checks pass; native,
+fresh generated declarations, Bun and actual Chromium gates are pending a
+coordinated build grant. Conversation hydration, retained-event/index growth and
+compact cold restoration remain unfinished.

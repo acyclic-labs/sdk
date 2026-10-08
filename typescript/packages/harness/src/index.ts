@@ -518,6 +518,15 @@ export class Harness {
     return this.#core.head() as readonly [Authority, bigint];
   }
 
+  /** Reads one admitted selection without serializing the retained event history. */
+  contextSelectionForOperation(operationId: OperationId): Readonly<{
+    conversation_revision: bigint;
+    message_ids: readonly ConversationMessageId[];
+    checkpoint?: FileRef;
+  }> | null {
+    return this.#core.contextSelectionForOperation(operationId);
+  }
+
   snapshot(): Snapshot {
     return this.#core.snapshot() as Snapshot;
   }

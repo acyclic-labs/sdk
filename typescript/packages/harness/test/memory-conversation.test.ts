@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
@@ -163,8 +163,16 @@ test("local conversation publishes staged refs and pinned context before model d
   }).build();
   const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
   const content = await host.stage("turns/one/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
-  const first = await host.runConversation(runtime, operation, content);
-  const replay = await host.runConversation(runtime, operation, content);
+  const [first, replay] = await (async () => {
+    const snapshots = spyOn(Harness.prototype, "snapshot");
+    try {
+      const first = await host.runConversation(runtime, operation, content);
+      const replay = await host.runConversation(runtime, operation, content);
+      // Only the model fixture's explicit audit above may serialize history.
+      expect(snapshots).toHaveBeenCalledTimes(1);
+      return [first, replay] as const;
+    } finally { snapshots.mockRestore(); }
+  })();
   expect(first.text).toBe("answer");
   expect(replay).toEqual(first);
   expect(calls).toBe(1);

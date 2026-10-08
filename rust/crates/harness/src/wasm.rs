@@ -2366,6 +2366,13 @@ impl WasmReducer {
         to_js(&(self.reducer.authority(), self.reducer.revision()))
     }
 
+    /// Reads one admitted selection through the reducer's retained identity index.
+    #[wasm_bindgen(js_name = contextSelectionForOperation)]
+    pub fn context_selection_for_operation(&self, operation: JsValue) -> Result<JsValue, JsValue> {
+        let operation = from_js(operation)?;
+        to_js_admitted(&self.reducer.context_selection_for_operation(operation))
+    }
+
     /// Returns a versioned issuer-authenticated restoration snapshot.
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
         to_js(&self.reducer.snapshot().map_err(js_error)?)

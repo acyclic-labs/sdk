@@ -1465,7 +1465,7 @@ pub struct Reducer {
     configured_extensions: BTreeMap<ExtensionDependency, ExtensionConfiguration>,
     active_configurations: Vec<ExtensionConfiguration>,
     events: Vec<Event>,
-    operation_intents: BTreeMap<OperationId, ([u8; 32], Event)>,
+    operation_positions: BTreeMap<OperationId, usize>,
     effects: BTreeMap<EffectId, EffectState>,
     forks: BTreeMap<Authority, ForkSeed>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
@@ -1494,7 +1494,7 @@ impl Reducer {
             configured_extensions: BTreeMap::new(),
             active_configurations: Vec::new(),
             events: Vec::new(),
-            operation_intents: BTreeMap::new(),
+            operation_positions: BTreeMap::new(),
             effects: BTreeMap::new(),
             forks: BTreeMap::new(),
             published_merges: BTreeSet::new(),
@@ -1706,9 +1706,8 @@ impl Reducer {
         &self,
         operation_id: OperationId,
     ) -> Option<&ModelContextSelection> {
-        self.operation_intents
-            .get(&operation_id)
-            .and_then(|(_, event)| match &event.payload {
+        self.event_for_operation(operation_id)
+            .and_then(|event| match &event.payload {
                 EventPayload::ModelContextSelected { selection } => Some(selection),
                 _ => None,
             })
@@ -1738,9 +1737,14 @@ impl Reducer {
     /// Hosts use it to reconstruct the original CAS command on a lost-ack retry.
     #[must_use]
     pub fn operation_revision(&self, operation_id: OperationId) -> Option<u64> {
-        self.operation_intents
+        self.event_for_operation(operation_id)
+            .map(|event| event.revision)
+    }
+
+    fn event_for_operation(&self, operation_id: OperationId) -> Option<&Event> {
+        self.operation_positions
             .get(&operation_id)
-            .map(|(_, event)| event.revision)
+            .and_then(|position| self.events.get(*position))
     }
 
     /// Returns the exact admitted request and its optional terminal resolution.
@@ -1815,8 +1819,8 @@ impl Reducer {
     ) -> Result<ApplyResult> {
         self.verify_command_scope(command)?;
         let intent = canonical_intent(command)?;
-        if let Some((existing_intent, event)) = self.operation_intents.get(&command.operation_id) {
-            if existing_intent == &intent {
+        if let Some(event) = self.event_for_operation(command.operation_id) {
+            if event.intent_digest == intent {
                 return Ok(ApplyResult::Replayed {
                     event: event.clone(),
                 });
@@ -1971,8 +1975,8 @@ impl Reducer {
     )]
     pub fn apply_committed(&mut self, event: Event) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
-        if let Some((digest, existing)) = self.operation_intents.get(&event.operation_id) {
-            if digest == &event.intent_digest && existing == &event {
+        if let Some(existing) = self.event_for_operation(event.operation_id) {
+            if existing == &event {
                 return Ok(ApplyResult::Replayed {
                     event: existing.clone(),
                 });
@@ -1998,9 +2002,9 @@ impl Reducer {
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
         self.apply_payload(&event.payload, event.revision)?;
         self.revision = event.revision;
+        self.operation_positions
+            .insert(event.operation_id, self.events.len());
         self.events.push(event.clone());
-        self.operation_intents
-            .insert(event.operation_id, (event.intent_digest, event.clone()));
         Ok(ApplyResult::Applied { event })
     }
 
