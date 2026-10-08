@@ -24,6 +24,15 @@ pub const LEGACY_DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
 pub const VERSION_INDEX_SCHEMA_VERSION: &str = "sdk-docs-versions.v1";
 pub const GENERATOR_VERSION: &str = "0.1.0";
 
+/// Return a relocation-invariant digest for a Rustdoc receipt. Rustdoc span
+/// filenames are normalized to repository-relative or basename identities
+/// before hashing, while the receipt bytes used for projection remain intact.
+pub fn rustdoc_digest(path: &Path, repository_root: &Path) -> Result<String, Error> {
+    let bytes = fs::read(path)?;
+    let normalized = normalized_rustdoc_digest_bytes(&bytes, repository_root)?;
+    Ok(format!("sha256:{}", sha256_hex(&normalized)))
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
@@ -333,11 +342,16 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         input_digest.update(metadata.version.as_bytes());
         input_digest.update([0]);
         let bytes = fs::read(path)?;
+        // Rustdoc embeds absolute source filenames in spans.  Those paths are
+        // producer-local metadata, so normalize them before deriving the
+        // input identity; the parsed receipt remains untouched for source
+        // mapping and generated-source attestation.
+        let digest_bytes = normalized_rustdoc_digest_bytes(&bytes, &repository_root)?;
         if let Some(name) = path.file_name() {
             input_digest.update(name.to_string_lossy().as_bytes());
         }
         input_digest.update([0]);
-        input_digest.update(&bytes);
+        input_digest.update(&digest_bytes);
         let krate: Crate = serde_json::from_slice(&bytes).map_err(|e| {
             Error::Invalid(format!(
                 "{} is not valid typed rustdoc JSON: {e}",
@@ -1598,6 +1612,50 @@ fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
         )));
     }
     Ok(components.join("/"))
+}
+
+fn normalized_rustdoc_digest_bytes(bytes: &[u8], repository_root: &Path) -> Result<Vec<u8>, Error> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    normalize_rustdoc_filenames(&mut value, repository_root);
+    Ok(serde_json::to_vec(&value)?)
+}
+
+fn normalize_rustdoc_filenames(value: &mut serde_json::Value, repository_root: &Path) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "filename" {
+                    if let serde_json::Value::String(filename) = child {
+                        *filename = stable_rustdoc_filename(filename, repository_root);
+                        continue;
+                    }
+                }
+                normalize_rustdoc_filenames(child, repository_root);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                normalize_rustdoc_filenames(child, repository_root);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn stable_rustdoc_filename(filename: &str, repository_root: &Path) -> String {
+    let path = PathBuf::from(filename);
+    if !path.is_absolute() {
+        return filename.replace('\\', "/");
+    }
+    if let Ok(canonical) = path.canonicalize() {
+        if let Ok(relative) = canonical.strip_prefix(repository_root) {
+            return format!("<root>/{}", normalize_path(relative));
+        }
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("<external>/{name}"))
+        .unwrap_or_else(|| "<external>/generated-source".into())
 }
 
 fn validate_generated_sha256(value: &str) -> Result<(), Error> {

@@ -7,6 +7,7 @@ use sdk_docs::rustdoc_profiles::{
 use sdk_docs::{
     build_data, merge_profile_catalog, scenarios, write_bundle, BuildInput, Channel,
     GeneratedSource, PackageMetadata,
+    rustdoc_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -321,7 +322,10 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             receipt_specs.insert(path_string(receipt), profile_spec.clone());
         }
         let receipt_key = rustdoc_key(&rustdoc_dir, receipt)?;
-        receipt_manifest.insert(receipt_key, sha256_file(receipt)?);
+        receipt_manifest.insert(
+            receipt_key,
+            rustdoc_digest(receipt, &root).map_err(|error| CliError(error.to_string()))?,
+        );
         rustdoc_files.push(receipt.clone());
         package_metadata.push(PackageMetadata {
             rustdoc_file: receipt.clone(),
@@ -365,7 +369,10 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         profiles.insert(profile_id, profile);
         receipt_specs.insert(path_string(receipt), executed.spec.clone());
         let receipt_key = rustdoc_key(&rustdoc_dir, &receipt)?;
-        receipt_manifest.insert(receipt_key, sha256_file(&receipt)?);
+        receipt_manifest.insert(
+            receipt_key,
+            rustdoc_digest(&receipt, &root).map_err(|error| CliError(error.to_string()))?,
+        );
     }
 
     let published = published_packages(&root)?;
@@ -628,7 +635,8 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
     }
     for (path, expected) in &manifest.rustdoc_files {
         let relative = path.strip_prefix("rustdoc/").unwrap_or(path);
-        let actual = sha256_file(&rustdoc_dir.join(relative))?;
+        let actual = rustdoc_digest(&rustdoc_dir.join(relative), &root)
+            .map_err(|error| CliError(error.to_string()))?;
         if &actual != expected {
             return Err(CliError(format!("Rustdoc input changed: {path}")));
         }
@@ -1036,12 +1044,26 @@ fn materialize_generated_sources(
         if !physical.is_absolute() {
             continue;
         }
-        let physical = if physical.is_file() {
-            let inside_root = physical.canonicalize().map_err(io_error)?.starts_with(root);
+        let (physical, stable_identity) = if physical.is_file() {
+            let canonical = physical.canonicalize().map_err(io_error)?;
+            let inside_root = canonical.starts_with(root);
             if inside_root {
-                physical
+                let relative = canonical
+                    .strip_prefix(root)
+                    .map_err(|_| CliError("generated source escaped the repository root".into()))?;
+                let identity = path_string(relative);
+                (canonical, identity)
             } else {
-                stage_generated_source(root, &physical, &filename)?
+                let basename = physical
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .ok_or_else(|| {
+                        CliError(format!("Rustdoc generated source has invalid filename {filename}"))
+                    })?;
+                (
+                    stage_generated_source(root, &canonical, &filename)?,
+                    format!("external/{basename}"),
+                )
             }
         } else {
             let basename = physical
@@ -1059,7 +1081,19 @@ fn materialize_generated_sources(
                     "Rustdoc generated source basename is ambiguous: {filename}"
                 )));
             };
-            stage_generated_source(root, candidate, &filename)?
+            let identity = candidate
+                .strip_prefix(root)
+                .map(path_string)
+                .unwrap_or_else(|_| {
+                    format!(
+                        "external/{}",
+                        candidate
+                            .file_name()
+                            .and_then(OsStr::to_str)
+                            .unwrap_or("generated-source")
+                    )
+                });
+            (stage_generated_source(root, candidate, &filename)?, identity)
         };
         let physical = physical.canonicalize().map_err(io_error)?;
         let is_generated = !physical.starts_with(root)
@@ -1077,9 +1111,16 @@ fn materialize_generated_sources(
             .and_then(OsStr::to_str)
             .map(|ext| format!(".{ext}"))
             .unwrap_or_default();
+        // The logical identity must survive relocating the checkout.  The
+        // physical path is intentionally excluded: rustdoc may point into a
+        // target directory or a staged foreign source whose absolute path
+        // differs on every producer host.  The stable source identity keeps
+        // distinct basenames separate, while the content digest keeps
+        // same-named sources with different bytes separate.
+        let logical_identity = format!("{stable_identity}\0{digest}");
         let logical_path = PathBuf::from(format!(
             "generated/rustdoc/{}{}",
-            sha256_bytes(path_string(&physical).as_bytes()).trim_start_matches("sha256:"),
+            sha256_bytes(logical_identity.as_bytes()).trim_start_matches("sha256:"),
             suffix
         ));
         result.push(GeneratedSource {
@@ -1222,6 +1263,16 @@ fn collect_files(
             }
             collect_files(root, &path, files, include_all)?;
         } else if include_all {
+            // Atomic publication leaves a short-lived sibling while the
+            // immutable artifact is linked into place. It is producer scratch
+            // space and must never enter the published artifact inventory.
+            if path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.contains(".tmp-"))
+            {
+                continue;
+            }
             files.push(path);
         }
     }

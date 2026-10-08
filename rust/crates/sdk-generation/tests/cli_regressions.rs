@@ -1,3 +1,4 @@
+use sdk_docs::rustdoc_digest;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -337,6 +338,122 @@ fn run_generate(
         command.arg("--skip-scenarios");
     }
     command.output().unwrap()
+}
+
+fn generated_span_fixture_pair() -> (Fixture, Fixture) {
+    let first = fixture(false);
+    let generated_relative = "target/generated/wire.rs";
+    let generated = first.root.join(generated_relative);
+    fs::create_dir_all(generated.parent().unwrap()).unwrap();
+    fs::write(&generated, b"pub struct Wire;\n").unwrap();
+
+    let receipt_path = first.rustdoc.join("demo_docs.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["index"]["0"]["span"] = json!({
+        "filename": generated.canonicalize().unwrap().to_string_lossy(),
+        "begin": [1, 0],
+        "end": [1, 16]
+    });
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+
+    let second_root = std::env::temp_dir().join(format!(
+        "sdk-generation-relocated-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&second_root);
+    let clone = Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            first.root.to_str().unwrap(),
+            second_root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        clone.status.success(),
+        "git clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+    fs::create_dir_all(second_root.join("rustdoc")).unwrap();
+    fs::copy(
+        first.rustdoc.join("demo_docs.json"),
+        second_root.join("rustdoc/demo_docs.json"),
+    )
+    .unwrap();
+    fs::copy(
+        first.rustdoc.join("demo_docs.source.sha256"),
+        second_root.join("rustdoc/demo_docs.source.sha256"),
+    )
+    .unwrap();
+    let second_generated = second_root.join(generated_relative);
+    fs::create_dir_all(second_generated.parent().unwrap()).unwrap();
+    fs::write(&second_generated, b"pub struct Wire;\n").unwrap();
+    let second_receipt = second_root.join("rustdoc/demo_docs.json");
+    let mut second_json: Value =
+        serde_json::from_slice(&fs::read(&second_receipt).unwrap()).unwrap();
+    second_json["index"]["0"]["span"] = json!({
+        "filename": second_generated
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy(),
+        "begin": [1, 0],
+        "end": [1, 16]
+    });
+    fs::write(&second_receipt, serde_json::to_vec(&second_json).unwrap()).unwrap();
+
+    let second = Fixture {
+        root: second_root.clone(),
+        rustdoc: second_root.join("rustdoc"),
+        output: second_root.join("output"),
+    };
+    (first, second)
+}
+
+#[test]
+fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
+    let (first, second) = generated_span_fixture_pair();
+    for fixture in [&first, &second] {
+        let result = run_generate(
+            &fixture.root,
+            &fixture.rustdoc,
+            &fixture.output,
+            "relocation-invariant",
+            "preview",
+            true,
+        );
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    let first_manifest: Value = serde_json::from_slice(
+        &fs::read(first.output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    let second_manifest: Value = serde_json::from_slice(
+        &fs::read(second.output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        first_manifest["sourceSha256"], second_manifest["sourceSha256"],
+        "source digest must survive checkout relocation"
+    );
+    assert_eq!(
+        first_manifest["sourceFiles"], second_manifest["sourceFiles"],
+        "source closure must survive checkout relocation"
+    );
+    assert_eq!(
+        first_manifest["artifacts"], second_manifest["artifacts"],
+        "every generated artifact hash must survive checkout relocation"
+    );
+
+    let _ = fs::remove_dir_all(first.root);
+    let _ = fs::remove_dir_all(second.root);
 }
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
@@ -867,7 +984,10 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
             .unwrap()
             .replace('/', "\\"),
     );
-    assert_eq!(receipt["rustdocSha256"], hash_file(&receipt_path));
+    assert_eq!(
+        receipt["rustdocSha256"],
+        rustdoc_digest(&receipt_path, &fixture.root).unwrap()
+    );
     assert_eq!(
         fs::read_to_string(receipt_path.with_extension("source.sha256"))
             .unwrap()
