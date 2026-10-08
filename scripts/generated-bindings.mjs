@@ -51,7 +51,7 @@ export const compatibilityArtifacts = {
   },
   workers: {
     schemaDigest: "proto/workers/v1/workers.proto",
-    descriptorDigest: "rust/crates/workers/src/generated/acyclic-workers-v1.bin",
+    descriptorDigest: "compatibility/descriptors/workers-v1.bin",
   },
 };
 
@@ -81,8 +81,6 @@ export const packagedRustBindings = [
   ["acyclic/objects/v2/acyclic.objects.v2.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
-  ["acyclic/workers/v1/acyclic.workers.v1.rs", "rust/crates/workers/src/generated/acyclic.workers.v1.rs"],
-  ["acyclic/workers/v1/acyclic.workers.v1.tonic.rs", "rust/crates/workers/src/generated/acyclic.workers.v1.tonic.rs"],
 ];
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";

@@ -10,6 +10,9 @@ description = "Public Workers v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
+ts-rs = "=12.0.1"
 http-body = "1.1.0"
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
@@ -26,6 +29,16 @@ tracing.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio.workspace = true
 tracing-subscriber.workspace = true
+
+[build-dependencies]
+prost.workspace = true
+acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
+ts-rs = "=12.0.1"
+sha2.workspace = true
+thiserror.workspace = true
+protoc-bin-vendored = "=3.3.0"
+tonic-prost-build = "=0.14.6"
 
 [lints]
 workspace = true

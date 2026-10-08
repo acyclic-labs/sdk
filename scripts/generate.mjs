@@ -20,6 +20,10 @@ const actors = spawnSync(process.execPath, [join(root, "scripts/generate-actors.
 if (actors.error) throw actors.error;
 if (actors.status !== 0) process.exit(actors.status ?? 1);
 
+const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", join(root, "proto"), join(root, "typescript/packages/workers/src/generated/semantic")], { cwd: root, stdio: "inherit" });
+if (workers.error) throw workers.error;
+if (workers.status !== 0) process.exit(workers.status ?? 1);
+
 run(["generate"]);
 for (const [source, destination] of generatedDescriptors) {
   mkdirSync(dirname(join(root, destination)), { recursive: true });

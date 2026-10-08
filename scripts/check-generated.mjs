@@ -142,6 +142,16 @@ const checkWasmPackage = async ([packageName, basename]) => {
 
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
 try {
+  const freshWorkers = join(temporary, "workers-semantic");
+  const freshWorkersProto = join(temporary, "workers-proto");
+  const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", freshWorkersProto, freshWorkers], { cwd: root, encoding: "utf8" });
+  if (workers.error) throw workers.error;
+  if (workers.status !== 0) throw new Error(`Workers Rust generation failed: ${workers.stderr}`);
+  if (!readFileSync(join(freshWorkersProto, "workers/v1/workers.proto")).equals(readFileSync(join(root, "proto/workers/v1/workers.proto")))) throw new Error("Workers Rust-rendered Proto drift");
+  const packagedWorkers = join(root, "typescript/packages/workers/src/generated/semantic");
+  const expectedWorkers = generatedFiles(freshWorkers);
+  if (JSON.stringify(expectedWorkers) !== JSON.stringify(generatedFiles(packagedWorkers))) throw new Error("Workers semantic TypeScript file set drift");
+  for (const file of expectedWorkers) if (!readFileSync(join(freshWorkers, file)).equals(readFileSync(join(packagedWorkers, file)))) throw new Error(`Workers semantic TypeScript drift: ${file}`);
   for (const [source, packaged] of packagedSourceCopies) {
     if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
       throw new Error(`packaged source drift: ${packaged}`);
