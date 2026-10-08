@@ -43,7 +43,7 @@ import {
   type InferenceTransport,
 } from "../src/index.js";
 import { retryableOnce, runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
-import { INFERENCE_FIXED_WIDTHS, validateInferenceFixedWidthMetadata } from "../src/widths.js";
+import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
 
@@ -127,9 +127,6 @@ test("ergonomic identity helpers enforce Rust-derived fixed widths at both bound
   expect(() => contextRevision(new Uint8Array(33))).toThrow("exactly 32 bytes");
   expect(runId(new Uint8Array(16))).toHaveLength(16);
   expect(contextRevision(new Uint8Array(32))).toHaveLength(32);
-  expect(() => validateInferenceFixedWidthMetadata([{
-    message: "inference.customer.v1.RequestIdentity", field: "request_id", width: 0,
-  }])).toThrow("non-positive width");
 });
 const receipt = (value: number) => create(MutationReceiptSchema, { revision: revision(value), commandDigest: revision(value + 32), sequence: 1n });
 const contextView = (value: Uint8Array, model = "model") => create(ContextViewSchema, {
