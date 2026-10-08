@@ -317,7 +317,7 @@ impl DaytonaApi {
             Ok(_) => span.record("outcome", "ok"),
             Err(error) => span
                 .record("outcome", "err")
-                .record("error.kind", crate::error_kind(error)),
+                .record("error.kind", error.kind()),
         };
         result
     }

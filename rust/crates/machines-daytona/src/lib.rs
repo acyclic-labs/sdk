@@ -271,22 +271,6 @@ impl BootEnvironment for DaytonaProvider {
     }
 }
 
-/// Stable `error.kind` for tracing; the message can embed provider detail.
-const fn error_kind(error: &ProviderError) -> &'static str {
-    match error {
-        ProviderError::NotFound(_) => "not_found",
-        ProviderError::Conflict(_) => "conflict",
-        ProviderError::Unsupported(_) => "unsupported",
-        ProviderError::Invalid(_) => "invalid",
-        ProviderError::Rejected(_) => "rejected",
-        ProviderError::Unavailable => "unavailable",
-        ProviderError::Indeterminate(_) => "indeterminate",
-        ProviderError::OperationIndeterminate(_) => "operation_indeterminate",
-        ProviderError::Failed => "failed",
-        ProviderError::Cancelled => "cancelled",
-    }
-}
-
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -575,7 +559,7 @@ impl DaytonaProvider {
                 Err(error) => {
                     tracing::warn!(
                         sandbox_id = sandbox,
-                        error.kind = error_kind(&error),
+                        error.kind = error.kind(),
                         "rollback delete of a failed operation's sandbox failed"
                     );
                     remaining.push(sandbox);
@@ -620,7 +604,7 @@ impl DaytonaProvider {
         if let Err(error) = self.api.delete(sandbox_id).await {
             tracing::warn!(
                 sandbox_id,
-                error.kind = error_kind(&error),
+                error.kind = error.kind(),
                 "best-effort delete of a sandbox created after cancellation failed"
             );
         }
@@ -903,7 +887,7 @@ impl DaytonaProvider {
         if let Err(error) = run(&self.api, &source.id, format!("rm -f {archive_quoted}")).await {
             tracing::warn!(
                 sandbox_id = source.id.as_str(),
-                error.kind = error_kind(&error),
+                error.kind = error.kind(),
                 "best-effort removal of the fork archive in the parent failed"
             );
         }
