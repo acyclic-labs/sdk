@@ -84,6 +84,10 @@ pub struct NativeProcessRequest {
     pub maximum_output_bytes: u32,
     /// Positive bound for the complete serialized result, including metadata.
     pub maximum_result_bytes: u32,
+    /// Optional exact MCP exchange. Absence preserves the closed-stdin contract
+    /// and canonical approval bytes of existing native process requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_stdio: Option<crate::mcp::stdio::McpStdioRequest>,
     /// Exact namespace, volumes, generations, authority revisions and work bounds.
     pub view: NativeViewManifest,
 }
@@ -104,6 +108,19 @@ impl NativeProcessRequest {
     /// Binds the existing approval mechanism to the task, command and exact request.
     pub fn approval_digest(&self, task: crate::TaskId, command: OperationId) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&(NATIVE_PROCESS_EFFECT_KIND, task, command, self))
+    }
+
+    /// Decodes a pinned complete MCP process receipt, with no process or network
+    /// I/O. Intentional protocol completion may terminate the server with a
+    /// nonzero exit status; any stopped capture remains uncertain.
+    pub fn mcp_response(&self, result: &NativeProcessResult) -> Result<serde_json::Value> {
+        let exchange = self.mcp_stdio.as_ref().ok_or_else(|| {
+            crate::Error::Unsupported("native request has no MCP exchange".into())
+        })?;
+        if result.stop.is_some() {
+            return Err(crate::Error::Indeterminate(exchange.operation));
+        }
+        exchange.decode_response(&result.stdout)
     }
 }
 

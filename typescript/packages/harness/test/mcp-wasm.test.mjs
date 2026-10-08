@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import init, { validateMcpCatalog, searchMcpCatalog, mcpModelDefinitions }
+import init, { validateMcpCatalog, searchMcpCatalog, mcpModelDefinitions, validateMcpStdioRequest }
   from "../generated/wasm/acyclic_harness_wasm.js";
 
 await init({ module_or_path: readFileSync(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)) });
@@ -10,6 +10,22 @@ const tool = name => ({ name, description: `Find ${name}`, inputSchema: { type: 
   outputSchema: { type: "object", minProperties: 1, required: ["value"], properties: { value: { type: "integer" } } } });
 const catalog = { server: "fixture", revision: "1", schema_exposure: { kind: "eager" },
   discovery: "search", tools: [tool("c"), tool("a"), tool("b")] };
+
+test("MCP WASM validates exact native stdio descriptors without selecting a process", () => {
+  const request = { initialization: "01010101-0101-0101-0101-010101010101",
+    operation: "02020202-0202-0202-0202-020202020202", method: "tools/call",
+    params: { name: "echo", arguments: {} }, maximum_bytes: 4096 };
+  validateMcpStdioRequest(request);
+  validateMcpStdioRequest({ ...request, method: "tools/list", params: { cursor: "next" } });
+  for (const change of [
+    { operation: request.initialization }, { operation: "invalid" }, { maximum_bytes: 0 },
+    { maximum_bytes: 32 }, { method: "sampling/createMessage" }, { params: [] },
+    { params: {} }, { params: { name: "echo", arguments: [] } },
+    { params: { name: "echo", task: {} } }, { params: { name: "echo", request_state: "retry" } },
+    { params: { name: "echo", requestState: "retry" } },
+    { method: "tools/list", params: { cursor: 1 } }, { unapproved_field: true },
+  ]) assert.throws(() => validateMcpStdioRequest({ ...request, ...change }));
+});
 
 test("MCP WASM uses the native schema and bounded catalog rules", () => {
   validateMcpCatalog(catalog, 3, 8192);

@@ -11,7 +11,7 @@ import type {
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
   WasmTaskDependencyInput,
-  McpCatalog,
+  McpCatalog, McpStdioRequest,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -35,6 +35,7 @@ export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
 export type NativeJsonValue = WasmToolJsonValue;
 /** MCP contracts are emitted from the production Rust protocol owner. */
 export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefinition, McpToolResult, McpToolsPage,
+  McpStdioRequest, McpStdioMethod,
   McpInitializeResult, McpHttpRequest, McpBrowserHttpProvider, McpBrowserExchange,
   McpBrowserResponseHead } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Pinned composition values generated from the production Rust types. */
@@ -254,6 +255,11 @@ export class NativeContracts {
   /** Validate a whole catalog before an explicit registration/reload. */
   validateMcpCatalog(catalog: McpCatalog, maximumTools: number, maximumBytes: number): void {
     this.native.validateMcpCatalog(catalog, maximumTools, maximumBytes);
+  }
+
+  /** Validate an exact native stdio descriptor without selecting a process provider. */
+  validateMcpStdioRequest(request: McpStdioRequest): void {
+    this.native.validateMcpStdioRequest(request);
   }
 
   /** Project explicitly selected schemas without granting tool authority. */

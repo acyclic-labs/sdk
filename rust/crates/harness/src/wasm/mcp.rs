@@ -5,6 +5,16 @@ use crate::mcp::McpCatalog;
 use serde::Serialize as _;
 use wasm_bindgen::prelude::*;
 
+/// Validates an exact stdio descriptor without selecting a native provider.
+#[wasm_bindgen(js_name=validateMcpStdioRequest)]
+pub fn validate_mcp_stdio_request(
+    #[wasm_bindgen(unchecked_param_type = "McpStdioRequest")] request: JsValue,
+) -> Result<(), JsValue> {
+    from_js::<crate::mcp::stdio::McpStdioRequest>(request)?
+        .validate()
+        .map_err(js_error)
+}
+
 /// Validates the complete bounded replacement before the host selects it.
 #[wasm_bindgen(js_name=validateMcpCatalog)]
 pub fn validate_mcp_catalog(

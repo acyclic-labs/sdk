@@ -22,6 +22,10 @@ use acyclic_harness::{
         NativeVolumeBinding, NativeVolumeView, workspace_ref,
     },
     interaction::{Interaction, InteractionResponse},
+    mcp::{
+        PROTOCOL_VERSION,
+        stdio::{McpStdioMethod, McpStdioRequest},
+    },
     resources::ProviderRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
     scheduler::{LeaseFence, SessionLimits},
@@ -136,7 +140,7 @@ async fn runtime(
     clippy::too_many_lines,
     reason = "self-contained public composition example with explicit capabilities and no private SDK helpers"
 )]
-async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let provider = ProviderRef::new("example", "filesystem", "1")?;
     let files = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([1; 16]);
@@ -298,14 +302,31 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
     let request = NativeProcessRequest {
         executable: std::env::current_exe()?,
-        argv: vec!["--native-child".into()],
+        argv: vec![
+            if mcp {
+                "--mcp-native-child"
+            } else {
+                "--native-child"
+            }
+            .into(),
+        ],
         cwd: view.manifest().options.root.clone(),
-        environment: BTreeMap::from([("APPROVED_TOKEN".into(), "exact-token".into())]),
+        environment: BTreeMap::from([
+            ("APPROVED_TOKEN".into(), "exact-token".into()),
+            ("MCP_MAX_BYTES".into(), "4096".into()),
+        ]),
         timeout_ms: 10_000,
         control_timeout_ms: 250,
         cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
+        mcp_stdio: mcp.then(|| McpStdioRequest {
+            initialization: OperationId::from_bytes([31; 16]),
+            operation: OperationId::from_bytes([32; 16]),
+            method: McpStdioMethod::CallTool,
+            params: json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}}),
+            maximum_bytes: 4096,
+        }),
         view: view.manifest().clone(),
     };
     let content = Arc::new(FilesystemContentVerifier::new(
@@ -410,7 +431,16 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Err(format!("unobserved native result: {status:?}").into());
     };
     let output: NativeProcessResult = serde_json::from_slice(&content.read(result).await?)?;
-    if !output.success
+    if mcp {
+        if request.mcp_response(&output)?
+            != json!({
+                "content":[{"type":"text","text":"héllo"}],
+                "structuredContent":{"text":"héllo","sequence":u64::MAX}
+            })
+        {
+            return Err("incorrect MCP process result".into());
+        }
+    } else if !output.success
         || !output
             .stdout
             .windows(b"exact-token".len())
@@ -456,16 +486,105 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     {
         return Err("receipt recovery repeated native execution".into());
     }
-    println!("approved native execution, SDK publication and receipt-only recovery passed");
+    if mcp && std::fs::read(directory.path().join("destination/calls.txt"))? != b"call\n" {
+        return Err("MCP call was not applied exactly once in this observed exchange".into());
+    }
+    println!(
+        "approved {} execution, SDK publication and receipt-only recovery passed",
+        if mcp { "MCP stdio" } else { "native" }
+    );
+    Ok(())
+}
+
+fn mcp_native_child() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use bytes::BytesMut;
+    use rmcp::transport::async_rw::JsonRpcMessageCodec;
+    use std::io::{BufRead as _, Read as _, Write as _};
+    use tokio_util::codec::{Decoder as _, Encoder as _};
+    let maximum: u32 = std::env::var("MCP_MAX_BYTES")?.parse()?;
+    if maximum == 0 || std::env::var("APPROVED_TOKEN")? != "exact-token" {
+        return Err("invalid explicit server input".into());
+    }
+    let mut input = std::io::stdin().lock();
+    let mut codec = JsonRpcMessageCodec::<Value>::new_with_max_length(maximum as usize);
+    let mut read = || -> std::result::Result<Value, Box<dyn std::error::Error>> {
+        let mut line = Vec::new();
+        input
+            .by_ref()
+            .take(u64::from(maximum) + 1)
+            .read_until(b'\n', &mut line)?;
+        if line.len() > maximum as usize || !line.ends_with(b"\n") {
+            return Err("invalid bounded client frame".into());
+        }
+        codec
+            .decode(&mut BytesMut::from(line.as_slice()))?
+            .ok_or_else(|| "missing client message".into())
+    };
+    let write = |value: Value| -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut bytes = BytesMut::new();
+        JsonRpcMessageCodec::new().encode(value, &mut bytes)?;
+        std::io::stdout().write_all(&bytes)?;
+        std::io::stdout().flush()?;
+        Ok(())
+    };
+    let initialization = read()?;
+    if initialization.get("method").and_then(Value::as_str) != Some("initialize")
+        || initialization
+            .pointer("/params/protocolVersion")
+            .and_then(Value::as_str)
+            != Some(PROTOCOL_VERSION)
+    {
+        return Err("incorrect client initialization".into());
+    }
+    let initialization_id = initialization
+        .get("id")
+        .ok_or("missing initialization id")?;
+    write(json!({"jsonrpc":"2.0","id":initialization_id,"result":{
+        "protocolVersion":PROTOCOL_VERSION,"capabilities":{"tools":{}},
+        "serverInfo":{"name":"example.echo","version":"1"}}}))?;
+    if read()?.get("method").and_then(Value::as_str) != Some("notifications/initialized") {
+        return Err("tool called before initialized notification".into());
+    }
+    let call = read()?;
+    if call.get("method").and_then(Value::as_str) != Some("tools/call")
+        || call.pointer("/params/name").and_then(Value::as_str) != Some("echo")
+        || call.pointer("/params/arguments") != Some(&json!({"text":"héllo","sequence":u64::MAX}))
+    {
+        return Err("incorrect pinned tool request".into());
+    }
+    std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("destination/calls.txt")?
+        .write_all(b"call\n")?;
+    let operation = call.get("id").ok_or("missing tool operation")?;
+    let arguments = call
+        .pointer("/params/arguments")
+        .ok_or("missing tool arguments")?;
+    write(json!({"jsonrpc":"2.0","id":operation,"result":{
+        "content":[{"type":"text","text":"héllo"}],
+        "structuredContent":arguments}}))?;
+    // The ordinary owner closes stdin and terminates containment on completion.
+    let mut byte = [0];
+    let _ = input.read(&mut byte)?;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|arg| arg == "--mcp-native-child") {
+        return mcp_native_child();
+    }
     if std::env::args().any(|arg| arg == "--native-child") {
         std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
         println!("{}", std::env::var("APPROVED_TOKEN")?);
         return Ok(());
     }
-    run().await
+    if cfg!(test) {
+        run(false).await?;
+        run(true).await
+    } else {
+        run(std::env::args().any(|arg| arg == "--mcp-stdio")).await
+    }
 }

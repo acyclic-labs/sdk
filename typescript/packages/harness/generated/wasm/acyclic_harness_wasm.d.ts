@@ -394,6 +394,33 @@ export interface McpHttpRequest {
 }
 
 /**
+ * Exact portable exchange descriptor included in native process approval.
+ */
+export interface McpStdioRequest {
+    /**
+     * Initialization identity, distinct from the admitted operation.
+     */
+    initialization: string;
+    /**
+     * Exact admitted remote request identity.
+     */
+    operation: string;
+    /**
+     * Discovery or tool call, explicitly selected by the host.
+     */
+    method: McpStdioMethod;
+    /**
+     * Exact object parameters included in approval and durable identity.
+     */
+    params: WasmToolJsonValue;
+    /**
+     * Positive cumulative byte allowance per input/output direction. Native
+     * capture also enforces its combined stdout/stderr allowance independently.
+     */
+    maximum_bytes: number;
+}
+
+/**
  * Explicit bounded selection from a pinned source.
  */
 export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
@@ -700,6 +727,11 @@ export interface ProtocolIdentity {
      */
     descriptor_digest: string;
 }
+
+/**
+ * The only operations this one-shot client can admit.
+ */
+export type McpStdioMethod = "tools/list" | "tools/call";
 
 /**
  * Tsify declarations for the provider-neutral model values.  These wrappers
@@ -1321,6 +1353,11 @@ export function validateIdentity(kind: string, value: string): string;
 export function validateMcpCatalog(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): void;
 
 /**
+ * Validates an exact stdio descriptor without selecting a native provider.
+ */
+export function validateMcpStdioRequest(request: McpStdioRequest): void;
+
+/**
  * Validates provider-neutral model content under the exact native limits.
  */
 export function validateModelContent(content: WasmModelContentInput, limits: WasmModelLimitsInput): void;
@@ -1486,6 +1523,7 @@ export interface InitOutput {
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validateMcpCatalog: (a: any, b: number, c: number) => [number, number];
+    readonly validateMcpStdioRequest: (a: any) => [number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
     readonly validateModelMessages: (a: any, b: any) => [number, number];

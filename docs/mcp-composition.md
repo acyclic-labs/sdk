@@ -58,15 +58,22 @@ still need coordination with G before F qualification.
 
 PR5's landed native request uses null stdin and bounded one-shot output capture.
 An approved MCP stdio exchange needs a small extension of that existing admitted
-process path; it must reuse its launch/observation receipts, exact approval,
-lease checks and process-tree drain. This extension is not implemented yet.
+process path; it reuses its launch/observation receipts, exact approval,
+lease checks and process-tree drain. `NativeProcessRequest.mcp_stdio` now pins
+the exact optional method, initialization/operation identities, parameters and
+byte allowance in that existing approval and effect request. Absent descriptors
+retain the closed-stdin wire contract and canonical approval bytes.
 No raw process launch or replacement process journal is an acceptable fallback.
 The existing `ProcessTree` capture loop now has a bounded input branch with
 nonblocking partial writes, ordered callback writes and explicit protocol
 completion. It keeps the same intent, output, deadline and cleanup owner;
 completion closes stdin and terminates containment before bounded output drain.
-No writer thread or separate process loop was introduced. The admitted process
-request/provider still needs the exact MCP exchange descriptor and receipt path.
+No writer thread or separate process loop was introduced. The existing admitted
+provider validates the descriptor and uses this input branch. Each approved
+process effect initializes one MCP session and performs one discovery page or
+tool call; this does not claim a persistent server supervisor. A stopped capture
+remains uncertain. Complete native receipts use the same codec/typed response
+boundary without performing its writes, including after provider recovery.
 `McpStdioExchange` wraps `rmcp`'s bounded newline codec for that extension.
 It validates initialization before emitting the initialized notification and
 one request, pins distinct IDs, and fails permanently after malformed output.
@@ -77,7 +84,8 @@ private stdout. The codec decodes raw JSON; Harness then hydrates it using its
 existing unbounded-depth JSON contract. A retained scan offset visits incomplete
 prefix bytes once. Development controls exercise 192-level JSON, split BOM/CRLF,
 and malformed private input, with an unguarded library log as a negative control.
-Native process integration and final-source qualification remain open.
+End-to-end model-tool/native binding, native MCP fault/restart controls and
+final-source qualification remain open.
 
 ## Simplification audit
 
@@ -92,6 +100,7 @@ Native process integration and final-source qualification remain open.
 | Bounded stdio exchange codec | Negotiation precedes the one admitted request; malformed output cannot restart it |
 | Raw JSON ingress validation and scan offset | Keep private malformed stdout out of library logs, preserve the admitted depth policy, and avoid rescanning incomplete prefixes |
 | Bounded input branch in the existing process capture loop | Backpressure must not prevent intent/deadline checks or owned cleanup; the ordered queue is bounded by the complete admitted input allowance |
+| Optional exact MCP descriptor in the existing native request | Protocol method, identities, parameters and allowance require the same approval and durable effect identity as the executable invocation |
 | Reconciliation distinct from HTTP POST | Uncertainty cannot cause an unapproved remote replay |
 | Optional native dependency | Portable/browser construction must not require native network/process providers |
 
@@ -112,7 +121,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
-| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Not implemented |
+| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer passes; MCP-specific fault/restart and model-tool binding gates open |
 | Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Pending |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
@@ -223,3 +232,35 @@ suppressions. Harness library tests with `filesystem-local,native-execution,mcp-
 existing approved consumer. Strict Harness library/test Clippy with that feature
 selection passed. They do not yet prove admitted MCP process effects,
 crash/reopen receipts or final-source OS gates.
+
+### Exact stdio admission development checkpoint
+
+The optional native request descriptor and its method union are Rust-derived.
+The existing provider checks it before admission/binding and routes its bytes
+through the shared owned capture loop. The absent field preserves a legacy
+request's canonical approval digest. Approval controls first bind a valid
+provider, then reject changed initialization/operation IDs, method, parameters
+and byte allowance without a launch. Descriptor controls reject malformed
+parameters, callback methods, continuation/task requests, aliased IDs and invalid
+allowances. An initial control exposed an ignored snake-case continuation field;
+both wire spellings are now rejected explicitly.
+
+The public `approved-native-process` consumer also runs as a standalone Cargo
+example test, without test-harness stdout contaminating the MCP stream. Both its
+closed-stdin and approved MCP paths pass. The latter verifies initialization
+order, exact Unicode/full-width structured output, real child-side publication
+into the SDK volume, and provider drop/recovery with one observed tool application
+and no new child-side write. Its journals/storage adapters remain memory-backed;
+this is provider recovery evidence, not host death or disk-reopen qualification.
+Stopped native captures remain indeterminate at the MCP response boundary even
+if their prefix contains a complete response. Decoding a stored complete receipt
+performs no process writes.
+
+Current Windows source checks: 274 Harness library tests passed, zero failed/
+ignored, the existing seven-case HTTP disk-reopen matrix passed, both standalone
+consumer paths passed, and strict library/test/example Clippy passed without new
+suppressions. WASM rebuilt and seven Node catalog/browser/descriptor controls
+passed, zero failed/skipped. Generated declarations and consumers use the same
+Rust request/method types and inert validator. Final platform, actual Chromium,
+installed artifacts, MCP-native fault/restart and model-tool binding gates and
+owner seam review remain open; nothing here establishes a qualified main landing.

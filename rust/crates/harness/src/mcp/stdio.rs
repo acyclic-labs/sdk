@@ -10,8 +10,116 @@ use super::{
 use crate::{Error, OperationId, Result};
 use bytes::BytesMut;
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
 use tokio_util::codec::{Decoder as _, Encoder as _};
+
+/// The only operations this one-shot client can admit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum McpStdioMethod {
+    /// One explicit discovery page.
+    #[serde(rename = "tools/list")]
+    ListTools,
+    /// One pinned tool call.
+    #[serde(rename = "tools/call")]
+    CallTool,
+}
+
+impl McpStdioMethod {
+    /// Exact protocol method, never a callback or ambient operation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ListTools => "tools/list",
+            Self::CallTool => "tools/call",
+        }
+    }
+}
+
+/// Exact portable exchange descriptor included in native process approval.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct McpStdioRequest {
+    /// Initialization identity, distinct from the admitted operation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub initialization: OperationId,
+    /// Exact admitted remote request identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub operation: OperationId,
+    /// Discovery or tool call, explicitly selected by the host.
+    pub method: McpStdioMethod,
+    /// Exact object parameters included in approval and durable identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
+    pub params: Value,
+    /// Positive cumulative byte allowance per input/output direction. Native
+    /// capture also enforces its combined stdout/stderr allowance independently.
+    pub maximum_bytes: u32,
+}
+
+impl McpStdioRequest {
+    /// Creates transient protocol state and its first write, with no I/O.
+    pub fn exchange(&self) -> Result<(McpStdioExchange, Vec<u8>)> {
+        match self.method {
+            McpStdioMethod::CallTool => {
+                let params: rmcp::model::CallToolRequestParams =
+                    serde_json::from_value(self.params.clone())
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                if params.input_responses.is_some()
+                    || params.request_state.is_some()
+                    || [
+                        "task",
+                        "requestState",
+                        "inputResponses",
+                        "request_state",
+                        "input_responses",
+                    ]
+                    .iter()
+                    .any(|key| self.params.get(key).is_some())
+                {
+                    return Err(Error::Unsupported(
+                        "MCP stdio continuation needs its own authority owner".into(),
+                    ));
+                }
+            }
+            McpStdioMethod::ListTools => {
+                let _: rmcp::model::PaginatedRequestParams =
+                    serde_json::from_value(self.params.clone())
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+            }
+        }
+        McpStdioExchange::new(
+            self.initialization,
+            self.operation,
+            self.method.as_str(),
+            &self.params,
+            self.maximum_bytes,
+        )
+    }
+
+    /// Verifies the complete descriptor without launching or admitting work.
+    pub fn validate(&self) -> Result<()> {
+        self.exchange().map(|_| ())
+    }
+
+    /// Validates a retained complete transcript without performing its writes.
+    /// Receipt recovery can decode an existing result, never redispatch stdin.
+    pub fn decode_response(&self, stdout: &[u8]) -> Result<Value> {
+        let (mut exchange, _) = self.exchange()?;
+        exchange.push(stdout)?;
+        let value = exchange.finish()?;
+        match self.method {
+            McpStdioMethod::CallTool => {
+                super::rpc::decode_tool_result(value.clone())?;
+            }
+            McpStdioMethod::ListTools => {
+                let _: super::McpToolsPage = serde_json::from_value(value.clone())
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            }
+        }
+        Ok(value)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Phase {
@@ -182,6 +290,12 @@ impl McpStdioExchange {
             .take()
             .ok_or(Error::Indeterminate(self.operation))
     }
+
+    /// Whether both exact responses are complete and valid. The process owner
+    /// still owns termination, bounded drain and durable result publication.
+    pub fn is_complete(&self) -> bool {
+        self.phase == Phase::Complete
+    }
 }
 
 fn line(value: &Value) -> Result<Vec<u8>> {
@@ -206,6 +320,80 @@ mod tests {
     fn initialized(id: OperationId) -> Vec<u8> {
         line(&json!({"jsonrpc":"2.0","id":id.to_string(),"result":{
             "protocolVersion":PROTOCOL_VERSION,"capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}})).unwrap()
+    }
+
+    #[test]
+    fn exact_descriptor_and_retained_response_have_one_protocol_boundary() {
+        let (initialization, operation) = ids();
+        let request = McpStdioRequest {
+            initialization,
+            operation,
+            method: McpStdioMethod::CallTool,
+            params: json!({"name":"echo","arguments":{}}),
+            maximum_bytes: 4096,
+        };
+        request.validate().unwrap();
+        let expected = json!({"content":[{"type":"text","text":"héllo"}],
+            "structuredContent":{"sequence":u64::MAX}});
+        let mut transcript = initialized(initialization);
+        transcript.extend(
+            line(&json!({"jsonrpc":"2.0","id":operation.to_string(),"result":expected})).unwrap(),
+        );
+        assert_eq!(request.decode_response(&transcript).unwrap(), expected);
+        assert!(
+            request
+                .decode_response(transcript.get(..transcript.len() - 1).unwrap())
+                .is_err()
+        );
+        for params in [
+            json!({}),
+            json!([]),
+            json!({"name":"echo","arguments":[]}),
+            json!({"name":"echo","task":{}}),
+            json!({"name":"echo","request_state":"retry"}),
+            json!({"name":"echo","requestState":"retry"}),
+        ] {
+            assert!(
+                McpStdioRequest {
+                    params: params.clone(),
+                    ..request
+                }
+                .validate()
+                .is_err(),
+                "accepted {params}"
+            );
+        }
+        assert!(
+            McpStdioRequest {
+                operation: initialization,
+                ..request.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            McpStdioRequest {
+                maximum_bytes: 0,
+                ..request.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            McpStdioRequest {
+                method: McpStdioMethod::ListTools,
+                params: json!({"cursor":1}),
+                ..request
+            }
+            .validate()
+            .is_err()
+        );
+        let mut malformed = initialized(initialization);
+        malformed.extend(line(&json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"structuredContent":{}}})).unwrap());
+        assert!(request.decode_response(&malformed).is_err());
+        let mut encoded = serde_json::to_value(&request).unwrap();
+        encoded["method"] = json!("sampling/createMessage");
+        assert!(serde_json::from_value::<McpStdioRequest>(encoded).is_err());
     }
 
     #[test]

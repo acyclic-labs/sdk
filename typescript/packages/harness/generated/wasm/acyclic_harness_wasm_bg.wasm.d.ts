@@ -43,6 +43,7 @@ export const validateContract: (a: number, b: number, c: any, d: any) => [number
 export const validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
 export const validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const validateMcpCatalog: (a: any, b: number, c: number) => [number, number];
+export const validateMcpStdioRequest: (a: any) => [number, number];
 export const validateModelContent: (a: any, b: any) => [number, number];
 export const validateModelContextSelection: (a: any, b: any) => [number, number];
 export const validateModelMessages: (a: any, b: any) => [number, number];
