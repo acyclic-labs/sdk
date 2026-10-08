@@ -1588,6 +1588,10 @@ fn collect_source_files(
                 || (under_conformance && path.extension().and_then(OsStr::to_str) == Some("json"))
                 || descriptor_input
                 || plugin_install_asset
+                || relative
+                    == Path::new(
+                        "rust/crates/sdk-generation/scripts/qualify-typescript-snippets.mjs",
+                    )
                 || relative == Path::new("Cargo.toml")
                 || relative == Path::new("Cargo.lock")
                 || relative == Path::new("rust-toolchain.toml")
@@ -2030,6 +2034,62 @@ mod tests {
         assert_ne!(sources[0].physical_path, sources[1].physical_path);
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(output);
+    }
+
+    #[test]
+    #[ignore = "requires SDK_GENERATION_CORPUS_ROOT and SDK_GENERATION_CORPUS_RUSTDOC"]
+    fn real_rustdoc_corpus_projects_every_receipt_source_span() {
+        let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
+            .canonicalize()
+            .unwrap();
+        let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
+            .canonicalize()
+            .unwrap();
+        let mut receipts = rustdoc_files(&rustdoc).unwrap();
+        receipts.extend(rustdoc_files(&rustdoc.join("profiles")).unwrap());
+        receipts.sort();
+        receipts.dedup();
+        let metadata = load_metadata(&root, None).unwrap();
+        let sources = materialize_generated_sources(&root, &receipts).unwrap();
+        println!(
+            "collector diagnostic: {} receipts, {} generated span mappings",
+            receipts.len(),
+            sources.len()
+        );
+        for (index, receipt) in receipts.iter().enumerate() {
+            let observation = observe_rustdoc(receipt).unwrap();
+            let package = package_for_crate(&metadata, &observation.crate_name).unwrap();
+            println!(
+                "projecting {}/{}: {}",
+                index + 1,
+                receipts.len(),
+                receipt.display()
+            );
+            let data = build_data(&BuildInput {
+                version: "corpus-diagnostic".into(),
+                channel: Channel::Preview,
+                revision: git_revision(&root).unwrap(),
+                source_state: "working-tree".into(),
+                source_sha256: None,
+                repository_root: root.clone(),
+                rustdoc_files: vec![receipt.clone()],
+                package_metadata: vec![PackageMetadata {
+                    rustdoc_file: receipt.clone(),
+                    package_name: package.name.to_string(),
+                    crate_name: observation.crate_name,
+                    version: package.version.to_string(),
+                }],
+                generated_sources: sources.clone(),
+                mark_latest: false,
+            })
+            .unwrap();
+            println!(
+                "projected {}/{}: {} families",
+                index + 1,
+                receipts.len(),
+                data.families.len()
+            );
+        }
     }
 
     #[cfg(windows)]
