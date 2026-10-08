@@ -585,7 +585,17 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     }
     rustdoc_files.sort();
     package_metadata.sort_by(|left, right| left.package_name.cmp(&right.package_name));
-    let mut sources = materialize_generated_sources(&root, &rustdoc_files)?;
+    let mut generated_receipts = rustdoc_files.clone();
+    if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
+        generated_receipts.extend(
+            executed_profiles
+                .iter()
+                .map(|profile| profile.receipt.clone()),
+        );
+        generated_receipts.sort();
+        generated_receipts.dedup();
+    }
+    let mut sources = materialize_generated_sources(&root, &generated_receipts)?;
     if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
         sources.extend(source_files.iter().map(|(path, sha256)| GeneratedSource {
             physical_path: root.join(path),
@@ -1293,7 +1303,7 @@ fn execute_historical_profiles(
         }
         for (target, rustdoc_target) in targets {
             let profiles = if matches!(rustdoc_target, RustdocTarget::Library) {
-                sdk_docs::rustdoc_profiles::profiles_for_package(
+                sdk_docs::rustdoc_profiles::historical_profiles_for_package(
                     execution_metadata,
                     package.name.as_ref(),
                     &host,

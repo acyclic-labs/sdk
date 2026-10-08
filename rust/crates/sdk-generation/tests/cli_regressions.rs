@@ -1332,6 +1332,24 @@ fn registry_archive_fixture_named(
     publisher_vcs: bool,
     package_name: &str,
 ) -> (Fixture, PathBuf) {
+    registry_archive_fixture_configured(
+        dirty,
+        published_lock,
+        mutation,
+        publisher_vcs,
+        package_name,
+        None,
+    )
+}
+
+fn registry_archive_fixture_configured(
+    dirty: bool,
+    published_lock: bool,
+    mutation: Option<&str>,
+    publisher_vcs: bool,
+    package_name: &str,
+    setup: Option<fn(&Path)>,
+) -> (Fixture, PathBuf) {
     let (fixture, support) = historical_fixture(None);
     let package = fixture.root.join("rust/crates/demo");
     let manifest = fs::read_to_string(package.join("Cargo.toml"))
@@ -1352,6 +1370,9 @@ fn registry_archive_fixture_named(
         format!("fn main() {{ {action} println!(\"archive-example-executed\"); }}\n"),
     )
     .unwrap();
+    if let Some(setup) = setup {
+        setup(&package);
+    }
     // Cargo itself creates the normalized manifest and published package lock.
     let packaged = Command::new("cargo")
         .current_dir(&fixture.root)
@@ -1395,6 +1416,106 @@ fn registry_archive_fixture_named(
     }
     write_registry_transport(&support);
     (fixture, support)
+}
+
+#[test]
+fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failures_fatal() {
+    fn setup(package: &Path) {
+        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+        fs::write(
+            package.join("Cargo.toml"),
+            manifest.replace(
+                "include = [",
+                "build = \"build.rs\"\ninclude = [\"build.rs\", ",
+            ),
+        )
+        .unwrap();
+        fs::write(package.join("src/lib.rs"), "#[cfg(not(feature=\"base\"))]\ncompile_error!(\"original package requires base\");\ninclude!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\n").unwrap();
+        fs::write(package.join("build.rs"), "fn main() { let name = if std::env::var_os(\"CARGO_FEATURE_EXTRA\").is_some() { \"ExtraWire\" } else { \"DefaultWire\" }; std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), format!(\"/// Actual feature-generated API.\\npub struct {name};\\n\")).unwrap(); }\n").unwrap();
+    }
+    fn required_no_defaults(package: &Path) {
+        setup(package);
+        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+        fs::write(package.join("Cargo.toml"), format!("{manifest}\n[package.metadata.docs.rs]\nno-default-features=true\nfeatures=['extra']\n")).unwrap();
+    }
+    for required_failure in [false, true] {
+        let (fixture, support) = registry_archive_fixture_configured(
+            false,
+            true,
+            None,
+            true,
+            "demo",
+            Some(if required_failure {
+                required_no_defaults
+            } else {
+                setup
+            }),
+        );
+        let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+        if required_failure {
+            assert!(!result.status.success());
+            assert!(output_message(&result).contains("original package requires base"));
+            assert!(
+                !fixture.output.join("sdk-docs-versions.v1.json").exists(),
+                "required upstream profile failure cannot admit the version"
+            );
+        } else {
+            assert!(result.status.success(), "{}", output_message(&result));
+            let output = fixture.output.join("releases/1.0.0");
+            let profiles: Value = serde_json::from_slice(
+                &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(profiles
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|profile| profile["defaultFeatures"] == true));
+            let data: Value =
+                serde_json::from_slice(&fs::read(output.join("sdk-docs-data.v2.json")).unwrap())
+                    .unwrap();
+            for name in ["DefaultWire", "ExtraWire"] {
+                let item = data["families"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|family| family["items"].as_array().unwrap())
+                    .find(|item| item["name"] == name)
+                    .unwrap();
+                let path = item["source"]["path"].as_str().unwrap();
+                assert!(path.starts_with("releases/1.0.0/generated/rustdoc/"));
+                assert!(fs::read_to_string(fixture.output.join(path))
+                    .unwrap()
+                    .contains(name));
+            }
+            let aliases: Value =
+                serde_json::from_slice(
+                    &fs::read(output.join(
+                        "sources/target/sdk-generation-generated-sources/retained/aliases.json",
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(
+                aliases
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .filter(|path| path.ends_with("wire.rs"))
+                    .count()
+                    >= 2,
+                "actual Cargo profiles must use distinct OUT_DIR aliases"
+            );
+            let drift = run_drift(&Fixture {
+                root: fixture.root.clone(),
+                rustdoc: output.join(".rustdoc"),
+                output,
+            });
+            assert!(drift.status.success(), "{}", output_message(&drift));
+        }
+        let _ = fs::remove_dir_all(fixture.root);
+        let _ = fs::remove_dir_all(fixture.output);
+    }
 }
 
 #[test]

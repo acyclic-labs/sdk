@@ -315,6 +315,66 @@ fn feature_closure(features: &BTreeMap<String, Vec<String>>, root: &str) -> BTre
     result
 }
 
+/// Historical documentation keeps the original Cargo defaults while covering
+/// declared features. An explicit upstream docs.rs feature policy is required
+/// in addition to the default profile; every selected invocation must succeed.
+pub fn historical_profiles_for_package(
+    metadata: &Metadata,
+    package: &str,
+    target: &str,
+    available_targets: &BTreeSet<String>,
+) -> Result<Vec<ProfileSpec>, ProfileError> {
+    let mut profiles = profiles_for_package(metadata, package, target, available_targets)?;
+    for profile in &mut profiles {
+        profile.default_features = true;
+    }
+    let owner = package_by_name(metadata, package)
+        .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
+    if let Some(policy) = owner.metadata.get("docs").and_then(|docs| docs.get("rs")) {
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "kebab-case", deny_unknown_fields)]
+        struct DocsRsFeatures {
+            #[serde(default)]
+            all_features: bool,
+            #[serde(default)]
+            no_default_features: bool,
+            #[serde(default)]
+            features: Vec<String>,
+        }
+        let policy: DocsRsFeatures = serde_json::from_value(policy.clone()).map_err(|error| {
+            ProfileError::InvalidRustdoc(format!("invalid historical docs.rs policy: {error}"))
+        })?;
+        let mut features = BTreeSet::new();
+        for feature in policy.features {
+            if !owner.features.contains_key(&feature) {
+                return Err(ProfileError::InvalidFeature {
+                    package: package.to_owned(),
+                    feature,
+                });
+            }
+            features.extend(feature_closure(&owner.features, &feature));
+        }
+        if policy.all_features {
+            features.extend(
+                owner
+                    .features
+                    .keys()
+                    .filter(|name| name.as_str() != "default")
+                    .cloned(),
+            );
+        }
+        profiles.push(ProfileSpec {
+            package: package.to_owned(),
+            target: target.to_owned(),
+            default_features: !policy.no_default_features,
+            features,
+        });
+    }
+    profiles.sort_by_key(ProfileSpec::id);
+    profiles.dedup_by_key(|profile| profile.id());
+    Ok(profiles)
+}
+
 /// Execute one profile through Cargo and retain its exact Rustdoc JSON.
 pub fn execute_profile(
     manifest: impl AsRef<Path>,
@@ -998,6 +1058,56 @@ mod tests {
             Err(ProfileError::UnsupportedTarget {
                 target: "wasm32-wasip1".into()
             })
+        );
+    }
+
+    #[test]
+    fn historical_defaults_cover_features_without_changing_current_profiles() {
+        let metadata = metadata();
+        let targets = BTreeSet::from(["host".into()]);
+        let historical =
+            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
+        assert!(historical.iter().all(|profile| profile.default_features));
+        assert!(historical.iter().any(|profile| profile.features.is_empty()));
+        assert!(historical
+            .iter()
+            .any(|profile| profile.features == BTreeSet::from(["codec".into(), "json".into()])));
+        assert!(historical.iter().any(|profile| profile.features
+            == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
+        assert!(
+            profiles_for_package(&metadata, "feature-rich", "host", &targets)
+                .unwrap()
+                .iter()
+                .any(|profile| !profile.default_features && profile.features.is_empty())
+        );
+    }
+
+    #[test]
+    fn historical_docs_rs_policy_is_required_and_validated() {
+        let mut metadata = metadata();
+        let targets = BTreeSet::from(["host".into()]);
+        metadata.packages[0].metadata =
+            serde_json::json!({"docs":{"rs":{"all-features":true,"no-default-features":true}}});
+        let profiles =
+            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
+        assert!(profiles
+            .iter()
+            .any(|profile| profile.default_features && profile.features.is_empty()));
+        assert!(profiles.iter().any(|profile| !profile.default_features
+            && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
+        metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"features":["absent"]}}});
+        assert!(matches!(
+            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets),
+            Err(ProfileError::InvalidFeature { .. })
+        ));
+        metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"all-features":"true"}}});
+        assert!(
+            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).is_err()
+        );
+        metadata.packages[0].metadata =
+            serde_json::json!({"docs":{"rs":{"rustdoc-args":["--cfg","pretend"]}}});
+        assert!(
+            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).is_err()
         );
     }
 
