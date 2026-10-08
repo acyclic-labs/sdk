@@ -15,13 +15,17 @@ try {
   let reconciliations = 0;
   let returns = 0;
   let signal;
+  let dispatch;
   const model = { provider: "browser-test", name: "pinned", revision: "1", options: {} };
   const prefix = { kind: "content", delta: "committed" };
-  const bind = runtime => runtime.configureModel(model, (bytes, abortSignal) => {
+  const bind = runtime => runtime.configureModel(model, (bytes, metadata, abortSignal) => {
     requests++;
     assert(requests === 1, "uncertain model request was redispatched");
     const request = JSON.parse(new TextDecoder().decode(bytes));
     assert(request.model.revision === "1" && request.model.name === "pinned", "request substituted the selected model");
+    assert(!("operation_id" in request) && !("request_digest" in request), "dispatch metadata changed canonical request bytes");
+    assert(typeof metadata.operation_id === "string" && Number.isInteger(metadata.step) && metadata.request_digest.length === 32, "fresh dispatch lacks admitted attempt identity");
+    dispatch = metadata;
     signal = abortSignal;
     let next = 0;
     return { async next() {
@@ -32,6 +36,8 @@ try {
     reconciliations++;
     assert(attempt.observed.length === 1 && attempt.observed[0].delta === prefix.delta, "reconciliation lost exact observed prefix");
     assert(attempt.request_digest.length === 32, "reconciliation lost canonical request identity");
+    assert(attempt.operation_id === dispatch.operation_id && attempt.step === dispatch.step
+      && describe(attempt.request_digest) === describe(dispatch.request_digest), "fresh and recovered dispatch identities differ");
     return [prefix, { kind: "completed", metadata: {} }];
   });
   runtime = await fixture.open();

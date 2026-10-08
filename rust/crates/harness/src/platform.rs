@@ -8,41 +8,6 @@ pub(crate) fn now_unix_millis() -> u64 {
     SystemUnixMillisClock.now_unix_millis()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    struct DropSignal(Arc<AtomicBool>);
-    impl Drop for DropSignal {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
-
-    #[tokio::test]
-    async fn deadline_drops_incomplete_work_and_preserves_ready_result() {
-        let dropped = Arc::new(AtomicBool::new(false));
-        let signal = DropSignal(dropped.clone());
-        let work = async move {
-            let _signal = signal;
-            std::future::pending::<()>().await;
-        };
-        assert!(matches!(
-            timeout(Duration::from_millis(1), work).await,
-            Err(Error::Invalid(_))
-        ));
-        assert!(dropped.load(Ordering::SeqCst));
-        assert_eq!(
-            timeout(Duration::from_secs(1), async { 7 }).await.unwrap(),
-            7
-        );
-    }
-}
-
 #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 pub(crate) use futures::future::AbortHandle;
 #[cfg(not(all(target_arch = "wasm32", feature = "wasm")))]
@@ -207,5 +172,40 @@ mod browser {
             remaining = remaining.saturating_sub(chunk);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    struct DropSignal(Arc<AtomicBool>);
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn deadline_drops_incomplete_work_and_preserves_ready_result() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let signal = DropSignal(dropped.clone());
+        let work = async move {
+            let _signal = signal;
+            std::future::pending::<()>().await;
+        };
+        assert!(matches!(
+            timeout(Duration::from_millis(1), work).await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            timeout(Duration::from_secs(1), async { 7 }).await.unwrap(),
+            7
+        );
     }
 }

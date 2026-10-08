@@ -162,6 +162,29 @@ existing bigint integer representation. An installed-consumer assignment of
 equality.
 
 The inspected macOS test host has 372 MiB free. No slice I build was dispatched
-there, and no other owner's files were removed. macOS execution, the independent
-B model-dispatch seam, installed full-package gates and final landing remain
-open; intermediate passes do not establish readiness.
+there, and no other owner's files were removed. macOS execution, installed
+full-package gates and final landing remain open; intermediate passes do not
+establish readiness.
+
+B's independent signed `fbaea4d355` provider seam was integrated without its
+unfinished ModelPurpose/context changes. Browser generation receives canonical
+request bytes, a separate dispatch identity and AbortSignal. Its callback type
+selects the three dispatch fields from the existing Rust-derived
+`WasmModelAttemptWire`; no second client identity schema is introduced. The
+browser fault fixture compares fresh and recovered operation, step and digest
+and rejects dispatch fields in the canonical request object. Integrated-source
+native/WASM/browser receipts remain pending.
+
+`target-i-browser-main273-1.log` passed actual Rust live-task cancellation,
+deadline destruction, initialization retry, timer reload, tool/model recovery
+and mail faults. Its wire/discovery page lacked the built Filesystem dependency.
+Its concurrent-tab assertion also wrongly rejected the documented retained
+attempt returned after a losing admission CAS. The fixture now verifies that
+such an attempt ran no machine code and that resuming the stale fence is
+rejected; exactly one winner, durable completion and no duplicate wake execution
+remain mandatory. This corrected fixture has not yet supplied a passing receipt.
+
+The Windows refresh crossed the independent provider contract integration and
+compiled mismatched library/test signatures. `target-i-native-main273-1.log`
+retains that failure; the affected run was stopped and is not qualification.
+The integrated source is frozen for its native/browser checks.

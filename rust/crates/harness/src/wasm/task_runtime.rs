@@ -14,7 +14,7 @@ use crate::{
         FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, TaskWakeCursor,
         TaskWorkerAttempt, TaskWorkerOutcome,
     },
-    model::{Model, ModelAttempt, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
@@ -302,7 +302,11 @@ impl Drop for HostModelIterator {
 }
 
 impl HostModel {
-    fn start(&self, request: &PreparedModelRequest) -> Result<HostModelIterator> {
+    fn start(
+        &self,
+        request: &PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> Result<HostModelIterator> {
         let constructor =
             js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("AbortController"))
                 .ok()
@@ -329,9 +333,11 @@ impl HostModel {
         };
         attempt.iterator = self
             .generate
-            .call2(
+            .call3(
                 &JsValue::UNDEFINED,
                 &js_sys::Uint8Array::from(request.bytes()),
+                &to_js(&dispatch)
+                    .map_err(|_| Error::Invalid("model dispatch encoding failed".into()))?,
                 &signal,
             )
             .map_err(|_| Error::Storage("host model dispatch is uncertain".into()))?;
@@ -343,6 +349,7 @@ impl ModelProvider for HostModel {
     fn generate<'a>(
         &'a self,
         request: PreparedModelRequest,
+        dispatch: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         let request = Arc::new(request);
         // Pull exactly one event per poll. The stock executor owns admission,
@@ -354,7 +361,7 @@ impl ModelProvider for HostModel {
                 async move {
                     let iterator = match iterator {
                         Some(iterator) => iterator,
-                        None => self.start(&request)?,
+                        None => self.start(&request, dispatch)?,
                     };
                     let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
                         .ok()
@@ -600,13 +607,20 @@ impl WasmTaskRuntime {
     }
 
     /// Composes an explicit provider with the stock model command executor.
-    /// Generate receives canonical request bytes and an `AbortSignal`, and returns an async iterator;
+    /// Generate receives canonical request bytes, separate dispatch identity and
+    /// an `AbortSignal`, and returns an async iterator;
     /// reconcile receives the exact retained attempt and never redispatches it.
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "WasmModelWire")] model: JsValue,
+        #[wasm_bindgen(
+            unchecked_param_type = "(request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>"
+        )]
         generate: Function,
+        #[wasm_bindgen(
+            unchecked_param_type = "(attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>"
+        )]
         reconcile: Function,
     ) -> std::result::Result<(), JsValue> {
         let model: Model = from_js(model)?;

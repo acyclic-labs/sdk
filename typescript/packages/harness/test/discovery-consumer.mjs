@@ -102,7 +102,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
       volumeReadCapability: value => core.volumeCapability(value, "read"),
       directoryReadCapability: (value, path) => core.directoryReadCapability(value, path),
     };
-    const runtime = Harness.builder(contracts).declaredContext(snapshot).content(content)
+    const runtime = await Harness.builder(contracts).declaredContext(snapshot).content(content)
       .grant(core.volumeCapability(volume, "read")).model({ provider: "mock", name: "discovery", revision: "1", options: {} }, {
       async *generate(request) {
         dispatches++;

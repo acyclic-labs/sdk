@@ -1287,10 +1287,11 @@ export class WasmTaskRuntime {
     cancel(task: string): Promise<void>;
     /**
      * Composes an explicit provider with the stock model command executor.
-     * Generate receives canonical request bytes and an `AbortSignal`, and returns an async iterator;
+     * Generate receives canonical request bytes, separate dispatch identity and
+     * an `AbortSignal`, and returns an async iterator;
      * reconcile receives the exact retained attempt and never redispatches it.
      */
-    configureModel(model: WasmModelWire, generate: Function, reconcile: Function): void;
+    configureModel(model: WasmModelWire, generate: (request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>, reconcile: (attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>): void;
     /**
      * A page observation is not a retained model-consumption acknowledgment.
      */

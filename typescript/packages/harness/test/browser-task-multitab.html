@@ -49,9 +49,9 @@ try {
     data.error ? receiver.reject(new Error(data.error)) : receiver.resolve(data);
     if (data.id) pending.delete(data.id);
   };
-  const actorCall = actor => new Promise((resolve, reject) => {
+  const actorCall = (actor, kind = "tick", lease = null) => new Promise((resolve, reject) => {
     const id = crypto.randomUUID(); pending.set(id, { resolve, reject });
-    channel.postMessage({ actor, id, kind: "tick" });
+    channel.postMessage({ actor, id, kind, lease });
   });
   phase("two replacement tabs open the same real providers");
   for (const actor of ["left", "right"]) {
@@ -64,7 +64,12 @@ try {
   phase("concurrent tabs discover and claim the durable wake");
   const ticks = await Promise.all([actorCall("left"), actorCall("right")]);
   assert(ticks.filter(value => value.tick.work?.kind === "completed").length === 1, describe(ticks));
-  assert(ticks.every(value => value.tick.work?.kind !== "unresolved"), describe(ticks));
+  for (const attempt of ticks.filter(value => value.tick.work?.kind === "unresolved")) {
+    assert(attempt.tick.work.error.code === 2 && attempt.transitions === 0, `contending admission executed work: ${describe(attempt)}`);
+    const rejected = await actorCall(attempt.actor, "resume", attempt.tick.work.lease);
+    assert(rejected.tick.work?.kind === "unresolved" && rejected.tick.work.error.code === 2
+      && rejected.transitions === 0, `losing lease obtained execution authority: ${describe(rejected)}`);
+  }
   assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "transport response lacks durable completion");
   const transitions = ticks.reduce((sum, value) => sum + value.transitions, 0);
   const repeated = await Promise.all([actorCall("left"), actorCall("right")]);
