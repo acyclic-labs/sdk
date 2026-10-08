@@ -62,6 +62,9 @@ pub enum ConnectError {
     /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
     #[error("invalid Stream private CA certificate")]
     InvalidCaCertificate,
+    /// The platform certificate verifier could not be initialized.
+    #[error("Stream platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
     /// At least one independently reachable endpoint is required.
     #[error("at least one Stream endpoint is required")]
     NoEndpoints,
@@ -108,7 +111,9 @@ fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
 }
 
 impl Client {
-    /// Connects to a TLS endpoint with an account-bound bearer credential.
+    /// Connects to a TLS endpoint with an account-bound bearer credential. The server is
+    /// verified by the platform verifier (on Linux, the native roots `SSL_CERT_FILE` and
+    /// `SSL_CERT_DIR` select).
     pub async fn connect(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -128,7 +133,7 @@ impl Client {
         Self::connect_with_tls(endpoints, bearer_token, None)
     }
 
-    /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
+    /// Connects to a TLS endpoint trusting exactly one caller-pinned private CA certificate.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -153,7 +158,7 @@ impl Client {
         Self::connect_eager_endpoints([endpoint], bearer_token, None).await
     }
 
-    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
+    /// Eagerly connects trusting exactly one caller-pinned private CA.
     pub async fn connect_eager_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -163,7 +168,7 @@ impl Client {
             .await
     }
 
-    /// Connects to independently reachable endpoints using one caller-pinned private CA.
+    /// Connects to independently reachable endpoints trusting exactly one caller-pinned private CA.
     pub async fn connect_endpoints_with_ca_certificate<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
@@ -244,6 +249,17 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        // A declared CA is the whole trust; otherwise the platform verifier.
+        let verifier = if certificate_pem.is_none() {
+            Some(Arc::new(
+                rustls_platform_verifier::Verifier::new(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .map_err(ConnectError::PlatformVerifier)?,
+            ))
+        } else {
+            None
+        };
         let mut configured = Vec::new();
         for endpoint in endpoints.into_iter().take(MAX_ENDPOINTS + 1) {
             if configured.len() == MAX_ENDPOINTS {
@@ -253,20 +269,19 @@ impl Client {
             if endpoint.len() > MAX_ENDPOINT_URI_BYTES {
                 return Err(ConnectError::EndpointLimit);
             }
-            // `Endpoint::new` enables the compiled WebPKI roots for HTTPS. The lower-level
-            // `from_shared` constructor leaves TLS disabled and fails only on first use.
-            let mut endpoint = Endpoint::new(endpoint.to_owned())?.connect_timeout(connect_timeout);
+            let endpoint =
+                Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(connect_timeout);
             if endpoint.uri().scheme_str() != Some("https") {
                 return Err(ConnectError::InsecureEndpoint);
             }
-            if let Some(certificate_pem) = certificate_pem {
-                endpoint = endpoint.tls_config(
+            configured.push(if let Some(verifier) = &verifier {
+                endpoint.tls_config_with_verifier(ClientTlsConfig::new(), verifier.clone())?
+            } else {
+                endpoint.tls_config(
                     ClientTlsConfig::new()
-                        .with_enabled_roots()
-                        .ca_certificate(Certificate::from_pem(certificate_pem)),
-                )?;
-            }
-            configured.push(endpoint);
+                        .ca_certificates(certificate_pem.map(Certificate::from_pem)),
+                )?
+            });
         }
         if configured.is_empty() {
             return Err(ConnectError::NoEndpoints);
@@ -1677,7 +1692,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_ca_https_connection_preserves_ambient_roots_and_exact_bearer()
+    async fn private_ca_https_connection_trusts_only_the_declared_ca_and_exact_bearer()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let certified = generate_simple_self_signed(["localhost".to_owned()])?;
         let certificate_pem = certified.cert.pem();
@@ -1734,6 +1749,70 @@ mod tests {
         assert_eq!(
             explicit.stream(path.as_str())?.tail().await,
             Err(StreamError::NotFound)
+        );
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    /// Without a declared CA the client trusts what the platform trusts: on
+    /// Linux, the roots `SSL_CERT_FILE` names. A declared CA replaces that trust
+    /// rather than joining it. The environment is process-wide, so the test
+    /// re-runs itself in a child process that carries it.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        const SERVER_KEY: &str = "ACYCLIC_STREAM_TEST_SERVER_KEY";
+        let Ok(private_key_pem) = std::env::var(SERVER_KEY) else {
+            let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+            let roots = tempfile::NamedTempFile::new()?;
+            std::fs::write(roots.path(), certified.cert.pem())?;
+            let module = module_path!();
+            let test = format!(
+                "{}::platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them",
+                module.split_once("::").map_or(module, |(_, path)| path)
+            );
+            let status = std::process::Command::new(std::env::current_exe()?)
+                .args([test.as_str(), "--exact", "--nocapture"])
+                .env("SSL_CERT_FILE", roots.path())
+                .env_remove("SSL_CERT_DIR")
+                .env(SERVER_KEY, certified.signing_key.serialize_pem())
+                .status()?;
+            assert!(status.success(), "child test failed: {status}");
+            return Ok(());
+        };
+        let certificate_pem = std::fs::read_to_string(std::env::var("SSL_CERT_FILE")?)?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let service = StreamServiceServer::new(Service::new(Arc::new(MemoryStream::default())));
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(certificate_pem, private_key_pem)),
+                )?
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let endpoint = format!("https://localhost:{}", address.port());
+        let platform = crate::StreamClient::connect(&endpoint, "exact-token").await?;
+        assert_eq!(
+            platform.stream("accounts/events")?.tail().await,
+            Err(StreamError::NotFound)
+        );
+        let other = generate_simple_self_signed(["localhost".to_owned()])?;
+        assert!(
+            Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", other.cert.pem())
+                .await
+                .is_err(),
+            "a declared CA must be the whole trust"
         );
 
         let _ = shutdown_tx.send(());

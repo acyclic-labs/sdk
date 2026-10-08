@@ -435,6 +435,8 @@ dependencies = [
  "protoc-bin-vendored",
  "rcgen",
  "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
  "ruzstd",
  "serde",
  "serde-wasm-bindgen",

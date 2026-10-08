@@ -748,7 +748,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Connects the high-level API through ambient roots plus one caller-supplied private CA.
+    /// Connects the high-level API trusting exactly one caller-supplied private CA.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -760,7 +760,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
+    /// Eagerly connects trusting exactly one caller-pinned private CA.
     pub async fn connect_eager_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
