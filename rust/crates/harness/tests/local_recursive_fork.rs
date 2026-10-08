@@ -70,7 +70,11 @@ struct PrefixModel {
     children: Value,
 }
 impl ModelProvider for PrefixModel {
-    fn generate<'a>(&'a self, request: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        request: PreparedModelRequest,
+        _dispatch: acyclic_harness::model::ModelDispatch,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let mut requests = self
             .requests
             .lock()
