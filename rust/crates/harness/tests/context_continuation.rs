@@ -793,6 +793,7 @@ struct LostCanonicalAck {
     inner: Arc<dyn acyclic_harness::executor::ExecutionJournal>,
     fail: std::sync::atomic::AtomicBool,
     deny_reads: std::sync::atomic::AtomicBool,
+    tamper: std::sync::atomic::AtomicUsize,
 }
 
 impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
@@ -824,6 +825,16 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
                 event,
                 acyclic_harness::executor::ExecutionEvent::ContextCompacted { step: 0, .. }
             );
+            let mode = if compacted {
+                self.tamper.swap(0, Ordering::SeqCst)
+            } else {
+                0
+            };
+            let event = if mode == 0 {
+                event
+            } else {
+                fabricate_checkpoint(self.inner.as_ref(), operation, event, mode).await?
+            };
             let committed = self
                 .inner
                 .append_if_tail(operation, tail, key, event)
@@ -889,6 +900,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         inner: storage.journal(),
         fail: std::sync::atomic::AtomicBool::new(true),
         deny_reads: std::sync::atomic::AtomicBool::new(false),
+        tamper: std::sync::atomic::AtomicUsize::new(0),
     });
     let bundle = storage
         .builder()
@@ -1011,5 +1023,372 @@ async fn assert_checkpoint_read_admission(
         matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &unpublished, limits).await,
         Err(Error::Conflict(message)) if message.contains("not published"))
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real-journal admission, retry and operation-isolation timeline"
+)]
+async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Result<()> {
+    use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+    let journal = storage.journal();
+    let operation = OperationId::new();
+    let context = journal
+        .stage(
+            operation,
+            "temporal-context".into(),
+            b"{\"canonical\":null,\"checkpoint\":null,\"context\":{\"current_input_index\":0,\"messages\":[{\"content\":{\"kind\":\"text\",\"text\":\"source\"},\"role\":\"user\"}],\"metadata\":{}}}".to_vec(),
+            "application/json",
+        )
+        .await?;
+    let compacted = ExecutionEvent::ContextCompacted {
+        step: 0,
+        projection: context.clone(),
+        compaction: context.clone(),
+        accounting: context.clone(),
+    };
+    assert!(
+        journal
+            .append_if_tail(operation, 0, "premature".into(), compacted.clone())
+            .await
+            .is_err()
+    );
+    journal
+        .append(
+            operation,
+            "started".into(),
+            ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+        )
+        .await?;
+    journal
+        .append(
+            operation,
+            "prepared".into(),
+            ExecutionEvent::ContextPrepared {
+                step: 0,
+                projection: context.clone(),
+                accounting: None,
+            },
+        )
+        .await?;
+    assert!(
+        journal
+            .append(operation, "no-summary".into(), compacted.clone())
+            .await
+            .is_err()
+    );
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: Model::new("synthetic", "journal-test", "1", serde_json::json!({}))?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("source".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(32),
+        },
+        Limits::default(),
+    )?;
+    let request_ref = journal
+        .stage(
+            operation,
+            "summary-request".into(),
+            request.bytes().to_vec(),
+            "application/json",
+        )
+        .await?;
+    journal
+        .append(
+            operation,
+            "summary-started".into(),
+            ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                request_digest: request.manifest().request_digest,
+                request: request_ref,
+            },
+        )
+        .await?;
+    assert!(
+        journal
+            .append(operation, "unsettled-summary".into(), compacted.clone())
+            .await
+            .is_err()
+    );
+    let completed = journal
+        .stage(
+            operation,
+            "summary-completed".into(),
+            b"{\"kind\":\"completed\",\"metadata\":{}}".to_vec(),
+            "application/json",
+        )
+        .await?;
+    journal
+        .append(
+            operation,
+            "summary-completed".into(),
+            ExecutionEvent::Model {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                event: completed,
+            },
+        )
+        .await?;
+    assert!(
+        !journal
+            .append_if_tail(operation, 3, "stale-tail".into(), compacted.clone())
+            .await?
+    );
+    assert!(
+        journal
+            .append_if_tail(operation, 4, "compacted".into(), compacted.clone())
+            .await?
+    );
+    assert!(
+        journal
+            .append_if_tail(operation, 4, "compacted".into(), compacted.clone())
+            .await?
+    );
+    assert!(
+        journal
+            .append(operation, "duplicate-compacted".into(), compacted)
+            .await
+            .is_err()
+    );
+    // A different operation must start at its own empty timeline; switching the
+    // rebuildable active index must not borrow the first operation's admission.
+    let other = OperationId::new();
+    journal
+        .append(
+            other,
+            "started".into(),
+            ExecutionEvent::Started {
+                request_digest: [2; 32],
+            },
+        )
+        .await?;
+    assert_eq!(journal.replay(operation, 0, 64).await?.len(), 5);
+    assert_eq!(journal.replay(other, 0, 64).await?.len(), 1);
+    assert!(
+        journal
+            .append_if_tail(
+                operation,
+                4,
+                "compacted".into(),
+                journal
+                    .replay(operation, 4, 1)
+                    .await?
+                    .first()
+                    .ok_or_else(|| Error::Invalid("compaction record missing".into()))?
+                    .event
+                    .clone()
+            )
+            .await?
+    );
+    Ok(())
+}
+
+async fn stage_fixture_json<T: serde::Serialize>(
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    operation: OperationId,
+    key: &str,
+    value: &T,
+) -> Result<FileRef> {
+    // Value's sorted object map uses the same canonical order as the wire writer.
+    let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    let bytes = serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?;
+    journal
+        .stage(operation, key.into(), bytes, "application/json")
+        .await
+}
+
+async fn fabricate_checkpoint(
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    operation: OperationId,
+    event: acyclic_harness::executor::ExecutionEvent,
+    mode: usize,
+) -> Result<acyclic_harness::executor::ExecutionEvent> {
+    use acyclic_harness::context::CanonicalContextCheckpoint;
+    use acyclic_harness::executor::ExecutionEvent;
+    let ExecutionEvent::ContextCompacted {
+        step,
+        projection,
+        compaction,
+        accounting,
+    } = event
+    else {
+        return Err(Error::Invalid("fixture requires compacted context".into()));
+    };
+    let decode = |bytes: &[u8]| {
+        serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
+    };
+    let mut wrapper: serde_json::Value = decode(&journal.load(&projection).await?)?;
+    let checkpoint: FileRef = serde_json::from_value(
+        wrapper
+            .get("checkpoint")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("fixture checkpoint missing".into()))?,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut envelope: CanonicalContextCheckpoint =
+        serde_json::from_slice(&journal.load(&checkpoint).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut source: Context = serde_json::from_slice(&journal.load(&envelope.source).await?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let proof: CompactionReference = serde_json::from_slice(&journal.load(&compaction).await?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut summary = proof
+        .summary
+        .ok_or_else(|| Error::Invalid("fixture summary missing".into()))?;
+    if mode == 1 {
+        source
+            .messages
+            .last_mut()
+            .ok_or_else(|| Error::Invalid("fixture source empty".into()))?
+            .content = ModelContent::Text("fabricated current".into());
+    } else {
+        summary.output = journal
+            .stage(
+                operation,
+                "poison-summary".into(),
+                b"fabricated summary".to_vec(),
+                "text/plain",
+            )
+            .await?;
+    }
+    let (retained, proof) = DurableContextProvider::compact(
+        &source,
+        proof.maximum_messages as usize,
+        Some(summary),
+        proof.retention,
+    )?;
+    if mode == 1 {
+        envelope.source = stage_fixture_json(journal, operation, "poison-source", &source).await?;
+    }
+    envelope.retained =
+        stage_fixture_json(journal, operation, "poison-retained", &retained).await?;
+    envelope.compaction = journal
+        .stage(
+            operation,
+            "poison-proof".into(),
+            proof.encode()?,
+            "application/json",
+        )
+        .await?;
+    // The substituted payloads satisfy the public envelope and compaction proof.
+    // Only owning-history/model-observation provenance can reject them.
+    envelope.validate_projection(&source, &retained, &proof, Limits::default())?;
+    let checkpoint = journal
+        .stage(
+            operation,
+            "poison-checkpoint".into(),
+            envelope.encode(Limits::default())?,
+            "application/json",
+        )
+        .await?;
+    *wrapper
+        .get_mut("canonical")
+        .ok_or_else(|| Error::Invalid("fixture canonical missing".into()))? =
+        serde_json::to_value(&envelope.source)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    *wrapper
+        .get_mut("checkpoint")
+        .ok_or_else(|| Error::Invalid("fixture checkpoint missing".into()))? =
+        serde_json::to_value(checkpoint).map_err(|error| Error::Invalid(error.to_string()))?;
+    let projection = stage_fixture_json(journal, operation, "poison-projection", &wrapper).await?;
+    Ok(ExecutionEvent::ContextCompacted {
+        step,
+        projection,
+        compaction: envelope.compaction,
+        accounting,
+    })
+}
+
+#[tokio::test]
+async fn canonical_publication_rejects_fabricated_source_and_summary_then_recovers() -> Result<()> {
+    use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
+    for mode in [1, 2] {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+        let provider = Arc::new(SummaryModel::default());
+        let journal = Arc::new(LostCanonicalAck {
+            inner: storage.journal(),
+            fail: std::sync::atomic::AtomicBool::new(false),
+            deny_reads: std::sync::atomic::AtomicBool::new(false),
+            tamper: std::sync::atomic::AtomicUsize::new(mode),
+        });
+        let bundle = storage
+            .builder()
+            .journal(journal)
+            .grant("model:generate")
+            .model(
+                Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?,
+                provider.clone(),
+            )
+            .build()?;
+        storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+        let operation = OperationId::new();
+        let file = storage
+            .stage(
+                operation,
+                "fault/current.txt",
+                "q".repeat(60_000).as_bytes(),
+                "text/plain",
+                "current.txt",
+            )
+            .await?;
+        let error = storage
+            .run_conversation(&bundle, operation, file.clone(), Vec::new(), 1)
+            .await;
+        let expected = if mode == 1 {
+            "canonical base and delta"
+        } else {
+            "output differs from admitted"
+        };
+        assert!(matches!(error, Err(Error::Conflict(message)) if message.contains(expected)));
+        let records = storage.journal().replay(operation, 0, 64).await?;
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+        );
+        let output = storage
+            .run_conversation(&bundle, operation, file, Vec::new(), 1)
+            .await?;
+        assert_eq!(output.text, "retained summary");
+        let records = storage.journal().replay(operation, 0, 64).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    ExecutionEvent::ModelStarted {
+                        purpose: ModelPurpose::Summary,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            provider
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            3
+        );
+    }
     Ok(())
 }

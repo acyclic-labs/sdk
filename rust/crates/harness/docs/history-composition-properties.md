@@ -635,3 +635,71 @@ these passing fixtures as closure of that owner-admission requirement. Private
 checkpoint JSON currently loads through the journal's own volume binding;
 portable direct-parent checkpoint reads require the appropriate owner-mediated
 content path rather than weakening that boundary.
+
+
+## Canonical publication and local temporal admission
+
+The native filesystem journal now applies its existing temporal reducer to local
+executions as well as task-owned executions. A single active-operation index is
+rebuilt from that operation's paged records when ownership switches; it does not
+retain a lifetime operation registry. Append and compare-and-append share the
+same retry/digest validation. Local publication uses the existing exact-tail
+Stream CAS and checks the complete one-record receipt. Task-owned publication
+continues to use its existing owner-fenced commit and shared budget checks.
+Both paths decode retained model requests and bind their digest before admission.
+
+Canonical checkpoint publication now reconstructs the source from the owning
+conversation's exact committed selection, all indexed model-visible messages
+since the immediate previous checkpoint watermark, and that previous retained
+base. It rejects a sparse coverage claim or a changed source. It validates the
+existing compaction proof and binds the summary to the retained prepared source,
+actual admitted request prefix, completed model observations and exact output
+bytes. This admission does not reconstruct arbitrary stage ownership by equality;
+stages remain separate from the canonical base. Immediate prior checkpoints are
+materialized through the existing owner-mediated read path, without recursively
+loading the lifetime checkpoint chain.
+
+The new adversarial continuation fixture substitutes immutable, descriptor-valid
+source or summary payloads and recomputes a valid public compaction proof. Owning
+history and model-observation admission must reject these publications before a
+ContextCompacted record commits; the same operation then recovers with the
+original admitted summary. The local temporal fixture independently exercises
+premature/unsettled/duplicate compaction, stale-tail rejection, exact retries and
+operation-index switching. Its opaque compaction payload qualifies temporal
+ordering only; it is not canonical proof evidence.
+
+This admission increment does not close automatic browser model integration,
+bounded cold hydration, direct-parent fork read admission or full fork policies.
+The reducer still retains lifetime events, first open still replays history, and
+these fixtures do not demonstrate constant memory or 10,000 default turns. Full
+slice and release qualification remain required before B's PR/admin merge.
+
+
+Strict native lint passed in `target-b-clippy-canonical-admission-final.log`;
+strict WASM lint passed in `target-b-clippy-canonical-admission-wasm-final.log`.
+The final native library passed 272 tests in
+`target-b-native-canonical-admission-library.log`; nine continuation and two fork
+tests passed in `target-b-native-canonical-admission-integration.log`, including
+both fabricated-payload rejection/recovery cases. Six owning source hashes are
+recorded in `target/b-canonical-admission-source-hashes.json` and verified unchanged
+after the terminal native run. Strengthening retained-request admission exposed
+three authority/tracing fixtures that staged placeholder JSON; those fixtures now
+stage valid prepared requests and retain their original owner, budget and tracing
+assertions. Failed intermediate runs remain recorded separately.
+
+Fresh isolated WASM generation passed in `target-b-wasm-canonical-tamper.log`.
+The four installed artifacts match the hashes recorded in
+`target/b-canonical-tamper-artifact-hashes.json`. Package/test type checks passed
+in `target-b-types-canonical-tamper.log`, the complete Harness Bun suite passed
+248 tests/1347 expectations in `target-b-bun-canonical-tamper.log`, and Chromium
+passed the wire page and 54 pure compaction checks in
+`target-b-browser-canonical-tamper.log`. Subsequent source edits changed only
+native test fixtures; the WASM library owning inputs remain identical. These
+consumer checks qualify the generated library and pure contracts, not automatic
+browser canonical continuation or production tokenizer/media adapters.
+
+
+Final-source isolated generation also passed in
+`target-b-wasm-canonical-admission-final.log`. All four output hashes exactly
+match the installed and consumer-tested artifacts; their final pins are in
+`target/b-canonical-admission-final-artifact-hashes.json`.

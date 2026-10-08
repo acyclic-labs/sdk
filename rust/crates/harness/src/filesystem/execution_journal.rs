@@ -37,6 +37,7 @@ use std::{
 
 #[derive(Default)]
 struct ExecutionSummary {
+    operation: Option<OperationId>,
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
     prepared_contexts: HashSet<u32>,
@@ -297,9 +298,16 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("quiescence requires a task-owned execution journal".into())
-        })?;
+        if summary.operation != Some(operation) {
+            *summary = ExecutionSummary {
+                operation: Some(operation),
+                ..ExecutionSummary::default()
+            };
+        }
+        let limits = self
+            .owner
+            .as_ref()
+            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
         loop {
             let page = Box::pin(self.replay_verified(
                 operation,
@@ -311,7 +319,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(());
             }
             for (record, model) in page {
-                summary.accept(&record, model.as_ref(), owner.input_limits())?;
+                summary.accept(&record, model.as_ref(), limits)?;
             }
         }
     }
@@ -352,7 +360,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .await
     }
 
-    async fn append_owned(
+    async fn append_validated(
         &self,
         operation_id: OperationId,
         expected_tail: Option<u64>,
@@ -370,12 +378,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 "execution journal compare-and-append is invalid".into(),
             ));
         }
-        let (owner, _) = self
-            .owner
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("task journal owner required".into()))?;
+        let owner = self.owner.as_ref().map(|(owner, _)| owner);
         let model = self.verify_event_refs(&event).await?;
-        let limits = owner.input_limits();
+        let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
+        self.verify_canonical_publication(operation_id, &event, limits)
+            .await?;
         let (key, retry_digest, bytes) = Observation::encode(operation_id, claim_id, &event)?;
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::contract::canonical_json_digest(&event)?;
@@ -384,7 +391,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         // No payload bodies are retained in this rebuildable index.
         loop {
             Box::pin(self.refresh_summary(operation_id, &mut summary)).await?;
-            owner.verify_execution(operation_id, &event).await?;
+            if let Some(owner) = owner {
+                owner.verify_execution(operation_id, &event).await?;
+            }
             if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
                 if *previous != event_digest {
                     return Err(Error::Conflict(
@@ -397,10 +406,22 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(false);
             }
             summary.validate_next(&event, model.as_ref(), limits)?;
-            if owner
-                .append_execution(operation_id, summary.tail, &key, bytes.clone(), &event)
+            let committed = if let Some(owner) = owner {
+                owner
+                    .append_execution(operation_id, summary.tail, &key, bytes.clone(), &event)
+                    .await?
+            } else {
+                self.append_local(
+                    operation_id,
+                    summary.tail,
+                    key.clone(),
+                    bytes.clone(),
+                    &retry_digest,
+                    &event,
+                )
                 .await?
-            {
+            };
+            if committed {
                 let sequence = summary.tail + 1;
                 summary.accept(
                     &ExecutionRecord {
@@ -413,6 +434,317 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     limits,
                 )?;
                 return Ok(true);
+            }
+        }
+    }
+
+    async fn verify_canonical_publication(
+        &self,
+        operation_id: OperationId,
+        event: &ExecutionEvent,
+        limits: Limits,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let ExecutionEvent::ContextCompacted {
+            step,
+            projection,
+            compaction,
+            ..
+        } = event
+        else {
+            return Ok(());
+        };
+        limits.validate_file(projection)?;
+        let projection =
+            crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection)
+                .await?;
+        crate::context::validate_projected_context(&projection.context, limits)?;
+        let Some(reference) = &projection.checkpoint else {
+            if projection.canonical.is_some() {
+                return Err(Error::Invalid(
+                    "canonical publication has no checkpoint".into(),
+                ));
+            }
+            return Ok(());
+        };
+        limits.validate_file(reference)?;
+        let envelope = crate::executor::load_json::<crate::context::CanonicalContextCheckpoint>(
+            self, reference,
+        )
+        .await?;
+        envelope.validate(limits)?;
+        if *step != 0
+            || envelope.operation_id != operation_id
+            || projection.canonical.as_ref() != Some(&envelope.source)
+            || &envelope.compaction != compaction
+        {
+            return Err(Error::Invalid(
+                "canonical publication differs from its envelope".into(),
+            ));
+        }
+        let source =
+            crate::executor::load_json::<crate::context::Context>(self, &envelope.source).await?;
+        let retained =
+            crate::executor::load_json::<crate::context::Context>(self, &envelope.retained).await?;
+        let proof =
+            crate::executor::load_json::<crate::context::CompactionReference>(self, compaction)
+                .await?;
+        envelope.validate_projection(&source, &retained, &proof, limits)?;
+        self.verify_canonical_source(&envelope, &source, limits)
+            .await?;
+        self.verify_canonical_summary(operation_id, &envelope, &source, &proof, limits)
+            .await
+    }
+
+    async fn verify_canonical_source(
+        &self,
+        envelope: &crate::context::CanonicalContextCheckpoint,
+        source: &crate::context::Context,
+        limits: Limits,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let previous = match &envelope.selection.checkpoint {
+            Some(reference) => {
+                Some(crate::executor::load_canonical_checkpoint(self, reference, limits).await?)
+            }
+            None => None,
+        };
+        let after = previous
+            .as_ref()
+            .map_or(0, |(previous, _)| previous.selection.conversation_revision);
+        let verifier = self
+            .input_verifier
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("canonical source reader is not bound".into()))?;
+        let aggregate = self.conversation_projection(limits).await?;
+        if aggregate
+            .reducer()
+            .context_selection_for_operation(envelope.operation_id)
+            != Some(&envelope.selection)
+        {
+            return Err(Error::Conflict(
+                "checkpoint source selection is not the committed admission".into(),
+            ));
+        }
+        let history = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("canonical source has no conversation".into()))?;
+        let ids = history
+            .model_messages_between(
+                after,
+                envelope.selection.conversation_revision,
+                limits.context_messages,
+            )?
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        if ids != envelope.selection.message_ids {
+            return Err(Error::Conflict(
+                "checkpoint skips uncovered canonical history".into(),
+            ));
+        }
+        let selected = select_model_context_at_revision(
+            history,
+            envelope.selection.clone(),
+            verifier.as_ref(),
+            limits.context_messages,
+            limits.attachments,
+            limits.render_bytes,
+            limits.attachments,
+        )
+        .await?;
+        let input = selected
+            .messages
+            .last()
+            .ok_or_else(|| Error::Invalid("canonical input is missing".into()))?
+            .content
+            .clone();
+        let mut selected_delta = selected;
+        selected_delta.selection.checkpoint = None;
+        let delta = crate::context::ContextPipeline::base_context(
+            &crate::context::ContextInput {
+                input,
+                selected_context: Some(selected_delta),
+                step: 0,
+                prior_messages: Vec::new(),
+            },
+            limits,
+        )?;
+        let expected = match previous {
+            Some((_, retained)) => {
+                crate::context::ContextPipeline::continue_base(retained, delta, limits)?
+            }
+            None => delta,
+        };
+        if source != &expected {
+            return Err(Error::Conflict(
+                "checkpoint source differs from its canonical base and delta".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn verify_canonical_summary(
+        &self,
+        operation: OperationId,
+        envelope: &crate::context::CanonicalContextCheckpoint,
+        source: &crate::context::Context,
+        proof: &crate::context::CompactionReference,
+        limits: Limits,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        use crate::executor::ModelPurpose;
+        let summary = proof
+            .summary
+            .as_ref()
+            .filter(|summary| summary.step == 0)
+            .ok_or_else(|| Error::Invalid("canonical summary belongs to another step".into()))?;
+        let (_, records) = crate::executor::replay_execution(
+            self,
+            operation,
+            limits.model_events_per_step.saturating_add(2),
+            |event| {
+                matches!(
+                    event,
+                    ExecutionEvent::ContextPrepared { step: 0, .. }
+                        | ExecutionEvent::ModelStarted {
+                            step: 0,
+                            purpose: ModelPurpose::Summary,
+                            ..
+                        }
+                        | ExecutionEvent::Model {
+                            step: 0,
+                            purpose: ModelPurpose::Summary,
+                            ..
+                        }
+                )
+            },
+        )
+        .await?;
+        let mut prepared = None;
+        let mut request = None;
+        let mut output = String::new();
+        let mut completed = false;
+        for record in records {
+            match record.event {
+                ExecutionEvent::ContextPrepared { projection, .. } => {
+                    let projection = crate::executor::load_json::<
+                        crate::executor::ResponseProjection,
+                    >(self, &projection)
+                    .await?;
+                    prepared = projection.canonical;
+                }
+                ExecutionEvent::ModelStarted {
+                    request: reference, ..
+                } => {
+                    request = Some(crate::model::PreparedModelRequest::decode(
+                        &self.load(&reference).await?,
+                        limits,
+                    )?);
+                }
+                ExecutionEvent::Model { event, .. } => {
+                    let event = crate::executor::load_json::<ModelEvent>(self, &event).await?;
+                    match event {
+                        ModelEvent::Content { delta } => {
+                            if (output.len() as u64)
+                                .checked_add(delta.len() as u64)
+                                .is_none_or(|length| length > limits.render_bytes)
+                            {
+                                return Err(Error::Invalid(
+                                    "canonical summary output exceeds bounds".into(),
+                                ));
+                            }
+                            output.push_str(&delta);
+                        }
+                        ModelEvent::Completed { .. } => completed = true,
+                        ModelEvent::Reasoning { .. } => {}
+                        ModelEvent::ToolCall { .. } => {
+                            return Err(Error::Invalid(
+                                "canonical summary requested a tool".into(),
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(Error::Storage(
+                        "canonical summary selection is invalid".into(),
+                    ));
+                }
+            }
+        }
+        if prepared.as_ref() != Some(&envelope.source) || !completed || output.is_empty() {
+            return Err(Error::Conflict(
+                "canonical summary lacks its prepared source or settled output".into(),
+            ));
+        }
+        let request = request
+            .ok_or_else(|| Error::Conflict("canonical summary has no admitted request".into()))?;
+        verify_summary_prefix(&request, source, summary.source_messages)?;
+        limits.validate_file(&summary.output)?;
+        if self.load(&summary.output).await? != output.as_bytes() {
+            return Err(Error::Conflict(
+                "canonical summary output differs from admitted observations".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn append_local(
+        &self,
+        operation_id: OperationId,
+        tail: u64,
+        key: StreamKey,
+        bytes: Bytes,
+        retry_digest: &str,
+        event: &ExecutionEvent,
+    ) -> Result<bool>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        match self
+            .path(operation_id)?
+            .append_batch(vec![bytes], Some(tail), Some(key))
+            .await
+        {
+            Ok(AppendOutcome::Committed(receipt))
+                if receipt.start == tail && receipt.end == tail + 1 =>
+            {
+                Ok(true)
+            }
+            Ok(AppendOutcome::Committed(_)) => Err(Error::Storage(
+                "execution journal append receipt is invalid".into(),
+            )),
+            Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
+            Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
+                "execution journal retry identity reused".into(),
+            )),
+            Err(_) => {
+                let records = self
+                    .replay(operation_id, tail, 1)
+                    .await
+                    .map_err(|_| Error::Indeterminate(operation_id))?;
+                if records
+                    .iter()
+                    .any(|record| record.idempotency_key == retry_digest && &record.event == event)
+                {
+                    Ok(true)
+                } else {
+                    Err(Error::Indeterminate(operation_id))
+                }
             }
         }
     }
@@ -804,6 +1136,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
 
     async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
     where
+        P: StreamProvider,
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
@@ -850,6 +1183,18 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 .host
                 .read_content(reference, &grant, self.maximum_payload_bytes)
                 .await?;
+            if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
+                let limits = self
+                    .owner
+                    .as_ref()
+                    .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+                let prepared = crate::model::PreparedModelRequest::decode(&bytes, limits)?;
+                if &prepared.manifest().request_digest != request_digest {
+                    return Err(Error::Invalid(
+                        "model start digest differs from its retained request".into(),
+                    ));
+                }
+            }
             if matches!(event, ExecutionEvent::Model { .. }) {
                 if reference.descriptor().media_type() != "application/json" {
                     return Err(Error::Storage("model observation is not JSON".into()));
@@ -940,33 +1285,9 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         let span = obs_span!("acyclic.harness.journal.append");
         traced(span, async move {
-            if self.owner.is_some() {
-                return self
-                    .append_owned(operation_id, None, &idempotency_key, event)
-                    .await
-                    .map(|_| ());
-            }
-            if idempotency_key.is_empty() {
-                return Err(Error::Invalid(
-                    "execution journal idempotency key is invalid".into(),
-                ));
-            }
-            self.verify_event_refs(&event).await?;
-            let (key, _, bytes) = Observation::encode(operation_id, &idempotency_key, &event)?;
-            match self
-                .path(operation_id)?
-                .append_batch(vec![bytes], None, Some(key))
+            self.append_validated(operation_id, None, &idempotency_key, event)
                 .await
-            {
-                Ok(AppendOutcome::Committed(_)) => Ok(()),
-                Ok(AppendOutcome::TailConflict { .. }) => {
-                    Err(Error::Conflict("execution journal tail changed".into()))
-                }
-                Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
-                    "execution journal retry identity reused".into(),
-                )),
-                Err(error) => Err(Error::Storage(error.to_string())),
-            }
+                .map(|_| ())
         })
     }
 
@@ -982,44 +1303,8 @@ where
             rev = expected_tail
         );
         traced(span, async move {
-            if self.owner.is_some() {
-                return self
-                    .append_owned(operation_id, Some(expected_tail), &claim_id, event)
-                    .await;
-            }
-            if claim_id.is_empty() {
-                return Err(Error::Invalid(
-                    "execution journal compare-and-append is invalid".into(),
-                ));
-            }
-            self.verify_event_refs(&event).await?;
-            let (key, retry_digest, bytes) = Observation::encode(operation_id, &claim_id, &event)?;
-            match self
-                .path(operation_id)?
-                .append_batch(vec![bytes], Some(expected_tail), Some(key))
+            self.append_validated(operation_id, Some(expected_tail), &claim_id, event)
                 .await
-            {
-                Ok(AppendOutcome::Committed(receipt)) if receipt.start == expected_tail => Ok(true),
-                Ok(AppendOutcome::Committed(_)) | Ok(AppendOutcome::TailConflict { .. }) => {
-                    Ok(false)
-                }
-                Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
-                    "execution journal compare-and-append identity was reused".into(),
-                )),
-                Err(_) => {
-                    let records = self
-                        .replay(operation_id, expected_tail, 1)
-                        .await
-                        .map_err(|_| Error::Indeterminate(operation_id))?;
-                    if records.iter().any(|record| {
-                        record.idempotency_key == retry_digest && record.event == event
-                    }) {
-                        Ok(true)
-                    } else {
-                        Err(Error::Indeterminate(operation_id))
-                    }
-                }
-            }
         })
     }
 
@@ -1310,6 +1595,24 @@ where
             Ok(outcome)
         })
     }
+}
+
+fn verify_summary_prefix(
+    request: &crate::model::PreparedModelRequest,
+    source: &crate::context::Context,
+    count: u32,
+) -> Result<()> {
+    let count = count as usize;
+    let expected = count
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("summary prefix count overflows".into()))?;
+    let messages = &request.request().messages;
+    if messages.len() != expected || messages.get(..count) != source.messages.get(..count) {
+        return Err(Error::Conflict(
+            "canonical summary request differs from its source prefix".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn interaction_operation(id: InteractionId, phase: &str) -> OperationId {

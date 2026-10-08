@@ -1165,6 +1165,27 @@ impl ContextPipeline {
         Ok(context)
     }
 
+    /// Adds an exact new delta to an owner-resolved base before running stages.
+    /// The caller establishes source provenance; the active input belongs to the delta.
+    pub fn continue_base(mut retained: Context, delta: Context, limits: Limits) -> Result<Context> {
+        validate_projected_context(&retained, limits)?;
+        validate_projected_context(&delta, limits)?;
+        let prefix = u32::try_from(retained.messages.len()).map_err(|_| {
+            crate::Error::Invalid("base message count exceeds portable index".into())
+        })?;
+        retained.current_input_index = Some(
+            delta
+                .current_input_index
+                .and_then(|index| prefix.checked_add(index))
+                .ok_or_else(|| {
+                    crate::Error::Invalid("continued base has no bounded current input".into())
+                })?,
+        );
+        retained.messages.extend(delta.messages);
+        validate_projected_context(&retained, limits)?;
+        Ok(retained)
+    }
+
     /// Bounds the initial view and every intermediate projection, without truncation.
     pub async fn run_bounded(&self, input: &ContextInput, limits: Limits) -> Result<Context> {
         self.transform_bounded(input, Self::base_context(input, limits)?, limits)

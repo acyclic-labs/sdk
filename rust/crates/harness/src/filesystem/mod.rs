@@ -3203,12 +3203,38 @@ mod tests {
             )
             .await?;
         assert_eq!(journal.load(&request).await?.len(), 12);
+        let prepared_request = crate::model::PreparedModelRequest::prepare(
+            crate::model::ModelRequest {
+                model: crate::model::Model::new(
+                    "synthetic",
+                    "journal-test",
+                    "1",
+                    serde_json::json!({}),
+                )?,
+                messages: vec![crate::model::ModelMessage {
+                    role: crate::model::ModelRole::User,
+                    content: crate::model::ModelContent::Text("fixture request".into()),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: Some(32),
+            },
+            Limits::default(),
+        )?;
+        let model_digest = prepared_request.manifest().request_digest;
+        let request = journal
+            .stage(
+                operation,
+                "prepared-request".into(),
+                prepared_request.bytes().to_vec(),
+                "application/json",
+            )
+            .await?;
         journal
             .append(
                 operation,
                 "start".into(),
                 ExecutionEvent::Started {
-                    request_digest: [1; 32],
+                    request_digest: model_digest,
                 },
             )
             .await?;
@@ -3221,7 +3247,7 @@ mod tests {
                     ExecutionEvent::ModelStarted {
                         purpose: crate::executor::ModelPurpose::Response,
                         step: 0,
-                        request_digest: [1; 32],
+                        request_digest: model_digest,
                         request
                     },
                 )

@@ -516,9 +516,9 @@ pub struct StockExecutor {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseProjection {
-    context: crate::context::Context,
-    canonical: Option<FileRef>,
-    checkpoint: Option<FileRef>,
+    pub(crate) context: crate::context::Context,
+    pub(crate) canonical: Option<FileRef>,
+    pub(crate) checkpoint: Option<FileRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1205,7 +1205,7 @@ impl StockExecutor {
         let Some(reference) = checkpoint else {
             return Ok(delta);
         };
-        let (envelope, mut retained) =
+        let (envelope, retained) =
             load_canonical_checkpoint(journal, &reference, self.limits).await?;
         let selected = input
             .selected_context
@@ -1216,15 +1216,7 @@ impl StockExecutor {
                 "checkpoint covers the new turn input".into(),
             ));
         }
-        let prefix = u32::try_from(retained.messages.len()).map_err(|_| {
-            Error::Invalid("checkpoint message count exceeds portable index".into())
-        })?;
-        retained.current_input_index = delta
-            .current_input_index
-            .and_then(|index| prefix.checked_add(index));
-        retained.messages.extend(delta.messages);
-        crate::context::validate_projected_context(&retained, self.limits)?;
-        Ok(retained)
+        ContextPipeline::continue_base(retained, delta, self.limits)
     }
 
     async fn transform_projection(
