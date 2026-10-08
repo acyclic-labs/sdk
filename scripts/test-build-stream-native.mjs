@@ -205,6 +205,10 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
     plain: "-C link-arg=\"C:\\Program Files\\SDK\\link.exe\"",
   }).split("\x1f");
   assert.deepEqual(windowsPath.slice(0, 2), ["-C", "link-arg=C:\\Program Files\\SDK\\link.exe"]);
+
+  const darwin = deterministicRustflags("/src", "/target", "aarch64-apple-darwin").split("\x1f");
+  assert.ok(darwin.includes("-C"));
+  assert.ok(darwin.includes("link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib"));
 });
 
 test("native qualification rejects build input identity mutations", () => {

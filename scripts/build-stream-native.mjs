@@ -226,6 +226,11 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     `--remap-path-prefix=${resolve(targetDir).replaceAll("\\", "/")}=/__acyclic_stream_target`,
   ];
   if (typeof target === "string" && target.endsWith("-pc-windows-msvc")) flags.push("-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro");
+  if (typeof target === "string" && target.endsWith("-apple-darwin")) {
+    // NAPI-RS emits a dylib-backed addon on Darwin. Keep its Mach-O install
+    // name relocatable so the package never embeds the producer's Cargo path.
+    flags.push("-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib");
+  }
   return flags.join("\x1f");
 }
 
