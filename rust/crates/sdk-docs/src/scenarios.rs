@@ -1148,7 +1148,10 @@ impl std::error::Error for Error {}
 /// digest cannot be reused after a source, fixture, or dependency change. The
 /// function does not execute a process or claim that an endpoint scenario has
 /// passed.
-pub fn validate(root: &Path) -> Result<Vec<ScenarioSource>, Error> {
+pub fn validate(
+    root: &Path,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<Vec<ScenarioSource>, Error> {
     let mut seen = std::collections::BTreeSet::new();
     let mut result = Vec::with_capacity(SCENARIOS.len());
     for scenario in SCENARIOS {
@@ -1186,7 +1189,7 @@ pub fn validate(root: &Path) -> Result<Vec<ScenarioSource>, Error> {
                 )));
             }
         }
-        if !manifest_declares_package(&manifest, scenario.package)? {
+        if !manifest_declares_package(metadata, &manifest, scenario.package)? {
             return Err(Error::Invalid(format!(
                 "scenario {} package {} does not match {}",
                 scenario.id,
@@ -1203,15 +1206,21 @@ pub fn validate(root: &Path) -> Result<Vec<ScenarioSource>, Error> {
     Ok(result)
 }
 
-fn manifest_declares_package(manifest: &Path, expected: &str) -> Result<bool, Error> {
-    let contents =
-        std::fs::read_to_string(manifest).map_err(|error| Error::Io(error.to_string()))?;
-    Ok(contents.lines().any(|line| {
-        let line = line.trim();
-        line.strip_prefix("name = ")
-            .and_then(|value| value.strip_prefix('"'))
-            .and_then(|value| value.strip_suffix('"'))
-            == Some(expected)
+fn manifest_declares_package(
+    metadata: &cargo_metadata::Metadata,
+    manifest: &Path,
+    expected: &str,
+) -> Result<bool, Error> {
+    let manifest = manifest
+        .canonicalize()
+        .map_err(|error| Error::Io(error.to_string()))?;
+    Ok(metadata.packages.iter().any(|package| {
+        package.name.as_ref() == expected
+            && package
+                .manifest_path
+                .as_std_path()
+                .canonicalize()
+                .is_ok_and(|path| path == manifest)
     }))
 }
 
@@ -1299,9 +1308,43 @@ mod tests {
     }
 
     #[test]
+    fn cargo_package_owner_requires_the_actual_package_and_manifest() {
+        let fixture = tempfile::tempdir().unwrap();
+        let manifest = fixture.path().join("Cargo.toml");
+        std::fs::create_dir(fixture.path().join("src")).unwrap();
+        std::fs::write(fixture.path().join("src/lib.rs"), "pub struct Witness;").unwrap();
+        // Cargo accepts compact, single-quoted TOML; metadata names are not package identities.
+        std::fs::write(
+            &manifest,
+            r#"[package]
+name='actual-owner'
+version='0.1.0'
+edition='2021'
+[workspace]
+[package.metadata]
+name = "decoy-owner"
+"#,
+        )
+        .unwrap();
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(&manifest)
+            .no_deps()
+            .other_options(vec!["--offline".into()])
+            .exec()
+            .unwrap();
+        assert!(manifest_declares_package(&metadata, &manifest, "actual-owner").unwrap());
+        assert!(!manifest_declares_package(&metadata, &manifest, "decoy-owner").unwrap());
+        let other = fixture.path().join("other.toml");
+        std::fs::copy(&manifest, &other).unwrap();
+        assert!(!manifest_declares_package(&metadata, &other, "actual-owner").unwrap());
+    }
+
+    #[test]
     fn current_source_closure_is_present_and_digested() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let sources = validate(&root).expect("registered scenario sources should exist");
+        let metadata = crate::rustdoc_profiles::load_metadata(root.join("Cargo.toml"))
+            .expect("actual workspace Cargo metadata");
+        let sources = validate(&root, &metadata).expect("registered scenario sources should exist");
         assert_eq!(sources.len(), SCENARIOS.len());
         assert!(sources.iter().all(|source| {
             source.source_sha256.starts_with("sha256:")

@@ -797,7 +797,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         )?;
         None
     } else if !args.skip_scenarios {
-        let sources = scenarios::validate(&root).map_err(scenario_error)?;
+        let sources = scenarios::validate(&root, &metadata).map_err(scenario_error)?;
         scenarios::compile_all(&root, &sources, None).map_err(scenario_error)?;
         let executions =
             scenarios::execute_all(&root, &sources, None, None).map_err(scenario_error)?;
