@@ -5,9 +5,8 @@ use sdk_docs::rustdoc_profiles::{
     ProfileSpec,
 };
 use sdk_docs::{
-    build_data, merge_profile_catalog, scenarios, write_bundle, BuildInput, Channel,
-    GeneratedSource, PackageMetadata,
-    rustdoc_digest,
+    build_data, merge_profile_catalog, rustdoc_digest, scenarios, write_bundle, BuildInput,
+    Channel, GeneratedSource, PackageMetadata,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -810,17 +809,22 @@ fn execute_default_profiles(
 }
 
 fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), CliError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(&fs::read(receipt).map_err(io_error)?).map_err(|error| {
-            CliError(format!("invalid Rustdoc JSON {}: {error}", receipt.display()))
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(receipt).map_err(io_error)?)
+        .map_err(|error| {
+            CliError(format!(
+                "invalid Rustdoc JSON {}: {error}",
+                receipt.display()
+            ))
         })?;
     let mut filenames = BTreeSet::new();
     collect_span_filenames(&value, &mut filenames);
     let retained_root = root.join("target/sdk-generation-generated-sources/retained");
     let index_path = retained_root.join("aliases.json");
     let mut aliases = if index_path.is_file() {
-        serde_json::from_slice::<BTreeMap<String, String>>(&fs::read(&index_path).map_err(io_error)?)
-            .map_err(|error| CliError(format!("invalid retained Rustdoc source index: {error}")))?
+        serde_json::from_slice::<BTreeMap<String, String>>(
+            &fs::read(&index_path).map_err(io_error)?,
+        )
+        .map_err(|error| CliError(format!("invalid retained Rustdoc source index: {error}")))?
     } else {
         BTreeMap::new()
     };
@@ -830,11 +834,16 @@ fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), C
             continue;
         }
         let basename = source.file_name().and_then(OsStr::to_str).ok_or_else(|| {
-            CliError(format!("Rustdoc generated source has invalid filename {filename}"))
+            CliError(format!(
+                "Rustdoc generated source has invalid filename {filename}"
+            ))
         })?;
         let bytes = fs::read(&source).map_err(io_error)?;
         let digest = sha256_bytes(&bytes);
-        let retained = retained_root.join(format!("{}-{basename}", digest.trim_start_matches("sha256:")));
+        let retained = retained_root.join(format!(
+            "{}-{basename}",
+            digest.trim_start_matches("sha256:")
+        ));
         if let Some(parent) = retained.parent() {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
@@ -847,9 +856,15 @@ fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), C
             .map_err(|_| CliError("retained generated source escaped repository root".into()))?;
         aliases.insert(filename, relative);
     }
-    fs::write(&index_path, serde_json::to_vec(&aliases).map_err(|error| {
-        CliError(format!("cannot serialize retained Rustdoc source index: {error}"))
-    })?)
+    fs::create_dir_all(&retained_root).map_err(io_error)?;
+    fs::write(
+        &index_path,
+        serde_json::to_vec(&aliases).map_err(|error| {
+            CliError(format!(
+                "cannot serialize retained Rustdoc source index: {error}"
+            ))
+        })?,
+    )
     .map_err(io_error)?;
     Ok(())
 }
@@ -1113,8 +1128,8 @@ fn materialize_generated_sources(
     for matches in candidates.values_mut() {
         matches.retain(|candidate| !candidate.starts_with(&staging_root));
     }
-    let retained_aliases = root
-        .join("target/sdk-generation-generated-sources/retained/aliases.json");
+    let retained_aliases =
+        root.join("target/sdk-generation-generated-sources/retained/aliases.json");
     let retained_aliases = if retained_aliases.is_file() {
         serde_json::from_slice::<BTreeMap<String, String>>(
             &fs::read(&retained_aliases).map_err(io_error)?,
@@ -1143,7 +1158,9 @@ fn materialize_generated_sources(
                     .file_name()
                     .and_then(OsStr::to_str)
                     .ok_or_else(|| {
-                        CliError(format!("Rustdoc generated source has invalid filename {filename}"))
+                        CliError(format!(
+                            "Rustdoc generated source has invalid filename {filename}"
+                        ))
                     })?;
                 (
                     // Keep an existing external producer path so sdk-docs can
@@ -1151,10 +1168,16 @@ fn materialize_generated_sources(
                     // Missing external paths are staged below; existing
                     // profile outputs are already immutable inputs.
                     canonical,
-                    format!("external/{basename}"),
+                    external_source_identity(&physical, basename),
                 )
             }
         } else {
+            validate_restore_path(root, rustdoc_files, &physical)?;
+            if !physical.starts_with(root) && !retained_aliases.contains_key(&filename) {
+                return Err(CliError(format!(
+                    "external Rustdoc restoration requires a captured source alias: {filename}"
+                )));
+            }
             let basename = physical
                 .file_name()
                 .and_then(OsStr::to_str)
@@ -1173,18 +1196,41 @@ fn materialize_generated_sources(
                     "Rustdoc generated source basename is ambiguous: {filename}"
                 )));
             };
-            let identity = candidate
-                .strip_prefix(root)
-                .map(path_string)
-                .unwrap_or_else(|_| {
-                    format!(
-                        "external/{}",
-                        candidate
-                            .file_name()
-                            .and_then(OsStr::to_str)
-                            .unwrap_or("generated-source")
-                    )
-                });
+            if retained_aliases.contains_key(&filename) {
+                validate_restore_path(root, &[], candidate)?;
+                let captured = candidate.canonicalize().map_err(io_error)?;
+                let retained = root.join("target/sdk-generation-generated-sources/retained");
+                if !captured.starts_with(&retained) {
+                    return Err(CliError(
+                        "captured Rustdoc alias escaped retained sources".into(),
+                    ));
+                }
+                let expected =
+                    format!("{}-", sha256_file(&captured)?.trim_start_matches("sha256:"));
+                if !captured
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.starts_with(&expected))
+                {
+                    return Err(CliError("captured Rustdoc source digest changed".into()));
+                }
+            }
+            let identity = if !physical.starts_with(root) {
+                external_source_identity(&physical, basename)
+            } else {
+                candidate
+                    .strip_prefix(root)
+                    .map(path_string)
+                    .unwrap_or_else(|_| {
+                        format!(
+                            "external/{}",
+                            candidate
+                                .file_name()
+                                .and_then(OsStr::to_str)
+                                .unwrap_or("generated-source")
+                        )
+                    })
+            };
             if let Some(parent) = physical.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
             }
@@ -1231,6 +1277,69 @@ fn materialize_generated_sources(
         result.entry(source.logical_path.clone()).or_insert(source);
     }
     Ok(result.into_values().collect())
+}
+
+fn external_source_identity(path: &Path, basename: &str) -> String {
+    let components = path.components().collect::<Vec<_>>();
+    if let Some(index) = components
+        .iter()
+        .position(|part| part.as_os_str() == OsStr::new(".profile-build"))
+    {
+        return format!(
+            "profile-build/{}",
+            path_string(&components[index + 1..].iter().collect::<PathBuf>())
+        );
+    }
+    format!("external/{basename}")
+}
+
+fn validate_restore_path(root: &Path, receipts: &[PathBuf], path: &Path) -> Result<(), CliError> {
+    if path
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(CliError(
+            "Rustdoc restoration path contains parent traversal".into(),
+        ));
+    }
+    let mut owned = vec![root.join("target")];
+    for receipt in receipts {
+        if let Some(rustdoc) = receipt
+            .ancestors()
+            .find(|ancestor| ancestor.file_name() == Some(OsStr::new(".rustdoc")))
+        {
+            if let Some(output) = rustdoc.parent() {
+                owned.push(output.join(".profile-build"));
+            }
+        }
+    }
+    if !owned.iter().any(|directory| path.starts_with(directory)) {
+        return Err(CliError(format!(
+            "Rustdoc restoration is outside owned build directories: {}",
+            path.display()
+        )));
+    }
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                #[cfg(windows)]
+                let reparse = {
+                    use std::os::windows::fs::MetadataExt;
+                    metadata.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let reparse = false;
+                if metadata.file_type().is_symlink() || reparse {
+                    return Err(CliError(
+                        "Rustdoc restoration path contains a reparse point or symlink".into(),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    Ok(())
 }
 
 fn collect_span_filenames(value: &serde_json::Value, output: &mut BTreeSet<String>) {
@@ -1707,18 +1816,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_external_rustdoc_span_is_staged_inside_target() {
+    fn missing_external_rustdoc_span_is_restored_at_rustdoc_path() {
         let root = test_root("generated-span-staging")
             .canonicalize()
             .expect("test root should canonicalize");
         let candidate = root.join("target/candidate/wire.rs");
         write(&root, "target/candidate/wire.rs", b"pub struct Wire;\n");
-        let foreign = std::env::temp_dir()
-            .join(format!(
-                "sdk-generation-foreign-span-{}",
-                std::process::id()
-            ))
-            .join("wire.rs");
+        let foreign = root.join("target/producer/wire.rs");
         let receipt = root.join("receipt.json");
         fs::write(
             &receipt,
@@ -1731,11 +1835,14 @@ mod tests {
         let sources = materialize_generated_sources(&root, std::slice::from_ref(&receipt))
             .expect("matching generated source should be staged");
         assert_eq!(sources.len(), 1);
-        assert!(sources[0].physical_path.starts_with(root.join("target")));
-        assert!(
-            !foreign.exists(),
-            "generator must never write to the foreign span"
+        assert_eq!(
+            sources[0].physical_path,
+            foreign
+                .canonicalize()
+                .expect("restored span should canonicalize")
         );
+        assert_eq!(fs::read(&foreign).unwrap(), fs::read(&candidate).unwrap());
+        assert_eq!(sources[0].sha256, sha256_file(&candidate).unwrap());
         assert!(candidate.exists());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(foreign.parent().unwrap());
@@ -1763,7 +1870,10 @@ mod tests {
         let sources = materialize_generated_sources(&root, std::slice::from_ref(&receipt))
             .expect("equivalent source paths should be accepted");
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].sha256, sha256_file(&canonical).expect("source should hash"));
+        assert_eq!(
+            sources[0].sha256,
+            sha256_file(&canonical).expect("source should hash")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1771,7 +1881,10 @@ mod tests {
     fn existing_external_rustdoc_span_keeps_canonical_input_path() {
         let root = test_root("existing-external-generated-span");
         let external = std::env::temp_dir()
-            .join(format!("sdk-generation-existing-span-{}", std::process::id()))
+            .join(format!(
+                "sdk-generation-existing-span-{}",
+                std::process::id()
+            ))
             .join("wire.rs");
         if let Some(parent) = external.parent() {
             fs::create_dir_all(parent).expect("external fixture directory should be writable");
@@ -1792,7 +1905,9 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(
             sources[0].physical_path,
-            external.canonicalize().expect("external source should canonicalize")
+            external
+                .canonicalize()
+                .expect("external source should canonicalize")
         );
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(external.parent().unwrap());
@@ -1803,12 +1918,7 @@ mod tests {
         let root = test_root("ambiguous-generated-span");
         write(&root, "target/one/wire.rs", b"pub struct One;\n");
         write(&root, "rust/two/wire.rs", b"pub struct Two;\n");
-        let foreign = std::env::temp_dir()
-            .join(format!(
-                "sdk-generation-ambiguous-span-{}",
-                std::process::id()
-            ))
-            .join("wire.rs");
+        let foreign = root.join("target/producer/wire.rs");
         let receipt = root.join("receipt.json");
         fs::write(
             &receipt,
@@ -1824,5 +1934,122 @@ mod tests {
         assert!(!foreign.exists());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(foreign.parent().unwrap());
+    }
+
+    #[test]
+    fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
+        let root = test_root("restoration-boundary");
+        for path in [
+            std::env::temp_dir().join(".cargo/sdk-docs-unowned/wire.rs"),
+            root.join("rust/wire.rs"),
+            root.join("target/../unowned/wire.rs"),
+        ] {
+            let error = validate_restore_path(&root, &[], &path).unwrap_err();
+            assert!(
+                error.to_string().contains("outside owned")
+                    || error.to_string().contains("parent traversal")
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn captured_external_restoration_is_owned_and_digest_bound() {
+        let root = test_root("captured-restoration").canonicalize().unwrap();
+        let output = test_root("captured-restoration-output")
+            .canonicalize()
+            .unwrap();
+        let foreign = output.join(".profile-build/build/demo/out/wire.rs");
+        let receipt = output.join(".rustdoc/demo.json");
+        let bytes = b"pub struct Captured;\n";
+        let digest = sha256_bytes(bytes);
+        let relative = format!(
+            "target/sdk-generation-generated-sources/retained/{}-wire.rs",
+            digest.trim_start_matches("sha256:")
+        );
+        write(&root, &relative, bytes);
+        write(
+            &output,
+            ".rustdoc/demo.json",
+            &serde_json::to_vec(&serde_json::json!({
+                "span": { "filename": foreign.to_string_lossy() }
+            }))
+            .unwrap(),
+        );
+        let aliases = serde_json::to_vec(&BTreeMap::from([(
+            foreign.to_string_lossy().to_string(),
+            relative.clone(),
+        )]))
+        .unwrap();
+        write(
+            &root,
+            "target/sdk-generation-generated-sources/retained/aliases.json",
+            &aliases,
+        );
+        let sources = materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap();
+        assert_eq!(sources[0].sha256, digest);
+        assert_eq!(fs::read(&foreign).unwrap(), bytes);
+        fs::remove_file(&foreign).unwrap();
+        fs::write(root.join(relative), b"changed capture").unwrap();
+        let error =
+            materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("captured Rustdoc source digest changed"));
+        assert!(!foreign.exists());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(output);
+    }
+
+    #[test]
+    fn identical_profile_outputs_keep_each_physical_span_mapping() {
+        let root = test_root("identical-profile-spans").canonicalize().unwrap();
+        let output = test_root("identical-profile-spans-output")
+            .canonicalize()
+            .unwrap();
+        let first = output.join(".profile-build/build/one/out/wire.rs");
+        let second = output.join(".profile-build/build/two/out/wire.rs");
+        write(
+            &output,
+            ".profile-build/build/one/out/wire.rs",
+            b"pub struct Wire;\n",
+        );
+        write(
+            &output,
+            ".profile-build/build/two/out/wire.rs",
+            b"pub struct Wire;\n",
+        );
+        let receipt = output.join(".rustdoc/demo.json");
+        write(&output, ".rustdoc/demo.json", &serde_json::to_vec(&serde_json::json!({
+            "spans": [{ "filename": first.to_string_lossy() }, { "filename": second.to_string_lossy() }]
+        })).unwrap());
+        let sources = materialize_generated_sources(&root, &[receipt]).unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].sha256, sources[1].sha256);
+        assert_ne!(sources[0].logical_path, sources[1].logical_path);
+        assert_ne!(sources[0].physical_path, sources[1].physical_path);
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(output);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restoration_rejects_junction_ancestors_before_writing() {
+        let root = test_root("restoration-junction");
+        let external = test_root("restoration-junction-external");
+        fs::create_dir_all(root.join("target")).unwrap();
+        let junction = root.join("target/linked");
+        assert!(Command::new("powershell.exe")
+            .env("SDK_DOCS_RESTORE_JUNCTION", &junction)
+            .env("SDK_DOCS_RESTORE_TARGET", &external)
+            .args(["-NoProfile", "-NonInteractive", "-Command",
+                "New-Item -ItemType Junction -Path $env:SDK_DOCS_RESTORE_JUNCTION -Target $env:SDK_DOCS_RESTORE_TARGET | Out-Null"])
+            .status().unwrap().success());
+        let error = validate_restore_path(&root, &[], &junction.join("wire.rs")).unwrap_err();
+        assert!(error.to_string().contains("reparse point or symlink"));
+        assert!(!external.join("wire.rs").exists());
+        fs::remove_dir(junction).unwrap();
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(external);
     }
 }
