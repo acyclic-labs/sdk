@@ -1727,6 +1727,26 @@ impl Reducer {
             })
     }
 
+    pub(crate) fn verify_command_scope(&self, command: &Command) -> Result<()> {
+        self.authority_verifier.verify_audience(&self.authority)?;
+        IdempotencyKey::new(command.idempotency_key.0.clone())?;
+        self.authority_verifier.verify(&command.scope)
+    }
+
+    /// Checks an archived admitted event against the exact caller command without re-planning effects.
+    pub(crate) fn verify_retained_command(&self, command: &Command, event: &Event) -> Result<()> {
+        self.verify_command_scope(command)?;
+        self.authority_verifier.verify_event(event)?;
+        if event.operation_id != command.operation_id
+            || event.intent_digest != canonical_intent(command)?
+        {
+            return Err(Error::Conflict(
+                "operation identity is already bound to another intent".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Exact aggregate revision committed for a stable operation identity.
     /// Hosts use it to reconstruct the original CAS command on a lost-ack retry.
     #[must_use]
@@ -1806,9 +1826,7 @@ impl Reducer {
         command: &Command,
         migration: Migration,
     ) -> Result<ApplyResult> {
-        self.authority_verifier.verify_audience(&self.authority)?;
-        IdempotencyKey::new(command.idempotency_key.0.clone())?;
-        self.authority_verifier.verify(&command.scope)?;
+        self.verify_command_scope(command)?;
         let intent = canonical_intent(command)?;
         if let Some((existing_intent, event)) = self.operation_intents.get(&command.operation_id) {
             if existing_intent == &intent {

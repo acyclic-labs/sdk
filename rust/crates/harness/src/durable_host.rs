@@ -377,13 +377,31 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) async fn append_conversation(
         &self,
-        path: acyclic_stream::StreamPath,
-        expected_tail: u64,
+        publication: &crate::store::operations::IndexedPublication,
         key: &StreamKey,
-        bytes: Bytes,
         write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
-        self.append(path, expected_tail, key, bytes, write).await
+        let mut request = self
+            .prepare_append(
+                &publication.path,
+                publication.expected_tail,
+                key,
+                &publication.bytes,
+                write,
+            )
+            .await?;
+        publication.add_index(&mut request);
+        match crate::distributed::commit_keyed(&self.stream, request, publication.operation_id)
+            .await?
+        {
+            acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
+            acyclic_stream::CommitOutcome::Committed(envelope) => {
+                publication
+                    .verify(&envelope)
+                    .map_err(|_| Error::Indeterminate(publication.operation_id))?;
+                Ok(true)
+            }
+        }
     }
 
     pub(crate) async fn append_execution(

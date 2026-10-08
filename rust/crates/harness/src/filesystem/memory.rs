@@ -822,9 +822,8 @@ impl MemoryHarnessStorage {
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
         let existing_selection = aggregate
-            .reducer()
             .context_selection_for_operation(operation_id)
-            .cloned();
+            .await?;
         let checkpoint_reference = aggregate.reducer().latest_context_checkpoint().cloned();
         let checkpoint = if existing_selection.is_none() {
             match &checkpoint_reference {
@@ -976,10 +975,10 @@ impl MemoryHarnessStorage {
         let mut aggregate = self.open_conversation(limits).await?;
         let publication = derived_operation_id(operation_id, b"conversation-checkpoint");
         if let Some(committed) = aggregate
-            .reducer()
             .context_selection_for_operation(publication)
+            .await?
         {
-            return if committed == &selection {
+            return if committed == selection {
                 Ok(())
             } else {
                 Err(Error::Conflict(

@@ -1,6 +1,7 @@
 //! Direct Stream persistence for durable aggregate histories.
 
 mod history;
+pub(crate) mod operations;
 pub use history::*;
 
 use crate::{
@@ -20,7 +21,7 @@ use crate::{
     wire_codec::{decode_event, encode_event},
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
+    CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
     StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
@@ -190,7 +191,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "extension migration request is invalid".into(),
             ));
         }
-        if let Some(revision) = self.reducer.operation_revision(request.operation_id) {
+        if let Some(revision) = self.operation_revision(request.operation_id).await? {
             return self
                 .replay_extension_migration(request, scope, publisher, revision)
                 .await;
@@ -679,6 +680,74 @@ impl<P: StreamProvider> StreamAggregate<P> {
         &self.reducer
     }
 
+    /// Resolves one archived operation through its atomically published canonical location.
+    pub async fn operation_event(
+        &self,
+        operation: OperationId,
+    ) -> Result<Option<crate::core::Event>> {
+        operations::find_operation(
+            &self.client,
+            self.reducer.authority(),
+            &self.reducer.event_verifier(),
+            operation,
+        )
+        .await
+    }
+
+    /// Exact historical operation revision, independent of the resident retry index.
+    pub async fn operation_revision(&self, operation: OperationId) -> Result<Option<u64>> {
+        Ok(self
+            .operation_event(operation)
+            .await?
+            .map(|event| event.revision))
+    }
+
+    /// Exact committed model selection, including operations archived from resident state.
+    pub async fn context_selection_for_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<Option<crate::conversation::ModelContextSelection>> {
+        Ok(self
+            .operation_event(operation)
+            .await?
+            .and_then(|event| match event.payload {
+                EventPayload::ModelContextSelected { selection } => Some(selection),
+                _ => None,
+            }))
+    }
+
+    async fn replay_indexed(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
+        self.reducer.verify_command_scope(command)?;
+        let Some(event) = self.operation_event(command.operation_id).await? else {
+            if self
+                .reducer
+                .operation_revision(command.operation_id)
+                .is_some()
+            {
+                return Err(Error::Storage(
+                    "resident operation has no atomic canonical location".into(),
+                ));
+            }
+            return Ok(None);
+        };
+        self.reducer.verify_retained_command(command, &event)?;
+        if event.revision > self.reducer.revision() {
+            if event.revision
+                != self
+                    .reducer
+                    .revision()
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("aggregate revision exhausted".into()))?
+            {
+                return Err(Error::Conflict(
+                    "aggregate must refresh to the indexed operation boundary".into(),
+                ));
+            }
+            return self.reducer.apply_committed(event).map(Some);
+        }
+        Ok(Some(ApplyResult::Replayed { event }))
+    }
+
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
         HistoryReader::new(
@@ -787,6 +856,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     async fn execute_untraced(&mut self, command: Command) -> Result<ApplyResult> {
+        if let Some(result) = self.replay_indexed(&command).await? {
+            if let Action::PublishFork { seed } = &command.action {
+                self.release_replayed_fork_fence(seed).await?;
+            }
+            return Ok(result);
+        }
         let idempotency_key =
             stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
         let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
@@ -807,6 +882,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.validate_causal_reference(event.causal_parent.as_ref())
             .await?;
         let bytes = encode_event(self.reducer.authority(), &event)?;
+        let publication =
+            operations::IndexedPublication::new(self.reducer.authority(), &event, bytes)?;
+        let request = publication.request(&self.client, idempotency_key).await?;
         // The private-volume reservation spans the final scan and the Stream
         // append. An unknown append result retains the durable reservation.
         let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
@@ -818,7 +896,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         } else {
             None
         };
-        self.append_planned_command(&command, event, bytes, idempotency_key, fork_guard)
+        self.append_planned_command(&command, event, publication, request, fork_guard)
             .await
     }
 
@@ -871,6 +949,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
         };
         owner.verify(write.settlement()).await?;
+        if let Some(result) = self.replay_indexed(&command).await? {
+            return Ok(result);
+        }
         let planned = self.plan_command(&command, false).await?;
         let ApplyResult::Applied { event } = planned else {
             return Ok(planned);
@@ -882,10 +963,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
         if !owner
             .append_conversation(
-                self.stream.path().clone(),
-                command.expected_revision,
+                &operations::IndexedPublication::new(self.reducer.authority(), &event, bytes)?,
                 &key,
-                Bytes::from(bytes),
                 write,
             )
             .await?
@@ -929,25 +1008,18 @@ impl<P: StreamProvider> StreamAggregate<P> {
             name = "acyclic.harness.store.append",
             level = "debug",
             skip_all,
-            fields(rev = command.expected_revision, bytes = bytes.len() as u64)
+            fields(rev = command.expected_revision, bytes = publication.bytes.len() as u64)
         )
     )]
     async fn append_planned_command(
         &mut self,
         command: &Command,
         event: crate::core::Event,
-        bytes: Vec<u8>,
-        idempotency_key: StreamIdempotencyKey,
+        publication: operations::IndexedPublication,
+        request: acyclic_stream::CommitRequest,
         fork_guard: Option<Box<dyn crate::fork::ForkPublicationGuard>>,
     ) -> Result<ApplyResult> {
-        let append = self
-            .stream
-            .append_batch(
-                vec![Bytes::from(bytes)],
-                Some(command.expected_revision),
-                Some(idempotency_key),
-            )
-            .await;
+        let append = self.client.commit(request).await;
         let outcome = match append {
             Ok(outcome) => outcome,
             Err(StreamError::Unavailable) => {
@@ -989,24 +1061,18 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
         };
         let result = match outcome {
-            AppendOutcome::Committed(receipt)
-                if receipt.start == command.expected_revision
-                    && receipt.end == event.revision
-                    && receipt.tail == event.revision =>
-            {
+            CommitOutcome::Committed(envelope) => {
+                if publication.verify(&envelope).is_err() {
+                    return Err(Error::Indeterminate(publication.operation_id));
+                }
                 match self.reducer.apply_committed(event) {
                     Ok(result) => Ok(result),
                     Err(_) => return Err(Error::Indeterminate(command.operation_id)),
                 }
             }
-            // A provider that claims a commit but returns a contradictory
-            // receipt has not proved non-publication. Keep the private gate
-            // held for reconciliation rather than exposing unselected state.
-            AppendOutcome::Committed(_) => return Err(Error::Indeterminate(command.operation_id)),
-            AppendOutcome::TailConflict { actual_tail } => Err(Error::Conflict(format!(
-                "expected revision {}, found {actual_tail}",
-                command.expected_revision
-            ))),
+            CommitOutcome::Conflict(_) => Err(Error::Conflict(
+                "aggregate tail or operation identity changed".into(),
+            )),
         };
         if let Some(guard) = fork_guard {
             guard
@@ -1272,70 +1338,27 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     async fn reconcile_inner(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
-        let planned = self.reducer.plan(command);
-        if matches!(&planned, Ok(ApplyResult::Replayed { .. })) {
-            return planned.map(Some);
+        if let Some(result) = self.replay_indexed(command).await? {
+            return Ok(Some(result));
         }
         let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
         let Some(observation) = self.client.inspect_idempotency(key).await? else {
             return Ok(None);
         };
-        let IdempotencyOutcome::Append(outcome) = observation.outcome else {
-            if let crate::core::Action::PublishFork { seed } = &command.action {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            return Err(Error::Conflict(
-                "retry identity is bound to a non-append operation".into(),
-            ));
-        };
-        let receipt = match outcome {
-            AppendOutcome::Committed(receipt) => receipt,
-            AppendOutcome::TailConflict { actual_tail } => {
-                // The Stream has durably rejected this append. A previously
-                // ambiguous response may have left the private gate held.
-                if let crate::core::Action::PublishFork { seed } = &command.action {
+        match observation.outcome {
+            IdempotencyOutcome::Commit(CommitOutcome::Conflict(_)) => {
+                if let Action::PublishFork { seed } = &command.action {
                     self.release_replayed_fork_fence(seed).await?;
                 }
-                return Err(Error::Conflict(format!(
-                    "expected revision {}, found {actual_tail}",
-                    command.expected_revision
-                )));
+                Err(Error::Conflict("aggregate publication was rejected".into()))
             }
-        };
-        // A stale local reducer can no longer plan the original command after
-        // another writer wins the tail. Inspecting the durable retry outcome
-        // first lets the terminal-conflict branch release a held fork fence.
-        let planned = planned?;
-        if receipt.start != command.expected_revision
-            || receipt.end != command.expected_revision.saturating_add(1)
-            || receipt.tail < receipt.end
-        {
-            return Err(Error::Storage(
-                "Stream returned an invalid reconciled append receipt".into(),
-            ));
+            IdempotencyOutcome::Commit(CommitOutcome::Committed(_)) => Err(Error::Storage(
+                "committed aggregate publication has no atomic operation location".into(),
+            )),
+            _ => Err(Error::Conflict(
+                "retry identity is bound to another operation contract".into(),
+            )),
         }
-        let records = self
-            .stream
-            .read(receipt.start, 1)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        let record = records
-            .first()
-            .ok_or_else(|| Error::Storage("reconciled append record is unavailable".into()))?;
-        let (authority, event) = decode_event(&record.value)?;
-        let ApplyResult::Applied { event: expected } = planned else {
-            unreachable!("replayed commands returned above")
-        };
-        if authority != *self.reducer.authority()
-            || event != expected
-            || record.sequence != receipt.start
-        {
-            return Err(Error::Storage(
-                "reconciled append does not match the original command".into(),
-            ));
-        }
-        self.reducer.apply_committed(event).map(Some)
     }
 
     async fn validate_causal_reference(
@@ -1645,7 +1668,7 @@ mod tests {
         assert_eq!(first.events.len(), 2);
         assert_eq!(first.cursor.after_revision, 9_999);
         let second = reader.read_page(&first.cursor, limits).await?;
-        assert_eq!(second.events, vec![last]);
+        assert_eq!(second.events, vec![last.clone()]);
         assert_eq!(second.cursor.after_revision, 10_000);
         assert!(
             reader
@@ -1703,6 +1726,130 @@ mod tests {
             reader.read_page(&invalid, limits).await,
             Err(Error::Unauthorized(_))
         ));
+        assert_cold_operation_lookup(&provider, &reader, last).await?;
+        Ok(())
+    }
+
+    async fn assert_cold_operation_lookup(
+        provider: &crate::test_stream::LostSessionAck<MemoryStream>,
+        reader: &HistoryReader<crate::test_stream::LostSessionAck<MemoryStream>>,
+        expected: crate::core::Event,
+    ) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        provider.observation_maximum.store(0, Ordering::SeqCst);
+        assert_eq!(
+            reader.operation_event(expected.operation_id).await?,
+            Some(expected)
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        assert!(reader.operation_event(OperationId::new()).await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        for fault in 1..=5 {
+            let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+            let client = StreamClient::new(provider.clone());
+            let mut aggregate = with_content(
+                StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+            );
+            let submitted = command(1)?;
+            provider
+                .aggregate_commit_fault
+                .store(fault, Ordering::SeqCst);
+            let result = aggregate.execute(submitted.clone()).await;
+            if fault == 2 {
+                assert!(matches!(result, Ok(ApplyResult::Applied { .. })));
+            } else {
+                assert!(
+                    matches!(result, Err(Error::Indeterminate(id)) if id == submitted.operation_id)
+                );
+            }
+            assert_eq!(provider.aggregate_commits.load(Ordering::SeqCst), 1);
+            let indexed = aggregate.operation_event(submitted.operation_id).await?;
+            assert_eq!(indexed.is_some(), fault != 1);
+            let canonical = match client.stream(authority().stream_path()?)?.read(0, 1).await {
+                Ok(records) => records.try_collect::<Vec<_>>().await?,
+                Err(StreamError::NotFound) => Vec::new(),
+                Err(error) => return Err(error.into()),
+            };
+            assert_eq!(canonical.len(), usize::from(fault != 1));
+            aggregate.execute(submitted.clone()).await?;
+            let expected_commits = if fault == 1 { 2 } else { 1 };
+            assert_eq!(
+                provider.aggregate_commits.load(Ordering::SeqCst),
+                expected_commits
+            );
+            assert_eq!(aggregate.reducer().revision(), 1);
+            let mut later = command(2)?;
+            later.expected_revision = 1;
+            aggregate.execute(later).await?;
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            assert!(matches!(
+                aggregate.execute(submitted.clone()).await?,
+                ApplyResult::Replayed { .. }
+            ));
+            let mut changed = submitted.clone();
+            changed.idempotency_key = IdempotencyKey::new("changed-retry")?;
+            assert!(matches!(
+                aggregate.execute(changed).await,
+                Err(Error::Conflict(_))
+            ));
+            for read_fault in [1, 3, 4] {
+                provider
+                    .history_read_fault
+                    .store(read_fault, Ordering::SeqCst);
+                assert!(aggregate.execute(submitted.clone()).await.is_err());
+            }
+            assert!(matches!(
+                aggregate.reconcile(&submitted).await?,
+                Some(ApplyResult::Replayed { .. })
+            ));
+            assert_eq!(
+                provider.aggregate_commits.load(Ordering::SeqCst),
+                expected_commits + 1
+            );
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            assert_eq!(aggregate.reducer().revision(), 2);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operation_location_must_share_the_canonical_events_atomic_commit() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut reducer = Reducer::new(authority(), issuer().verifier(), schemas());
+        let ApplyResult::Applied { event } = reducer.apply(command(1)?)? else {
+            return Err(Error::Invalid("fixture needs admitted event".into()));
+        };
+        client
+            .stream(authority().stream_path()?)?
+            .append_batch(
+                vec![Bytes::from(encode_event(&authority(), &event)?)],
+                Some(0),
+                None,
+            )
+            .await?;
+        let location = json!({"authority": authority(), "operation_id": event.operation_id,
+            "revision": event.revision, "intent_digest": event.intent_digest});
+        client
+            .stream(operations::operation_path(&authority(), event.operation_id)?.as_str())?
+            .append_batch(
+                vec![Bytes::from(crate::contract::canonical_json_bytes(
+                    &location,
+                )?)],
+                Some(0),
+                None,
+            )
+            .await?;
+        let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
+        assert!(matches!(reader.operation_event(event.operation_id).await,
+            Err(Error::Storage(message)) if message.contains("atomic canonical event")));
         Ok(())
     }
 

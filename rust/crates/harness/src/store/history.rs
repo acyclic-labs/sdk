@@ -43,6 +43,7 @@ pub struct HistoryPage {
 
 /// An owner-bound Stream handle, with no reducer, history cache or replay on open.
 pub struct HistoryReader<P> {
+    client: StreamClient<P>,
     stream: Stream<P>,
     verifier: AuthorityVerifier,
 }
@@ -56,9 +57,22 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<Self> {
         verifier.verify_audience(authority)?;
         Ok(Self {
+            client: client.clone(),
             stream: client.stream(authority.stream_path()?)?,
             verifier,
         })
+    }
+
+    /// Resolves a globally unique admitted operation without restoring its aggregate.
+    /// This identity lookup is independent of a paginated traversal's pinned boundary.
+    pub async fn operation_event(&self, operation: crate::OperationId) -> Result<Option<Event>> {
+        super::operations::find_operation(
+            &self.client,
+            self.verifier.audience(),
+            &self.verifier,
+            operation,
+        )
+        .await
     }
 
     /// Captures a committed boundary once for explicit archival traversal.
@@ -120,16 +134,13 @@ impl<P: StreamProvider> HistoryReader<P> {
                 .checked_add(record.value.len() as u64)
                 .filter(|total| *total <= limits.maximum_bytes)
                 .ok_or_else(|| Error::Invalid("history page exceeds byte bound".into()))?;
-            let (authority, event) = decode_event(&record.value)?;
-            let revision = record
-                .sequence
-                .checked_add(1)
-                .ok_or_else(|| Error::Storage("history event revision overflows".into()))?;
-            if authority != cursor.authority || event.revision != revision {
-                return Err(Error::Storage("history event binding is invalid".into()));
-            }
-            self.verifier.verify_event(&event)?;
-            next.after_revision = revision;
+            let event = verify_history_record(
+                &self.verifier,
+                &cursor.authority,
+                next.after_revision,
+                &record,
+            )?;
+            next.after_revision = event.revision;
             events.push(event);
         }
         if events.is_empty() {
@@ -142,4 +153,27 @@ impl<P: StreamProvider> HistoryReader<P> {
             cursor: next,
         })
     }
+}
+
+pub(crate) fn verify_history_record(
+    verifier: &AuthorityVerifier,
+    authority: &Authority,
+    sequence: u64,
+    record: &acyclic_stream::Record,
+) -> Result<Event> {
+    if record.sequence != sequence || record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
+        return Err(Error::Storage(
+            "history record position or byte bound is invalid".into(),
+        ));
+    }
+    let (record_authority, event) = decode_event(&record.value)?;
+    let revision = sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::Storage("history event revision overflows".into()))?;
+    if &record_authority != authority || event.revision != revision {
+        return Err(Error::Storage("history event binding is invalid".into()));
+    }
+    verifier.verify_audience(authority)?;
+    verifier.verify_event(&event)?;
+    Ok(event)
 }

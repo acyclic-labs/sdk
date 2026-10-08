@@ -758,3 +758,77 @@ in `target-b-bun-history-reader.log`; Chromium passed the wire page and 54 pure
 compaction checks in `target-b-browser-history-reader.log`. The Rust reader is
 portable and WASM-compiles, but these browser pages do not invoke its new cold
 Stream reader through the runtime binding; that consumer evidence remains open.
+
+
+## Archived operation locations
+
+Aggregate event publication now uses the existing Stream coordinated commit to
+append both the canonical event and a small derived operation-location record.
+The location is keyed by exact aggregate authority and operation ID; its fields
+bind the canonical revision and intent digest. Canonical-tail and absent-location
+conditions are checked atomically. The caller's original retry key remains the
+transaction key. Task-owned interaction publication adds the same location to its
+existing owner-fenced transaction, retaining the current lease/coordinator fence.
+Execution/workflow journals retain their existing owned publication mechanism.
+
+Passive operation lookup reads one location and one canonical event. It checks
+both sequence bounds, the single-record location tail, authority and operation
+identity, exact intent digest, existing keyed event attestation and a shared
+commit ID. Separate publication of an otherwise valid owner-attested event and
+location is rejected. Empty nonterminal, missing or corrupt committed locations
+fail explicitly. A resident cached operation is not an alternative proof if its
+canonical location is missing. No derived record grants admission authority.
+
+Turn selection/checkpoint admission, interaction retry planning and historical
+extension migration now use owning asynchronous operation lookups. A cold
+HistoryReader can resolve an admitted operation without restoring a reducer or
+scanning an operation registry. Exact command replay rechecks its original scope
+and whole intent digest; changing the caller retry key remains a conflict.
+A stale projection may apply only the next exact indexed event; a larger gap
+requires explicit bounded refresh before local state can advance.
+
+This index is a prerequisite for releasing resident lifetime retry events during
+compact hydration. That release, authenticated compact state checkpoints and
+bounded normal cold restoration are not yet implemented. No old-data migration
+or generic historical adapter is added; newly supported aggregate publications
+include their location in the same atomic commit. The canonical event Stream
+remains authoritative, and the index has no independent admission lifecycle.
+
+
+The real-provider fault fixture covers no-publication failure, committed/lost
+acknowledgement, temporarily hidden location reads and contradictory receipts
+missing or changing the index mutation. Only the no-publication case needs a
+second commit attempt; committed retries resolve the exact original event without
+another publication. Exact old retries after a later event work with writes
+disabled, changed retry identities conflict, and malformed/missing index reads
+cannot fall back to resident cached events. The 10,000-event cold reader also
+resolves an operation with exactly two record reads, each requesting one record,
+and no writes. A valid owner-attested event and location published in separate
+transactions fail their shared-commit check.
+
+Final strict native lint passed in
+`target-b-clippy-operation-index-final-source.log`; strict WASM library lint passed
+in `target-b-clippy-operation-index-final-source-wasm.log`. Final native tests
+passed 276 library, nine continuation and two fork tests in
+`target-b-native-operation-index-final-source.log`. Nine source hashes in
+`target/b-operation-index-final-source-hashes.json` remained unchanged through
+terminal qualification. Fresh isolated generation passed without warnings in
+`target-b-wasm-operation-index-qualified.log`; four matching installed artifact
+hashes are in `target/b-operation-index-artifact-hashes.json`. Package/test types
+passed in `target-b-types-operation-index.log`; Bun passed 248 tests/1347
+expectations in `target-b-bun-operation-index.log`; Chromium passed wire and 54
+pure compaction checks in `target-b-browser-operation-index.log`. An intermediate
+native run failed the existing model-span capture assertion; the final full run
+passed that unchanged assertion. The intermediate failure remains recorded in
+`target-b-native-operation-index-uncertainty.log` rather than being counted as a
+passing receipt.
+
+Fork publication keeps its existing private fence held on ambiguous receipts or
+failure to apply an attested committed event locally. Contradictory task-owned
+interaction receipts report the interaction operation as indeterminate. The
+index contract does not change model-provider/dispatch/request or event schemas.
+Its Rust reader and publication paths WASM-compile, but are not yet exposed as a
+browser runtime reader/publication bridge; the pure browser pages above do not
+qualify that missing consumer. These receipts also precede adoption of main
+`a10e2b24c53201a321ff567835ab960a80a309bc` (#280/#281); relevant final-source provider
+and generated-contract checks must be refreshed after that integration.

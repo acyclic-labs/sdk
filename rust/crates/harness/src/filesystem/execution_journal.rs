@@ -526,8 +526,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .ok_or_else(|| Error::Unsupported("canonical source reader is not bound".into()))?;
         let aggregate = self.conversation_projection(limits).await?;
         if aggregate
-            .reducer()
             .context_selection_for_operation(envelope.operation_id)
+            .await?
+            .as_ref()
             != Some(&envelope.selection)
         {
             return Err(Error::Conflict(
@@ -1458,12 +1459,12 @@ where
                 .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
             let aggregate = self.conversation_projection(limits).await?;
             let committed = aggregate
-                .reducer()
                 .context_selection_for_operation(operation_id)
+                .await?
                 .ok_or_else(|| {
                     Error::Conflict("turn has no committed model-context selection".into())
                 })?;
-            if committed != &selected.selection {
+            if committed != selected.selection {
                 return Err(Error::Conflict(
                     "model-context selection does not match the committed turn".into(),
                 ));
