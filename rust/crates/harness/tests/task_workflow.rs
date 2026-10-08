@@ -1793,8 +1793,17 @@ async fn worker_restart_with_options(
             }
         }
         if with_timer {
-            let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
-            assert_eq!(timers.bounds().await?.tail, 72);
+            let mut retained_timers = 0;
+            for index in std::iter::once(99_u8)
+                .chain(100..170_u8)
+                .chain(std::iter::once(26_u8))
+            {
+                let timer_operation = OperationId::from_bytes([index; 16]);
+                let timer = stream.stream(format!("harness/v2/timers/{task}/{timer_operation}"))?;
+                assert_eq!(timer.bounds().await?.tail, 1);
+                retained_timers += 1;
+            }
+            assert_eq!(retained_timers, 72);
             if let Some(old) = &old_lease {
                 assert!(
                     runtime

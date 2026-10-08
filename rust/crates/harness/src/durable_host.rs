@@ -533,15 +533,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if !owner.input_grants.contains("timer:wait") {
             return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
         }
-        let path = acyclic_stream::StreamPath::new(format!("harness/v2/timers/{task}"))?;
+        let path = self.timer_stream(task, operation)?.path().clone();
         let key = Self::event_key("timers", task, operation)?;
         let bytes = Bytes::from(crate::contract::canonical_json_bytes(&TimerEvent {
             task_id: task,
             operation_id: operation,
             deadline_unix_ms,
         })?);
-        // Only the selected timer is retained. Paging bounds resident records;
-        // no session-wide history ceiling is imposed.
+        // Each operation retains exactly one timer record. Earlier timers do
+        // not add work to polling this operation; there is no lifetime ceiling.
         loop {
             self.verify_owner(task, &fence, false).await?;
             let (tail, found) = self.timer_state(task, operation, deadline_unix_ms).await?;
@@ -1693,9 +1693,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         .map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    fn timer_stream(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
+    fn timer_stream(
+        &self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> Result<acyclic_stream::Stream<P>> {
         self.stream
-            .stream(format!("harness/v2/timers/{task_id}"))
+            .stream(format!("harness/v2/timers/{task_id}/{operation_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -1884,44 +1888,34 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation: OperationId,
         deadline_unix_ms: u64,
     ) -> Result<(u64, bool)> {
-        let stream = self.timer_stream(task)?;
+        let stream = self.timer_stream(task, operation)?;
         let tail = match stream.bounds().await {
             Ok(bounds) => bounds.tail,
             Err(StreamError::NotFound) => 0,
             Err(error) => return Err(error.into()),
         };
-        let mut after = 0;
-        let mut found = false;
-        while after < tail {
-            let page = stream
-                .read(after, (tail - after).min(64) as u32)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            if page.is_empty() || page.len() > 64 {
-                return Err(Error::Storage("invalid timer replay page".into()));
-            }
-            for record in page {
-                if record.sequence != after || after >= tail {
-                    return Err(Error::Storage("timer replay sequence differs".into()));
-                }
-                let event: TimerEvent = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                if event.task_id != task || event.deadline_unix_ms == 0 {
-                    return Err(Error::Conflict(
-                        "timer history belongs to another task".into(),
-                    ));
-                }
-                if event.operation_id == operation {
-                    if found || event.deadline_unix_ms != deadline_unix_ms {
-                        return Err(Error::Conflict("timer identity reused".into()));
-                    }
-                    found = true;
-                }
-                after += 1;
-            }
+        if tail == 0 {
+            return Ok((0, false));
         }
-        Ok((tail, found))
+        if tail != 1 {
+            return Err(Error::Storage("timer is not exactly retained".into()));
+        }
+        let records = stream.read(0, 1).await?.try_collect::<Vec<_>>().await?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage("timer record is missing".into()));
+        };
+        let event: TimerEvent = crate::contract::json_from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if record.sequence != 0
+            || event.task_id != task
+            || event.operation_id != operation
+            || event.deadline_unix_ms == 0
+            || event.deadline_unix_ms != deadline_unix_ms
+            || crate::contract::canonical_json_bytes(&event)? != record.value.as_ref()
+        {
+            return Err(Error::Conflict("timer identity reused".into()));
+        }
+        Ok((1, true))
     }
 
     async fn publish_control(
@@ -2566,7 +2560,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 deadline_unix_ms,
             };
             let bytes = crate::contract::canonical_json_bytes(&event)?;
-            let stream = self.timer_stream(task_id)?;
+            let stream = self.timer_stream(task_id, operation_id)?;
             loop {
                 let (tail, found) = self
                     .timer_state(task_id, operation_id, deadline_unix_ms)
@@ -2713,6 +2707,81 @@ mod tests {
     struct MemoryPayloads {
         volume: VolumeRef,
         files: Mutex<BTreeMap<String, Vec<u8>>>,
+    }
+
+    #[tokio::test]
+    async fn timer_lookup_reopens_one_exact_record_independent_of_previous_timers() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        for retained in [1_u128, 16, 128] {
+            let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+            let stream = StreamClient::new(provider.clone());
+            let payloads = Arc::new(MemoryPayloads::new()?);
+            let authority = Authority {
+                kind: AggregateKind::Task,
+                id: "timer-owner".into(),
+            };
+            let issuer = AuthorityIssuer::new("timer-test", [7; 32], authority.clone());
+            let scope = issuer.root(
+                "owner",
+                Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]),
+            );
+            let open = || async {
+                CoordinatorTaskHost::new(
+                    DistributedCoordinator::open(&stream, payloads.clone()).await?,
+                    stream.clone(),
+                    payloads.clone(),
+                    payloads.clone(),
+                    authority.clone(),
+                    scope.clone(),
+                    issuer.verifier(),
+                    RuntimeScope::new(scope.capabilities().clone(), Limits::default())?,
+                    TaskRegistry::default(),
+                    MachineRegistry::default(),
+                    Arc::new(SystemUnixMillisClock),
+                )
+            };
+            let host = open().await?;
+            let task = TaskId::from_bytes([97; 16]);
+            for index in 1..=retained {
+                let operation = OperationId::from_bytes(index.to_le_bytes());
+                let timer = host.timer_stream(task, operation)?;
+                let tail = match timer.bounds().await {
+                    Ok(bounds) => bounds.tail,
+                    Err(StreamError::NotFound) => 0,
+                    Err(error) => return Err(error.into()),
+                };
+                let bytes = crate::contract::canonical_json_bytes(&TimerEvent {
+                    task_id: task,
+                    operation_id: operation,
+                    deadline_unix_ms: 100,
+                })?;
+                assert!(
+                    host.publish_control_at(&timer, "timers", task, operation, &bytes, Some(tail),)
+                        .await?
+                );
+            }
+            drop(host);
+            let host = open().await?;
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let operation = OperationId::from_bytes(1_u128.to_le_bytes());
+            let started = std::time::Instant::now();
+            assert_eq!(host.timer_state(task, operation, 100).await?, (1, true));
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 1);
+            assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            eprintln!(
+                "timer retained={retained} reads=1 maximum=1 elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+            assert_eq!(host.timer_state(task, operation, 100).await?, (1, true));
+            assert!(matches!(
+                host.timer_state(task, operation, 101).await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 3);
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        }
+        Ok(())
     }
 
     impl MemoryPayloads {

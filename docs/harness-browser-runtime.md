@@ -92,9 +92,42 @@ was skipped. The policy failure arose from Clippy not recognizing combined
 test/feature guards. Separate equivalent cfg attributes preserve assertions
 and pass strict Filesystem lint; a fresh pushed-source CI run is still required.
 
-The actual browser parent/descendant cancellation test is currently compiling.
-Final-source native, WASM lint, generated and full installed-consumer receipts,
+On ac36f87145, the two actual Rust Harness browser tests passed in
+target-i-harness-browser-final-1.log. Windows and Linux each passed strict native
+lint, 237 unit tests and 20 durable-worker tests; strict WASM lint also passed.
+The exact installed closure passed 291 Rust and 47 TypeScript tests, with seven
+verified artifact hashes and SOURCE_COMMIT ac36f87145, in
+target/i-harness-package-ac36f87145. A strict consumer of that exact tarball
+passed bigint schema/outcome checking and browser execution. Automatic PR run
+37712929368 succeeded; forced complete matrix 37714072774 is still running on
+that source and does not qualify the subsequent timer correction below.
+
+The production scheduler test checks all 40,320 orderings of eight inputs over
+three tasks, two attempts and two leases. It includes changed-request and
+foreign-fence negative controls, cancellation and retained uncertainty. These
+bounds are a test scenario, not runtime ceilings. The native context measurement
+uses 1, 16 and 128 retained revisions: each latest lookup verifies one reference
+and returns 547 canonical bytes (target-i-bounded-history-final-1.log).
+The measured latencies include a cold first lookup and are not a latency bound
+or whole-runtime memory measurement.
+
+The completion audit found that durable timer polling still scanned every
+earlier timer for the task. Timer records now use the existing Stream journal
+scoped by task and operation, with exactly one canonical identity/deadline
+record. The task-wide scan is removed; there is no additional timer ledger or
+lifetime timer-count ceiling. The new test measures one read of at most one
+record after reopen with 1, 16 and 128 retained timers, and rejects a changed
+deadline. Existing integration checks still retain all 72 independent timers,
+concurrent exact retry, changed-deadline rejection and stale-owner denial.
+This changes the supported timer journal layout; the prior task-wide layout
+has no compatibility fallback. Strict native all-target lint and the focused
+measurement passed in target-i-timer-bounds-clippy-2.log and
+target-i-timer-bounds-2.log (one read, maximum one record for all three retained
+counts). The initial fixture type-inference failure is retained in the first
+lint receipt. Full affected-source qualification of this correction is pending.
+
+Affected final-source native, WASM/browser, generated and installed receipts,
 successful required CI, macOS and landed-tree verification remain open.
-The inspected macOS host ivar has about 316 MiB free; no slice I build was
+The latest macOS host ivar inspection has about 667 MiB free; no slice I build was
 dispatched and no other owner's files were removed. No unrestricted proof,
 native mount, confinement or cross-provider atomicity claim is made.
