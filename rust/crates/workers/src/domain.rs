@@ -27,17 +27,17 @@ impl From<std::convert::Infallible> for DomainError {
 #[derive(TS)]
 #[ts(export_to = "workers/JobState.ts", repr(enum))]
 pub enum JobState {
-    /// Published discriminant 0.
+    /// No job state was reported.
     Unspecified = 0,
-    /// Published discriminant 1.
+    /// The durable job was accepted.
     Accepted = 1,
-    /// Published discriminant 2.
+    /// An attempt is executing the run handler.
     Running = 2,
-    /// Published discriminant 3.
+    /// Execution produced a successful result.
     Succeeded = 3,
-    /// Published discriminant 4.
+    /// Execution finished with a failure.
     Failed = 4,
-    /// Published discriminant 5.
+    /// The job was cancelled.
     Cancelled = 5,
 }
 fn parse_jobstate(value: i32) -> Result<JobState, DomainError> {
@@ -53,27 +53,27 @@ fn encode_jobstate(value: JobState) -> i32 {
 #[derive(TS)]
 #[ts(export_to = "workers/ErrorCode.ts", repr(enum))]
 pub enum ErrorCode {
-    /// Published discriminant 0.
+    /// No service error code was reported.
     Unspecified = 0,
-    /// Published discriminant 1.
+    /// The request failed contract admission.
     InvalidArgument = 1,
-    /// Published discriminant 2.
+    /// The credential does not admit the requested operation.
     CapabilityDenied = 2,
-    /// Published discriminant 3.
+    /// The credential has expired.
     CapabilityExpired = 3,
-    /// Published discriminant 4.
+    /// The immutable version was not found.
     VersionNotFound = 4,
-    /// Published discriminant 5.
+    /// The deployment alias was not found.
     DeploymentNotFound = 5,
-    /// Published discriminant 6.
+    /// The durable job was not found.
     JobNotFound = 6,
-    /// Published discriminant 7.
+    /// The idempotency key identifies a different request.
     IdempotencyMismatch = 7,
-    /// Published discriminant 8.
+    /// The deployment revision precondition did not match.
     RevisionConflict = 8,
-    /// Published discriminant 9.
+    /// The service could not admit work at its current load.
     Overloaded = 9,
-    /// Published discriminant 10.
+    /// Durable execution ended with a terminal failure.
     TerminalJobFailure = 10,
 }
 fn parse_errorcode(value: i32) -> Result<ErrorCode, DomainError> {
@@ -95,11 +95,11 @@ pub mod payload {
         rename_all = "camelCase"
     )]
     pub enum Source {
-        /// Published selector 1.
+        /// Inline input bytes; an empty byte sequence is a present input.
         #[proto(tag = 1, bytes)]
         #[ts(type = "Uint8Array")]
         InlineBytes(Vec<u8>),
-        /// Published selector 2.
+        /// Logical object privately retained when the job is accepted.
         #[proto(tag = 2, message(proxied))]
         Object(ObjectRef),
     }
@@ -117,17 +117,17 @@ pub mod job_target {
         rename_all = "camelCase"
     )]
     pub enum Target {
-        /// Published selector 1.
+        /// Deployment alias resolved at job acceptance.
         #[proto(tag = 1, string)]
         DeploymentAlias(String),
-        /// Published selector 2.
+        /// Exact immutable version selected for the job.
         #[proto(tag = 2, bytes)]
         #[ts(type = "Uint8Array")]
         VersionSha256(Vec<u8>),
     }
 }
 
-/// Workers CodeVersion with Rust-owned semantic fields.
+/// A digest identifies exact immutable JavaScript module bytes.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -135,34 +135,34 @@ pub mod job_target {
 pub struct CodeVersion {
     #[proto(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// SHA-256 identifying the exact immutable module bytes.
     pub sha256: Vec<u8>,
     #[proto(tag = 2, uint64)]
     #[ts(type = "bigint")]
-    /// Published semantic field.
+    /// Size of the module in bytes.
     pub size_bytes: u64,
 }
 
-/// Workers Deployment with Rust-owned semantic fields.
+/// A deployment alias may change; revision increases on every selection.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Deployment.ts", rename_all = "camelCase")]
 pub struct Deployment {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// Mutable deployment alias.
     pub alias: String,
     #[proto(tag = 2, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Selected immutable version, when reported by the service.
     pub version: Option<CodeVersion>,
     #[proto(tag = 3, uint64)]
     #[ts(type = "bigint")]
-    /// Published semantic field.
+    /// Deployment revision, advanced by each successful selection.
     pub revision: u64,
 }
 
-/// Workers PublishVersionRequest with Rust-owned semantic fields.
+/// Publish exact module bytes with their expected SHA-256 and idempotency key.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE, post_from_proto = PublishVersionRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -173,15 +173,18 @@ pub struct Deployment {
 pub struct PublishVersionRequest {
     #[proto(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
+    /// Exact module bytes; publication requires a nonempty module within `MAX_MODULE_BYTES`.
     javascript_module: Vec<u8>,
     #[proto(tag = 2, bytes)]
     #[ts(type = "Uint8Array")]
+    /// Expected SHA-256, checked against the exact module bytes at publication.
     expected_sha256: Vec<u8>,
     #[proto(tag = 3)]
+    /// Caller-provided key for idempotent admission.
     idempotency_key: String,
 }
 impl PublishVersionRequest {
-    /// Creates a semantic value without changing its wire representation.
+    /// Creates a request using the canonical Workers admission predicate.
     pub fn new(
         javascript_module: Vec<u8>,
         expected_sha256: Vec<u8>,
@@ -198,24 +201,24 @@ impl PublishVersionRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         crate::validate_publish(&self.clone().into()).map_err(DomainError::Contract)
     }
-    /// Returns the exact javascript_module value.
+    /// Exact module bytes; publication requires a nonempty module within `MAX_MODULE_BYTES`.
     #[must_use]
     pub fn javascript_module(&self) -> &[u8] {
         &self.javascript_module
     }
-    /// Returns the exact expected_sha256 value.
+    /// Expected SHA-256, checked against the exact module bytes at publication.
     #[must_use]
     pub fn expected_sha256(&self) -> &[u8] {
         &self.expected_sha256
     }
-    /// Returns the exact idempotency_key value.
+    /// Caller-provided key for idempotent admission.
     #[must_use]
     pub fn idempotency_key(&self) -> &str {
         &self.idempotency_key
     }
 }
 
-/// Workers PublishVersionResponse with Rust-owned semantic fields.
+/// The immutable version accepted by module publication.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -225,12 +228,12 @@ impl PublishVersionRequest {
 )]
 pub struct PublishVersionResponse {
     #[proto(tag = 1, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Selected immutable version, when reported by the service.
     pub version: Option<CodeVersion>,
 }
 
-/// Workers SelectDeploymentRequest with Rust-owned semantic fields.
+/// Select an immutable version for a deployment alias using revision preconditions.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE, post_from_proto = SelectDeploymentRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -240,18 +243,23 @@ pub struct PublishVersionResponse {
 )]
 pub struct SelectDeploymentRequest {
     #[proto(tag = 1)]
+    /// Mutable deployment alias.
     alias: String,
     #[proto(tag = 2, bytes)]
     #[ts(type = "Uint8Array")]
+    /// SHA-256 selecting the immutable version.
     version_sha256: Vec<u8>,
     #[proto(tag = 3, optional(uint64))]
     #[ts(optional)]
+    /// Omitted means create only if absent. A present positive value selects only
+    /// when it matches the current revision; every successful selection advances it.
     expected_revision: Option<u64>,
     #[proto(tag = 4)]
+    /// Caller-provided key for idempotent admission.
     idempotency_key: String,
 }
 impl SelectDeploymentRequest {
-    /// Creates a semantic value without changing its wire representation.
+    /// Creates a request using the canonical Workers admission predicate.
     pub fn new(
         alias: String,
         version_sha256: Vec<u8>,
@@ -270,29 +278,30 @@ impl SelectDeploymentRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         crate::validate_select(&self.clone().into()).map_err(DomainError::Contract)
     }
-    /// Returns the exact alias value.
+    /// Mutable deployment alias.
     #[must_use]
     pub fn alias(&self) -> &str {
         &self.alias
     }
-    /// Returns the exact version_sha256 value.
+    /// SHA-256 selecting the immutable version.
     #[must_use]
     pub fn version_sha256(&self) -> &[u8] {
         &self.version_sha256
     }
-    /// Returns the exact expected_revision value.
+    /// Omitted means create only if absent. A present positive value selects only
+    /// when it matches the current revision; every successful selection advances it.
     #[must_use]
     pub fn expected_revision(&self) -> &Option<u64> {
         &self.expected_revision
     }
-    /// Returns the exact idempotency_key value.
+    /// Caller-provided key for idempotent admission.
     #[must_use]
     pub fn idempotency_key(&self) -> &str {
         &self.idempotency_key
     }
 }
 
-/// Workers SelectDeploymentResponse with Rust-owned semantic fields.
+/// The deployment selected by the alias mutation.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -302,37 +311,39 @@ impl SelectDeploymentRequest {
 )]
 pub struct SelectDeploymentResponse {
     #[proto(tag = 1, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Selected deployment, when reported by the service.
     pub deployment: Option<Deployment>,
 }
 
-/// Workers ObjectRef with Rust-owned semantic fields.
+/// Logical S3 object selected and privately retained at durable job acceptance.
+/// Retries read the same retained bytes even if this public key is replaced.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE, reserved_numbers(3), reserved_names("version_id"))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/ObjectRef.ts", rename_all = "camelCase")]
 pub struct ObjectRef {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// Logical object bucket; job admission checks nonempty text and at most 63 bytes.
     pub bucket: String,
     #[proto(tag = 2)]
-    /// Published semantic field.
+    /// Logical object key; job admission checks nonempty text and at most 1024 bytes.
     pub key: String,
 }
 
-/// Workers Payload with Rust-owned semantic fields.
+/// Durable job input selected from inline bytes or a retained logical object.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Payload.ts", rename_all = "camelCase")]
 pub struct Payload {
     #[proto(tag = 1, oneof(proxied, tags(1, 2), required))]
-    /// Published semantic field.
+    /// Inline bytes or the logical object retained at job acceptance.
     pub source: payload::Source,
 }
 
-/// Workers JobResult with Rust-owned semantic fields.
+/// Exact accepted job output, bounded by `JobLimits.output_bytes`. Storage and
+/// retention are service-owned; no replaceable public Object pointer is exposed.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE, reserved_numbers(2), reserved_names("object_version"))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -340,11 +351,11 @@ pub struct Payload {
 pub struct JobResult {
     #[proto(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// Exact accepted job output bytes.
     pub body: Vec<u8>,
 }
 
-/// Workers JobLimits with Rust-owned semantic fields.
+/// Resource budgets applied to the accepted durable job.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -352,63 +363,69 @@ pub struct JobResult {
 pub struct JobLimits {
     #[proto(tag = 1, uint64)]
     #[ts(type = "bigint")]
-    /// Published semantic field.
+    /// Execution timeout in milliseconds; job submission requires a positive value.
     pub timeout_millis: u64,
     #[proto(tag = 2, uint64)]
     #[ts(type = "bigint")]
-    /// Published semantic field.
+    /// Memory budget in bytes; job submission requires a positive value.
     pub memory_bytes: u64,
     #[proto(tag = 3, uint64)]
     #[ts(type = "bigint")]
-    /// Published semantic field.
+    /// Result budget in bytes; job submission requires a positive value at most `MAX_INLINE_BYTES`.
     pub output_bytes: u64,
 }
 
-/// Workers RetryPolicy with Rust-owned semantic fields.
+/// Bounded attempts and retry delay for the accepted durable job.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/RetryPolicy.ts", rename_all = "camelCase")]
 pub struct RetryPolicy {
     #[proto(tag = 1, uint32)]
-    /// Published semantic field.
+    /// Number of attempts, including the first; job submission admits 1 through `MAX_JOB_ATTEMPTS`.
     pub max_attempts: u32,
     #[proto(tag = 2, uint64)]
     #[ts(type = "bigint")]
-    /// Published semantic field.
+    /// Delay between attempts in milliseconds; zero is admitted.
     pub backoff_millis: u64,
 }
 
-/// Workers JobTarget with Rust-owned semantic fields.
+/// Resolve a deployment alias or select an exact immutable version at job acceptance.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobTarget.ts", rename_all = "camelCase")]
 pub struct JobTarget {
     #[proto(tag = 1, oneof(proxied, tags(1, 2), required))]
-    /// Published semantic field.
+    /// Deployment alias or immutable version selected for job admission.
     pub target: job_target::Target,
 }
 
-/// Workers SubmitJobRequest with Rust-owned semantic fields.
+/// Accepted input is delivered to `default.run`, never to `default.fetch`.
+/// The same job ID and input recur on retry; attempt numbering starts at one.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE, post_from_proto = SubmitJobRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobRequest.ts", rename_all = "camelCase")]
 pub struct SubmitJobRequest {
     #[proto(tag = 1, message(proxied, required))]
+    /// Deployment alias or immutable version selected for job admission.
     target: JobTarget,
     #[proto(tag = 2, message(proxied, required))]
+    /// Input delivered to the durable run handler.
     input: Payload,
     #[proto(tag = 3, message(proxied, required))]
+    /// Accepted execution and result budgets.
     limits: JobLimits,
     #[proto(tag = 4, message(proxied, required))]
+    /// Accepted attempt count and backoff policy.
     retry: RetryPolicy,
     #[proto(tag = 5)]
+    /// Caller-provided key for idempotent admission.
     idempotency_key: String,
 }
 impl SubmitJobRequest {
-    /// Creates a semantic value without changing its wire representation.
+    /// Creates a request using the canonical Workers admission predicate.
     pub fn new(
         target: JobTarget,
         input: Payload,
@@ -429,140 +446,140 @@ impl SubmitJobRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         crate::validate_submit(&self.clone().into()).map_err(DomainError::Contract)
     }
-    /// Returns the exact target value.
+    /// Deployment alias or immutable version selected for job admission.
     #[must_use]
     pub fn target(&self) -> &JobTarget {
         &self.target
     }
-    /// Returns the exact input value.
+    /// Input delivered to the durable run handler.
     #[must_use]
     pub fn input(&self) -> &Payload {
         &self.input
     }
-    /// Returns the exact limits value.
+    /// Accepted execution and result budgets.
     #[must_use]
     pub fn limits(&self) -> &JobLimits {
         &self.limits
     }
-    /// Returns the exact retry value.
+    /// Accepted attempt count and backoff policy.
     #[must_use]
     pub fn retry(&self) -> &RetryPolicy {
         &self.retry
     }
-    /// Returns the exact idempotency_key value.
+    /// Caller-provided key for idempotent admission.
     #[must_use]
     pub fn idempotency_key(&self) -> &str {
         &self.idempotency_key
     }
 }
 
-/// Workers SubmitJobResponse with Rust-owned semantic fields.
+/// The durable job observation returned at acceptance.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobResponse.ts", rename_all = "camelCase")]
 pub struct SubmitJobResponse {
     #[proto(tag = 1, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Durable job observation, when reported by the service.
     pub job: Option<JobObservation>,
 }
 
-/// Workers JobObservation with Rust-owned semantic fields.
+/// Current execution state, resolved version and result of a durable job.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobObservation.ts", rename_all = "camelCase")]
 pub struct JobObservation {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// Identity of the accepted durable job.
     pub job_id: String,
     #[proto(tag = 2, enum_(JobState), from_proto = parse_jobstate, into_proto = encode_jobstate)]
-    /// Published semantic field.
+    /// Current execution state reported for the job.
     pub state: JobState,
     #[proto(tag = 3, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// SHA-256 of the immutable version resolved for this operation.
     pub resolved_sha256: Vec<u8>,
     #[proto(tag = 4, uint32)]
-    /// Published semantic field.
+    /// Attempt number, starting at one for accepted jobs.
     pub attempt: u32,
     #[proto(tag = 5, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Accepted result bytes, when reported by execution.
     pub result: Option<JobResult>,
     #[proto(tag = 6)]
-    /// Published semantic field.
+    /// Failure code reported by job execution.
     pub failure_code: String,
     #[proto(tag = 7)]
-    /// Published semantic field.
+    /// Whether cancellation has been requested for the job.
     pub cancellation_requested: bool,
 }
 
-/// Workers InspectJobRequest with Rust-owned semantic fields.
+/// Inspect the current observation of an accepted durable job.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobRequest.ts", rename_all = "camelCase")]
 pub struct InspectJobRequest {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// Identity of the accepted durable job.
     pub job_id: String,
 }
 
-/// Workers InspectJobResponse with Rust-owned semantic fields.
+/// The durable job observation returned by inspection.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobResponse.ts", rename_all = "camelCase")]
 pub struct InspectJobResponse {
     #[proto(tag = 1, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Durable job observation, when reported by the service.
     pub job: Option<JobObservation>,
 }
 
-/// Workers CancelJobRequest with Rust-owned semantic fields.
+/// Request cancellation of an accepted job with an idempotency key.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobRequest.ts", rename_all = "camelCase")]
 pub struct CancelJobRequest {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// Identity of the accepted durable job.
     pub job_id: String,
     #[proto(tag = 2)]
-    /// Published semantic field.
+    /// Caller-provided key for idempotent admission.
     pub idempotency_key: String,
 }
 
-/// Workers CancelJobResponse with Rust-owned semantic fields.
+/// The durable job observation returned after requesting cancellation.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobResponse.ts", rename_all = "camelCase")]
 pub struct CancelJobResponse {
     #[proto(tag = 1, message(proxied))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Durable job observation, when reported by the service.
     pub job: Option<JobObservation>,
 }
 
-/// Workers Header with Rust-owned semantic fields.
+/// A name and value carried by the ordinary HTTP invocation.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Header.ts", rename_all = "camelCase")]
 pub struct Header {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// HTTP header name.
     pub name: String,
     #[proto(tag = 2)]
-    /// Published semantic field.
+    /// HTTP header value.
     pub value: String,
 }
 
-/// Workers InvokeVersionRequest with Rust-owned semantic fields.
+/// Invocation is ordinary HTTP work, not durable job acceptance.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -573,24 +590,24 @@ pub struct Header {
 pub struct InvokeVersionRequest {
     #[proto(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// SHA-256 selecting the immutable version.
     pub version_sha256: Vec<u8>,
     #[proto(tag = 2)]
-    /// Published semantic field.
+    /// HTTP method passed to the invoked worker.
     pub method: String,
     #[proto(tag = 3)]
-    /// Published semantic field.
+    /// HTTP URL passed to the invoked worker.
     pub url: String,
     #[proto(tag = 4, repeated(message(proxied)))]
-    /// Published semantic field.
+    /// HTTP headers in their supplied order.
     pub headers: Vec<Header>,
     #[proto(tag = 5, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// HTTP request body bytes.
     pub body: Vec<u8>,
 }
 
-/// Workers InvokeDeploymentRequest with Rust-owned semantic fields.
+/// Resolve a deployment alias for an ordinary HTTP invocation.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -600,60 +617,60 @@ pub struct InvokeVersionRequest {
 )]
 pub struct InvokeDeploymentRequest {
     #[proto(tag = 1)]
-    /// Published semantic field.
+    /// Mutable deployment alias.
     pub alias: String,
     #[proto(tag = 2)]
-    /// Published semantic field.
+    /// HTTP method passed to the invoked worker.
     pub method: String,
     #[proto(tag = 3)]
-    /// Published semantic field.
+    /// HTTP URL passed to the invoked worker.
     pub url: String,
     #[proto(tag = 4, repeated(message(proxied)))]
-    /// Published semantic field.
+    /// HTTP headers in their supplied order.
     pub headers: Vec<Header>,
     #[proto(tag = 5, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// HTTP request body bytes.
     pub body: Vec<u8>,
 }
 
-/// Workers InvokeResponse with Rust-owned semantic fields.
+/// HTTP response and the immutable version resolved for the invocation.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InvokeResponse.ts", rename_all = "camelCase")]
 pub struct InvokeResponse {
     #[proto(tag = 1, uint32)]
-    /// Published semantic field.
+    /// HTTP status returned by the invocation.
     pub status: u32,
     #[proto(tag = 2, repeated(message(proxied)))]
-    /// Published semantic field.
+    /// HTTP headers in their supplied order.
     pub headers: Vec<Header>,
     #[proto(tag = 3, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// HTTP response body bytes.
     pub body: Vec<u8>,
     #[proto(tag = 4, bytes)]
     #[ts(type = "Uint8Array")]
-    /// Published semantic field.
+    /// SHA-256 of the immutable version resolved for this operation.
     pub resolved_sha256: Vec<u8>,
     #[proto(tag = 5, optional(uint64))]
-    /// Published semantic field.
     #[ts(optional)]
+    /// Deployment revision when an alias was resolved; absent for a direct version invocation.
     pub resolved_revision: Option<u64>,
 }
 
-/// Workers Error with Rust-owned semantic fields.
+/// Workers service rejection with its known code and original message.
 #[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
 #[proto(file = WORKERS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Error.ts", rename_all = "camelCase")]
 pub struct Error {
     #[proto(tag = 1, enum_(ErrorCode), from_proto = parse_errorcode, into_proto = encode_errorcode)]
-    /// Published semantic field.
+    /// Known Workers service error code.
     pub code: ErrorCode,
     #[proto(tag = 2)]
-    /// Published semantic field.
+    /// Original service error message.
     pub message: String,
 }
 

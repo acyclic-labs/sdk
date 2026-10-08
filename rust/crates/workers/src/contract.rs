@@ -53,32 +53,40 @@ mod generated {
         enums = [JobState, ErrorCode],
         services = [WorkersService]
     );
+    /// Public Workers v1 operations over the Rust-owned contract.
     #[proto_service]
     pub enum WorkersService {
+        /// Publish exact module bytes under their expected immutable digest.
         PublishVersion {
             request: PublishVersionRequestProto,
             response: PublishVersionResponseProto,
         },
+        /// Select a deployment version with the supplied revision precondition.
         SelectDeployment {
             request: SelectDeploymentRequestProto,
             response: SelectDeploymentResponseProto,
         },
+        /// Accept durable run-handler work against a resolved immutable version.
         SubmitJob {
             request: SubmitJobRequestProto,
             response: SubmitJobResponseProto,
         },
+        /// Read the current durable job observation.
         InspectJob {
             request: InspectJobRequestProto,
             response: InspectJobResponseProto,
         },
+        /// Request durable job cancellation with idempotent admission.
         CancelJob {
             request: CancelJobRequestProto,
             response: CancelJobResponseProto,
         },
+        /// Invoke exact immutable code with ordinary HTTP request semantics.
         InvokeVersion {
             request: InvokeVersionRequestProto,
             response: InvokeResponseProto,
         },
+        /// Resolve a deployment alias once and invoke its selected immutable code.
         InvokeDeployment {
             request: InvokeDeploymentRequestProto,
             response: InvokeResponseProto,

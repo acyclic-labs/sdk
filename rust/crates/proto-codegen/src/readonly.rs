@@ -3,11 +3,9 @@
 pub const TYPESCRIPT_READONLY: &str = r#"// Generated from the Rust semantic metadata entrypoint. Do not edit.
 
 /**
- * The Rust-owned semantic projection of byte fields. Its TypeScript surface
- * omits mutating methods and mutable aliases, but an ordinary Uint8Array is
- * still mutable at runtime; this type does not freeze or proxy that value.
- * The Rust bridge snapshots inputs before encoding and returns detached byte
- * values, so later caller mutation cannot alter an admitted Rust request.
+ * Readonly views of byte fields and nested semantic records.
+ * Byte methods, returned views and callback arguments expose readonly surfaces.
+ * Rust nominal brands remain part of the projected type.
  */
 export interface ReadonlyByteSurface {
   readonly [index: number]: number;
