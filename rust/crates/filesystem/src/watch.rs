@@ -392,106 +392,117 @@ impl NativeWatch {
     ///
     /// Rejects invalid bounds, an unavailable/non-directory root, allocation
     /// conversion, poisoned synchronization, or native watcher startup failure.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.watch.open",
+            level = "debug",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub fn open_with_profile(
         root: impl AsRef<Path>,
         profile: FilesystemProfile,
         options: NativeWatchOptions,
     ) -> Result<Self, NativeWatchError> {
-        let options = options.validate()?;
-        let requested_root = root.as_ref();
-        let admission = requested_root
-            .symlink_metadata()
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
-        if admission.file_type().is_symlink() {
-            return Err(NativeWatchError::RootIsNotDirectory);
-        }
-        let root = requested_root
-            .canonicalize()
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
-        let root_file =
-            open_native_root(&root).map_err(|error| NativeWatchError::Io(error.to_string()))?;
-        let metadata = root_file
-            .metadata()
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
-        if !metadata.is_dir() {
-            return Err(NativeWatchError::RootIsNotDirectory);
-        }
-        let root_identity = NativeRootIdentity::from_file(&root_file)
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
-        #[cfg(windows)]
-        let complete = crate::native_host::reports_every_change(&root_file)
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
-        #[cfg(not(windows))]
-        let complete = true;
-        let capacity = usize::try_from(options.maximum_queued_changes)
-            .map_err(|_| NativeWatchError::InvalidOptions)?;
-        let (sender, receiver) = sync_channel(capacity);
-        let queued = Arc::new(AtomicU32::new(0));
-        let shared = Arc::new(Mutex::new(SharedState::new(Some(
-            WatchInvalidationReason::InitialSnapshotRequired,
-        ))));
-        let fenced = Arc::new(Condvar::new());
-        let callback_shared = Arc::clone(&shared);
-        let callback_fenced = Arc::clone(&fenced);
-        let callback_queued = Arc::clone(&queued);
-        let callback_context = NativeEventContext {
-            root: root.clone(),
-            root_identity,
-            profile,
-            limits: options.limits,
-            #[cfg(target_os = "linux")]
-            maximum_queued_changes: options.maximum_queued_changes,
-        };
-        let mut watcher = NativeEventWatcher::new(
-            move |event: notify::Result<Event>| {
-                accept_native_event(
-                    &event,
-                    &callback_context,
-                    &sender,
-                    &callback_shared,
-                    &callback_queued,
-                );
-                // Signal only after the cookie's own hint is handled: delivery is
-                // ordered, so every earlier host change is already queued.
-                if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
-                    && state
-                        .fence
-                        .as_ref()
-                        .is_some_and(|fence| event.paths.contains(fence))
-                {
-                    state.fence = None;
-                    callback_fenced.notify_all();
-                }
-            },
-            notify::Config::default(),
-        )
-        .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
-        watcher
-            .watch(
-                &root,
-                if options.recursive {
-                    RecursiveMode::Recursive
-                } else {
-                    RecursiveMode::NonRecursive
+        crate::obs::outcome_of(|| {
+            let options = options.validate()?;
+            let requested_root = root.as_ref();
+            let admission = requested_root
+                .symlink_metadata()
+                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            if admission.file_type().is_symlink() {
+                return Err(NativeWatchError::RootIsNotDirectory);
+            }
+            let root = requested_root
+                .canonicalize()
+                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let root_file =
+                open_native_root(&root).map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let metadata = root_file
+                .metadata()
+                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            if !metadata.is_dir() {
+                return Err(NativeWatchError::RootIsNotDirectory);
+            }
+            let root_identity = NativeRootIdentity::from_file(&root_file)
+                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            #[cfg(windows)]
+            let complete = crate::native_host::reports_every_change(&root_file)
+                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            #[cfg(not(windows))]
+            let complete = true;
+            let capacity = usize::try_from(options.maximum_queued_changes)
+                .map_err(|_| NativeWatchError::InvalidOptions)?;
+            let (sender, receiver) = sync_channel(capacity);
+            let queued = Arc::new(AtomicU32::new(0));
+            let shared = Arc::new(Mutex::new(SharedState::new(Some(
+                WatchInvalidationReason::InitialSnapshotRequired,
+            ))));
+            let fenced = Arc::new(Condvar::new());
+            let callback_shared = Arc::clone(&shared);
+            let callback_fenced = Arc::clone(&fenced);
+            let callback_queued = Arc::clone(&queued);
+            let callback_context = NativeEventContext {
+                root: root.clone(),
+                root_identity,
+                profile,
+                limits: options.limits,
+                #[cfg(target_os = "linux")]
+                maximum_queued_changes: options.maximum_queued_changes,
+            };
+            let mut watcher = NativeEventWatcher::new(
+                move |event: notify::Result<Event>| {
+                    accept_native_event(
+                        &event,
+                        &callback_context,
+                        &sender,
+                        &callback_shared,
+                        &callback_queued,
+                    );
+                    // Signal only after the cookie's own hint is handled: delivery is
+                    // ordered, so every earlier host change is already queued.
+                    if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
+                        && state
+                            .fence
+                            .as_ref()
+                            .is_some_and(|fence| event.paths.contains(fence))
+                    {
+                        state.fence = None;
+                        callback_fenced.notify_all();
+                    }
                 },
+                notify::Config::default(),
             )
             .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
-        Ok(Self {
-            watcher,
-            watched_directories: BTreeSet::from([root.clone()]),
-            root,
-            recursive: options.recursive,
-            receiver,
-            queued,
-            shared,
-            fenced,
-            fences: 0,
-            excluded: Vec::new(),
-            epoch: WatchEpoch(0),
-            next_sequence: WatchSequence(0),
-            rescan_in_progress: false,
-            root_identity,
-            complete,
+            watcher
+                .watch(
+                    &root,
+                    if options.recursive {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    },
+                )
+                .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
+            Ok(Self {
+                watcher,
+                watched_directories: BTreeSet::from([root.clone()]),
+                root,
+                recursive: options.recursive,
+                receiver,
+                queued,
+                shared,
+                fenced,
+                fences: 0,
+                excluded: Vec::new(),
+                epoch: WatchEpoch(0),
+                next_sequence: WatchSequence(0),
+                rescan_in_progress: false,
+                root_identity,
+                complete,
+            })
         })
     }
 
@@ -808,36 +819,47 @@ impl NativeWatch {
     /// # Errors
     ///
     /// Rejects completion without a matching scan or poisoned state.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.watch.finish_rescan",
+            level = "debug",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub fn finish_rescan(&mut self) -> Result<WatchBatch, NativeWatchError> {
-        if !self.rescan_in_progress {
-            return Err(NativeWatchError::NoRescanInProgress);
-        }
-        let observed = open_native_root(&self.root)
-            .and_then(|root| NativeRootIdentity::from_file(&root))
-            .ok();
-        if observed != Some(self.root_identity) {
-            self.shared
+        crate::obs::outcome_of(|| {
+            if !self.rescan_in_progress {
+                return Err(NativeWatchError::NoRescanInProgress);
+            }
+            let observed = open_native_root(&self.root)
+                .and_then(|root| NativeRootIdentity::from_file(&root))
+                .ok();
+            if observed != Some(self.root_identity) {
+                self.shared
+                    .lock()
+                    .map_err(|_| NativeWatchError::StatePoisoned)?
+                    .invalidation = Some(WatchInvalidationReason::RootChanged);
+            }
+            self.rescan_in_progress = false;
+            let mut shared = self
+                .shared
                 .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .invalidation = Some(WatchInvalidationReason::RootChanged);
-        }
-        self.rescan_in_progress = false;
-        let mut shared = self
-            .shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        Ok(shared.seal_invalidation().map_or(
-            WatchBatch::Changes {
-                epoch: self.epoch,
-                first_sequence: self.next_sequence,
-                next_sequence: self.next_sequence,
-                changes: Vec::new(),
-            },
-            |reason| WatchBatch::RescanRequired {
-                epoch: self.epoch,
-                reason,
-            },
-        ))
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+            Ok(shared.seal_invalidation().map_or(
+                WatchBatch::Changes {
+                    epoch: self.epoch,
+                    first_sequence: self.next_sequence,
+                    next_sequence: self.next_sequence,
+                    changes: Vec::new(),
+                },
+                |reason| WatchBatch::RescanRequired {
+                    epoch: self.epoch,
+                    reason,
+                },
+            ))
+        })
     }
 
     /// Aborts an in-progress baseline and returns the watcher to an explicitly
@@ -910,20 +932,31 @@ impl NativeWatch {
     /// # Errors
     ///
     /// Returns only poisoned synchronization.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.watch.fence",
+            level = "debug",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
-        let delivered = self.fence_cookie().is_ok_and(|cookie| {
-            self.await_cookie(&cookie, timeout)
-                .is_ok_and(|delivered| delivered)
-        });
-        let mut state = self
-            .shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        state.fence = None;
-        if !delivered && state.invalidation.is_none() {
-            state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-        }
-        Ok(())
+        crate::obs::outcome_of(|| {
+            let delivered = self.fence_cookie().is_ok_and(|cookie| {
+                self.await_cookie(&cookie, timeout)
+                    .is_ok_and(|delivered| delivered)
+            });
+            let mut state = self
+                .shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+            state.fence = None;
+            if !delivered && state.invalidation.is_none() {
+                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+            }
+            Ok(())
+        })
     }
 
     fn fence_cookie(&mut self) -> Result<PathBuf, NativeWatchError> {
@@ -1502,7 +1535,7 @@ fn relative_namespace_path(
 }
 
 /// Native watcher failures that are not recoverable through a baseline rescan.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum NativeWatchError {
     /// Queue or volume bounds are invalid.
     #[error("native watcher options are invalid")]

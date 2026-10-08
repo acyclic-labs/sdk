@@ -41,6 +41,12 @@ pub(crate) fn outcome<T, E: ErrorKind>(result: Result<T, E>) -> Result<T, E> {
     result
 }
 
+/// [`outcome`] of a synchronous body, including its early returns.
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) fn outcome_of<T, E: ErrorKind>(body: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    outcome(body())
+}
+
 /// Like [`outcome`], also recording the `work.*` summary of the receipt that
 /// `work` selects or of the failure.
 #[cfg_attr(
