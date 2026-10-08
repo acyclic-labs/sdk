@@ -51,7 +51,12 @@
   },
   "napi": {
     "binaryName": "index",
-    "packageName": "@acyclic-labs/stream"
+    "packageName": "@acyclic-labs/stream",
+    "targets": [
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-apple-darwin"
+    ]
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
