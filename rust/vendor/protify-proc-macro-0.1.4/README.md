@@ -1,12 +1,15 @@
-# Vendored `protify-proc-macro` 0.1.4
+# `acyclic-protify-proc-macro`
 
 This directory vendors the published `protify-proc-macro` 0.1.4 crate from
 <https://github.com/Rick-Phoenix/protify> (upstream commit
 `8b74dcd0247c53d0663a3741454d83d7cb19d4b8`). The crate is licensed under
-MPL-2.0; the upstream package metadata is retained in `Cargo.toml` and
-`.cargo_vcs_info.json`.
+MPL-2.0; the exact upstream license and `.cargo_vcs_info.json` are retained.
+The package has a distinct Acyclic identity and follows the SDK release version.
 
-The workspace uses this source through the root `[patch.crates-io]` entry. The
+Actors depends directly on this versioned package for its library and build
+script; consumers do not need a workspace patch. Cargo publication order places
+this package before Actors. The tooling has an independent workspace so product
+feature selection does not enable unrelated generator features. The
 focused local patch changes only fallible proxied ingress: when a semantic
 declaration is annotated with `fallible = E`, generated `TryFrom<Proto>`
 implementations preserve validation errors instead of emitting an infallible

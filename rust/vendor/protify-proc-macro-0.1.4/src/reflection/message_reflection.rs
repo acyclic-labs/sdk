@@ -77,6 +77,7 @@ fn extract_fields_data(item: &mut ItemStruct) -> Result<ReflectionMsgData, Error
 								path: path_str.parse()?,
 								tags: vec![],
 								default: false,
+								required: false,
 							}));
 						}
 						"enumeration" => {

@@ -3,6 +3,14 @@
 	clippy::collapsible_if,
 	clippy::collapsible_else_if
 )]
+#![allow(
+    clippy::question_mark,
+    clippy::collapsible_match,
+    clippy::doc_lazy_continuation,
+    clippy::doc_overindented_list_items,
+    clippy::needless_doctest_main,
+    reason = "Preserve the pinned upstream implementation and documentation outside contract ingress changes"
+)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::{
@@ -254,7 +262,7 @@ pub fn proto_enum(args: TokenStream, input: TokenStream) -> TokenStream {
 	let item = parse_macro_input!(input as ItemEnum);
 	let args = parse_macro_input!(args as crate::enum_proc_macro::EnumMacroArgs);
 
-	enum_proc_macro(item, args).into()
+	enum_proc_macro(item, &args).into()
 }
 
 #[doc(hidden)]

@@ -11,8 +11,8 @@
 
 [package]
 edition = "2024"
-name = "protify-proc-macro"
-version = "0.1.4"
+name = "acyclic-protify-proc-macro"
+version = "0.2.0"
 authors = ["Rick-Phoenix <https://github.com/Rick-Phoenix>"]
 build = false
 autolib = false
@@ -21,7 +21,8 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "Proc macro implementations for protify."
-readme = false
+readme = "README.md"
+exclude = [".cargo_vcs_info.json"]
 keywords = [
     "protobuf",
     "validation",
@@ -45,7 +46,7 @@ default = []
 reflection = ["dep:prost-reflect"]
 
 [lib]
-name = "protify_proc_macro"
+name = "acyclic_protify_proc_macro"
 path = "src/lib.rs"
 proc-macro = true
 
@@ -186,3 +187,5 @@ unused_self = "warn"
 use_self = "warn"
 useless_let_if_seq = "warn"
 vec_init_then_push = "allow"
+
+[workspace]

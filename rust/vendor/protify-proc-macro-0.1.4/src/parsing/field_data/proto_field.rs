@@ -23,18 +23,13 @@ impl ProtoField {
 			Self::Repeated(_) => quote_spanned! {span=>
 				#base_ident.into_iter().map(::core::convert::TryInto::try_into).collect::<::core::result::Result<_, _>>()?
 			},
-			Self::Optional(_) => quote_spanned! {span=>
-				#base_ident.map(::core::convert::TryInto::try_into).transpose()?
-			},
-			Self::Oneof(OneofInfo { required: true, .. }) => quote_spanned! {span=>
-				#base_ident.ok_or_else(|| <#error>::default())?.try_into()?
-			},
-			Self::Oneof(_) => quote_spanned! {span=>
-				#base_ident.map(::core::convert::TryInto::try_into).transpose()?
-			},
-			Self::Single(ProtoType::Message(MessageInfo { required: true, .. })) => quote_spanned! {span=>
-				#base_ident.ok_or_else(|| <#error>::default())?.try_into()?
-			},
+			Self::Oneof(OneofInfo { required: true, .. })
+            | Self::Single(ProtoType::Message(MessageInfo { required: true, .. })) => quote_spanned! {span=>
+                #base_ident.ok_or_else(|| <#error>::default())?.try_into()?
+            },
+            Self::Optional(_) | Self::Oneof(_) => quote_spanned! {span=>
+                #base_ident.map(::core::convert::TryInto::try_into).transpose()?
+            },
 			Self::Single(_) | Self::Map(_) => quote_spanned! {span=>
 				::core::convert::TryInto::try_into(#base_ident)?
 			},

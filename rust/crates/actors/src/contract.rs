@@ -137,7 +137,7 @@ mod tests {
 mod fallible_producer_tests {
     use super::*;
     use prost::Message;
-    use protify::{define_proto_file, proto_message, proto_package};
+    use protify::{define_proto_file, proto_package};
 
     proto_package!(
         FALLIBLE_PACKAGE,
@@ -173,20 +173,20 @@ mod fallible_producer_tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[proto_message(proxied, fallible = IngressError)]
+    #[acyclic_protify_proc_macro::proto_message(proxied, fallible = IngressError)]
     pub struct Ingress {
         #[proto(string, tag = 1, from_proto = parse_actor_id)]
         actor_id: String,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[proto_message(proxied, fallible = IngressError)]
+    #[acyclic_protify_proc_macro::proto_message(proxied, fallible = IngressError)]
     pub struct Child {
         #[proto(string, tag = 1)]
         value: String,
     }
 
-    #[proto_oneof(proxied, fallible = IngressError)]
+    #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = IngressError)]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Selector {
         #[proto(tag = 1)]
@@ -196,7 +196,7 @@ mod fallible_producer_tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[proto_message(proxied, fallible = IngressError)]
+    #[acyclic_protify_proc_macro::proto_message(proxied, fallible = IngressError)]
     pub struct Envelope {
         #[proto(message(proxied), tag = 3)]
         child: Option<Child>,

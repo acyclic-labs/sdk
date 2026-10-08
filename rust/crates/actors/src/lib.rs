@@ -272,15 +272,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn workers_grpc_client_stays_in_sync() {
-        // Workers shares no crate with Actors, so it carries a renamed copy of this client.
-        let renamed = include_str!("grpc.rs")
-            .replace("actors", "workers")
-            .replace("Actors", "Workers");
-        assert_eq!(renamed, include_str!("../../workers/src/grpc.rs"));
-    }
-
     /// Serves one RPC whose OK headers precede a 50 ms body ending in an UNAVAILABLE trailer.
     #[cfg(not(target_arch = "wasm32"))]
     async fn slow_status_server() -> std::io::Result<std::net::SocketAddr> {

@@ -25,6 +25,7 @@ members = [
   "rust/crates/workers",
   "plugin",
 ]
+exclude = ["rust/vendor/protify-proc-macro-0.1.4"]
 resolver = "2"
 
 [workspace.package]
@@ -187,9 +188,3 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-
-[patch.crates-io]
-protify-proc-macro = { path = "rust/vendor/protify-proc-macro-0.1.4" }
-
-
-

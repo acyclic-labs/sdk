@@ -5,10 +5,12 @@ mod message_schema_impl;
 mod oneof_schema_impl;
 pub use fallback_impls::*;
 mod conversions;
+#[cfg(feature = "reflection")]
 pub use oneof_validator_impl::*;
 mod oneof_validator_impl;
 pub use conversions::*;
 mod consistency_checks;
+#[cfg(feature = "reflection")]
 pub use consistency_checks::*;
 mod message_validator_impl;
 pub use message_validator_impl::*;

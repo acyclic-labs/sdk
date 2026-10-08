@@ -3,6 +3,7 @@
   "acyclic-machines",
   "acyclic-native-runtime",
   "acyclic-objects",
+  "acyclic-protify-proc-macro",
   "acyclic-actors",
   "acyclic-workers",
   "acyclic-stream",
