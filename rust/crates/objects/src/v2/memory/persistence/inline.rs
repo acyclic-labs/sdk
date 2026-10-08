@@ -44,71 +44,89 @@ impl Journal {
     /// relocated state is returned for the checkpoint to record: a compaction
     /// costs a few synchronizations, not two for every small body.
     pub(super) fn materialize_inline(&self, state: &mut State) -> Result<(), LocalOpenError> {
-        let mut carried = BTreeMap::new();
-        for object in state
-            .buckets
-            .values()
-            .flat_map(|bucket| bucket.objects.values())
-        {
-            journal_bodies(&object.body, &mut carried);
-        }
-        for upload in state.uploads.values() {
-            for (_, body) in upload.parts.values() {
-                journal_bodies(body, &mut carried);
-            }
-        }
-        if carried.is_empty() {
-            return Ok(());
-        }
-        let journal = File::open(self.root.path.join("mutations.log"))?;
-        let mut moves = LocalBodyRelocations::new();
-        let mut batch = Materialized::default();
-        let mut entries = carried.into_iter().peekable();
-        while let Some(((offset, digest), length)) = entries.next() {
-            if !batch.holds(&digest) {
-                let bytes = crate::physical::read_journal_body(&journal, offset, &digest, length)
-                    .map_err(corrupt)?;
-                batch.add(digest, bytes);
-            }
-            batch.carried.push((offset, digest));
-            let full = entries.peek().is_none_or(|((_, next_digest), next)| {
-                !batch.holds(next_digest)
-                    && (batch.bodies.len() == crate::physical::MAXIMUM_SEGMENT_BODIES
-                        || batch.bytes + next > crate::physical::MAXIMUM_SEGMENT_BYTES)
-            });
-            if full {
-                self.write_materialized(&mut batch, &mut moves)?;
-            }
-        }
-        crate::physical::sync_segment_directory(&self.root.path, self.limits.durability)
-            .map_err(|_| LocalOpenError::Unavailable)?;
-        for bucket in state.buckets.values_mut() {
-            let relocated = bucket
-                .objects
-                .iter()
-                .filter_map(|(key, object)| {
-                    object
-                        .body
-                        .relocated(&moves)
-                        .map(|body| (key.clone(), body))
-                })
-                .collect::<Vec<_>>();
-            for (key, body) in relocated {
-                bucket
-                    .objects
-                    .get_mut(&key)
-                    .ok_or(LocalOpenError::Corrupt)?
-                    .body = body;
-            }
-        }
-        for upload in state.uploads.values_mut() {
-            for (_, body) in upload.parts.values_mut() {
-                if let Some(moved) = body.relocated(&moves) {
-                    *body = moved;
+        obs::scoped(
+            &obs::span!(
+                DEBUG,
+                "acyclic.objects.journal.materialize",
+                items = obs::Empty,
+                bytes = obs::Empty,
+                segments = obs::Empty
+            ),
+            || {
+                let mut carried = BTreeMap::new();
+                for object in state
+                    .buckets
+                    .values()
+                    .flat_map(|bucket| bucket.objects.values())
+                {
+                    journal_bodies(&object.body, &mut carried);
                 }
-            }
-        }
-        Ok(())
+                for upload in state.uploads.values() {
+                    for (_, body) in upload.parts.values() {
+                        journal_bodies(body, &mut carried);
+                    }
+                }
+                if carried.is_empty() {
+                    return Ok(());
+                }
+                let (items, mut moved, mut segments) = (carried.len(), 0, 0_u64);
+                let mut moves = LocalBodyRelocations::new();
+                let mut batch = Materialized::default();
+                let mut entries = carried.into_iter().peekable();
+                while let Some(((offset, digest), length)) = entries.next() {
+                    if !batch.holds(&digest) {
+                        // The shared read handle: compaction closes it before replacing
+                        // the journal, after every body here has been read.
+                        let bytes = self
+                            .root
+                            .read_journal_body(offset, &digest, length)
+                            .map_err(corrupt)?;
+                        batch.add(digest, bytes);
+                    }
+                    batch.carried.push((offset, digest));
+                    let full = entries.peek().is_none_or(|((_, next_digest), next)| {
+                        !batch.holds(next_digest)
+                            && (batch.bodies.len() == crate::physical::MAXIMUM_SEGMENT_BODIES
+                                || batch.bytes + next > crate::physical::MAXIMUM_SEGMENT_BYTES)
+                    });
+                    if full {
+                        moved += batch.bytes;
+                        segments += 1;
+                        self.write_materialized(&mut batch, &mut moves)?;
+                    }
+                }
+                obs::record!("items" = items, "bytes" = moved, "segments" = segments);
+                crate::physical::sync_segment_directory(&self.root.path, self.limits.durability)
+                    .map_err(|_| LocalOpenError::Unavailable)?;
+                for bucket in state.buckets.values_mut() {
+                    let relocated = bucket
+                        .objects
+                        .iter()
+                        .filter_map(|(key, object)| {
+                            object
+                                .body
+                                .relocated(&moves)
+                                .map(|body| (key.clone(), body))
+                        })
+                        .collect::<Vec<_>>();
+                    for (key, body) in relocated {
+                        bucket
+                            .objects
+                            .get_mut(&key)
+                            .ok_or(LocalOpenError::Corrupt)?
+                            .body = body;
+                    }
+                }
+                for upload in state.uploads.values_mut() {
+                    for (_, body) in upload.parts.values_mut() {
+                        if let Some(moved) = body.relocated(&moves) {
+                            *body = moved;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )
     }
     /// Writes one segment of journal bodies and records where each moved.
     fn write_materialized(

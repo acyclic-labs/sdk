@@ -1962,6 +1962,8 @@ mod tests {
                     200,
                     sandbox(MACHINE, "started", &owned_labels(test_key(9), None)),
                 )
+            } else if request.is("GET", "/sandbox/malformed") {
+                (200, "{".into())
             } else {
                 (404, "no sandbox at /secret/path".into())
             }
@@ -1973,8 +1975,19 @@ mod tests {
             provider.api.delete("missing").await,
             Err(ProviderError::NotFound(_))
         ));
+        assert!(matches!(
+            provider.api.get("malformed").await,
+            Err(ProviderError::Rejected(_))
+        ));
 
         let seen = seen.lock().unwrap();
+        // Only the well-formed `get` is ok; the malformed body fails inside its span.
+        assert_eq!(
+            seen.iter()
+                .filter(|(_, f, v)| (*f, v.as_str()) == ("outcome", "ok"))
+                .count(),
+            1
+        );
         for expected in [
             ("op", "get"),
             ("http.status", "200"),
@@ -1982,6 +1995,7 @@ mod tests {
             ("op", "delete"),
             ("http.status", "404"),
             ("error.kind", "not_found"),
+            ("error.kind", "rejected"),
         ] {
             assert!(
                 seen.iter()

@@ -39,12 +39,16 @@ export class HttpStreamProvider implements StreamProvider {
     if (signal?.aborted) return;
     const tail = await this.#tail(path, signal);
     if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
+    // The HTTP API has no long-poll or streaming read, so follow polls. Back
+    // off from 25 ms after the last record to 1 s while idle: new records
+    // after activity arrive sooner, and an idle follower costs 1 request/s.
     let next = from;
+    let idle = 25;
     while (!signal?.aborted) {
-      const records: EncodedRecord[] = [];
-      for (const item of await this.#read(path, { from: next, limit: 256 }, signal, false)) records.push(item);
+      const records = await this.#read(path, { from: next, limit: 256 }, signal, false);
       for (const item of records) { yield item; next = item.sequence + 1n; }
-      if (!records.length) await delay(250, signal);
+      if (records.length) idle = 25;
+      else { await delay(idle, signal); idle = Math.min(idle * 2, 1000); }
     }
   }
   async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input))) yield item; }

@@ -1,7 +1,8 @@
 // Summarizes one qualification lane's timings as Markdown: per-step wall time
 // (steps.tsv, written by qualify-ci.sh), the slowest Rust and TypeScript tests
-// (JUnit from cargo-nextest and bun test) and compiler cache statistics
-// (sccache.json). Prints to stdout and appends to $GITHUB_STEP_SUMMARY.
+// (JUnit from cargo-nextest and bun test) with a rerun command for each slow
+// Rust test, and compiler cache statistics (sccache.json). Prints to stdout
+// and appends to $GITHUB_STEP_SUMMARY.
 //
 // Usage: node scripts/ci-summary.mjs <observability directory> [title]
 import { appendFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
@@ -64,6 +65,13 @@ const slowest = (kind, label, count) => {
   tests.sort((a, b) => b.time - a.time);
   out.push(...table([`Slowest ${label} tests`, "Binary or file", "Time"], tests.slice(0, count)
     .map(test => [`\`${cell(test.name)}\``, `\`${cell(test.suite)}\``, seconds(test.time)])));
+  if (kind === "rust" && tests.length) {
+    // nextest names each suite after its binary id, `<package>[::<binary>]`.
+    out.push("<details><summary>Rerun a slow Rust test alone</summary>", "", "```sh",
+      ...tests.slice(0, count).map(test =>
+        `cargo nextest run -p ${test.suite.split("::")[0]} --all-features -E 'binary_id(=${test.suite}) & test(=${test.name})'`),
+      "```", "", "</details>", "");
+  }
   const totals = suites[kind].map(suite => ({
     ...suite, time: suite.cases.reduce((sum, test) => sum + test.time, 0),
   })).sort((a, b) => b.time - a.time);

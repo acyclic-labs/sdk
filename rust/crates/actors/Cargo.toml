@@ -10,6 +10,7 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+http-body = "1.1.0"
 prost.workspace = true
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
@@ -38,7 +39,7 @@ tracing-subscriber.workspace = true
 
 [build-dependencies]
 prost = "=0.14.4"
-protoc-bin-vendored = "=3.2.0"
+protoc-bin-vendored = "=3.3.0"
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 tonic-prost-build = "=0.14.6"
 ts-rs = "=12.0.1"

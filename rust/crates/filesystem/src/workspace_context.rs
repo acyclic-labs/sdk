@@ -330,6 +330,9 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
             if !context.roots.contains_key(&root_id) || context.roots.len() == 1 {
                 return Err(WorkspaceContextError::InvalidRoots);
             }
+            // Ancestors already walked to a root without meeting `context_id`
+            // end later walks, keeping deep fork chains linear.
+            let mut cleared = BTreeSet::new();
             for candidate in by_id.values() {
                 if candidate.context_id == context_id
                     || candidate.state == WorkspaceContextState::Discarded
@@ -343,6 +346,9 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
                     if id == context_id {
                         return Err(WorkspaceContextError::RootInUse);
                     }
+                    if cleared.contains(&id) {
+                        break;
+                    }
                     if !visited.insert(id) {
                         return Err(WorkspaceContextError::IncompatibleState);
                     }
@@ -351,6 +357,7 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
                         .ok_or(WorkspaceContextError::IncompatibleState)?
                         .parent_context_id;
                 }
+                cleared.append(&mut visited);
             }
             context.roots.remove(&root_id);
             context.revision = context

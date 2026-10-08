@@ -156,8 +156,15 @@ const OUTCOME_RETENTION: Duration = RETRANSMIT_WINDOW;
 const MAXIMUM_OPERATIONS: usize = 65_536;
 /// Responses beyond this budget are released oldest first; their operations
 /// stay remembered, so a retry is refused rather than executed.
-const RETAINED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-const JOURNAL_REWRITE_SLACK: u64 = 1024 * 1024;
+///
+/// Unit tests shrink this budget and the rewrite slack in proportion, so
+/// random histories cross both without writing gigabytes.
+const RETAINED_RESPONSE_BYTES: usize = if cfg!(test) {
+    1024 * 1024
+} else {
+    16 * 1024 * 1024
+};
+const JOURNAL_REWRITE_SLACK: u64 = if cfg!(test) { 64 * 1024 } else { 1024 * 1024 };
 /// The journal alternates between two slots. Compaction rewrites the inactive
 /// slot and publishes it by writing its generation frame last, so the active
 /// slot only ever changes by appending past its end.
@@ -1019,7 +1026,11 @@ mod tests {
                         let envelope = in_flight.swap_remove(
                             usize::try_from(random(in_flight.len() as u64)).expect("index"),
                         );
-                        let size = if random(2) == 0 { 2 * 1024 * 1024 } else { 16 };
+                        let size = if random(2) == 0 {
+                            RETAINED_RESPONSE_BYTES / 8
+                        } else {
+                            16
+                        };
                         let generation = ledger.lock().expect("live").journal.generation;
                         ledger
                             .complete_at(&envelope, &vec![b'r'; size], now)
@@ -1238,7 +1249,7 @@ mod tests {
             .max()
             .expect("slot sizes");
         assert!(
-            journal_bytes < 16 * JOURNAL_REWRITE_SLACK,
+            journal_bytes < 16 * 1024 * 1024,
             "journal grew to {journal_bytes} bytes"
         );
     }

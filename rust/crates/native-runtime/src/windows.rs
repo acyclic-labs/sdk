@@ -21,6 +21,10 @@ use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, RawHandle};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::task::{Wake, Waker};
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_MODE_INFORMATION, FILE_SYNCHRONOUS_IO_ALERT, FILE_SYNCHRONOUS_IO_NONALERT,
+    FileModeInformation, NtQueryInformationFile,
+};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
@@ -32,7 +36,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     ReadFile, SetFileAttributesW, WriteFile,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
-use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::IO::{
+    DeviceIoControl, GetOverlappedResult, IO_STATUS_BLOCK, OVERLAPPED,
+};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CreateEventW, CreateProcessW, DETACHED_PROCESS,
@@ -257,27 +263,65 @@ fn overlapped_range(offset: u64, length: usize) -> io::Result<u32> {
     }
 }
 
-/// Reads once through a private overlapped reopen of a borrowed handle, on
-/// the calling thread: the caller's cursor never moves, and the request
-/// needs neither the driver thread nor a completion-port association.
+/// Whether `file` was opened with `FILE_FLAG_OVERLAPPED`. Such a handle
+/// has no cursor, so positional requests can be issued on it directly. A
+/// failed query answers `false`, which keeps the reopen path.
+fn is_overlapped(file: &File) -> bool {
+    let mut status = IO_STATUS_BLOCK::default();
+    let mut mode = FILE_MODE_INFORMATION::default();
+    #[allow(clippy::cast_possible_truncation, reason = "the structure is one u32")]
+    let length = size_of::<FILE_MODE_INFORMATION>() as u32;
+    // SAFETY: both outputs are writable buffers of the sizes passed, and the
+    // handle stays live for this synchronous query.
+    let result = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle(),
+            &raw mut status,
+            (&raw mut mode).cast(),
+            length,
+            FileModeInformation,
+        )
+    };
+    result >= 0 && mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0
+}
+
+/// Runs `transfer` on `file` itself when it is overlapped, otherwise on a
+/// private overlapped reopen with `access`: either way the caller's cursor
+/// never moves.
+fn with_overlapped<T>(
+    file: &File,
+    access: u32,
+    transfer: impl FnOnce(&File) -> io::Result<T>,
+) -> io::Result<T> {
+    if is_overlapped(file) {
+        transfer(file)
+    } else {
+        transfer(&reopen_overlapped(file, access)?)
+    }
+}
+
+/// Reads once on the calling thread through [`with_overlapped`]: the
+/// request needs neither the driver thread nor a completion-port
+/// association.
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     let length = overlapped_range(offset, destination.len())?;
     if length == 0 {
         return Ok(0);
     }
-    let reopened = reopen_overlapped(file, FILE_GENERIC_READ)?;
-    let count = transfer_in_place(&reopened, offset, |handle, overlapped| {
-        // SAFETY: `destination` holds `length` writable bytes for the whole
-        // request, which completes before return.
-        unsafe {
-            ReadFile(
-                handle,
-                destination.as_mut_ptr(),
-                length,
-                std::ptr::null_mut(),
-                overlapped,
-            )
-        }
+    let count = with_overlapped(file, FILE_GENERIC_READ, |file| {
+        transfer_in_place(file, offset, |handle, overlapped| {
+            // SAFETY: `destination` holds `length` writable bytes for the whole
+            // request, which completes before return.
+            unsafe {
+                ReadFile(
+                    handle,
+                    destination.as_mut_ptr(),
+                    length,
+                    std::ptr::null_mut(),
+                    overlapped,
+                )
+            }
+        })
     })?;
     if count > destination.len() {
         return Err(io::Error::other("read completion exceeded buffer"));
@@ -285,11 +329,12 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
     Ok(count)
 }
 
-/// Writes every byte through a private overlapped reopen of a borrowed
-/// handle, on the calling thread, exactly as [`read_at`] reads.
+/// Writes every byte on the calling thread, exactly as [`read_at`] reads.
 pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     overlapped_range(offset, bytes.len())?;
-    write_all_in_place(&reopen_overlapped(file, FILE_GENERIC_WRITE)?, offset, bytes)
+    with_overlapped(file, FILE_GENERIC_WRITE, |file| {
+        write_all_in_place(file, offset, bytes)
+    })
 }
 
 const DRIVER_QUEUE: usize = 1024;
@@ -1328,6 +1373,32 @@ mod tests {
             ]
         );
         assert_eq!((&*file).stream_position()?, 13);
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let open = |name, flags| {
+            OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .custom_flags(flags)
+                .open(directory.path().join(name))
+        };
+        let synchronous = open("synchronous", 0)?;
+        let overlapped = open("overlapped", FILE_FLAG_OVERLAPPED)?;
+        assert!(!is_overlapped(&synchronous));
+        assert!(is_overlapped(&overlapped));
+        for file in [&synchronous, &overlapped] {
+            write_all_at(file, 3, b"positional")?;
+            let mut bytes = [0; 8];
+            assert_eq!(read_at(file, 5, &mut bytes)?, 8);
+            assert_eq!(&bytes, b"sitional");
+            assert_eq!(read_at(file, 13, &mut bytes)?, 0);
+        }
+        assert_eq!((&synchronous).stream_position()?, 0);
         Ok(())
     }
 

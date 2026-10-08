@@ -134,16 +134,12 @@ pub(crate) fn compile_json_schema(
 }
 
 fn write_canonical_json(value: &serde_json::Value, bytes: &mut Vec<u8>) -> Result<()> {
+    // Scalars and keys are written in place by serde_json's own compact
+    // formatter, so only object key order is decided here.
+    fn scalar(bytes: &mut Vec<u8>, value: &(impl Serialize + ?Sized)) -> Result<()> {
+        serde_json::to_writer(bytes, value).map_err(|error| Error::Invalid(error.to_string()))
+    }
     match value {
-        serde_json::Value::Null => bytes.extend_from_slice(b"null"),
-        serde_json::Value::Bool(true) => bytes.extend_from_slice(b"true"),
-        serde_json::Value::Bool(false) => bytes.extend_from_slice(b"false"),
-        serde_json::Value::Number(number) => bytes.extend_from_slice(number.to_string().as_bytes()),
-        serde_json::Value::String(string) => bytes.extend_from_slice(
-            serde_json::to_string(string)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .as_bytes(),
-        ),
         serde_json::Value::Array(items) => {
             bytes.push(b'[');
             for (index, item) in items.iter().enumerate() {
@@ -156,22 +152,19 @@ fn write_canonical_json(value: &serde_json::Value, bytes: &mut Vec<u8>) -> Resul
         }
         serde_json::Value::Object(fields) => {
             bytes.push(b'{');
-            let mut keys = fields.keys().collect::<Vec<_>>();
-            keys.sort_unstable();
-            for (index, key) in keys.into_iter().enumerate() {
+            let mut fields = fields.iter().collect::<Vec<_>>();
+            fields.sort_unstable_by_key(|(key, _)| *key);
+            for (index, (key, field)) in fields.into_iter().enumerate() {
                 if index > 0 {
                     bytes.push(b',');
                 }
-                bytes.extend_from_slice(
-                    serde_json::to_string(key)
-                        .map_err(|error| Error::Invalid(error.to_string()))?
-                        .as_bytes(),
-                );
+                scalar(bytes, key)?;
                 bytes.push(b':');
-                write_canonical_json(&fields[key], bytes)?;
+                write_canonical_json(field, bytes)?;
             }
             bytes.push(b'}');
         }
+        scalar_value => scalar(bytes, scalar_value)?,
     }
     Ok(())
 }
@@ -558,6 +551,32 @@ mod tests {
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(canonical_json_bytes(&value)?, nested.as_bytes());
         assert!(json_from_slice::<serde_json::Value>(b"{} {}").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_json_bytes_are_pinned_for_every_value_kind() -> Result<()> {
+        #[derive(Serialize)]
+        struct Declared<'a> {
+            zeta: Option<u8>,
+            alpha: &'a str,
+            #[serde(rename = "\u{e9}")]
+            accent: (i64, f64, f64, bool),
+            mid: std::collections::BTreeMap<&'a str, Vec<u8>>,
+        }
+        let value = Declared {
+            zeta: None,
+            alpha: "quote\" back\\ nl\n tab\t ctl\u{1} \u{2028} \u{1f600}",
+            accent: (i64::MIN, 1.5e300, -0.0, false),
+            mid: [("b", vec![]), ("a", vec![0, 255])].into(),
+        };
+        let expected = concat!(
+            r#"{"alpha":"quote\" back\\ nl\n tab\t ctl\u0001 "#,
+            "\u{2028} \u{1f600}\",",
+            r#""mid":{"a":[0,255],"b":[]},"zeta":null,"#,
+            "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
+        );
+        assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
         Ok(())
     }
 

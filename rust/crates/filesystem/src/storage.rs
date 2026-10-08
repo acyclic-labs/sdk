@@ -290,7 +290,7 @@ pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
 pub type AuthorityResult<T> = MeasuredResult<AuthorityReceipt<T>, AuthorityStoreError>;
 
 /// Typed authority storage failures.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum AuthorityStoreError {
     /// Operation was cancelled before durable authority work began.
     #[error("authority operation was cancelled")]
@@ -693,7 +693,7 @@ impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
 }
 
 /// Typed immutable-object failures.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum ObjectStoreError {
     /// Operation was cancelled before immutable-object work began.
     #[error("object operation was cancelled")]
