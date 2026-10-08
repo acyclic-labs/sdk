@@ -1,4 +1,4 @@
-import { create, fromJson, getOption, hasOption, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { create, fromJson, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
@@ -53,7 +53,7 @@ import {
   RunsService,
   WarmContextsService,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { http_path } from "../generated/proto/validation/v1/options_pb.js";
+import { HTTP_ROUTES } from "./routes.js";
 import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
@@ -80,35 +80,20 @@ export function validateInferenceHttpPath(path: string): void {
   }
 }
 
-/**
- * Derive every public inference endpoint from the canonical service descriptors.
- * Missing, malformed, or duplicate options stop module initialization so a
- * handwritten route cannot silently diverge from the protobuf contract.
- */
+/** Associate the Rust-validated route contract with generated protobuf types. */
 export function deriveInferenceHttpRoutes(): readonly InferenceHttpRoute[] {
-  const routes: InferenceHttpRoute[] = [];
-  const paths = new Map<string, string>();
-  for (const service of inferenceServices) {
-    for (const method of service.methods) {
-      if (!hasOption(method, http_path)) {
-        throw new Error(`inference RPC ${method.parent.typeName}.${method.name} has no http_path option`);
-      }
-      const path = getOption(method, http_path);
-      try {
-        validateInferenceHttpPath(path);
-      } catch {
-        throw new Error(`inference RPC ${method.parent.typeName}.${method.name} has an invalid http_path`);
-      }
-      const prior = paths.get(path);
-      if (prior !== undefined) {
-        throw new Error(`inference RPC route ${path} is declared by both ${prior} and ${method.parent.typeName}.${method.name}`);
-      }
-      paths.set(path, `${method.parent.typeName}.${method.name}`);
-      routes.push({ method, path, input: method.input, output: method.output, methodKind: method.methodKind });
-    }
+  const declared: Readonly<Record<string, readonly [string, string]>> = HTTP_ROUTES;
+  const methods = inferenceServices.flatMap(service => service.methods);
+  if (methods.length !== Object.keys(declared).length) {
+    throw new Error("inference Rust HTTP routes do not cover the generated descriptors");
   }
-  if (routes.length === 0) throw new Error("inference protobuf declares no HTTP routes");
-  return Object.freeze(routes);
+  return Object.freeze(methods.map(method => {
+    const route = declared[`${method.parent.typeName}.${method.name}`];
+    if (route === undefined || route[1] !== method.methodKind) {
+      throw new Error(`inference RPC descriptor ${method.parent.typeName}.${method.name} has no matching Rust route`);
+    }
+    return { method, path: route[0], input: method.input, output: method.output, methodKind: method.methodKind };
+  }));
 }
 
 const inferenceHttpRoutes = deriveInferenceHttpRoutes();
