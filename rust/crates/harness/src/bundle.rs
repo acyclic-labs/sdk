@@ -885,6 +885,7 @@ mod tests {
             fn generate<'a>(
                 &'a self,
                 _: crate::model::PreparedModelRequest,
+                _dispatch: crate::model::ModelDispatch,
             ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>>
             {
                 Box::pin(futures::stream::empty())
