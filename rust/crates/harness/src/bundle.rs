@@ -1054,19 +1054,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn custom_executor_owns_complete_turn_input_output_without_stock_events() -> Result<()> {
-        use crate::conversation::{
-            Attachment, FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef,
-        };
-        use crate::model::{
-            FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole,
-        };
-        use crate::projection::{ModelContextSelection, SelectedModelContext};
+    fn custom_turn_file() -> Result<crate::conversation::FileRef> {
+        use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
         use crate::resources::ProviderRef;
-        use std::sync::atomic::Ordering;
 
-        let file = FileRef::new(
+        FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("example", "filesystem", "1")?,
                 "custom-turn",
@@ -1077,7 +1069,19 @@ mod tests {
             "version-1",
             FileDescriptor::from_bytes(b"custom artifact", "text/plain")?,
             "artifact.txt",
-        )?;
+        )
+    }
+
+    #[tokio::test]
+    async fn custom_executor_owns_complete_turn_input_output_without_stock_events() -> Result<()> {
+        use crate::conversation::Attachment;
+        use crate::model::{
+            FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole,
+        };
+        use crate::projection::{ModelContextSelection, SelectedModelContext};
+        use std::sync::atomic::Ordering;
+
+        let file = custom_turn_file()?;
         let inputs = (1_u32..=2)
             .map(|index| {
                 let content = ModelContent::Parts(vec![
