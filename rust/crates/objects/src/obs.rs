@@ -275,8 +275,8 @@ pub(crate) fn traced<R: Outcome>(
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 pub(crate) fn download(
     span: Span,
-    future: impl Future<Output = Result<crate::v2::Download, crate::Error>>,
-) -> impl Future<Output = Result<crate::v2::Download, crate::Error>> {
+    future: impl Future<Output = Result<crate::v1::Download, crate::Error>>,
+) -> impl Future<Output = Result<crate::v1::Download, crate::Error>> {
     let mut lifetime = Lifetime(Some(span.clone()));
     let context = span.clone().or_current();
     let dispatch = lifetime.dispatch();
@@ -446,7 +446,7 @@ mod tests {
         let future = traced(span!(DEBUG, "acyclic.objects.test.filtered"), async {
             span!(INFO, "acyclic.objects.test.visible_child").in_scope(|| {
                 record!("rpc.code" = 13_u64);
-                Err::<(), _>(crate::Error::from(crate::v2::wire::ErrorCode::Unavailable))
+                Err::<(), _>(crate::Error::from(crate::v1::wire::ErrorCode::Unavailable))
             })
         });
         let other = Capture::default();
@@ -528,7 +528,7 @@ mod tests {
         use futures::StreamExt;
         let future = tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
             download(span!(INFO, "acyclic.objects.test.disabled_origin"), async {
-                Ok(crate::v2::Download {
+                Ok(crate::v1::Download {
                     header: Default::default(),
                     body: futures::stream::iter([Ok(bytes::Bytes::new())])
                         .map(|item| {
@@ -639,7 +639,7 @@ mod tests {
                     download(rpc, async {
                         // This retained child makes the parent's final close occur on drop.
                         let child = span!(INFO, "acyclic.objects.test.drop_decode");
-                        Ok(crate::v2::Download {
+                        Ok(crate::v1::Download {
                             header: Default::default(),
                             body: futures::stream::poll_fn(move |_| {
                                 let _held = &child;
@@ -726,7 +726,7 @@ mod tests {
                                 Some(span!(INFO, "acyclic.objects.test.decode").in_scope(|| {
                                     if fails {
                                         Err(crate::Error::from(
-                                            crate::v2::wire::ErrorCode::Unavailable,
+                                            crate::v1::wire::ErrorCode::Unavailable,
                                         ))
                                     } else {
                                         Ok(bytes::Bytes::from_static(b"data"))
@@ -736,7 +736,7 @@ mod tests {
                             std::task::Poll::Ready(item)
                         })
                         .boxed();
-                        Ok(crate::v2::Download {
+                        Ok(crate::v1::Download {
                             header: Default::default(),
                             body: body.into(),
                         })
