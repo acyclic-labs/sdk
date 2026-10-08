@@ -12,7 +12,7 @@ export function generationArgs(mode = "check") {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const result = spawnSync(process.env.ACYCLIC_CARGO_BIN || "cargo", generationArgs(process.argv[2]), {
+  const result = spawnSync("cargo", generationArgs(process.argv[2]), {
     cwd: root, stdio: "inherit", windowsHide: true,
   });
   if (result.error) throw result.error;

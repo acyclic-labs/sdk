@@ -120,6 +120,11 @@ fn files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
                         .map_err(std::io::Error::other)?
                         .to_path_buf(),
                 );
+            } else {
+                return Err(std::io::Error::other(format!(
+                    "unsupported generation entry: {}",
+                    entry.path().display()
+                )));
             }
         }
         Ok(())
@@ -451,6 +456,35 @@ fn render_semantic_index(config: &ts_rs::Config) -> String {
 mod generation_tests {
     use super::{Temporary, assert_tree_equal, files};
     use std::fs;
+
+    #[test]
+    fn rejects_symlink_outputs() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = Temporary::new(&std::env::temp_dir())?;
+        let actual = temporary.0.join("actual");
+        let target = temporary.0.join("target");
+        fs::create_dir(&actual)?;
+        fs::create_dir(&target)?;
+        let link = actual.join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link)?;
+        #[cfg(windows)]
+        {
+            // Directory junctions require no symbolic-link privilege on Windows.
+            let status = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(&target)
+                .status()?;
+            assert!(status.success(), "create owned test junction");
+        }
+        assert!(
+            files(&actual)
+                .expect_err("linked output must not be omitted from the inventory")
+                .to_string()
+                .contains("unsupported generation entry")
+        );
+        Ok(())
+    }
 
     #[test]
     fn rejects_missing_extra_and_mutated_outputs() -> Result<(), Box<dyn std::error::Error>> {
