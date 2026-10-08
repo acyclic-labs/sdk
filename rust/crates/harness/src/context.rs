@@ -1022,19 +1022,10 @@ impl ContextPipeline {
             .await
     }
 
-    /// Bounds the initial view and every intermediate projection, without truncation.
-    pub async fn run_bounded(
-        &self,
-        input: &ContextInput,
-        limits: crate::conversation::Limits,
-    ) -> Result<Context> {
+    /// Builds the canonical selection/current input and in-turn messages before stages.
+    /// This boundary contains no stage contributions and performs no source reads.
+    pub fn base_context(input: &ContextInput, limits: Limits) -> Result<Context> {
         limits.validate()?;
-        self.validate()?;
-        if self.0.len() > limits.context_messages {
-            return Err(crate::Error::Invalid(
-                "context stage count exceeds limit".into(),
-            ));
-        }
         input.input.validate_user_input()?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
@@ -1052,7 +1043,7 @@ impl ContextPipeline {
             crate::Error::Invalid("current input is missing from context".into())
         })?)
         .map_err(|_| crate::Error::Invalid("current input index exceeds portable count".into()))?;
-        let mut context = Context {
+        let context = Context {
             messages: base
                 .into_iter()
                 .chain(input.prior_messages.iter().cloned())
@@ -1061,6 +1052,41 @@ impl ContextPipeline {
             current_input_index: Some(current_input_index),
         };
         validate_projected_context(&context, limits)?;
+        Ok(context)
+    }
+
+    /// Bounds the initial view and every intermediate projection, without truncation.
+    pub async fn run_bounded(&self, input: &ContextInput, limits: Limits) -> Result<Context> {
+        self.transform_bounded(input, Self::base_context(input, limits)?, limits)
+            .await
+    }
+
+    /// Applies declared stages to an explicit base, including a retained canonical
+    /// checkpoint plus its new history delta. The caller owns that base's provenance;
+    /// transforms may replace or reorder it while preserving the current input marker.
+    pub async fn transform_bounded(
+        &self,
+        input: &ContextInput,
+        mut context: Context,
+        limits: Limits,
+    ) -> Result<Context> {
+        limits.validate()?;
+        self.validate()?;
+        if self.0.len() > limits.context_messages {
+            return Err(crate::Error::Invalid(
+                "context stage count exceeds limit".into(),
+            ));
+        }
+        input.input.validate_user_input()?;
+        if let Some(selected) = &input.selected_context {
+            selected.validate_for_input(&input.input)?;
+        }
+        validate_projected_context(&context, limits)?;
+        if context.current_input_index.is_none() {
+            return Err(crate::Error::Invalid(
+                "base context has no current input marker".into(),
+            ));
+        }
         for stage in &self.0 {
             context = stage.apply(input, context).await?;
             validate_projected_context(&context, limits)?;
@@ -1521,6 +1547,143 @@ mod tests {
         assert!(compacted.messages.contains(&source.messages[4]));
         assert!(compacted.messages.contains(&source.messages[5]));
         assert_eq!(compacted.current_input_index, Some(2));
+        Ok(())
+    }
+
+    struct InputDependentProjection {
+        revision: u32,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ContextStage for InputDependentProjection {
+        fn name(&self) -> &str {
+            "input-dependent-projection"
+        }
+
+        fn contract(&self) -> Value {
+            serde_json::json!({ "name": self.name(), "revision": self.revision })
+        }
+
+        fn apply<'a>(
+            &'a self,
+            input: &'a ContextInput,
+            mut context: Context,
+        ) -> BoxFuture<'a, Result<Context>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                context.messages.push(ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!(
+                        "stage:{}:{}",
+                        self.revision,
+                        serde_json::to_string(&input.input)
+                            .map_err(|error| crate::Error::Invalid(error.to_string()))?
+                    )),
+                });
+                context.messages.reverse();
+                let length = u32::try_from(context.messages.len())
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+                context.current_input_index =
+                    context.current_input_index.map(|index| length - 1 - index);
+                Ok(context)
+            })
+        }
+    }
+
+    fn retained_input_base(input: ModelContent) -> Context {
+        Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("older question".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("older answer".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: input,
+                },
+            ],
+            current_input_index: Some(2),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_base_boundary_reruns_input_dependent_custom_transforms_and_reload()
+    -> Result<()> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pipeline = ContextPipeline::new([Arc::new(InputDependentProjection {
+            revision: 1,
+            calls: calls.clone(),
+        }) as Arc<dyn ContextStage>]);
+        let mut input = ContextInput {
+            input: ModelContent::Text("first input".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let raw = ContextPipeline::base_context(&input, Limits::default())?;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(ContextPipeline::default().run(&input).await?, raw);
+        // The continuation owner supplies its retained base plus the current delta.
+        // No prior stage contribution is saved into this base.
+        let retained = retained_input_base(input.input.clone());
+        let first = pipeline
+            .transform_bounded(&input, retained.clone(), Limits::default())
+            .await?;
+        assert_eq!(first.current_input_index, Some(1));
+        assert_eq!(first.messages[1].content, input.input);
+        assert_eq!(
+            first.messages[0].content,
+            ModelContent::Text("stage:1:\"first input\"".into())
+        );
+        assert_eq!(retained.messages.len(), 3);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        input.input = ModelContent::Text("later input".into());
+        let mut next_base = retained.clone();
+        next_base.messages[2].content = input.input.clone();
+        let next = pipeline
+            .transform_bounded(&input, next_base.clone(), Limits::default())
+            .await?;
+        assert_eq!(
+            next.messages[0].content,
+            ModelContent::Text("stage:1:\"later input\"".into())
+        );
+        let reloaded =
+            pipeline.reload(ContextPipeline::new([Arc::new(InputDependentProjection {
+                revision: 2,
+                calls: calls.clone(),
+            })
+                as Arc<dyn ContextStage>]))?;
+        let next = reloaded
+            .transform_bounded(&input, next_base, Limits::default())
+            .await?;
+        assert_eq!(
+            next.messages[0].content,
+            ModelContent::Text("stage:2:\"later input\"".into())
+        );
+        assert_eq!(
+            next.messages
+                .iter()
+                .filter(|message| message.role == ModelRole::System)
+                .count(),
+            1
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let invalid = Context {
+            current_input_index: None,
+            ..retained
+        };
+        assert!(
+            pipeline
+                .transform_bounded(&input, invalid, Limits::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
         Ok(())
     }
 

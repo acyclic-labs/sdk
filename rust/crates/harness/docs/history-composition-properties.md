@@ -473,3 +473,34 @@ would duplicate them, while skipping it would lose input-dependent stages and
 explicit reloads. The canonical watermark and declared stage contribution
 boundary must be integrated without inferring provenance from message equality.
 Cold bounded restoration and configurable default fork policies also remain open.
+
+
+## Explicit input-base transformation boundary
+
+`ContextPipeline::base_context` builds the selected canonical input and in-turn
+messages without executing any stage. `transform_bounded` applies the same
+ordered stages to an explicitly supplied base and checks the current input marker
+and all intermediate bounds. `run_bounded` composes these two operations; there
+is no second pipeline or checkpoint engine. A continuation owner can therefore
+supply a retained canonical base plus its delta, while rerunning input-dependent
+stages and future reloads. The owner must establish that base's provenance; this
+API does not infer contribution ownership from message equality or claim that a
+post-pipeline summary can be unmerged.
+
+The custom-transform fixture prepends new input-dependent instructions by
+reordering the entire supplied base, tracks the active input, and changes the
+instruction revision on explicit reload. It checks that stage construction/base
+construction performs no source calls, each new transformation runs once, no old
+stage instructions enter the retained base, and an absent input marker rejects
+before stage execution. This is a transformation-boundary test, not a default
+checkpoint admission or canonical-watermark qualification.
+
+Strict native all-target lint passed in
+`target-b-clippy-explicit-base-boundary.log`; strict WASM lint passed in
+`target-b-clippy-explicit-base-boundary-wasm.log`. The exact context source hash
+is retained in `target/b-explicit-base-boundary-source-hash.json`. The complete native
+library passed 261 tests, and all four existing admitted-summary continuation
+integration tests passed in `target-b-native-explicit-base-boundary.log`.
+Generated browser artifacts have not been regenerated for this refactor yet;
+these receipts qualify the Rust transformation seam, not browser adoption or
+default canonical watermark publication.
