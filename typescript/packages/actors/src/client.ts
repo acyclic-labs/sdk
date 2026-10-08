@@ -247,13 +247,13 @@ async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
   // @ts-ignore generated N-API loader is optional in browser/WASM builds
   nativeModulePromise ??= import("../generated/native/binding.cjs")
     .then(module => module as unknown as NativeActorsModule)
-    .catch(error => {
+    .catch(async error => {
       nativeModulePromise = undefined;
       // The generated loader is the maintained target selector. Its aggregate
       // error is fallback-safe only when every candidate failed because the
       // candidate itself was absent; ABI, export, and dependency failures must
       // remain visible instead of silently selecting WASM.
-      if (isExpectedNativeAbsence(error)) return undefined;
+      if (await isExpectedNativeAbsence(error)) return undefined;
       throw error;
     });
   return nativeModulePromise;
@@ -360,14 +360,16 @@ function snakeCase(value: string): string {
   return value.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
 }
 
-function isExpectedNativeAbsence(error: unknown): boolean {
+async function isExpectedNativeAbsence(error: unknown): Promise<boolean> {
   if (isMissingGeneratedLoader(error)) return true;
   if (!errorMessage(error).startsWith("Cannot find native binding. ")) return false;
+  const { createRequire } = await import("node:module");
+  const requireNative = createRequire(import.meta.url);
   let cause = errorCause(error);
   let foundCause = false;
   while (cause !== undefined && cause !== null) {
     foundCause = true;
-    if (!isMissingNativeCandidate(cause)) return false;
+    if (!isMissingNativeCandidate(cause, specifier => requireNative.resolve(specifier))) return false;
     cause = errorCause(cause);
   }
   return foundCause;
@@ -391,7 +393,7 @@ function isMissingGeneratedLoader(error: unknown): boolean {
   return isOwnGeneratedLoader(requested);
 }
 
-function isMissingNativeCandidate(error: unknown): boolean {
+function isMissingNativeCandidate(error: unknown, resolve: (specifier: string) => string): boolean {
   if (typeof error !== "object" || error === null) return false;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
   const message = errorMessage(error);
@@ -400,6 +402,12 @@ function isMissingNativeCandidate(error: unknown): boolean {
   if (code !== undefined && code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
   if (!hasGeneratedLoaderRequireStack(message)) return false;
   const requested = firstLine.match(/^Cannot find (?:module|package) ['"]([^'"]+)['"]/i)?.[1];
+  if (requested !== undefined && /^@acyclic-labs\/actors-[^/]+$/.test(requested)) {
+    try { resolve(`${requested}/package.json`); return false; }
+    catch (error) {
+      if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "MODULE_NOT_FOUND") throw error;
+    }
+  }
   return requested !== undefined
     && (/^\.\/index\.[^/]+\.(?:node|cjs)$/.test(requested) || /^@acyclic-labs\/actors-[^/]+(?:\/package\.json)?$/.test(requested));
 }
