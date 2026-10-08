@@ -271,6 +271,22 @@ impl BootEnvironment for DaytonaProvider {
     }
 }
 
+/// Stable `error.kind` for tracing; the message can embed provider detail.
+const fn error_kind(error: &ProviderError) -> &'static str {
+    match error {
+        ProviderError::NotFound(_) => "not_found",
+        ProviderError::Conflict(_) => "conflict",
+        ProviderError::Unsupported(_) => "unsupported",
+        ProviderError::Invalid(_) => "invalid",
+        ProviderError::Rejected(_) => "rejected",
+        ProviderError::Unavailable => "unavailable",
+        ProviderError::Indeterminate(_) => "indeterminate",
+        ProviderError::OperationIndeterminate(_) => "operation_indeterminate",
+        ProviderError::Failed => "failed",
+        ProviderError::Cancelled => "cancelled",
+    }
+}
+
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -471,7 +487,7 @@ impl DaytonaProvider {
             let sandbox = self.api.get(sandbox_id).await?;
             if map::is_settled(sandbox.state.as_deref()) {
                 if map::machine_state(sandbox.state.as_deref()) == MachineState::Failed {
-                    tracing::error!(sandbox_id, reason = ?sandbox.error_reason, "Daytona sandbox failed");
+                    tracing::error!(sandbox_id, "Daytona sandbox failed");
                     return Err(ProviderError::Failed);
                 }
                 return Ok(sandbox);
@@ -502,7 +518,7 @@ impl DaytonaProvider {
                     {
                         return Ok(value);
                     }
-                    tracing::error!(snapshot, reason = ?value.error_reason, "Daytona snapshot failed");
+                    tracing::error!(snapshot_id = snapshot, "Daytona snapshot failed");
                     return Err(ProviderError::Failed);
                 }
                 Ok(_) | Err(ProviderError::NotFound(_)) => {}
@@ -557,7 +573,11 @@ impl DaytonaProvider {
             match self.api.delete(&sandbox).await {
                 Ok(()) | Err(ProviderError::NotFound(_)) => {}
                 Err(error) => {
-                    tracing::warn!(sandbox, %error, "rollback delete of a failed operation's sandbox failed");
+                    tracing::warn!(
+                        sandbox_id = sandbox,
+                        error.kind = error_kind(&error),
+                        "rollback delete of a failed operation's sandbox failed"
+                    );
                     remaining.push(sandbox);
                 }
             }
@@ -598,7 +618,11 @@ impl DaytonaProvider {
             return Ok(());
         }
         if let Err(error) = self.api.delete(sandbox_id).await {
-            tracing::warn!(sandbox_id, %error, "best-effort delete of a sandbox created after cancellation failed");
+            tracing::warn!(
+                sandbox_id,
+                error.kind = error_kind(&error),
+                "best-effort delete of a sandbox created after cancellation failed"
+            );
         }
         Err(ProviderError::Cancelled)
     }
@@ -877,7 +901,11 @@ impl DaytonaProvider {
         }
         let archive = self.api.download_file(&source.id, &archive_path).await;
         if let Err(error) = run(&self.api, &source.id, format!("rm -f {archive_quoted}")).await {
-            tracing::warn!(%error, "best-effort removal of the fork archive in the parent failed");
+            tracing::warn!(
+                sandbox_id = source.id.as_str(),
+                error.kind = error_kind(&error),
+                "best-effort removal of the fork archive in the parent failed"
+            );
         }
         let archive = archive?;
         let mut ids = Vec::with_capacity(count as usize);
@@ -1901,6 +1929,90 @@ mod tests {
 
     fn gate() -> Arc<tokio::sync::Semaphore> {
         Arc::new(tokio::sync::Semaphore::new(0))
+    }
+
+    #[tokio::test]
+    async fn api_calls_emit_spans_without_paths_or_bodies() {
+        use std::sync::Mutex;
+        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+
+        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+        struct Capture(Seen);
+        struct Fields<'a>(&'static str, &'a Seen);
+        impl tracing::field::Visit for Fields<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                let value = format!("{value:?}").trim_matches('"').to_owned();
+                self.1.lock().unwrap().push((self.0, field.name(), value));
+            }
+        }
+        impl<S> tracing_subscriber::Layer<S> for Capture
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_new_span(
+                &self,
+                attrs: &tracing::span::Attributes<'_>,
+                _: &tracing::span::Id,
+                _: Context<'_, S>,
+            ) {
+                attrs.record(&mut Fields(attrs.metadata().name(), &self.0));
+            }
+            fn on_record(
+                &self,
+                id: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                ctx: Context<'_, S>,
+            ) {
+                values.record(&mut Fields(ctx.span(id).unwrap().name(), &self.0));
+            }
+        }
+        // A second live dispatcher keeps callsites consulting this test's subscriber.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let seen = Seen::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+        );
+        let mock = mock::Mock::start(|request| async move {
+            if request.is("GET", &format!("/sandbox/{MACHINE}")) {
+                (
+                    200,
+                    sandbox(MACHINE, "started", &owned_labels(test_key(9), None)),
+                )
+            } else {
+                (404, "no sandbox at /secret/path".into())
+            }
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        provider.api.get(MACHINE).await.unwrap();
+        assert!(matches!(
+            provider.api.delete("missing").await,
+            Err(ProviderError::NotFound(_))
+        ));
+
+        let seen = seen.lock().unwrap();
+        for expected in [
+            ("op", "get"),
+            ("http.status", "200"),
+            ("outcome", "ok"),
+            ("op", "delete"),
+            ("http.status", "404"),
+            ("error.kind", "not_found"),
+        ] {
+            assert!(
+                seen.iter()
+                    .any(|(s, f, v)| *s == "acyclic.machines.daytona.call"
+                        && (*f, v.as_str()) == expected),
+                "{expected:?} not in {seen:?}"
+            );
+        }
+        for (_, field, value) in seen.iter() {
+            assert!(!["path", "body", "authorization"].contains(field));
+            assert!(
+                !value.contains('/') && !value.contains("missing"),
+                "{value}"
+            );
+        }
     }
 
     #[tokio::test]
