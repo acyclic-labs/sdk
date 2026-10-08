@@ -8,7 +8,7 @@ Run the maintained workspace checks from the SDK root with `cargo test --workspa
 
 The same `qualify` binary owns the SDK's Filesystem fixture and diagnostic commands: `fixture`, `roundtrip`, `corpus`, `bench`, `restore-gen`, `mount-smoke`, `mount-smoke2`, `mount-hold`, and `source-probe`. They consume public SDK APIs. The plugin control plane consumes the same public APIs and keeps its end-to-end tests in its own crate.
 
-For a measured Filesystem consumer, run `cargo run --release -p acyclic-conformance --features local-runner --bin bench-fs -- --writes=64` from `rust/`. Add `--batch` to publish one transaction, or `--barrier` to compare the local durability policy. The benchmark verifies the resulting files after timing and emits one JSON measurement. The combined gate checks that all four modes succeed and reports their timings; it does not yet impose a performance threshold.
+For a measured Filesystem consumer, run `cargo run --release -p acyclic-conformance --features local-runner --bin bench-fs -- --writes=64` from `rust/`. Add `--batch` to publish one transaction, or `--barrier` to compare the local durability policy. The benchmark then times warm reads and cold reads after reopening, verifies every file, and emits one JSON measurement. The combined gate checks that all four modes succeed and reports their timings; it does not yet impose a performance threshold.
 
 The first [cross-host baseline comparison](benchmarks/2026-09-18-local-fs.json) records three warm full-flush samples from the preserved pre-lazy revision and this lab branch. This small workload did not establish a reproducible performance shift; continue comparing real consumers and add CPU, memory, and allocation measurements before setting regression thresholds.
 

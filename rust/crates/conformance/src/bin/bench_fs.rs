@@ -41,12 +41,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return benchmark_capture(writes, file_bytes).await;
     }
     let root = tempfile::tempdir()?;
-    let mut options = LocalOptions::new(root.path());
-    if barrier {
-        options.stream.durability = LocalStreamDurability::Barrier;
-        options.objects.durability = LocalObjectsDurability::Barrier;
-    }
-    let fs = Box::pin(Fs::local(options)).await?;
+    let options = || {
+        let mut options = LocalOptions::new(root.path());
+        if barrier {
+            options.stream.durability = LocalStreamDurability::Barrier;
+            options.objects.durability = LocalObjectsDurability::Barrier;
+        }
+        options
+    };
+    let fs = Box::pin(Fs::local(options())).await?;
     let workspace = Box::pin(fs.create_workspace("benchmark")).await?;
     let started = Instant::now();
     if batch {
@@ -80,18 +83,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let read_elapsed = read_started.elapsed();
     drop(workspace);
     drop(fs);
-    let mut options = LocalOptions::new(root.path());
-    if barrier {
-        options.stream.durability = LocalStreamDurability::Barrier;
-        options.objects.durability = LocalObjectsDurability::Barrier;
-    }
-    let fs = Box::pin(Fs::local(options)).await?;
+    // Reopen so reads start from durable storage instead of warm caches.
+    let fs = Box::pin(Fs::local(options())).await?;
     let workspace = Box::pin(fs.open_workspace("benchmark")).await?;
     let cold_started = Instant::now();
     for index in 0..writes {
         let value = Box::pin(workspace.read(&format!("/entry-{index:04}"), 64)).await?;
         if value.as_ref() != format!("value-{index}").as_bytes() {
-            return Err("cold read differs".into());
+            return Err(format!("entry {index} differs after reopen").into());
         }
     }
     let cold_elapsed = cold_started.elapsed();
