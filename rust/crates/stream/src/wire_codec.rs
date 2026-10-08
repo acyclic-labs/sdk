@@ -718,3 +718,176 @@ pub(crate) fn observation_to_wire(
         }),
     }
 }
+
+/// Builds an uncompressed Read or Follow frame carrying consecutive records.
+#[must_use]
+pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
+    use prost::Message;
+    let data = wire::RecordBatch { records }.encode_to_vec();
+    wire::ReadResponse {
+        codec: wire::Codec::None as i32,
+        decoded_length: data.len() as u64,
+        data: data.into(),
+    }
+}
+
+/// Decodes one Read or Follow frame to its encoded `RecordBatch`.
+///
+/// The declared length is checked against [`crate::MAX_COMMAND_BYTES`] before any
+/// allocation or decompression, and the decoded length must match it exactly.
+pub fn read_response_batch(value: wire::ReadResponse) -> Result<Bytes, StreamError> {
+    let length = usize::try_from(value.decoded_length)
+        .ok()
+        .filter(|length| *length <= crate::MAX_COMMAND_BYTES)
+        .ok_or(StreamError::Unavailable)?;
+    match wire::Codec::try_from(value.codec) {
+        Ok(wire::Codec::None) if value.data.len() == length => Ok(value.data),
+        Ok(wire::Codec::Zstd) => zstd(&value.data, length)
+            .map(Bytes::from)
+            .ok_or(StreamError::Unavailable),
+        _ => Err(StreamError::Unavailable),
+    }
+}
+
+/// Decodes one Read or Follow frame to its records, in frame order.
+pub fn read_response_records(value: wire::ReadResponse) -> Result<Vec<wire::Record>, StreamError> {
+    use prost::Message;
+    wire::RecordBatch::decode(read_response_batch(value)?)
+        .map(|batch| batch.records)
+        .map_err(|_| StreamError::Unavailable)
+}
+
+/// Decompresses one or more complete Zstandard frames to exactly `length` bytes.
+///
+/// Empty data is not a Zstandard stream; an empty frame is sent as `CODEC_NONE`.
+fn zstd(mut input: &[u8], length: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    if input.is_empty() {
+        return None;
+    }
+    let mut output = Vec::with_capacity(length);
+    while !input.is_empty() {
+        let allowed = (length - output.len()) as u64 + 1;
+        let decoder = ruzstd::decoding::StreamingDecoder::new(&mut input).ok()?;
+        decoder.take(allowed).read_to_end(&mut output).ok()?;
+        if output.len() > length {
+            return None;
+        }
+    }
+    (output.len() == length).then_some(output)
+}
+
+#[cfg(test)]
+pub(crate) fn zstd_read_response(records: Vec<wire::Record>) -> wire::ReadResponse {
+    let plain = read_response_wire(records);
+    wire::ReadResponse {
+        codec: wire::Codec::Zstd as i32,
+        decoded_length: plain.decoded_length,
+        data: ruzstd::encoding::compress_to_vec(
+            &plain.data[..],
+            ruzstd::encoding::CompressionLevel::Fastest,
+        )
+        .into(),
+    }
+}
+
+#[cfg(test)]
+mod read_response_tests {
+    use super::{read_response_records, read_response_wire, wire, zstd_read_response};
+
+    fn records(from: u64, count: u64) -> Vec<wire::Record> {
+        (from..from + count)
+            .map(|sequence| wire::Record {
+                sequence,
+                value: vec![u8::try_from(sequence % 251).unwrap_or(0); 100].into(),
+                commit_id: vec![1; 32].into(),
+                committed_at_micros: sequence,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compressed_frame_decodes_to_the_same_records() {
+        for count in [0, 1, 64] {
+            let expected = records(5, count);
+            let frame = zstd_read_response(expected.clone());
+            assert!(
+                count < 64 || frame.data.len() < usize::try_from(frame.decoded_length).unwrap_or(0)
+            );
+            assert_eq!(read_response_records(frame).ok(), Some(expected.clone()));
+            assert_eq!(
+                read_response_records(read_response_wire(expected.clone())).ok(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn empty_zstd_data_is_refused_and_an_empty_plain_frame_is_accepted() {
+        let empty = wire::ReadResponse {
+            codec: wire::Codec::Zstd as i32,
+            data: Default::default(),
+            decoded_length: 0,
+        };
+        assert!(read_response_records(empty).is_err());
+        assert_eq!(
+            read_response_records(read_response_wire(Vec::new())).ok(),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn mixed_frames_reassemble_in_order() {
+        let expected = records(0, 30);
+        let frames = expected
+            .chunks(7)
+            .enumerate()
+            .map(|(index, chunk)| {
+                if index % 2 == 0 {
+                    zstd_read_response(chunk.to_vec())
+                } else {
+                    read_response_wire(chunk.to_vec())
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut result = Vec::new();
+        for frame in frames {
+            result.extend(read_response_records(frame).expect("valid frame"));
+        }
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn oversized_declared_length_is_refused_before_decompressing() {
+        let maximum = crate::MAX_COMMAND_BYTES as u64;
+        for length in [maximum + 1, u64::MAX] {
+            for codec in [wire::Codec::None, wire::Codec::Zstd] {
+                let frame = wire::ReadResponse {
+                    codec: codec as i32,
+                    data: vec![0xff; 16].into(),
+                    decoded_length: length,
+                };
+                assert!(read_response_records(frame).is_err());
+            }
+        }
+        let mut expanding = zstd_read_response(records(0, 64));
+        expanding.decoded_length = 100;
+        assert!(read_response_records(expanding).is_err());
+    }
+
+    #[test]
+    fn mismatched_length_unknown_codec_and_corrupt_data_are_refused() {
+        let mut long = zstd_read_response(records(0, 3));
+        long.decoded_length += 1;
+        assert!(read_response_records(long).is_err());
+        let mut plain = read_response_wire(records(0, 3));
+        plain.decoded_length -= 1;
+        assert!(read_response_records(plain).is_err());
+        let mut unknown = zstd_read_response(records(0, 3));
+        unknown.codec = 2;
+        assert!(read_response_records(unknown).is_err());
+        let mut corrupt = zstd_read_response(records(0, 30));
+        corrupt.data.truncate(corrupt.data.len() / 2);
+        assert!(read_response_records(corrupt).is_err());
+    }
+}

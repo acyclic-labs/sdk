@@ -103,6 +103,9 @@ export type HostedFsErrorCode =
   | "permission_denied" | "resource_exhausted" | "failed_precondition" | "aborted" | "out_of_range"
   | "internal" | "unavailable" | "data_loss" | "unauthenticated" | "unknown";
 
+/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
+export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
+
 export class HostedFsError extends Error {
   constructor(readonly code: HostedFsErrorCode, message: string) {
     super(message);
@@ -122,8 +125,8 @@ interface HostedClient {
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  if (!options.bearerToken.trim() || new TextEncoder().encode(options.bearerToken).byteLength > 8192 || /[\r\n\0]/.test(options.bearerToken)) {
-    throw new RangeError("bearer token must be non-empty, at most 8 KiB, and free of CR, LF, or NUL");
+  if (!options.bearerToken.trim() || new TextEncoder().encode(options.bearerToken).byteLength > MAX_BEARER_TOKEN_BYTES || /[\r\n\0]/.test(options.bearerToken)) {
+    throw new RangeError("bearer token must be non-empty, at most 12 KiB, and free of CR, LF, or NUL");
   }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");

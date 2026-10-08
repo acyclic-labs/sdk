@@ -104,6 +104,9 @@ pub mod wire {
 /// Largest caller-supplied PEM CA, client certificate, or private key.
 #[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
 const MAX_PEM_BYTES: usize = 64 * 1024;
+/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
+pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Canonical Objects v2 descriptor, including streaming service definitions.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../generated/acyclic-objects-v2.bin");

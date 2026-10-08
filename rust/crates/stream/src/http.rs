@@ -56,7 +56,7 @@ impl HttpStream {
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
             || token.trim().is_empty()
-            || token.len() > 8192
+            || token.len() > crate::MAX_BEARER_TOKEN_BYTES
             || maximum == 0
         {
             return Err(ConnectError);
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn endpoint_and_credential_policy_matches_other_families() {
-        let long = "t".repeat(8193);
+        let long = "t".repeat(crate::MAX_BEARER_TOKEN_BYTES + 1);
         for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
             assert!(HttpStream::new("https://example.test", token, 1).is_err());
         }

@@ -6,7 +6,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
+use acyclic_machines::{MAX_BEARER_TOKEN_BYTES, MAX_PAGE_SIZE, SimulatedMachines};
 use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
 use uuid::Uuid;
@@ -156,7 +156,7 @@ pub fn validate_transport_options(
     let token = token.as_string().ok_or_else(|| {
         js_error(
             "invalid-token",
-            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+            "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
         )
     })?;
     let maximum_response_bytes = maximum_response_bytes.as_f64().ok_or_else(|| {
@@ -166,14 +166,14 @@ pub fn validate_transport_options(
         )
     })?;
     if token.chars().all(is_js_whitespace)
-        || token.len() > 8192
+        || token.len() > MAX_BEARER_TOKEN_BYTES
         || token
             .chars()
             .any(|character| matches!(character, '\r' | '\n' | '\0'))
     {
         return Err(js_error(
             "invalid-token",
-            "token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL",
+            "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
         ));
     }
     if !public::is_safe_integer(maximum_response_bytes) || maximum_response_bytes <= 0.0 {
