@@ -20,7 +20,7 @@ required-features = ["local"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:tonic", "dep:tonic-prost"]
+grpc = ["dep:tonic", "dep:tonic-prost", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
