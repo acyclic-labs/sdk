@@ -233,7 +233,7 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     // Keep the final linker identity stable while Cargo builds in its own path.
     // rust-lld is invoked directly by rustc, so pass Darwin options directly;
     // the -Wl, prefix is only valid when the driver is Apple's ld wrapper.
-    flags.push("-C", "link-arg=-install_name", "-C", "link-arg=@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-final_output", "-C", "link-arg=libacyclic_stream_napi.dylib");
+    flags.push("-C", "link-arg=-fuse-ld=ld64.lld", "-C", "link-arg=-install_name", "-C", "link-arg=@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-final_output", "-C", "link-arg=libacyclic_stream_napi.dylib");
   }
   return flags.join("\x1f");
 }
@@ -252,23 +252,29 @@ export function darwinRustLldPaths(target, sysroot) {
     // gcc-ld. The generic rust-lld name intentionally rejects direct Darwin
     // invocations unless a driver supplies -flavor.
     linker: resolve(sysroot, "lib", "rustlib", target, "bin", "gcc-ld", "ld64.lld"),
+    driver: resolve(sysroot, "lib", "rustlib", target, "bin", "gcc-ld"),
     loaderPath: resolve(sysroot, "lib"),
   };
 }
 
-export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, sdkRoot: suppliedSdkRoot, linkerExists = existsSync } = {}) {
+export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, sdkRoot: suppliedSdkRoot, driver: suppliedDriver, linkerExists = existsSync } = {}) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return () => {};
   const sysroot = suppliedSysroot ?? commandOutput("rustc", ["--print", "sysroot"]);
   const paths = darwinRustLldPaths(target, sysroot);
   if (!linkerExists(paths.linker)) throw new Error(`Rust toolchain rust-lld is unavailable at ${paths.linker}`);
   const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   if (sdkRoot.length === 0) throw new Error("Darwin rust-lld requires an Apple macOS SDK");
+  const driver = suppliedDriver ?? commandOutput("xcrun", ["--find", "clang"]);
   const priorTargetLinker = envValue(paths.linkerEnvironment);
   const priorDyldLibraryPath = envValue("DYLD_LIBRARY_PATH");
   const priorSdkRoot = envValue("SDKROOT");
-  process.env[paths.linkerEnvironment] = paths.linker;
+  const priorPath = envValue("PATH");
+  // Clang is the maintained Darwin driver; -fuse-ld=ld64.lld selects the
+  // toolchain's Darwin-flavoured LLD while preserving Cargo host-link flags.
+  process.env[paths.linkerEnvironment] = driver;
   process.env.DYLD_LIBRARY_PATH = [paths.loaderPath, priorDyldLibraryPath].filter(value => typeof value === "string" && value.length > 0).join(delimiter);
   process.env.SDKROOT = sdkRoot;
+  process.env.PATH = [paths.driver, priorPath].filter(value => typeof value === "string" && value.length > 0).join(delimiter);
   return () => {
     if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
     else process.env[paths.linkerEnvironment] = priorTargetLinker;
@@ -276,6 +282,8 @@ export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, sdkRo
     else process.env.DYLD_LIBRARY_PATH = priorDyldLibraryPath;
     if (priorSdkRoot === null) delete process.env.SDKROOT;
     else process.env.SDKROOT = priorSdkRoot;
+    if (priorPath === null) delete process.env.PATH;
+    else process.env.PATH = priorPath;
   };
 }
 

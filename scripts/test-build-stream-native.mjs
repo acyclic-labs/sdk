@@ -216,6 +216,7 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
   assert.deepEqual(lldPaths, {
     linkerEnvironment: "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
     linker: resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "gcc-ld", "ld64.lld"),
+    driver: resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "gcc-ld"),
     loaderPath: resolve("/rust/sysroot", "lib"),
   });
   assert.equal(darwinRustLldPaths("x86_64-pc-windows-msvc", "/rust/sysroot"), null);
@@ -257,11 +258,11 @@ test("native qualification rejects build input identity mutations", () => {
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
 
   const darwinLinker = linkerInputs("aarch64-apple-darwin", {
-    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld64.lld",
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/usr/bin/clang",
     DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
     SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
   });
-  assert.equal(darwinLinker.configured.target, "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld64.lld");
+  assert.equal(darwinLinker.configured.target, "/usr/bin/clang");
   assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
   assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
 });
@@ -430,14 +431,17 @@ test("native qualification restores Darwin rust-lld linker and loader environmen
   process.env.SDKROOT = "ambient-sdk";
   let restore;
   try {
-    restore = configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", linkerExists: () => true });
-    assert.equal(process.env[linkerEnvironment], resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "gcc-ld", "ld64.lld"));
+    const priorPath = process.env.PATH;
+    restore = configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", driver: "/usr/bin/clang", linkerExists: () => true });
+    assert.equal(process.env[linkerEnvironment], "/usr/bin/clang");
+    assert.equal(process.env.PATH, `${resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "gcc-ld")}${process.platform === "win32" ? ";" : ":"}${priorPath}`);
     assert.equal(process.env.DYLD_LIBRARY_PATH, `${resolve("/rust/sysroot", "lib")}${process.platform === "win32" ? ";" : ":"}ambient-loader`);
     restore();
     restore = undefined;
     assert.equal(process.env[linkerEnvironment], "ambient-linker");
     assert.equal(process.env.DYLD_LIBRARY_PATH, "ambient-loader");
     assert.equal(process.env.SDKROOT, "ambient-sdk");
+    assert.equal(process.env.PATH, priorPath);
   } finally {
     restore?.();
     if (priorLinker === undefined) delete process.env[linkerEnvironment];
@@ -451,7 +455,7 @@ test("native qualification restores Darwin rust-lld linker and loader environmen
 
 test("native qualification refuses a Darwin toolchain without rust-lld", () => {
   assert.throws(
-    () => configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", linkerExists: () => false }),
+    () => configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", driver: "/usr/bin/clang", linkerExists: () => false }),
     /Rust toolchain rust-lld is unavailable/u,
   );
 });
