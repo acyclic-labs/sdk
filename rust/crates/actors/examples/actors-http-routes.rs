@@ -99,14 +99,26 @@ impl Temporary {
         fs::create_dir(&path)?;
         Ok(Self(path))
     }
+
+    fn cleanup(&self) -> std::io::Result<()> {
+        fs::remove_dir_all(&self.0)
+    }
 }
 impl Drop for Temporary {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        if let Err(error) = self.cleanup()
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("Actors generation cleanup failed: {error}");
+        }
     }
 }
 
 fn files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(root)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::other("unsupported generation root"));
+    }
     fn visit(root: &Path, current: &Path, output: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in fs::read_dir(current)? {
             let entry = entry?;
@@ -197,16 +209,14 @@ fn generate(mode: &str, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::copy(&proto_file, checked_proto)?;
     }
     if mode == "rust" {
+        temporary.cleanup()?;
         return Ok(());
     }
     fs::write(
         temporary.0.join("buf.yaml"),
         "version: v2\nmodules:\n  - path: proto\n",
     )?;
-    let plugin = env::var("ACYCLIC_PROTOC_GEN_ES").map_or_else(
-        |_| vec!["bun".to_owned(), "x".to_owned(), "protoc-gen-es".to_owned()],
-        |path| vec![path.replace('\\', "/")],
-    );
+    let plugin = plugin_command(env::var("ACYCLIC_PROTOC_GEN_ES").ok());
     let config = format!(
         "version: v2\nplugins:\n  - local: {}\n    out: generated/typescript\n    strategy: all\n    opt:\n      - target=js+dts\n      - import_extension=js\n",
         serde_json::to_string(&plugin)?
@@ -249,7 +259,15 @@ fn generate(mode: &str, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
         copy_tree(&fresh_proto, &package_proto)?;
     }
+    temporary.cleanup()?;
     Ok(())
+}
+
+fn plugin_command(path: Option<String>) -> Vec<String> {
+    match path.filter(|path| !path.is_empty()) {
+        Some(path) => vec![path.replace('\\', "/")],
+        None => vec!["bun".to_owned(), "x".to_owned(), "protoc-gen-es".to_owned()],
+    }
 }
 
 fn lower_camel(value: &str) -> Result<String, &'static str> {
@@ -454,7 +472,7 @@ fn render_semantic_index(config: &ts_rs::Config) -> String {
 
 #[cfg(test)]
 mod generation_tests {
-    use super::{Temporary, assert_tree_equal, files};
+    use super::{Temporary, assert_tree_equal, files, plugin_command};
     use std::fs;
 
     #[test]
@@ -482,6 +500,43 @@ mod generation_tests {
                 .expect_err("linked output must not be omitted from the inventory")
                 .to_string()
                 .contains("unsupported generation entry")
+        );
+        assert!(
+            files(&link)
+                .expect_err("linked root")
+                .to_string()
+                .contains("unsupported generation root")
+        );
+        let regular = actual.join("regular.ts");
+        fs::write(&regular, "declaration")?;
+        assert!(
+            files(&regular)
+                .expect_err("file root")
+                .to_string()
+                .contains("unsupported generation root")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_plugin_override_retains_maintained_default() {
+        assert_eq!(plugin_command(Some(String::new())), plugin_command(None));
+        assert_eq!(
+            plugin_command(Some("C:\\tools\\protoc-gen-es".to_owned())),
+            ["C:/tools/protoc-gen-es"]
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = Temporary::new(&std::env::temp_dir())?;
+        fs::remove_dir(&temporary.0)?;
+        fs::write(&temporary.0, "replaced temporary directory")?;
+        let result = temporary.cleanup();
+        fs::remove_file(&temporary.0)?;
+        assert!(
+            result.is_err(),
+            "cleanup must not silently accept an invalid owned path"
         );
         Ok(())
     }
