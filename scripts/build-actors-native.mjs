@@ -225,7 +225,7 @@ export async function assertBundle(output, options = {}) {
   if (JSON.stringify(metadata.source_files) !== JSON.stringify(current.files) || JSON.stringify(generation.source_files) !== JSON.stringify(current.files)) throw new Error("native bundle source file attestation differs from current checkout");
   const artifacts = generation.artifacts;
   if (!Array.isArray(artifacts) || !Array.isArray(metadata.artifacts) || JSON.stringify(metadata.artifacts) !== JSON.stringify(artifacts) || metadata.artifact === undefined) throw new Error("native bundle artifact attestation is invalid");
-  if (metadata.artifact.sha256 !== artifacts.find(item => item.path === metadata.artifact.path)?.sha256) throw new Error("native bundle selected artifact digest differs");
+  assertSelectedArtifact(metadata.artifact, artifacts);
   for (const artifact of artifacts) {
     const bytes = await readFile(pathFromArtifact(output, artifact.path));
     if (artifact.sha256 !== digest(bytes) || artifact.bytes !== bytes.length) throw new Error(`native bundle artifact differs: ${artifact.path}`);
@@ -233,6 +233,11 @@ export async function assertBundle(output, options = {}) {
   const bundle = await bundleArtifacts(output);
   if (JSON.stringify(bundle.artifacts) !== JSON.stringify(artifacts)) throw new Error("native bundle contains unstated or missing generated files");
   return { metadata, generation, artifacts };
+}
+
+export function assertSelectedArtifact(artifact, artifacts) {
+  const selected = artifacts.find(item => item.path === artifact.path);
+  if (!selected || artifact.path !== selected.path || artifact.sha256 !== selected.sha256 || artifact.bytes !== selected.bytes) throw new Error("native bundle selected artifact attestation differs");
 }
 
 async function build(options) {

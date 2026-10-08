@@ -6,10 +6,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { assertCommonBindings, assertNativeSet } from "./assemble-actors-native-package.mjs";
+import { assertSelectedArtifact } from "./build-actors-native.mjs";
 
 const targets = ["target-a", "target-b", "target-c"];
 const source = "a".repeat(40);
 const qualified = () => targets.map(selected_target => ({ selected_target, source_revision: source, source_sha256: "sha256:source", source_files: [{ path: "contract.rs", sha256: "sha256:contract", bytes: 10 }], package: "acyclic-actors-napi", version: "0.2.0", targets }));
+
+test("selected native artifact must match the complete generation record", () => {
+  const artifact = { path: "generated/native/index.node", sha256: "sha256:binary", bytes: 4096 };
+  assert.doesNotThrow(() => assertSelectedArtifact({ ...artifact }, [artifact]));
+  for (const mutation of [{ bytes: 4095 }, { sha256: "sha256:changed" }, { path: "generated/native/other.node" }]) {
+    assert.throws(() => assertSelectedArtifact({ ...artifact, ...mutation }, [artifact]), /selected artifact attestation differs/);
+  }
+});
 
 test("assembly requires one bundle for each declared Rust target", () => {
   assert.doesNotThrow(() => assertNativeSet(qualified(), targets, source));
