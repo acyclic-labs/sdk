@@ -8,9 +8,14 @@ repository.workspace = true
 publish = true
 description = "Native file and process primitives shared by Acyclic host consumers"
 readme = "README.md"
+exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
+
+[[bench]]
+name = "native_runtime"
+harness = false
 
 [dependencies]
 bytes.workspace = true
@@ -40,6 +45,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+divan.workspace = true
 tempfile = "3.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
