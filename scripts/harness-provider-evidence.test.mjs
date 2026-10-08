@@ -40,17 +40,24 @@ import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harnes
 const suite = { cases: [{ name: "a", family: "harness" }, { name: "b", family: "harness" }] };
 const registrations = [["harness", "a", [["rust", "test_a"]]], ["harness", "b", [["e2e", "test_b"]]]];
 
-test("locked Harness inventory fails closed until exact semantic assertions exist", () => {
+test("locked Harness inventory owns exactly the executed requirements for every case", () => {
   const locked = JSON.parse(readFileSync(new URL("../conformance/vectors/core.json", import.meta.url), "utf8"));
   const cases = locked.cases.filter(item => item.family === "harness");
   assert.deepEqual(harnessCaseMarkers.map(([, name]) => name), cases.map(item => item.name));
-  const pending = harnessCaseMarkers.filter(([, , required]) => !required.length);
-  assert.deepEqual(pending.map(([, name]) => name), [
-    "join-preserves-child-slot-order", "quorum-fails-when-threshold-is-unreachable", "custom-executor-owns-the-whole-turn-loop", "pagination-is-bounded-and-rebase-safe",
-  ]);
-  assert.throws(() => registerCases(locked, "harness", harnessCaseMarkers), /no executable evidence/);
-  for (const marker of pending) {
-    assert.throws(() => registerCases({ cases: [{ name: marker[1], family: "harness" }] }, "harness", [marker]), /no executable evidence/);
+  const registered = registerCases(locked, "harness", harnessCaseMarkers);
+  assert.deepEqual(registered.cases, cases);
+  assert.equal(registered.markers.size, cases.length);
+  const executed = { rust: new Set(), typescript: new Set(), e2e: new Set() };
+  for (const required of registered.markers.values()) {
+    for (const [runtime, name] of required) executed[runtime].add(name);
+  }
+  for (const [name, required] of registered.markers) {
+    requireExecutedCase(name, required, executed);
+    for (const [runtime, missing] of required) {
+      executed[runtime].delete(missing);
+      assert.throws(() => requireExecutedCase(name, required, executed), /missing/);
+      executed[runtime].add(missing);
+    }
   }
 });
 
