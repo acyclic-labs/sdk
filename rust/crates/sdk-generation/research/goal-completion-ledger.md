@@ -1,13 +1,13 @@
 # Rust source-of-truth goal completion ledger
 
-Snapshot: current main c8bef0be476cbfd5d4fa30d1f8d017fa5336d964 (2026-10-07).
+Baseline snapshot: main c8bef0be476cbfd5d4fa30d1f8d017fa5336d964 (2026-10-07). Latest verified main: d5394556ebb5ddf7c6b62f1bb1d08c5e6dd058f3 (2026-10-08).
 Review rule: evidence is labeled by its actual source. Main-tree facts,
 C-worktree research, and external qualification receipts are not interchangeable.
 
 This ledger records whether the complete SDK and generated documentation-data
 goal can be called. A row closes only with reproducible current-main evidence.
 
-## Current-main facts
+## Baseline main facts (2026-10-07)
 
 | Area | What is actually present on current main | State |
 | --- | --- | --- |
@@ -660,3 +660,9 @@ PR267 merged by root using authorized admin squash after current-main cheap qual
 - Fresh remote Linux clone had no node_modules. Maintained Bun1.4.2 frozen install passed; system Cargo1.75 failed edition2024 as expected, establishing the prerequisite. Replay with actual pinned Rust/Cargo1.98.1 passed inventory generation. Root read pinned-prepare.log and prepare-proof.json: Windows/Linux expected inventories agree across65 source files, CLI identity and maintained three-platform descriptors; source closure5f605fa00304ace1e12e4afbcd99f226e2e1a8da5079141eb5b368e97f0f5856. No native build in this proof. Final freeze approved; exact three-platform native/neutral-parent/browser installed qualification now authorized, no package publication or PR merge.
 - Root inspected Actors source-owned formal harness and found inverse/error-preservation alone admits an always-reject mutation. Owner will strengthen accepted iff published discriminants and actual field ingress, delegate three duplicate numeric parse maps to maintained enum TryFrom, and run a reject-valid-variant Kani negative control after original42502 terminal. Existing live generation check remains intact. One final freeze after main integration/two Rustdoc corrections, not premature artifact retagging.
 - Historical docs current review confirms all non-Cargo-produced archive members are now compared with checkout and final drift includes archived source paths. Required executable mutation negative controls and actual archive-identity mode for genuinely dirty/divergent registry releases remain assigned; no backfill or full goal completion claim. All original requirements retained and all three worker slots active.
+### Current-main authority audit and final Actors review — 2026-10-08
+- Root inspected actual d539 main Cargo.toml and git tree: Stream NAPI is present, sdk-docs is present as isolated tooling, sdk-generation and Actors semantic domain are not yet on main. Inference build.rs explicitly reads the committed inference_descriptor.bin; the Rust-derived widths merge does not make its wire contract Rust-authored. Unified all-owner generation and broad authored-TypeScript replacement remain required, not closed by the bounded merges.
+- Actors original42502 terminated exit0: default generation and generated-output drift check both passed. Owner integrated authoritative main d539 and made exactly three files37 additions37 deletions: remove three duplicate numeric enum parsing maps in favor of maintained TryFrom, strengthen source-owned admission proof to accepted iff named variant discriminants and actual private parse/encode ingress, and correct two browser Rustdoc paragraphs. Root independently reviewed the actual diff and approved. Rust Actors/NAPI tests and canonical generation checks18649 precede one signed freeze, final four Kani proofs, intentional Active-rejection negative control and exact three-platform installed refresh; these are not yet claimed complete.
+- Root current docs review found historical write_bundle selected mark_latest solely from empty semver prerelease, allowing a yanked stable release to become latest. Required fix: preserve selectable immutable yanked versions, exclude any-yanked cohort from latest, enforce same rule when validating a coherently modified catalog, and add yanked stable regression. Historical dirty/divergent archive identity and source-mutation controls remain part of the full goal.
+- Frozen Stream neutral293510 actual qualification drivers are running on Windows76541, Linux54206 and macOS1516. Each performs two actual producer outputs with independent existing Cargo targets and retains original raw receipts. This is reused-target reproduction, not empty-target evidence. No final runtime/artifact/reproducibility claim yet; source remains frozen.
+- Goal remains active/incomplete. Current runtime has root plus three active worker slots. No registry publishing, auto-merge, deployment, or website merge.
