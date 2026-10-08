@@ -258,6 +258,40 @@ uses the existing disabled-policy test constructor. Fresh strict native
 all-target lint passed in `target-b-clippy-main275-compaction-fixed.log`.
 Integrated native execution is recorded separately in
 `target-b-native-main275-compaction.log`; earlier receipts do not qualify this
-integrated source. Default-policy replacement, malformed accounting, durable
+integrated source. This integrated run passed 250 unit and 46 integration tests,
+with zero failures or ignored tests, at commit
+`76b88721fc7008e27889bd2c5a6ca7baa5184c93` (tree
+`c3df1bba72cdd5d82953077221f25d8d144602eb`). Source hashes are recorded in
+`target/b-main275-compaction-source-hashes.json`.
+Additional policy/accounting negatives, durable
 projection continuation, logical forks, cold checkpoints, generated consumption
 and final platform qualification remain open.
+
+The next consumer change forwards the existing CompactionPolicy through
+LocalHarness::with_limits/with_tools, FilesystemTaskExecution's configuration
+and the stock task model binding. LocalHarness::new retains the default policy.
+The local consumer regression installs a 1,024-token reserve, then disables
+compaction for a provider that implements no capacity/accounting hooks. The
+durable reopen regression installs an 8,192-token reserve and checks the retained
+output budget after exact reconciliation. These are current-source checks under
+development, separate from the preceding 296-test receipt. The current consumer
+run passed all 251 unit and 46 integration tests in
+`target-b-native-compaction-convenience.log`; no failures or ignored tests.
+Strict native all-target lint passed in
+`target-b-clippy-compaction-convenience-final.log`. The four source hashes in
+`target/b-compaction-convenience-source-hashes.json` were rechecked after the run
+and all matched. This verifies native configuration consumption; generated and
+browser consumption remain open.
+
+Source inspection of later-turn continuation identifies the remaining boundary:
+StockExecutor::compact_response stages the exact CompactionReference in its turn
+journal, while MemoryHarnessStorage::run_conversation starts the next canonical
+selection again. The selection's indexed suffix bounds message count but does
+not load a retained summary projection. DurableContextProvider::latest provides
+bounded durable projection reads, but the default builder currently binds the
+journal/content providers without installing that provider as a continuing
+context source. Thus the current automatic-threshold evidence covers one admitted
+turn and its recovery, not persistent compression across later turns. The next
+continuation change must reuse those existing projection/journal mechanisms,
+retain authoritative history and exact prior admissions, and include a changed
+source plus later-turn consumer regression.

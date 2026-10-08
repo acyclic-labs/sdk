@@ -1218,6 +1218,13 @@ where
         self.operation_id
     }
 
+    /// Replaces or disables compaction while retaining task accounting and fencing.
+    #[must_use]
+    pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
+        self.executor = self.executor.with_compaction_policy(policy);
+        self
+    }
+
     /// Sets the output token budget without replacing task ownership or its journal.
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
         self.executor = self.executor.with_max_output_tokens(maximum)?;

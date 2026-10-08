@@ -90,15 +90,23 @@ pub struct LocalHarness {
 impl LocalHarness {
     /// Starts a fresh local agent with the standard bounded runtime defaults.
     pub async fn new(model: Model, provider: Arc<dyn ModelProvider>) -> Result<Self> {
-        Self::with_limits(AgentId::new(), Limits::default(), model, provider).await
+        Self::with_limits(
+            AgentId::new(),
+            Limits::default(),
+            model,
+            provider,
+            crate::context::CompactionPolicy::default(),
+        )
+        .await
     }
 
-    /// Starts a named local agent with explicit admission and rendering bounds.
+    /// Starts a named local agent with explicit limits and compaction policy.
     pub async fn with_limits(
         agent: AgentId,
         limits: Limits,
         model: Model,
         provider: Arc<dyn ModelProvider>,
+        compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
         limits.validate()?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
@@ -114,11 +122,12 @@ impl LocalHarness {
                 "tool:call:acyclic.stage_file".into(),
                 "tool:call:acyclic.list_files".into(),
             ],
+            compaction,
         )
     }
 
     /// Starts a local agent with an explicitly selected, versioned tool set and
-    /// matching capability grants. Merely registering a tool does not authorize
+    /// matching capability grants and compaction policy. Merely registering a tool does not authorize
     /// its execution; callers must grant `tool:call:<name>` deliberately.
     pub async fn with_tools(
         agent: AgentId,
@@ -127,10 +136,19 @@ impl LocalHarness {
         provider: Arc<dyn ModelProvider>,
         tools: ToolRegistry,
         capabilities: impl IntoIterator<Item = String>,
+        compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
         limits.validate()?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        Self::from_storage(storage, limits, model, provider, tools, capabilities)
+        Self::from_storage(
+            storage,
+            limits,
+            model,
+            provider,
+            tools,
+            capabilities,
+            compaction,
+        )
     }
 
     fn from_storage(
@@ -140,12 +158,14 @@ impl LocalHarness {
         provider: Arc<dyn ModelProvider>,
         tools: ToolRegistry,
         capabilities: impl IntoIterator<Item = String>,
+        compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
         let mut builder = storage
             .builder()
             .model(model, provider)
             .grant(capability::MODEL_GENERATE)
             .tools(tools)
+            .compaction(compaction)
             .limits(limits);
         for capability in capabilities {
             builder = builder.grant(capability);
@@ -1467,6 +1487,63 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    struct ModelWithoutAccounting(TextModel);
+
+    impl ModelProvider for ModelWithoutAccounting {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+            dispatch: crate::model::ModelDispatch,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            self.0.generate(request, dispatch)
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            attempt: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(attempt)
+        }
+    }
+
+    #[tokio::test]
+    async fn local_convenience_consumers_replace_or_disable_compaction() -> Result<()> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let policy =
+            crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
+                response_reserve_tokens: 1_024,
+                recent_tokens: 2_048,
+                ..crate::context::ThresholdCompaction::default()
+            });
+        let local = LocalHarness::with_limits(
+            AgentId::new(),
+            Limits::default(),
+            Model::new("test", "text", "1", Value::Null)?,
+            Arc::new(TextModel(requests.clone())),
+            policy,
+        )
+        .await?;
+        assert_eq!(local.run("replacement").await?.text, "local response");
+        let disabled = LocalHarness::with_tools(
+            AgentId::new(),
+            Limits::default(),
+            Model::new("test", "text", "1", Value::Null)?,
+            Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))),
+            ToolRegistry::new(),
+            Vec::<String>::new(),
+            crate::context::CompactionPolicy::Disabled,
+        )
+        .await?;
+        assert_eq!(disabled.run("disabled").await?.text, "local response");
+        let requests = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].max_output_tokens, Some(1_024));
+        assert_eq!(requests[1].max_output_tokens, None);
+        Ok(())
     }
 
     #[tokio::test]

@@ -1721,6 +1721,7 @@ async fn worker_restart_with_options(
                         Model::new("test", "interrupted", "1", Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
+                        acyclic_harness::context::CompactionPolicy::default(),
                     ),
                     2,
                 )
@@ -1750,6 +1751,7 @@ async fn worker_restart_with_options(
                         Model::new("test", "interrupted", "1", Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
+                        acyclic_harness::context::CompactionPolicy::default(),
                     ),
                     2,
                 )
@@ -2271,7 +2273,17 @@ async fn stock_restart_with_publication_fault(
                 model.clone(),
                 ContextPipeline::default(),
             )
-            .await?;
+            .await?
+            .with_compaction_policy(if fault.is_none() {
+                acyclic_harness::context::CompactionPolicy::Threshold(
+                    acyclic_harness::context::ThresholdCompaction {
+                        response_reserve_tokens: 8_192,
+                        ..acyclic_harness::context::ThresholdCompaction::default()
+                    },
+                )
+            } else {
+                acyclic_harness::context::CompactionPolicy::default()
+            });
         let turn = TurnInput {
             operation_id: execution.operation_id(),
             input: ModelContent::Text("hello".into()),
@@ -2313,6 +2325,9 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(execution.execute(turn).await?, restored);
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            if fault.is_none() {
+                assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+            }
             let another = runtime
                 .stock_execution(
                     task,

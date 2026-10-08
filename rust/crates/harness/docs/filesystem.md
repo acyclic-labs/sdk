@@ -2,6 +2,17 @@
 
 Enabled by the `filesystem` feature (`filesystem-local` adds the durable local stores).
 
+Stock execution enables `CompactionPolicy::default()` with a 16,384-token
+response reserve and 20,000-token recent suffix. The selected ModelProvider
+supplies its actual capacity and digest-bound additive token counts; unsupported
+accounting is an explicit error before model dispatch. `LocalHarness::with_limits`
+and `with_tools` take an explicit `CompactionPolicy`, while `new` uses the default.
+`HarnessBuilder::compaction` and `FilesystemTaskExecution::with_compaction_policy`
+install the same configuration. The stock task command host's `with_model` binds
+the model, provider, context pipeline and policy together. `Disabled` leaves the
+installed context pipeline in control; replacement thresholds preserve task
+accounting, ownership and exact journal recovery.
+
 Explicit bridge from Harness resource references to versioned Filesystem workspaces. It keeps generation identities visible rather than pretending mutable paths are durable references.
 
 The local preset's file tools require both their tool-call grant and the caller's exact volume read or write grant, including on completed replay. Its ephemeral directory-listing tool retains the first page observed for each operation ID, so reconciliation cannot silently return a newer generation.
