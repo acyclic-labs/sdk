@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+
+test("non-Darwin builds do not discover Apple signing tools or read signing artifacts", () => {
+  for (const target of ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]) {
+    assert.equal(signDarwinAddon("nonexistent-signing-output", target), null);
+  }
+});
 
 test("native qualification rejects a compiled path dependency mutation", async () => {
   const snapshot = await sourceSnapshot();

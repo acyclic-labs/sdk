@@ -874,20 +874,21 @@ async function bundleArtifacts(output) {
   return { artifacts, node: artifacts.find(item => item.path.endsWith(".node")) };
 }
 
-function signDarwinAddon(output, target, codesignExecutable = commandOutput("xcrun", ["--find", "codesign"])) {
+export function signDarwinAddon(output, target, /** @type {string|null} */ codesignExecutable = null) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  const signer = codesignExecutable ?? commandOutput("xcrun", ["--find", "codesign"]);
   const name = readdir(output).then(entries => entries.find(entry => entry.endsWith(".node")));
   return name.then(async artifactName => {
     if (artifactName === undefined) throw new Error(`native bundle ${output} has no Darwin addon to sign`);
     const artifact = resolve(output, artifactName);
     const args = ["--force", "--sign", "-", "--identifier", "acyclic.stream.napi", "--timestamp=none", artifact];
-    execFileSync(codesignExecutable, args, { stdio: "inherit" });
-    const verified = spawnSync(codesignExecutable, ["--verify", "--strict", artifact], { encoding: "utf8" });
+    execFileSync(signer, args, { stdio: "inherit" });
+    const verified = spawnSync(signer, ["--verify", "--strict", artifact], { encoding: "utf8" });
     if (verified.status !== 0) {
       const verification = `${verified.stdout ?? ""}${verified.stderr ?? ""}`;
       throw new Error(`codesign strict verification failed: ${verification.trim()}`);
     }
-    const observed = spawnSync(codesignExecutable, ["-dvv", artifact], { encoding: "utf8" });
+    const observed = spawnSync(signer, ["-dvv", artifact], { encoding: "utf8" });
     const details = `${observed.stdout ?? ""}${observed.stderr ?? ""}`;
     if (observed.status !== 0) throw new Error(`codesign verification failed: ${details.trim()}`);
     return {
