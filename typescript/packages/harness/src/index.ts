@@ -28,6 +28,8 @@ export * from "./cache.js";
 export * from "./enums.js";
 export * from "./conversation.js";
 export * from "./native-contracts.js";
+export { createBrowserMcpHttpProvider } from "./mcp-http.js";
+export { WasmMcpHttpTransport } from "../generated/wasm/acyclic_harness_wasm.js";
 export type { SessionLimitsWire } from "./limits-contract.js";
 export * from "./fork.js";
 export * from "./project.js";

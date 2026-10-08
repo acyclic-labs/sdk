@@ -61,13 +61,15 @@ prost-types = "0.14.4"
 prost-reflect = "0.16.3"
 protoc-bin-vendored = "3.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rmcp = { version = "3.3.0", features = ["server", "macros", "transport-io", "schemars"] }
+rmcp = { version = "=3.3.0", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["process"] }
 ruzstd = "0.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 serde_json = "1.0.145"
+sse-stream = "=0.3.0"
+tokio-util = "0.7"
 s3s = "0.17.0"
 schemars = "1"
 serde-wasm-bindgen = "0.6.5"

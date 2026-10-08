@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmcontentstore_free: (a: number, b: number) => void;
+export const __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
 export const __wbg_wasmreducer_free: (a: number, b: number) => void;
 export const admitBatch: (a: any) => [number, number, number];
 export const admitBatchRequest: (a: any) => [number, number, number];
@@ -29,6 +30,7 @@ export const prepareConversationTurn: (a: any, b: number, c: number, d: any, e: 
 export const prepareModelRequest: (a: any, b: any) => [number, number, number, number];
 export const projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
 export const readPinnedContextPath: (a: any, b: any, c: number) => any;
+export const searchMcpCatalog: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
 export const taskAdmissionIdentities: (a: any) => [number, number, number];
 export const taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
@@ -39,6 +41,7 @@ export const validateContextSelection: (a: any, b: any) => [number, number];
 export const validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
 export const validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
 export const validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const validateMcpCatalog: (a: any, b: number, c: number) => [number, number];
 export const validateModelContent: (a: any, b: any) => [number, number];
 export const validateModelContextSelection: (a: any, b: any) => [number, number];
 export const validateModelMessages: (a: any, b: any) => [number, number];
@@ -69,6 +72,9 @@ export const wasmcontentstore_pathConflicts: (a: number, b: number, c: number) =
 export const wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
 export const wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
 export const wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+export const wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+export const wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+export const wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
 export const wasmreducer_apply: (a: number, b: any) => [number, number, number];
 export const wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
 export const wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];

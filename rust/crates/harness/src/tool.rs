@@ -204,7 +204,7 @@ pub struct Tool {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     versions: BTreeMap<(String, String), Tool>,
-    selected: BTreeMap<String, String>,
+    selected: BTreeMap<String, Option<String>>,
 }
 
 impl ToolRegistry {
@@ -233,9 +233,9 @@ impl ToolRegistry {
         let previous = self.versions.keys().any(|(logical, _)| logical == &name);
         self.versions.insert((name.clone(), revision.clone()), tool);
         if previous {
-            self.selected.remove(&name);
+            self.selected.insert(name, None);
         } else {
-            self.selected.insert(name, revision);
+            self.selected.insert(name, Some(revision));
         }
         Ok(())
     }
@@ -248,8 +248,15 @@ impl ToolRegistry {
         {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
         }
-        self.selected.insert(name.to_owned(), revision.to_owned());
+        self.selected
+            .insert(name.to_owned(), Some(revision.to_owned()));
         Ok(())
+    }
+
+    /// Withdraws a model-visible name while retaining its admitted revisions.
+    /// Existing invocations continue to resolve through `get_version`.
+    pub fn withdraw_model_tool(&mut self, name: &str) {
+        self.selected.remove(name);
     }
 
     /// Installs an agent-selected tool after exact scope and durable approval checks.
@@ -284,7 +291,7 @@ impl ToolRegistry {
         if let Some((logical, revision)) = name.rsplit_once('@') {
             return self.get_version(logical, revision);
         }
-        let revision = self.selected.get(name)?;
+        let revision = self.selected.get(name)?.as_ref()?;
         self.get_version(name, revision)
     }
 
@@ -296,14 +303,9 @@ impl ToolRegistry {
 
     /// Returns the unambiguous model-visible selection in canonical order.
     pub fn definitions(&self) -> Result<Vec<ToolDefinition>> {
-        let names = self
-            .versions
-            .keys()
-            .map(|(name, _)| name)
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut definitions = Vec::with_capacity(names.len());
-        for name in names {
-            let revision = self.selected.get(name).ok_or_else(|| {
+        let mut definitions = Vec::with_capacity(self.selected.len());
+        for (name, selection) in &self.selected {
+            let revision = selection.as_ref().ok_or_else(|| {
                 Error::Conflict(format!("tool {name} requires an explicit model revision"))
             })?;
             let tool = self

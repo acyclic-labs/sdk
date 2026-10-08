@@ -1,6 +1,17 @@
 /* tslint:disable */
 /* eslint-disable */
 
+/** A host-owned bounded HTTP exchange; cancellation must synchronously abort I/O. */
+export interface McpBrowserExchange {
+    readonly response: Promise<McpBrowserResponseHead>;
+    readonly read: () => Promise<Uint8Array | null>;
+    readonly cancel: () => void;
+}
+/** Platform I/O only. Do not retry requests or follow redirects. */
+export type McpBrowserHttpProvider = (operation: string, request: McpHttpRequest) => McpBrowserExchange;
+
+
+
 /** Bound owner authenticates each read; declarations confer no authority.
  * Functions are captured for one call and never retained in a process catalog. */
 export interface ContextDiscoveryReader {
@@ -304,6 +315,77 @@ export interface ContextAttribute {
 }
 
 /**
+ * Bounded immutable remote catalog. The existing `ToolRegistry` is the only
+ * execution registry; this value is a validated registration input.
+ */
+export interface McpCatalog {
+    /**
+     * Consumer-selected namespace; names do not convey remote authority.
+     */
+    server: string;
+    /**
+     * Exact transport/configuration/catalog revision selected by the host.
+     */
+    revision: string;
+    /**
+     * Complete bounded catalog, not a partially fetched `tools/list` page.
+     */
+    tools: McpToolDefinition[];
+}
+
+/**
+ * Canonical MCP result; content stays ordered and may be multimodal.
+ */
+export interface McpToolResult {
+    /**
+     * Protocol content blocks. Validation occurs at the protocol boundary.
+     */
+    content: WasmToolJsonValue[];
+    /**
+     * Structured value checked against the remote output contract.
+     */
+    structuredContent?: WasmToolJsonValue;
+    /**
+     * A tool failure is a recorded result, rather than a transport failure.
+     */
+    isError?: boolean;
+    /**
+     * Opaque protocol metadata retained for the owning consumer.
+     */
+    _meta?: WasmToolJsonValue;
+}
+
+/**
+ * Exact portable HTTP input. Credentials belong to the bound provider.
+ */
+export interface McpHttpRequest {
+    /**
+     * Pinned HTTP(S) endpoint.
+     */
+    endpoint: string;
+    /**
+     * HTTP method selected by the protocol owner.
+     */
+    method: string;
+    /**
+     * Protocol headers; keys use lowercase ASCII.
+     */
+    headers: Map<string, string>;
+    /**
+     * One UTF-8 JSON-RPC message, or empty for GET/DELETE.
+     */
+    body: number[];
+    /**
+     * Finite whole-exchange provider deadline.
+     */
+    timeout_ms: number;
+    /**
+     * Finite total response-body allowance.
+     */
+    maximum_response_bytes: number;
+}
+
+/**
  * Explicit bounded selection from a pinned source.
  */
 export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
@@ -418,6 +500,43 @@ export interface Context {
 }
 
 /**
+ * Negotiated server initialization, retained with the admitted session.
+ */
+export interface McpInitializeResult {
+    /**
+     * Explicit supported protocol revision, with no silent downgrade.
+     */
+    protocolVersion: string;
+    /**
+     * Server-advertised feature set; it does not grant host authority.
+     */
+    capabilities: WasmToolJsonValue;
+    /**
+     * Server implementation name and version.
+     */
+    serverInfo: WasmToolJsonValue;
+    /**
+     * Optional server instructions, treated as external content.
+     */
+    instructions?: string;
+}
+
+/**
+ * One bounded discovery page. A host must fetch the complete catalog before
+ * replacing its model-visible selection; a page is not a replacement catalog.
+ */
+export interface McpToolsPage {
+    /**
+     * Remote contracts in this page.
+     */
+    tools: McpToolDefinition[];
+    /**
+     * Opaque server cursor for the next explicitly admitted discovery request.
+     */
+    nextCursor?: string;
+}
+
+/**
  * One lazily discovered name, without eager byte or ref transfer.
  */
 export interface PrivateDirectoryEntry {
@@ -490,6 +609,32 @@ export interface WasmModelMessageInput {
  * Refresh timing selected by the embedding admitted workflow.
  */
 export type ContextReloadPolicy = "explicit" | "next_request";
+
+/**
+ * Remote JSON Schema contract returned by `tools/list`.
+ */
+export interface McpToolDefinition {
+    /**
+     * Server-local name, preserved independently of the Harness namespace.
+     */
+    name: string;
+    /**
+     * Optional human-facing title.
+     */
+    title?: string;
+    /**
+     * Description supplied by the server.
+     */
+    description?: string;
+    /**
+     * Runtime-validated arguments.
+     */
+    inputSchema: WasmToolJsonSchema;
+    /**
+     * Runtime-validated structured output when supplied by the server.
+     */
+    outputSchema?: WasmToolJsonSchema;
+}
 
 /**
  * Rendering mode for the same immutable source state.
@@ -566,6 +711,11 @@ export interface ContextPathResult {
 export interface ContextReadQuery {
     source: PinnedContextPath;
     maximum_bytes: bigint;
+}
+
+export interface McpBrowserResponseHead {
+    status: number;
+    headers: Record<string,string>;
 }
 
 export interface WasmBatchAdmissionInput {
@@ -758,6 +908,29 @@ export class WasmContentStore {
      * Stores one immutable file and optionally advances its path head.
      */
     stage(path: string, bytes: Uint8Array, media_type: string, display_name: string, update_path: boolean): any;
+}
+
+/**
+ * Low-level explicitly bound transport for a host's admitted tool executor.
+ * The existing Harness tool/task journal owns admission and result retention.
+ */
+export class WasmMcpHttpTransport {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Calls an already admitted operation. Canonical JSON bytes preserve
+     * full-width remote numbers and avoid a second JavaScript result engine.
+     */
+    callJson(operation: string, name: string, _arguments: WasmToolJsonValue): Promise<Uint8Array>;
+    /**
+     * Binds an initialized session and bounded platform I/O without effects.
+     */
+    constructor(provider: McpBrowserHttpProvider, endpoint: string, session: string | null | undefined, maximum_bytes: number, timeout_ms: number);
+    /**
+     * Queries the transport's explicit receipt capability without network I/O.
+     * This HTTP provider has none; the owning journal retains known results.
+     */
+    reconcileJson(operation: string): Promise<Uint8Array | undefined>;
 }
 
 /**
@@ -1053,6 +1226,11 @@ export function projectDiscoveredContext(snapshot: DiscoveredContext, context: C
 export function readPinnedContextPath(source: PinnedContextPath, reader: ContextDiscoveryReader, maximum_bytes: number): Promise<ContextPathResult>;
 
 /**
+ * Searches a pinned catalog without network I/O or authority changes.
+ */
+export function searchMcpCatalog(catalog: McpCatalog, query: string, after: string | null | undefined, maximum_results: number, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
+
+/**
  * Runs the canonical Rust conversation projection over bytes captured by the
  * owner.  TypeScript supplies a map rather than a callback so authorization
  * and async reads finish before this deterministic core is entered.
@@ -1113,6 +1291,11 @@ export function validateConversationMessageId(value: string): string;
  * returns its normalized UUID spelling for a branded TypeScript facade.
  */
 export function validateIdentity(kind: string, value: string): string;
+
+/**
+ * Validates the complete bounded replacement before the host selects it.
+ */
+export function validateMcpCatalog(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): void;
 
 /**
  * Validates provider-neutral model content under the exact native limits.
@@ -1239,6 +1422,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
+    readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
     readonly admitBatch: (a: any) => [number, number, number];
     readonly admitBatchRequest: (a: any) => [number, number, number];
@@ -1266,6 +1450,7 @@ export interface InitOutput {
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
     readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
     readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
+    readonly searchMcpCatalog: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
@@ -1276,6 +1461,7 @@ export interface InitOutput {
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly validateMcpCatalog: (a: any, b: number, c: number) => [number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
     readonly validateModelMessages: (a: any, b: any) => [number, number];
@@ -1306,6 +1492,9 @@ export interface InitOutput {
     readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
     readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+    readonly wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+    readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];

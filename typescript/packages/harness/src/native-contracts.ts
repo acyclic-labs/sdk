@@ -11,6 +11,7 @@ import type {
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
   WasmTaskDependencyInput,
+  McpCatalog,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -32,6 +33,10 @@ export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
 export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
 /** JSON value accepted by the Rust admission ABI after schema validation. */
 export type NativeJsonValue = WasmToolJsonValue;
+/** MCP contracts are emitted from the production Rust protocol owner. */
+export type { McpCatalog, McpToolDefinition, McpToolResult, McpToolsPage,
+  McpInitializeResult, McpHttpRequest, McpBrowserHttpProvider, McpBrowserExchange,
+  McpBrowserResponseHead } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Pinned composition values generated from the production Rust types. */
 export type { Context, ContextAttribute, ContextSourceValue, ContextSelection,
   ContextRepresentation, ContextExtent, ContextRenderMode, ContextPlacement,
@@ -244,6 +249,17 @@ export class NativeContracts {
   /** Rust owns the complete model-visible tool definition contract. */
   validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">): void {
     this.native.validateToolDefinition(nativeToolDefinition(definition));
+  }
+
+  /** Validate a whole catalog before an explicit registration/reload. */
+  validateMcpCatalog(catalog: McpCatalog, maximumTools: number, maximumBytes: number): void {
+    this.native.validateMcpCatalog(catalog, maximumTools, maximumBytes);
+  }
+
+  /** Pure bounded search; returned definitions convey no invocation authority. */
+  searchMcpCatalog(catalog: McpCatalog, query: string, after: string | undefined,
+    maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+    return this.native.searchMcpCatalog(catalog, query, after, maximumResults, maximumTools, maximumBytes);
   }
 
   /** Rust owns tool invocation identity and argument schema validation. */
