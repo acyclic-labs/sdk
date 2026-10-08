@@ -49,7 +49,7 @@ bun_wasm_bindgen_bin="$(bash "$root/scripts/ensure-wasm-bindgen.sh")"
 bun scripts/check-metadata.mjs
 mkdir -p "$wasm_output"
 bun scripts/build-wasm.mjs harness "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
-bun x tsc -p typescript/packages/harness/tsconfig.json
+bun x tsc -b typescript/packages/harness/tsconfig.json
 for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
   acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
   [[ -s "$wasm_output/$generated" ]] || { echo "missing generated Harness artifact: $generated" >&2; exit 1; }
