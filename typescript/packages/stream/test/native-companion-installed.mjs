@@ -41,5 +41,7 @@ try {
   check("await assert.rejects(nativeStreamAvailable(),/generated Rust N-API binding/)");
   await writeFile(fake, "require('missing-internal-native-dependency');");
   check("await assert.rejects(nativeStreamAvailable())");
+  await writeFile(fake, "require('@acyclic-labs/stream-missing-transitive');");
+  check("await assert.rejects(nativeStreamAvailable())");
 } finally { await writeFile(manifestPath, manifest); await rm(fake); }
-console.log(JSON.stringify({ status: "passed", nativeAvailable: true, missingCompanionFallsBack: true, corruptAddonRejected: true, wrongBindingRejected: true, nonCallableBindingRejected: true, missingConnectAbiRejected: true, missingInternalDependencyRejected: true }));
+console.log(JSON.stringify({ status: "passed", nativeAvailable: true, missingCompanionFallsBack: true, corruptAddonRejected: true, wrongBindingRejected: true, nonCallableBindingRejected: true, missingConnectAbiRejected: true, missingInternalDependencyRejected: true, missingNamespacedDependencyRejected: true }));

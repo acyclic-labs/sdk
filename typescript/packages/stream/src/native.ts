@@ -49,7 +49,21 @@ function missingNativeBinding(error: unknown): boolean {
   const message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
     ? (error as { readonly message: string }).message : String(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  return /Cannot find module ['"][^'"]*[\\/]generated[\\/]native[\\/]binding\.cjs['"]/.test(firstLine);
+  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/)?.[1];
+  return requested !== undefined && isOwnNativeLoader(requested);
+}
+
+function isOwnNativeLoader(path: string): boolean {
+  return (path.startsWith("file:") ? fileURLToPath(path) : path).replace(/\\/g, "/") === nativeBindingPath.replace(/\\/g, "/");
+}
+
+function importedByNativeLoader(message: string): boolean {
+  const lines = message.split(/\r?\n/);
+  const marker = lines.findIndex(line => line.trim() === "Require stack:");
+  const frame = marker >= 0 ? lines[marker + 1]?.trim().replace(/^-\s*/, "")
+    : lines[0]?.match(/\s(?:imported )?from (?:['"]([^'"]+)['"]|(.+))$/i);
+  const importer = typeof frame === "string" ? frame : frame?.[1] ?? frame?.[2];
+  return importer !== undefined && isOwnNativeLoader(importer);
 }
 
 function expectedNativeAbsence(error: unknown): boolean {
@@ -63,9 +77,12 @@ function expectedNativeAbsence(error: unknown): boolean {
   while (cause !== null && cause !== undefined) {
     sawCause = true;
     if (typeof cause !== "object") return false;
+    const code = "code" in cause ? cause.code : undefined;
+    if (code !== undefined && code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") return false;
     const causeMessage = "message" in cause && typeof (cause as { readonly message?: unknown }).message === "string"
       ? (cause as { readonly message: string }).message : "";
     if (!/^Cannot find module ['"](?:\.\/index\.[^'"]+\.node|\.\/index\.wasi\.cjs|@acyclic-labs\/stream-[^'"]+|\.\/index\.wasm[^'"]*)['"]/.test(causeMessage.split(/\r?\n/, 1)[0] ?? causeMessage)) return false;
+    if (!importedByNativeLoader(causeMessage)) return false;
     cause = "cause" in cause ? (cause as { readonly cause?: unknown }).cause : undefined;
   }
   return sawCause;
