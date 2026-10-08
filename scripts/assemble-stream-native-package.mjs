@@ -115,6 +115,11 @@ export async function sourceNativeInventory(sourceSha) {
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
+export async function writeCompanionManifest(directory, manifest) {
+  manifest.private = false;
+  await writeFile(join(directory, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 export async function verifyNativeAssembly(output, sourceSha, version, expectedInventory) {
   if (!expectedInventory || expectedInventory.schema !== "acyclic.stream.native-source-inventory.v1" || expectedInventory.source_commit !== sourceSha || expectedInventory.parent.version !== version || expectedInventory.parent.private !== false) fail("trusted native source inventory is required for release");
   const assembly = JSON.parse(await readFile(join(output, "STREAM_NATIVE_PACKAGE.json"), "utf8"));
@@ -263,7 +268,7 @@ async function main() {
         await cp(original, join(attestation, name));
         manifest.files.push(name);
       }
-      await writeFile(join(companion, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+      await writeCompanionManifest(companion, manifest);
       neutralManifest.optionalDependencies[manifest.name] = manifest.version;
       const asset = run("npm", ["pack", "--ignore-scripts", "--pack-destination", companionOutput, "--silent"], { cwd: companion }).trim();
       companions.push({ name: manifest.name, version: manifest.version, asset: `native/${asset}`, selected_target: bundle.metadata.selected_target, os: manifest.os, cpu: manifest.cpu, libc: manifest.libc, artifact: bundle.metadata.artifact, sha256: digest(join(companionOutput, asset)), metadata_sha256: digest(join(companion, "native-targets.json")), receipt_sha256: digest(join(companion, "producer-receipt.json")) });
