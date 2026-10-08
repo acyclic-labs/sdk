@@ -64,10 +64,10 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 /// Conversion through Value preserves full-width serde integer values while
 /// avoiding struct declaration order as an accidental wire contract.
 pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
-    let mut bytes = Vec::new();
-    write_canonical_json(&value, &mut bytes)?;
-    Ok(bytes)
+    let mut value =
+        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    value.sort_all_objects();
+    serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
@@ -131,42 +131,6 @@ pub(crate) fn compile_json_schema(
     }
     cache.insert(key, Arc::clone(&validator));
     Ok(validator)
-}
-
-fn write_canonical_json(value: &serde_json::Value, bytes: &mut Vec<u8>) -> Result<()> {
-    // Scalars and keys are written in place by serde_json's own compact
-    // formatter, so only object key order is decided here.
-    fn scalar(bytes: &mut Vec<u8>, value: &(impl Serialize + ?Sized)) -> Result<()> {
-        serde_json::to_writer(bytes, value).map_err(|error| Error::Invalid(error.to_string()))
-    }
-    match value {
-        serde_json::Value::Array(items) => {
-            bytes.push(b'[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    bytes.push(b',');
-                }
-                write_canonical_json(item, bytes)?;
-            }
-            bytes.push(b']');
-        }
-        serde_json::Value::Object(fields) => {
-            bytes.push(b'{');
-            let mut fields = fields.iter().collect::<Vec<_>>();
-            fields.sort_unstable_by_key(|(key, _)| *key);
-            for (index, (key, field)) in fields.into_iter().enumerate() {
-                if index > 0 {
-                    bytes.push(b',');
-                }
-                scalar(bytes, key)?;
-                bytes.push(b':');
-                write_canonical_json(field, bytes)?;
-            }
-            bytes.push(b'}');
-        }
-        scalar_value => scalar(bytes, scalar_value)?,
-    }
-    Ok(())
 }
 
 /// Returns whether a component label satisfies the shared Rust spelling rule.
@@ -577,6 +541,97 @@ mod tests {
             "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
         );
         assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
+        Ok(())
+    }
+
+    struct Pairs<K>(Vec<(K, u8)>);
+
+    impl<K: Serialize> Serialize for Pairs<K> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(self.0.len()))?;
+            for (key, value) in &self.0 {
+                map.serialize_entry(key, value)?;
+            }
+            map.end()
+        }
+    }
+
+    struct Failing;
+
+    impl Serialize for Failing {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("canonical fixture failure"))
+        }
+    }
+
+    #[test]
+    fn canonical_json_pins_raw_key_order_and_duplicate_collapse() -> Result<()> {
+        let pairs = Pairs(vec![
+            ("\u{1f600}", 5),
+            ("\u{e9}", 4),
+            ("\\", 3),
+            ("\"", 2),
+            ("\0", 1),
+        ]);
+        let expected = concat!(
+            r#"{"\u0000":1,"\"":2,"\\":3,"#,
+            "\"\u{e9}\":4,\"\u{1f600}\":5}"
+        );
+        assert_eq!(canonical_json_bytes(&pairs)?, expected.as_bytes());
+        assert_eq!(
+            canonical_json_bytes(&Pairs(vec![("key", 1), ("key", 2)]))?,
+            br#"{"key":2}"#
+        );
+        assert_eq!(
+            canonical_json_bytes(&[serde_json::json!({"z": {"b": 2, "a": 1}})])?,
+            br#"[{"z":{"a":1,"b":2}}]"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_json_preserves_value_conversion_and_invalid_messages() -> Result<()> {
+        assert_eq!(
+            canonical_json_bytes(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY])?,
+            b"[null,null,null]"
+        );
+        assert_eq!(canonical_json_bytes(&0.1_f32)?, b"0.10000000149011612");
+        assert_eq!(
+            canonical_json_bytes(&Pairs(vec![(1.5_f64, 1)]))?,
+            br#"{"1.5":1}"#
+        );
+        for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                canonical_json_bytes(&Pairs(vec![(key, 1)])),
+                Err(Error::Invalid(
+                    "float key must be finite (got NaN or +/-inf)".into()
+                ))
+            );
+        }
+        assert_eq!(
+            canonical_json_bytes(&Pairs(vec![(vec![1_u8], 1)])),
+            Err(Error::Invalid("key must be a string".into()))
+        );
+        assert_eq!(
+            canonical_json_bytes(&Failing),
+            Err(Error::Invalid("canonical fixture failure".into()))
+        );
+        assert_eq!(
+            canonical_json_bytes(&i128::MIN),
+            Err(Error::Invalid("number out of range".into()))
+        );
+        assert_eq!(
+            canonical_json_bytes(&u128::MAX),
+            Err(Error::Invalid("number out of range".into()))
+        );
+        assert_eq!(
+            canonical_json_bytes(&(i128::from(i64::MIN), u128::from(u64::MAX)))?,
+            b"[-9223372036854775808,18446744073709551615]"
+        );
         Ok(())
     }
 
