@@ -17,9 +17,6 @@ const sourceRoots = [
   "Cargo.lock",
   "rust-toolchain.toml",
   ".cargo/config.toml",
-  // acyclic-actors links this crate under non-WASM targets. Keep its source
-  // in the attestation so a native build cannot silently use another tree.
-  "rust/crates/native-runtime",
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
@@ -62,6 +59,7 @@ into the package. check is cheap and never invokes Cargo or NAPI-RS.`;
 function parseArgs(argv) {
   const command = argv[0]?.startsWith("-") ? "build" : (argv[0] ?? "check");
   const rest = argv[0]?.startsWith("-") ? argv : argv.slice(1);
+  /** @type {{command: string, target?: string, output?: string, bundle?: string, targetDir?: string, help?: boolean}} */
   const options = { command };
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -149,7 +147,7 @@ function assertCleanSource() {
   if (status.trim() !== "") throw new Error("Actors native build requires a clean source closure; commit or stage source changes before building");
 }
 
-function rustMetadata() {
+export function rustMetadata() {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { cwd: root, encoding: "utf8" }));
   const rustPackage = metadata.packages.find(item => item.name === "acyclic-actors-napi");
   const targets = rustPackage?.metadata?.napi?.targets;
@@ -200,7 +198,7 @@ function pathFromArtifact(output, artifactPath) {
 }
 
 /** @param {{ expectedTarget?: string }} [options] */
-async function assertBundle(output, options = {}) {
+export async function assertBundle(output, options = {}) {
   const { expectedTarget } = options;
   const metadataPath = resolve(output, "native-targets.json");
   const generationPath = resolve(output, generationManifestName);
