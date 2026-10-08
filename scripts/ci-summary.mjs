@@ -42,6 +42,37 @@ out.push(...table(["Step", "Wall time"], [
   ...(steps.length ? [["**Total**", `**${seconds(steps.reduce((sum, step) => sum + step.time, 0))}**`]] : []),
 ]));
 
+// Contract freshness is Cargo's decision, not a claim that rustc ran (sccache
+// may satisfy a rebuilt artifact). Build wall time includes Cargo lock waits.
+const contracts = read("generated-contracts.json");
+if (contracts) {
+  const report = JSON.parse(contracts);
+  if (report.revision !== 1) throw new Error("unsupported generated contract timing revision");
+  if (!["success", "failed", "incomplete"].includes(report.status)) throw new Error("unsupported generated contract timing state");
+  // Cancellation before source discovery still belongs to this run, but has
+  // no observed source identity. Only successful reports require one.
+  const sourceMatches = report.source_commit === process.env.CI_HEAD_SHA ||
+    (report.source_commit === null && report.status !== "success");
+  if (process.env.GITHUB_RUN_ID && (report.run_id !== process.env.GITHUB_RUN_ID || !sourceMatches)) {
+    throw new Error("generated contract timings belong to another run/source");
+  }
+  out.push(...table(["Generated contracts", "Wall time or count"], [
+    ["Recorded completion state", cell(report.status)],
+    ["Last recorded phase", cell(report.phase)],
+    ["Observed source", cell(report.source_commit ?? "not observed")],
+    ["Cargo identity", cell(report.cargo_version)],
+    ["Direct rustc probe (Cargo selection may differ)", cell(report.rustc_error ?? report.rustc_version)],
+    ["Toolchain inspection", seconds((report.toolchain_ms + report.rustc_ms) / 1000)],
+    ["Cargo metadata", seconds(report.metadata_ms / 1000)],
+    ["Cargo build (including lock waits)", seconds(report.build_ms / 1000)],
+    ["Cargo fresh artifacts (all / requested)", `${report.artifacts.filter(item => item.fresh).length} / ${report.artifacts.filter(item => item.fresh && item.requested).length}`],
+    ["Cargo rebuilt artifacts (all / requested)", `${report.artifacts.filter(item => !item.fresh).length} / ${report.artifacts.filter(item => !item.fresh && item.requested).length}`],
+    ["Total", seconds(report.total_ms / 1000)],
+  ]));
+  out.push(...table(["Contract generator", "Execute", "Render and compare or write"],
+    report.generators.map(item => [cell(item.name), seconds(item.execute_ms / 1000), seconds(item.render_compare_ms / 1000)])));
+}
+
 // JUnit: nextest writes one <testsuite> per test binary, bun one per file.
 const entity = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const attributes = tag =>
