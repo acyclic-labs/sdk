@@ -1,3 +1,4 @@
+import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -70,36 +71,7 @@ if (JSON.stringify(evidence.artifacts) !== JSON.stringify(artifactEvidence)) {
   throw new Error("package evidence does not match the exact release archives");
 }
 
-const markers = new Map([
-  ["operation-identities-are-stable", [["rust", "executor::tests::operation_identity_rejects_changed_input"]]],
-  ["native-wasm-replay-is-byte-equivalent", [["rust", "wire_codec::tests::native_event_bytes_match_cross_language_fixture"], ["typescript", "WASM event bytes match the native cross-language fixture"]]],
-  ["authority-scopes-cannot-cross-aggregate-audiences", [["rust", "core::tests::mutated_or_foreign_scopes_are_rejected"]]],
-  ["stream-append-uncertainty-is-queryable", [["rust", "store::tests::reconciliation_observes_a_commit_without_redispatch"]]],
-  ["full-history-restores-from-checked-snapshot", [["rust", "store::tests::snapshot_reopens_with_full_stream_history"]]],
-  ["fork-publication-is-atomic", [["rust", "core::tests::fork_is_invisible_until_one_seed_event_commits"]]],
-  ["effect-attempts-respect-provider-guarantees", [["rust", "core::tests::at_most_once_effect_is_never_redispatched_after_uncertainty"]]],
-  ["typed-approvals-bind-the-exact-action", [["rust", "interaction::tests::approval_binding_cannot_change_with_display_json"], ["rust", "runtime::tests::tool_approval_keeps_terminal_outcomes_distinct"]]],
-  ["structured-parent-waits-release-capacity", [["rust", "scheduler::tests::waiting_parent_releases_execution_capacity"]]],
-  ["join-preserves-child-slot-order", [["rust", "scheduler::tests::reduction_is_bound_to_the_exact_contract_and_inputs"]]],
-  ["race-uses-first-authoritative-success", [["rust", "scheduler::tests::race_uses_first_observed_success_and_cancels_losers"]]],
-  ["quorum-fails-when-threshold-is-unreachable", [["rust", "scheduler::tests::failed_dependencies_are_explicitly_rejectable"]]],
-  ["stock-executor-replay-does-not-repeat-tools", [["rust", "executor::tests::stock_loop_replays_without_reinvoking_models_or_tools"]]],
-  ["custom-executor-owns-the-whole-turn-loop", [["rust", "executor::tests::interrupted_model_stream_reconciles_without_redispatch"]]],
-  ["client-replay-is-generation-fenced", [["typescript", "a replay generation cannot change without an explicit rebase"], ["typescript", "client hydrates a durable cursor before its first reconnect"], ["typescript", "rebase fences a delivery buffered by the previous replay connection"]]],
-  ["client-outbox-clears-only-after-authority", [["typescript", "reconnect delivery is contiguous and clears authoritative outbox entries"], ["typescript", "IndexedDB atomically persists outbox acknowledgements and replay cursors across restart"], ["typescript", "IndexedDB preserves enqueue order across restart and isolates database namespaces"], ["typescript", "terminal admission removes a safe command from the retry outbox"]]],
-  ["pagination-is-bounded-and-rebase-safe", [["typescript", "page reset fences an older in-flight response"]]],
-  ["operation-control-is-protocol-scope-and-owner-bound", [["rust", "wire_api::tests::operation_control_is_protocol_scope_and_response_identity_bound"], ["typescript", "gRPC control validates echoed operation, owner, protocol, error, and retry identity"]]],
-  ["recursive-cancellation-is-atomic-and-exactly-replayable", [["rust", "distributed::tests::authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable"]]],
-  ["recursive-cancellation-stops-at-owner-boundaries", [["rust", "scheduler::tests::recursive_cancellation_stops_at_owner_boundaries"]]],
-  ["transport-control-errors-remain-request-correlated", [["typescript", "framed control serializes observe and cancel for the same operation"], ["typescript", "correlated framed errors do not abort another operation"]]],
-  ["durable-context-providers-reopen-compaction-exactly", [["rust", "context::tests::durable_sources_and_compaction_reopen_exactly"]]],
-  ["coding-bundle-host-adapter-is-complete-and-executable", [["rust", "bundle::tests::coding_factory_builds_an_executable_complete_registry"]]],
-  ["recursive-fork-isolation-attachments-and-project-only-merge", [["e2e", "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project"]]],
-  ["durable-local-conversation-fork-and-merge-reopens", [["e2e", "local_reopen_preserves_ref_only_history_fork_and_parent_merge"]]],
-]);
-
-const harnessCases = suite.cases.filter(item => item.family === "harness");
-if (harnessCases.length !== markers.size) throw new Error("executable marker map does not exactly cover the Harness suite");
+const { cases: harnessCases, markers } = registerCases(suite, "harness", harnessCaseMarkers);
 const command = (executable, args, input) => {
   const result = spawnSync(executable, args, { encoding: "utf8", input });
   if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
@@ -144,9 +116,7 @@ const runnerBinary = resolve(metadata.target_directory, `debug/harness-conforman
 const hash = bytes => command(runnerBinary, ["digest"], bytes);
 const cases = harnessCases.map(item => {
   const required = markers.get(item.name);
-  if (required === undefined || required.some(([runtime, name]) => !executed[runtime]?.has(name))) {
-    throw new Error(`executed package evidence is missing for ${item.name}`);
-  }
+  requireExecutedCase(item.name, required, executed);
   return {
     name: item.name,
     status: "passed",
