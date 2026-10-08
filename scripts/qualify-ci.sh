@@ -361,6 +361,7 @@ case "$lane" in
     if [[ "$full_qualification" != true ]]; then
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
+      node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
       cargo fmt --all -- --check
       exit 0
     fi
@@ -378,6 +379,7 @@ case "$lane" in
     node --test scripts/test-publish-npm-packages.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs
+    node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
