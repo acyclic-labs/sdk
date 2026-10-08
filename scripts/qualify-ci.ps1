@@ -94,17 +94,14 @@ try {
         $env:RUSTC_WRAPPER = $rustcWrapper
     }
 }
-# The Windows x64 Stream artifact is the currently qualified native target.
-# Build it into the lane artifact directory, then stage only the attested
-# bundle into the package before TypeScript archives are assembled. The native
-# builder rejects dirty source closure and records the exact source/bundle
-# hashes; other host targets remain separate qualification work.
-$StreamNativeBundle = Join-Path $env:SDK_ARTIFACT_DIR 'stream-native-bundle'
+$StreamNativeRoot = Join-Path $env:SDK_ARTIFACT_DIR 'stream-native-bundle'
+$StreamNativeBundle = Join-Path $StreamNativeRoot 'bundle'
 $StreamNativeTargetDir = "$CargoTargetDir-stream-native"
 node scripts/build-stream-native.mjs build `
     --target x86_64-pc-windows-msvc `
     --output $StreamNativeBundle `
     --target-dir $StreamNativeTargetDir
+Copy-Item -LiteralPath (Join-Path $StreamNativeTargetDir 'stream-native-build-inputs.receipt.json') -Destination (Join-Path $StreamNativeRoot 'producer-receipt.json')
 node scripts/build-stream-native.mjs stage --bundle $StreamNativeBundle
 node scripts/build-stream-native.mjs check
 $release = Start-Background release @"

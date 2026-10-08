@@ -505,7 +505,7 @@ export async function createRustcInvocationCapture(target = "test") {
   };
 }
 
-async function napiGeneratorIdentity() {
+export async function napiGeneratorIdentity() {
   const packagePath = require.resolve("@napi-rs/cli/package.json");
   const entryPath = require.resolve("@napi-rs/cli");
   const packageBytes = await readFile(packagePath);
@@ -559,13 +559,13 @@ function maintainedBunIdentity(version) {
   throw new Error(`maintained Bun ${version} is unavailable${versions.length === 0 ? "" : `; observed ${versions}`}`);
 }
 
-function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: string}} */ { targetDir, outputDir } = {}) {
+function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: string, sourceRoot?: string, platform?: string}} */ { targetDir, outputDir, sourceRoot = root } = {}) {
   if (typeof value !== "string") return value;
   let text = value.replaceAll("\\", "/");
   const prefixes = [
     [targetDir, "<target-dir>"],
     [outputDir, "<output-dir>"],
-    [root, "<source-root>"],
+    [sourceRoot, "<source-root>"],
   ];
   let replacedPrefix = false;
   for (const [prefix, replacement] of prefixes) {
@@ -584,7 +584,7 @@ function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: strin
 }
 
 function portableResolve(value) {
-  if (typeof value === "string" && /^[A-Za-z]:[\\/]/u.test(value)) return value.replaceAll("\\", "/");
+  if (typeof value === "string" && (/^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("/"))) return value.replaceAll("\\", "/");
   return resolve(value);
 }
 
@@ -605,7 +605,7 @@ function normalizeToolPath(value, context) {
 
 function normalizeToolPathList(value, context) {
   if (typeof value !== "string") return value;
-  const separator = process.platform === "win32" ? ";" : ":";
+  const separator = (context.platform ?? process.platform) === "win32" ? ";" : ":";
   return value.split(separator).map(item => normalizeToolPath(item, context)).join(separator);
 }
 
@@ -629,8 +629,8 @@ function isDiagnosticOnlyRustcArgument(value) {
   return typeof value === "string" && /^--diagnostic-width=\d+$/u.test(value);
 }
 
-export function normalizeBuildInputs(value, { targetDir, outputDir }) {
-  const context = { targetDir: portableResolve(targetDir), outputDir: portableResolve(outputDir) };
+export function normalizeBuildInputs(value, { targetDir, outputDir, sourceRoot = root, platform = process.platform }) {
+  const context = { targetDir: portableResolve(targetDir), outputDir: portableResolve(outputDir), sourceRoot, platform };
   const normalized = normalizeBuildInputPaths(value, context);
   normalized.target_dir = "<target-dir>";
   normalized.runtime.node_path = "<runtime>";
@@ -844,7 +844,7 @@ function assertCleanSource() {
   if (status.trim() !== "") throw new Error("Stream native build requires a clean source closure; commit or stage source changes before building");
 }
 
-function rustMetadata() {
+export function rustMetadata() {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { cwd: root, encoding: "utf8" }));
   const rustPackage = metadata.packages.find(item => item.name === "acyclic-stream-napi");
   const targets = rustPackage?.metadata?.napi?.targets;
@@ -1057,7 +1057,7 @@ async function build(options) {
     const packagePath = resolve(temporary, `${randomUUID()}.json`);
     await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
     const runNapiBuild = async () => {
-      const { NapiCli } = await import("@napi-rs/cli");
+      const { NapiCli } = require("@napi-rs/cli");
       const buildResult = await new NapiCli().build({
         cwd: root,
         packageJsonPath: packagePath,
