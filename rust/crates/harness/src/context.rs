@@ -194,7 +194,88 @@ impl DurableContextProvider {
             .await
             .map_err(|error| crate::Error::Storage(error.to_string()))?
         {
-            AppendOutcome::Committed(receipt) if receipt.tail == revision => Ok(record),
+            AppendOutcome::Committed(receipt)
+                if receipt.start == expected_revision
+                    && receipt.end == revision
+                    && receipt.tail == revision =>
+            {
+                Ok(record)
+            }
+            AppendOutcome::Committed(_) => Err(crate::Error::Storage(
+                "context append returned an invalid tail".into(),
+            )),
+            AppendOutcome::TailConflict { actual_tail } => Err(crate::Error::Conflict(format!(
+                "context revision {expected_revision} is stale; actual revision is {actual_tail}"
+            ))),
+        }
+    }
+
+    /// Publishes one continuing projection and its exact source in a single CAS.
+    /// Neither the uncompressed source nor a projection without its provenance
+    /// becomes a visible latest revision. Exact retries reuse the same pair.
+    pub async fn append_compaction(
+        &self,
+        expected_revision: u64,
+        source: Context,
+        compacted: Context,
+        reference: CompactionReference,
+        idempotency_key: impl Into<Bytes>,
+    ) -> Result<[ContextRevision; 2]> {
+        let source_revision = next_revision(expected_revision)?;
+        let compacted_revision = next_revision(source_revision)?;
+        let key = StreamIdempotencyKey::new(idempotency_key)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        validate_compaction(&reference, &source, &compacted)?;
+        validate_context_refs(&source, self.content_verifier.as_ref()).await?;
+        validate_context_refs(&compacted, self.content_verifier.as_ref()).await?;
+        let pair = [
+            ContextRevision {
+                format_version: 4,
+                revision: source_revision,
+                source: self.source.clone(),
+                source_revision: self.source_revision.clone(),
+                context: source,
+                compaction: None,
+            },
+            ContextRevision {
+                format_version: 4,
+                revision: compacted_revision,
+                source: self.source.clone(),
+                source_revision: self.source_revision.clone(),
+                context: compacted,
+                compaction: Some(reference),
+            },
+        ];
+        let records = pair
+            .iter()
+            .map(|record| {
+                let encoded = crate::contract::canonical_json_bytes(record)?;
+                if encoded.len() > MAX_RECORD_BYTES {
+                    return Err(crate::Error::Invalid(
+                        "durable context record exceeds Stream limit".into(),
+                    ));
+                }
+                Ok(Bytes::from(encoded))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        match self
+            .provider
+            .append(AppendRequest {
+                path: self.path.clone(),
+                records,
+                if_tail: Some(expected_revision),
+                idempotency_key: Some(key),
+            })
+            .await
+            .map_err(|error| crate::Error::Storage(error.to_string()))?
+        {
+            AppendOutcome::Committed(receipt)
+                if receipt.start == expected_revision
+                    && receipt.end == compacted_revision
+                    && receipt.tail == compacted_revision =>
+            {
+                Ok(pair)
+            }
             AppendOutcome::Committed(_) => Err(crate::Error::Storage(
                 "context append returned an invalid tail".into(),
             )),
@@ -336,19 +417,34 @@ impl DurableContextProvider {
         self.decode_revision(record.sequence, &record.value).await
     }
 
-    /// Returns a captured latest revision with at most two record reads, independent
-    /// of retained revision count. `revisions(after, through)` provides bounded archival pages.
-    pub async fn latest(&self) -> Result<Context> {
+    /// Loads one pinned revision, checking its source proof with at most two
+    /// record reads. Later publications do not change this projection.
+    pub async fn revision(&self, revision: u64) -> Result<ContextRevision> {
+        let record = self.read_revision(revision).await?;
+        if let Some(reference) = &record.compaction {
+            let source = self.read_revision(revision - 1).await?;
+            validate_compaction(reference, &source.context, &record.context)?;
+        }
+        Ok(record)
+    }
+
+    /// Captures the current continuing projection and its immutable revision.
+    /// Reads at most two records, independent of retained revision count.
+    pub async fn latest_revision(&self) -> Result<Option<ContextRevision>> {
         let tail = self.tail_revision().await?;
         if tail == 0 {
-            return Ok(Context::default());
+            return Ok(None);
         }
-        let revision = self.read_revision(tail).await?;
-        if let Some(reference) = &revision.compaction {
-            let source = self.read_revision(tail - 1).await?;
-            validate_compaction(reference, &source.context, &revision.context)?;
-        }
-        Ok(revision.context)
+        self.revision(tail).await.map(Some)
+    }
+
+    /// Returns the captured latest context. `latest_revision` also retains its
+    /// pin; `revisions(after, through)` provides explicit bounded archival pages.
+    pub async fn latest(&self) -> Result<Context> {
+        Ok(self
+            .latest_revision()
+            .await?
+            .map_or_else(Context::default, |record| record.context))
     }
 
     /// Deterministically compacts a context and returns its immutable source reference.
@@ -1812,6 +1908,132 @@ mod tests {
         let second = undersized.revisions(1, 2).await?;
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].context, compacted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn continuing_compaction_publishes_and_retries_one_atomic_pair() -> Result<()> {
+        let stream = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("runtime/context/continuing")
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let provider = DurableContextProvider::new(
+            stream.clone(),
+            path.clone(),
+            "memory",
+            "1",
+            1,
+            Arc::new(RefVerifier),
+        )?;
+        let source = Context {
+            messages: vec![
+                message(ModelRole::User, "one")?,
+                message(ModelRole::Assistant, "two")?,
+                message(ModelRole::User, "three")?,
+            ],
+            current_input_index: Some(2),
+            ..Context::default()
+        };
+        let mut covered = source.clone();
+        covered.messages.truncate(2);
+        covered.current_input_index = None;
+        let output = message(ModelRole::System, "summary")?
+            .content
+            .file_refs()
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
+            .clone();
+        let (compacted, reference) = DurableContextProvider::compact(
+            &source,
+            2,
+            Some(ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: 2,
+                source_digest: crate::contract::canonical_json_digest(&covered)?,
+                output,
+            }),
+            CompactionRetention::default(),
+        )?;
+        let key = Bytes::from_static(b"atomic-compaction");
+        // Discard the first successful acknowledgement, as a caller whose
+        // receipt was lost would. The same admission must remain recoverable.
+        provider
+            .append_compaction(
+                0,
+                source.clone(),
+                compacted.clone(),
+                reference.clone(),
+                key.clone(),
+            )
+            .await?;
+        let reopened =
+            DurableContextProvider::new(stream, path, "memory", "1", 1, Arc::new(RefVerifier))?;
+        let pair = reopened
+            .append_compaction(0, source.clone(), compacted.clone(), reference.clone(), key)
+            .await?;
+        assert_eq!(reopened.tail_revision().await?, 2);
+        assert_eq!(pair.first().map(|record| &record.context), Some(&source));
+        assert_eq!(pair.last().map(|record| &record.context), Some(&compacted));
+        assert_eq!(reopened.latest().await?, compacted);
+        let pin = reopened
+            .latest_revision()
+            .await?
+            .ok_or_else(|| crate::Error::Storage("published context revision is missing".into()))?;
+        assert_eq!(pin.revision, 2);
+        assert_eq!(reopened.revision(pin.revision).await?, pin);
+        assert!(reopened.revision(0).await.is_err());
+        assert_eq!(reopened.revisions(0, 1).await?, pair[..1]);
+        assert_eq!(reopened.revisions(1, 2).await?, pair[1..]);
+        assert!(matches!(
+            reopened
+                .append_compaction(
+                    0,
+                    source.clone(),
+                    compacted.clone(),
+                    reference.clone(),
+                    Bytes::from_static(b"stale-compaction")
+                )
+                .await,
+            Err(crate::Error::Conflict(_))
+        ));
+        let mut forged = reference.clone();
+        forged.source_digest[0] ^= 1;
+        assert!(
+            reopened
+                .append_compaction(
+                    2,
+                    source.clone(),
+                    compacted.clone(),
+                    forged,
+                    Bytes::from_static(b"forged-compaction")
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            reopened
+                .append_compaction(
+                    u64::MAX - 1,
+                    source,
+                    compacted,
+                    reference,
+                    Bytes::from_static(b"overflow-compaction")
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(reopened.tail_revision().await?, 2);
+        reopened
+            .append(
+                2,
+                Context::default(),
+                None,
+                Bytes::from_static(b"newer-context"),
+            )
+            .await?;
+        assert_eq!(reopened.latest().await?, Context::default());
+        assert_eq!(reopened.revision(pin.revision).await?, pin);
         Ok(())
     }
 }

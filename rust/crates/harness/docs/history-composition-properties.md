@@ -309,3 +309,68 @@ before summary inference. Excess actual compacted accounting rejects response
 publication; an exact retry reuses the captured source and completed summary,
 with one total summary generation and no response generation. These are typed
 synthetic-provider admission tests, not production tokenizer/media qualification.
+
+Generated consumers now expose the production Rust CompactionPolicy,
+CompactionRetention, ThresholdCompaction, ModelContextCapacity and ModelTokenCount
+types, plus pure default-policy, selected-capacity and exact-request count
+validation. Host counts remain provider-owned; these exports do not implement a
+second browser compactor or qualify automatic browser model admission.
+The generated optional current-input marker is omitted from standalone JS
+projections, while index zero is preserved. Native canonical context serialization
+is unchanged. Strict WASM lint passed in
+`target-b-clippy-generated-compaction-marker.log`. The regenerated consumer build
+and type checks passed in `target-b-types-compaction-build-marker.log` and
+`target-b-types-compaction-consumer-marker.log`. Affected actual WASM consumers
+passed 26 tests and 213 expectations in
+`target-b-wasm-compaction-affected-consumers-marker.log`; actual Chromium passed
+16 contract checks in `target-b-browser-compaction-contracts-marker.log`.
+Both generation output directories and installed JS/WASM/declarations matched
+all four SHA-256 hashes in `target/b-compaction-generated-artifact-hashes.json`.
+The eight compiled/consumer source hashes are recorded in
+`target/b-compaction-generated-source-hashes.json`. The earlier failed optional
+marker receipt is retained in `target-b-wasm-compaction-marker-output.log`.
+These checks cover generated primitive consumption and wire validation; later-turn
+projection reuse, cold checkpoints, default logical fork integration and complete
+platform/runtime qualification remain open.
+
+Local canonical-turn retry publication now uses ConversationState's existing
+message-ID index for user, assistant and tool-message checks. These lookups no
+longer scan retained history. The existing local storage/retry consumers passed
+10 tests in `target-b-native-indexed-memory-lookups.log`; strict native all-target
+lint passed in `target-b-clippy-indexed-memory-lookups.log`. The compiled memory
+source SHA-256 is recorded in `target/b-indexed-memory-lookups-source-hash.json`.
+This removes three warm-turn scans and does not qualify cold restoration or
+complete operation work bounds.
+
+Continuing projection publication now uses one existing Stream append CAS for
+the exact source plus its compacted revision (`append_compaction`). Validation,
+portable revision arithmetic and record-size checks finish before publication;
+both single and paired appends require the complete expected receipt range.
+`latest_revision` captures a revision pin, and `revision` verifies that pinned
+context and its immediate compaction source with at most two record reads.
+Neither operation traverses all retained context revisions.
+
+The final context provider tests passed 10 cases in
+`target-b-native-atomic-context-pair-receipts.log`. The new actual native consumer
+passed three cases in `target-b-native-context-continuation-consumer-final.log`:
+an ordinary admitted summary with real private Filesystem source/output,
+lost-ack recovery of the paired publication, malformed start/end/tail receipts,
+and later-turn SourceStage composition plus exact response recovery after a
+changed source. New admissions see the changed source; an admitted retry retains
+its captured request. Strict native all-target lint passed in
+`target-b-clippy-context-continuation-consumer-final.log`, and strict WASM library
+lint passed in `target-b-clippy-atomic-context-pair-wasm.log`. Three source hashes
+are recorded in `target/b-atomic-context-pair-final-source-hashes.json`.
+The existing durable workflow consumers of the shared fault fixture passed all
+20 cases in `target-b-native-context-pair-shared-fault-consumers.log`; no failures
+or ignored tests. All three source hashes were rechecked after completion and
+matched.
+
+This qualifies the explicit existing context-source path and atomic publication
+primitive, not automatic canonical-conversation continuation. The default
+integration must pin its context revision alongside the canonical selection and
+select only later history after the checkpoint watermark. Its retained view must
+not duplicate old current input or instruction stages. Existing durable context
+records accept file parts only; inline instruction/skill text and structured
+tool exchanges require bounded immutable payload references through the existing
+content provider before that default integration can use this primitive.

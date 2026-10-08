@@ -17,6 +17,7 @@ pub enum ExecutionFaultMode {
 pub struct LostSessionAck<P = MemoryStream> {
     pub inner: P,
     pub lose_ack: std::sync::atomic::AtomicBool,
+    pub append_receipt_fault: std::sync::atomic::AtomicU8,
     pub hide_receipt: std::sync::atomic::AtomicBool,
     pub location_fault: std::sync::atomic::AtomicU8,
     pub hide_location_read: std::sync::atomic::AtomicBool,
@@ -35,6 +36,7 @@ impl<P> LostSessionAck<P> {
         Self {
             inner,
             lose_ack: Default::default(),
+            append_receipt_fault: Default::default(),
             hide_receipt: Default::default(),
             location_fault: Default::default(),
             hide_location_read: Default::default(),
@@ -118,7 +120,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         if fault == 1 {
             return Err(StreamError::Unavailable);
         }
-        let outcome = self.inner.append(request).await?;
+        let mut outcome = self.inner.append(request).await?;
         if fault >= 2 {
             if fault == 3 {
                 self.hide_location_read
@@ -132,6 +134,17 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             return Err(StreamError::Unavailable);
+        }
+        if let AppendOutcome::Committed(receipt) = &mut outcome {
+            match self
+                .append_receipt_fault
+                .swap(0, std::sync::atomic::Ordering::SeqCst)
+            {
+                1 => receipt.start = receipt.end,
+                2 => receipt.end = receipt.start,
+                3 => receipt.tail = receipt.start,
+                _ => {}
+            }
         }
         Ok(outcome)
     }
