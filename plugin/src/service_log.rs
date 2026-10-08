@@ -553,6 +553,75 @@ mod tests {
         }
     }
 
+    struct ChildGuard(std::process::Child);
+
+    impl ChildGuard {
+        fn stop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+
+        fn wait_until(
+            &mut self,
+            deadline: std::time::Instant,
+        ) -> io::Result<std::process::ExitStatus> {
+            loop {
+                if let Some(status) = self.0.try_wait()? {
+                    return Ok(status);
+                }
+                if std::time::Instant::now() >= deadline {
+                    self.stop();
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    fn spawn_writer(path: &Path, start: &Path, id: usize) -> ChildGuard {
+        ChildGuard(
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", "service_log::tests::process_writer", "--ignored"])
+                .env("ACYCLIC_TEST_LOG_PATH", path)
+                .env("ACYCLIC_TEST_LOG_WRITER", id.to_string())
+                .env("ACYCLIC_TEST_LOG_START", start)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("child writer"),
+        )
+    }
+
+    #[test]
+    fn stalled_writer_times_out_and_is_reaped() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("service.log");
+        let start = directory.path().join("start");
+        let mut child = spawn_writer(&path, &start, 0);
+        wait_for(&start.with_extension("0"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10);
+        assert_eq!(
+            child
+                .wait_until(deadline)
+                .expect_err("stalled child")
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(
+            child
+                .0
+                .try_wait()
+                .expect("reaped child")
+                .is_some_and(|status| !status.success())
+        );
+    }
+
     #[test]
     fn process_writers_serialize_independent_handles() {
         let directory = tempfile::tempdir().expect("directory");
@@ -561,28 +630,21 @@ mod tests {
         let alias = directory.path().join("alias.log");
         fs::hard_link(&path, &alias).expect("active alias");
         let start = directory.path().join("start");
-        let children: Vec<_> = (0..4)
-            .map(|id| {
-                std::process::Command::new(std::env::current_exe().expect("test binary"))
-                    .args(["--exact", "service_log::tests::process_writer", "--ignored"])
-                    .env(
-                        "ACYCLIC_TEST_LOG_PATH",
-                        if id % 2 == 0 { &path } else { &alias },
-                    )
-                    .env("ACYCLIC_TEST_LOG_WRITER", id.to_string())
-                    .env("ACYCLIC_TEST_LOG_START", &start)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .expect("child writer")
-            })
+        let mut children: Vec<_> = (0..4)
+            .map(|id| spawn_writer(if id % 2 == 0 { &path } else { &alias }, &start, id))
             .collect();
         for id in 0..4 {
             wait_for(&start.with_extension(id.to_string()));
         }
         fs::write(&start, b"start").expect("release children");
-        for mut child in children {
-            assert!(child.wait().expect("child completion").success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        for child in &mut children {
+            assert!(
+                child
+                    .wait_until(deadline)
+                    .expect("child completion")
+                    .success()
+            );
         }
         let records = fs::read_to_string(&path).expect("log");
         let observed: std::collections::BTreeSet<_> = records.lines().collect();
