@@ -260,7 +260,7 @@ mod tests {
             "http://[::1]:1",
             "https://example.test",
         ] {
-            assert!(http::Client::new(endpoint, &"t".repeat(8192), 1).is_ok());
+            assert!(http::Client::new(endpoint, &"t".repeat(MAX_BEARER_TOKEN_BYTES), 1).is_ok());
         }
         for endpoint in [
             "http://example.test",
