@@ -596,7 +596,7 @@ impl SubscriptionSpec {
 #[proto(file = ACTORS_FILE)]
 #[derive(TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
-#[ts(type = "0 | 1 | 2")]
+#[ts(repr(enum))]
 pub enum SubscriptionState {
     /// No subscription state was specified by the service.
     Unspecified = 0,
@@ -612,7 +612,7 @@ pub enum SubscriptionState {
 #[proto(file = ACTORS_FILE)]
 #[derive(TS)]
 #[ts(export_to = "actors/ActorState.ts")]
-#[ts(type = "0 | 1 | 2 | 3")]
+#[ts(repr(enum))]
 pub enum ActorState {
     /// No Actor state was specified by the service.
     Unspecified = 0,
@@ -630,7 +630,7 @@ pub enum ActorState {
 #[proto(file = ACTORS_FILE)]
 #[derive(TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
-#[ts(type = "0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10")]
+#[ts(repr(enum))]
 pub enum ErrorCode {
     /// No service error code was specified.
     Unspecified = 0,
@@ -1381,6 +1381,22 @@ pub fn typescript_export_names(config: &Config) -> Vec<String> {
     visitor.names
 }
 
+// ts-rs derives numeric unions from Rust discriminants with repr(enum), but its
+// file export emits a runtime enum. Keep the existing type-only public surface.
+fn export_numeric_union<T: TS + 'static>(path: &Path, config: &Config) -> Result<(), ExportError> {
+    let generated = T::export_to_string(config)?;
+    let declaration = format!("{}\n", T::decl(config));
+    let prefix = generated.strip_suffix(&declaration).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "ts-rs enum declaration suffix is absent")
+    })?;
+    let output = T::output_path().ok_or(ExportError::CannotBeExported(std::any::type_name::<T>()))?;
+    std::fs::write(
+        path.join(output),
+        format!("{prefix}type {} = {};\n", T::ident(config), T::inline(config)),
+    )?;
+    Ok(())
+}
+
 /// Export all public Actors request and response declarations and their
 /// recursively discovered semantic dependencies.
 ///
@@ -1399,6 +1415,9 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
     }
 
     typescript_roots!(export_roots);
+    export_numeric_union::<SubscriptionState>(path.as_ref(), &config)?;
+    export_numeric_union::<ActorState>(path.as_ref(), &config)?;
+    export_numeric_union::<ErrorCode>(path.as_ref(), &config)?;
     Ok(())
 }
 
@@ -1433,7 +1452,12 @@ mod tests {
         let service_error =
             std::fs::read_to_string(output.join("actors/ServiceError.ts")).expect("ServiceError");
         assert!(service_error.contains("from \"./ErrorCode.js\""));
-        assert!(output.join("actors/ErrorCode.ts").is_file());
+        for name in ["ActorState", "SubscriptionState", "ErrorCode"] {
+            let declaration = std::fs::read_to_string(output.join(format!("actors/{name}.ts")))
+                .expect("numeric enum declaration");
+            assert!(declaration.contains(&format!("export type {name} = ")));
+            assert!(!declaration.contains("export enum "));
+        }
         let current_head = std::fs::read_to_string(output.join("actors/CurrentHeadMarker.ts"))
             .expect("CurrentHeadMarker");
         assert!(current_head.contains("true"));
