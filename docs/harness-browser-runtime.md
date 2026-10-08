@@ -235,3 +235,5 @@ receipt followed by malformed reconciliation, two reopens, and exactly one
 effect and projection. Installed-package correspondence and the final full
 matrix remain required for this repair; earlier source receipts do not qualify
 the changed WASM boundary.
+
+Main refresh incorporated ccf590d3f7479f6acf7f616888562c5dab7e77a2 (#270) through signed merge8e5332dcd8. Its four changed files concern Stream native-bundle build contracts and target metadata; Harness/Filesystem/Stream Rust semantics, WASM build and generated bindings are unchanged from locally qualified d8453a5a17. Combined-source installed and full platform checks remain required. The prior d845 full request37732189061 was verified pending with zero jobs before cancellation; active424 matrix jobs are preserved.
