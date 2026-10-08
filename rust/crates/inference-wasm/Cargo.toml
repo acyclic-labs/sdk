@@ -18,5 +18,9 @@ prost.workspace = true
 prost-reflect.workspace = true
 wasm-bindgen.workspace = true
 
+[dev-dependencies]
+acyclic-inference = { version = "=0.2.0", path = "../inference", default-features = false, features = ["http-codec"] }
+serde_json.workspace = true
+
 [lints]
 workspace = true

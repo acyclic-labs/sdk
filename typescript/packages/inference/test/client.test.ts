@@ -42,7 +42,7 @@ import {
   WatchRunRequestSchema,
   type InferenceTransport,
 } from "../src/index.js";
-import { retryableOnce, runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
+import { retryableOnce, runTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
 import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
@@ -78,6 +78,38 @@ test("derived HTTP route validation rejects URL escape paths", () => {
   }
 });
 
+test("Rust route association rejects descriptor identity and streaming drift", () => {
+  const method = deriveInferenceHttpRoutes()[0]!.method as unknown as { name: string; methodKind: string };
+  for (const field of ["name", "methodKind"] as const) {
+    const previous = method[field];
+    try {
+      method[field] = "drifted";
+      expect(() => deriveInferenceHttpRoutes()).toThrow("has no matching Rust route");
+    } finally {
+      method[field] = previous;
+    }
+  }
+  expect(deriveInferenceHttpRoutes()).toHaveLength(14);
+});
+
+test("Rust route association rejects duplicate descriptor identities", () => {
+  const routes = deriveInferenceHttpRoutes();
+  const method = routes[2]!.method as unknown as { name: string };
+  const previous = method.name;
+  try {
+    method.name = routes[1]!.method.name;
+    expect(() => deriveInferenceHttpRoutes()).toThrow("do not cover the generated descriptors");
+  } finally {
+    method.name = previous;
+  }
+});
+
+test("public safe-path validation preserves URL-safe segment acceptance", () => {
+  for (const path of ["Models/List2", "models/model.v2", "runs/run_id~latest", "safe/a-b"]) {
+    expect(() => validateInferenceHttpPath(path)).not.toThrow();
+  }
+});
+
 test("Rust reflection supplies every nonzero terminal and validates request shape", async () => {
   const metadata = await runTerminalMetadata();
   expect(metadata).toEqual(RUN_TERMINAL_METADATA);
@@ -103,15 +135,12 @@ test("shared WASM loads are reused but a rejected load is retried", async () => 
   expect([first, second, await load(), attempts]).toEqual([2, 2, 2, 2]);
 });
 
-test("terminal metadata validation rejects Rust/protobuf drift", () => {
-  const valid = RUN_TERMINAL_METADATA.map(item => ({ ...item }));
-  expect(validateRunTerminalMetadata(JSON.stringify(valid))).toEqual(valid);
-  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.slice(1)))).toThrow("does not cover the generated enum");
-  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
-    index === 0 ? { ...item, kind: "renamed" } : item)))).toThrow("does not cover the generated enum");
-  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
-    index === 0 ? { ...item, partial: !item.partial } : item)))).toThrow("does not cover the generated enum");
-  expect(() => validateRunTerminalMetadata("[{\"number\":1,\"kind\":\"completed\"}]")).toThrow("invalid entry");
+test("generated terminal metadata preserves shared immutable identity", async () => {
+  const first = await runTerminalMetadata();
+  expect(first).toBe(RUN_TERMINAL_METADATA);
+  expect(await runTerminalMetadata()).toBe(first);
+  expect(Object.isFrozen(first)).toBe(true);
+  expect(first.every(item => Object.isFrozen(item))).toBe(true);
 });
 
 test("ergonomic identity helpers enforce Rust-derived fixed widths at both boundaries", () => {

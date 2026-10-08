@@ -22,3 +22,19 @@ for (const [construct, width] of [[contextRevision, widths.contextRevision], [ru
 }
 assert.equal(itemId(new Uint8Array(0)).byteLength, 0);
 console.log(JSON.stringify({ status: "passed", namedWidths: Object.keys(widths).length, publicConstructors: 4, negativeControls: 13 }));
+
+// The installed public route adapter consumes the Rust-generated inventory.
+const { deriveInferenceHttpRoutes, validateInferenceHttpPath, RunTerminal } = await import(publicUrl);
+const routes = deriveInferenceHttpRoutes();
+assert.equal(routes.length, 14);
+assert.equal(new Set(routes.map(route => `${route.method.parent.typeName}.${route.method.name}`)).size, routes.length);
+assert.equal(routes.find(route => route.method.name === "Watch")?.methodKind, "server_streaming");
+validateInferenceHttpPath("Models/model.v2_~");
+assert.throws(() => validateInferenceHttpPath("runs/../escape"));
+const { RUN_TERMINAL_METADATA: terminals } = await import(pathToFileURL(join(root, "generated/terminal-metadata.js")).href);
+const { runTerminalMetadata } = await import(pathToFileURL(join(root, "dist/contract.js")).href);
+assert.equal(await runTerminalMetadata(), terminals);
+assert.ok(Object.isFrozen(terminals) && terminals.every(Object.isFrozen));
+assert.deepEqual(terminals.map(item => item.number), Object.values(RunTerminal).filter(value => typeof value === "number" && value > 0));
+assert.throws(() => { terminals[0].partial = true; }, TypeError);
+console.log(JSON.stringify({ status: "passed", rustRoutes: routes.length, frozenTerminals: terminals.length, publicPathValidation: "preserved" }));
