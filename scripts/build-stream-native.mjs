@@ -217,7 +217,7 @@ function splitRustflags(value) {
   return flags;
 }
 
-export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
+export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null, darwinLinker?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS, darwinLinker = null } = {}) {
   const prior = encoded !== null && typeof encoded === "string"
     ? (encoded.length === 0 ? [] : encoded.split("\x1f"))
     : plain !== null && typeof plain === "string" ? splitRustflags(plain) : [];
@@ -233,7 +233,7 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     // Keep the final linker identity stable while Cargo builds in its own path.
     // rust-lld is invoked directly by rustc, so pass Darwin options directly;
     // the -Wl, prefix is only valid when the driver is Apple's ld wrapper.
-    flags.push("-C", "link-arg=-fuse-ld=ld64.lld", "-C", "link-arg=-install_name", "-C", "link-arg=@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-final_output", "-C", "link-arg=libacyclic_stream_napi.dylib");
+    flags.push("-C", `link-arg=-fuse-ld=${darwinLinker ?? "ld64.lld"}`, "-C", "link-arg=-install_name", "-C", "link-arg=@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-final_output", "-C", "link-arg=libacyclic_stream_napi.dylib");
   }
   return flags.join("\x1f");
 }
@@ -275,7 +275,7 @@ export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, sdkRo
   process.env.DYLD_LIBRARY_PATH = [paths.loaderPath, priorDyldLibraryPath].filter(value => typeof value === "string" && value.length > 0).join(delimiter);
   process.env.SDKROOT = sdkRoot;
   process.env.PATH = [paths.driver, priorPath].filter(value => typeof value === "string" && value.length > 0).join(delimiter);
-  return () => {
+  const restore = () => {
     if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
     else process.env[paths.linkerEnvironment] = priorTargetLinker;
     if (priorDyldLibraryPath === null) delete process.env.DYLD_LIBRARY_PATH;
@@ -285,6 +285,8 @@ export function configureDarwinRustLld(target, { sysroot: suppliedSysroot, sdkRo
     if (priorPath === null) delete process.env.PATH;
     else process.env.PATH = priorPath;
   };
+  restore.linkerPath = paths.linker;
+  return restore;
 }
 
 export async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
@@ -296,7 +298,7 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
   try {
     process.env.CARGO_INCREMENTAL = "0";
     process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "false";
-    process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
+    process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags, darwinLinker: restoreDarwinRustLld.linkerPath ?? null });
     delete process.env.RUSTFLAGS;
     return await operation();
   } finally {
