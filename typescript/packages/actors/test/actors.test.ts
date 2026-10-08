@@ -25,11 +25,11 @@ describe("Actors v1 generated transport", () => {
     expect(response.actor?.actorId).toBe("a");
   });
   test("refuses redirects and header-unsafe or oversized bearer tokens", async () => {
-    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(12 * 1024 + 1)]) {
       expect(() => new HttpActorsClient({ endpoint: "https://actors.example.test", token })).toThrow(TypeError);
     }
     let redirect: RequestRedirect | undefined;
-    const client = new HttpActorsClient({ endpoint: "https://actors.example.test", token: "x".repeat(8192), fetcher: async (_input, init) => {
+    const client = new HttpActorsClient({ endpoint: "https://actors.example.test", token: "x".repeat(12 * 1024), fetcher: async (_input, init) => {
       redirect = init?.redirect;
       return new Response(JSON.stringify({}));
     } });

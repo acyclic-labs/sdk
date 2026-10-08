@@ -36,8 +36,9 @@ The Rust descriptor codec governs validation and conversion.
 Streaming bodies use `application/x-ndjson`. Each line is exactly one canonical
 frame followed by LF. CRLF is accepted. JSON strings must escape embedded
 newlines. Empty lines and trailing non-frame data are invalid. A JSON frame is
-at most 128 KiB, including its terminator. Each decoded body frame is at most
-65,536 bytes. Transport chunk boundaries need not match frames.
+at most 12 MiB, including its terminator, so that one compressed 8 MiB body
+frame fits. A plain body frame decodes to at most 65,536 bytes and a
+compressed one to at most 8,388,608. Transport chunk boundaries need not match frames.
 
 PUT and upload-part require exactly one header first, then body frames, then
 exactly one `{"complete":true}` frame and clean request EOF. The completion
@@ -52,7 +53,11 @@ may impose smaller explicit bounds. Conditions are evaluated at publication,
 including multipart completion, never only at upload creation.
 
 GET requires exactly one metadata header first, followed by body frames for that
-complete representation. EOF succeeds only when the decoded length equals
+complete representation. Each download body frame is a `Body` whose `data`
+decodes under `codec` (`CODEC_NONE` or `CODEC_ZSTD`) to exactly `decodedLength`
+bytes; before decompressing, clients refuse a declared length above the bytes
+still selected, above 65,536 for `CODEC_NONE` or above 8,388,608 for
+`CODEC_ZSTD`, and refuse an unknown codec. EOF succeeds only when the decoded length equals
 ObjectInfo.size, or the selected ContentRange length. Clients check the caller's
 allocation bound before collecting bytes. A second header, malformed range,
 oversized frame, excess bytes or premature EOF fails. A terminal `error` frame

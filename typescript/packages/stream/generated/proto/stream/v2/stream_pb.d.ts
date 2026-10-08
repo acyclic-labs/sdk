@@ -296,13 +296,47 @@ export declare type FollowRequest = Message<"acyclic.stream.v2.FollowRequest"> &
 export declare const FollowRequestSchema: GenMessage<FollowRequest>;
 
 /**
+ * One Stream's consecutive records in ascending sequence order.
+ *
+ * @generated from message acyclic.stream.v2.RecordBatch
+ */
+export declare type RecordBatch = Message<"acyclic.stream.v2.RecordBatch"> & {
+  /**
+   * @generated from field: repeated acyclic.stream.v2.Record records = 1;
+   */
+  records: Record[];
+};
+
+/**
+ * Describes the message acyclic.stream.v2.RecordBatch.
+ * Use `create(RecordBatchSchema)` to create a new message.
+ */
+export declare const RecordBatchSchema: GenMessage<RecordBatch>;
+
+/**
+ * One Read or Follow frame. data decodes under codec to exactly decoded_length
+ * bytes of an encoded RecordBatch whose records continue the previous frame's.
+ * A client rejects decoded_length above STREAM_LIMIT_MAX_COMMAND_BYTES before it
+ * allocates or decompresses, rejects any other decoded length, and rejects an
+ * unknown codec. A server chooses the codec independently for every frame.
+ *
  * @generated from message acyclic.stream.v2.ReadResponse
  */
 export declare type ReadResponse = Message<"acyclic.stream.v2.ReadResponse"> & {
   /**
-   * @generated from field: acyclic.stream.v2.Record record = 1;
+   * @generated from field: acyclic.stream.v2.Codec codec = 2;
    */
-  record?: Record | undefined;
+  codec: Codec;
+
+  /**
+   * @generated from field: bytes data = 3;
+   */
+  data: Uint8Array;
+
+  /**
+   * @generated from field: uint64 decoded_length = 4;
+   */
+  decodedLength: bigint;
 };
 
 /**
@@ -1019,6 +1053,32 @@ export enum StreamLimit {
  * Describes the enum acyclic.stream.v2.StreamLimit.
  */
 export declare const StreamLimitSchema: GenEnum<StreamLimit>;
+
+/**
+ * Encoding of one read frame's data.
+ *
+ * @generated from enum acyclic.stream.v2.Codec
+ */
+export enum Codec {
+  /**
+   * data is the encoded RecordBatch itself.
+   *
+   * @generated from enum value: CODEC_NONE = 0;
+   */
+  NONE = 0,
+
+  /**
+   * data is one or more complete Zstandard frames.
+   *
+   * @generated from enum value: CODEC_ZSTD = 1;
+   */
+  ZSTD = 1,
+}
+
+/**
+ * Describes the enum acyclic.stream.v2.Codec.
+ */
+export declare const CodecSchema: GenEnum<Codec>;
 
 /**
  * @generated from service acyclic.stream.v2.StreamService

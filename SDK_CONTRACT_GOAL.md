@@ -975,7 +975,7 @@ two successive declaration checks pass with fresh Rust macro output.
 
 Objects v2 HTTP downloads decode bounded NDJSON frames incrementally, validate
 selection size at the header, and apply caller body limits before retaining
-frames. The parser uses a fixed 128 KiB line buffer. Node and Bun tests prove
+frames. The parser bounds each line at 12 MiB, enough for one compressed 8 MiB body frame. Node and Bun tests prove
 oversized headers cancel the stream without pulling the body; existing lifecycle,
 range, malformed framing and error tests pass. Chrome qualification also passes.
 

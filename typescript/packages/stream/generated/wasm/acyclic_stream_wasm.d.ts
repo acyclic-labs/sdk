@@ -72,6 +72,14 @@ export function __streamErrorCodeContract(value: StreamErrorCode): StreamErrorCo
 export function decodeHttpResponse(route: string, response_json: string): unknown;
 
 /**
+ * Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
+ *
+ * The shared Rust decoder bounds the declared length before decompressing and
+ * requires the decoded length to match it exactly.
+ */
+export function decodeReadResponse(codec: number, data: Uint8Array, decoded_length: bigint): Uint8Array;
+
+/**
  * Encode one protobuf request into the hosted Stream HTTP JSON shape.
  *
  * Protobuf remains the only request contract crossing from TypeScript into
@@ -167,6 +175,7 @@ export interface InitOutput {
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
     readonly __wbg_wasmstream_free: (a: number, b: number) => void;
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly decodeReadResponse: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];

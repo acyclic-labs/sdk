@@ -13,7 +13,7 @@ export interface ObjectsV2GrpcOptions {
   readonly observer?: AcyclicObserver;
 }
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
+import { MAX_BEARER_TOKEN_BYTES, ObjectsV2Error, ObjectsV2Provider, bodyDecodedLimit, objectsV2Error } from "./v2.js";
 import { validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
@@ -29,7 +29,7 @@ function grpcError(error: unknown): ObjectsV2Error {
 export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > 8192 || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
+  if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > MAX_BEARER_TOKEN_BYTES || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
@@ -174,8 +174,8 @@ export class GrpcObjectsV2 extends ObjectsV2Provider {
                   if (frame.frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
                   remaining = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.frame.value), maximum);
                 } else {
-                  if (frame.frame.case !== "body" || frame.frame.value.byteLength > 65536 || BigInt(frame.frame.value.byteLength) > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-                  remaining -= BigInt(frame.frame.value.byteLength);
+                  if (frame.frame.case !== "body" || frame.frame.value.decodedLength > bodyDecodedLimit(frame.frame.value) || frame.frame.value.decodedLength > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+                  remaining -= frame.frame.value.decodedLength;
                 }
               } catch (error) { rejected = objectsV2Error(error); }
             }
