@@ -1427,6 +1427,11 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "boundary tests use explicit indexed fixtures and grouped validation cases"
+)]
 mod tests {
     use super::*;
 
@@ -1702,7 +1707,7 @@ mod tests {
             Err(DomainError::Contract(crate::ContractError::InvalidArgument))
         );
 
-        let mut over_limit = create.clone();
+        let mut over_limit = create;
         over_limit
             .bindings
             .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
@@ -1734,7 +1739,7 @@ mod tests {
             Err(DomainError::Contract(crate::ContractError::DuplicateName))
         );
 
-        let mut invalid_update_idempotency = update.clone();
+        let mut invalid_update_idempotency = update;
         invalid_update_idempotency.idempotency_key.clear();
         assert_eq!(
             UpdateActorRequest::try_from(invalid_update_idempotency),
@@ -1811,7 +1816,7 @@ mod tests {
         let limits = ActorLimits::new(1, 2, 3).expect("positive limits");
         let update = UpdateActorRequest::new(
             actor_id.clone(),
-            digest.clone(),
+            digest,
             Vec::new(),
             limits,
             u64::MAX,
