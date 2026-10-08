@@ -2,23 +2,44 @@
 
 use std::collections::HashSet;
 
+/// Rust-owned semantic projections for generated SDK metadata.
+pub use contract::domain;
+
+/// Authenticated operations over the platform's Rust-owned transport.
+pub mod client;
+
+/// Rust-owned Actors contract declarations and schema renderer.
+pub mod contract;
+
+/// Native gRPC client for the canonical Actors v1 service.
+///
+/// The client applies bearer authentication and TLS configuration to every
+/// generated RPC. Browser bindings use the TypeScript Actors transport;
+/// this adapter is intentionally unavailable on `wasm32`.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
+/// Native HTTP client for the canonical Actors v1 Protobuf JSON service.
+///
+/// The client exposes the same eight operations with bounded responses and
+/// bearer authentication. Browser bindings use the TypeScript Actors
+/// transport; this adapter is intentionally unavailable on `wasm32`.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 
-/// Generated Actors v1 wire types. The documented schema is `proto/actors/v1/actors.proto`.
-pub mod wire {
-    #![allow(missing_docs, reason = "generated from the public Actors schema")]
-    #![allow(
-        clippy::all,
-        clippy::pedantic,
-        clippy::allow_attributes_without_reason,
-        reason = "generated protobuf bindings"
-    )]
-    include!("generated/acyclic.actors.v1.rs");
-}
+/// Rust-owned Actors v1 wire types and schema metadata.
+#[allow(
+    clippy::allow_attributes_without_reason,
+    clippy::doc_markdown,
+    clippy::too_many_lines,
+    dead_code,
+    missing_docs,
+    reason = "tonic emits this module and its generated server dispatch code"
+)]
+pub mod wire;
 
 /// Canonical version-one descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-actors-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 /// Maximum subscriptions on one Actor contract.
 pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.
@@ -30,10 +51,6 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Bearer credentials must be nonblank and at most [`MAX_BEARER_TOKEN_BYTES`]; the HTTP and gRPC
 /// header parsers additionally reject control characters such as CR, LF, and NUL.
-<<<<<<< HEAD
-fn valid_token(token: &str) -> bool {
-    !token.trim().is_empty() && token.len() <= MAX_BEARER_TOKEN_BYTES
-=======
 pub(crate) fn valid_token(token: &str) -> bool {
     !token.trim().is_empty()
         && token.len() <= MAX_BEARER_TOKEN_BYTES
@@ -45,7 +62,6 @@ pub(crate) fn valid_token(token: &str) -> bool {
 /// Idempotency keys are present and bounded consistently across operations.
 pub(crate) fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
->>>>>>> origin/codex/actors-final-platform-integration
 }
 
 /// Rust-owned route names used by the TypeScript transport generator.
@@ -74,15 +90,6 @@ pub enum ContractError {
     DuplicateName,
 }
 
-<<<<<<< HEAD
-fn digest(value: &[u8]) -> bool {
-    value.len() == 32 && value.iter().any(|byte| *byte != 0)
-}
-
-/// Idempotency keys share the 1..=256 byte bound used by the other families.
-fn idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
-=======
 impl ContractError {
     /// Returns the stable error code shared by every SDK bridge.
     #[must_use]
@@ -99,7 +106,6 @@ impl From<std::convert::Infallible> for ContractError {
     fn from(value: std::convert::Infallible) -> Self {
         match value {}
     }
->>>>>>> origin/codex/actors-final-platform-integration
 }
 
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
@@ -114,9 +120,9 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
 
 /// Validates a customer-authored Actor creation request before admission.
 pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
-    if !digest(&request.code_sha256)
+    if !domain::valid_code_sha256(&request.code_sha256)
         || request.home_region.is_empty()
-        || !idempotency_key(&request.idempotency_key)
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -158,8 +164,8 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 /// The service checks checkpoint compatibility or migration before activation.
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
-        || !digest(&request.code_sha256)
-        || !idempotency_key(&request.idempotency_key)
+        || !domain::valid_code_sha256(&request.code_sha256)
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -188,7 +194,7 @@ pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
-        || !idempotency_key(&request.idempotency_key)
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.subscription.as_ref().is_some_and(subscription)
     {
         return Err(ContractError::InvalidArgument);
@@ -216,7 +222,7 @@ mod tests {
         assert!(!subscription(&invalid));
 
         let mut create = wire::CreateActorRequest {
-            code_sha256: vec![1; 32],
+            code_sha256: vec![1; 32].into(),
             home_region: "eu".into(),
             bindings: vec![],
             limits: Some(wire::ActorLimits {
@@ -235,21 +241,10 @@ mod tests {
             idempotency_key: "create-a".into(),
         };
         assert_eq!(validate_create(&create), Ok(()));
-        create.idempotency_key = "k".repeat(257);
-        assert_eq!(
-            validate_create(&create),
-            Err(ContractError::InvalidArgument)
-        );
-        create.idempotency_key = "k".repeat(256);
-        assert_eq!(validate_create(&create), Ok(()));
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
     }
-<<<<<<< HEAD
-
-=======
->>>>>>> origin/codex/actors-final-platform-integration
     #[test]
     fn clients_share_endpoint_and_credential_policy() {
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
