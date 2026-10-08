@@ -97,6 +97,7 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
   if (assembly.parent.asset !== parentAsset || digest(join(output, parentAsset)) !== assembly.parent.sha256) fail("native assembly parent digest differs");
   const parent = archiveFiles(join(output, parentAsset));
   const neutral = JSON.parse(parent.get("package/package.json").toString("utf8"));
+  if (neutral.name !== assembly.parent.name || neutral.version !== version || neutral.private !== false) fail("neutral parent manifest differs from release identity");
   const { parent: ignored, ...index } = assembly;
   if (JSON.stringify(JSON.parse(parent.get("package/generated/native/native-targets.json").toString("utf8"))) !== JSON.stringify(index)) fail("neutral parent assembly index differs");
   if ([...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent contains a native binary");

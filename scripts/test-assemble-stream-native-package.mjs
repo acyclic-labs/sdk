@@ -66,7 +66,7 @@ test("publication verifies all companion archives and retained attestations befo
       await put(join(parent, "generated/native/attestations", target, name), bytes);
     }
     await json(join(companion, "package.json"), { name: companionName, version: "0.2.0", private: false, main: addon, os: entry.os, cpu: entry.cpu });
-    await json(join(parent, "package.json"), { name: "@acyclic-labs/stream", version: "0.2.0", optionalDependencies: { [companionName]: "0.2.0" } });
+    await json(join(parent, "package.json"), { name: "@acyclic-labs/stream", version: "0.2.0", private: false, optionalDependencies: { [companionName]: "0.2.0" } });
     const pack = (source, asset) => execFileSync("tar", ["-czf", join(output, asset), "-C", source, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
     pack(join(directory, "companion"), entry.asset);
     entry.sha256 = bytesHash(await readFile(join(output, entry.asset)));
@@ -78,6 +78,19 @@ test("publication verifies all companion archives and retained attestations befo
     await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
     await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n${entry.sha256}  ${entry.asset}\n`);
     await verifyNativeAssembly(output, revision, "0.2.0");
+    const originalParent = JSON.parse(await readFile(join(parent, "package.json"), "utf8"));
+    for (const [field, value] of Object.entries({ name: "@wrong/parent", version: "9.9.9", private: true })) {
+      await json(join(parent, "package.json"), { ...originalParent, [field]: value });
+      pack(join(directory, "parent"), parentAsset);
+      parentReceipt.sha256 = bytesHash(await readFile(join(output, parentAsset)));
+      await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /parent manifest differs/);
+    }
+    await json(join(parent, "package.json"), originalParent);
+    pack(join(directory, "parent"), parentAsset);
+    parentReceipt.sha256 = bytesHash(await readFile(join(output, parentAsset)));
+    await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
+    await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n${entry.sha256}  ${entry.asset}\n`);
     await assert.rejects(verifyNativeAssembly(output, "2".repeat(40), "0.2.0"), /release identity/);
     await put(join(output, "native/stale.tgz"), "stale");
     await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /missing or extra files/);
