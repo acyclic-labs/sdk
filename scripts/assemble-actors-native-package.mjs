@@ -65,6 +65,10 @@ export function qualifiedCompanionManifest(manifest) {
   return { ...manifest, files: [...manifest.files, "native-targets.json", "generation-manifest.json"], private: false };
 }
 
+export function qualifiedParentManifest(manifest, targets, companions) {
+  return { ...manifest, napi: { ...manifest.napi, targets }, optionalDependencies: Object.fromEntries(companions.map(companion => [companion.name, companion.version])) };
+}
+
 export async function sourceNativeInventory(sourceSha) {
   if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("native inventory source differs from checkout");
   const source = await sourceSnapshot();
@@ -79,11 +83,11 @@ export async function sourceNativeInventory(sourceSha) {
     await new NapiCli().createNpmDirs({ cwd: temporary, npmDir });
     const companions = await Promise.all(targets.map(async selected_target => {
       const generated = JSON.parse(await readFile(join(npmDir, parseTriple(selected_target).platformArchABI, "package.json"), "utf8"));
-      return { selected_target, name: generated.name, main: generated.main, os: generated.os, cpu: generated.cpu, libc: generated.libc, manifest: qualifiedCompanionManifest(generated) };
+      return { selected_target, name: generated.name, version: generated.version, main: generated.main, os: generated.os, cpu: generated.cpu, libc: generated.libc, manifest: qualifiedCompanionManifest(generated) };
     }));
     await assertSourceSnapshot(source);
     if (run("git", ["rev-parse", "HEAD"]) !== sourceSha) fail("native inventory source changed during generation");
-    return { schema: "acyclic.actors.native-source-inventory.v1", source_commit: sourceSha, source_sha256: source.sha256, source_files: source.files, parent: { name: manifest.name, version: manifest.version, private: manifest.private }, targets, companions };
+    return { schema: "acyclic.actors.native-source-inventory.v1", source_commit: sourceSha, source_sha256: source.sha256, source_files: source.files, parent: qualifiedParentManifest(manifest, targets, companions), targets, companions };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
@@ -103,7 +107,7 @@ export async function verifyNativeAssembly(output, sourceSha, version, expectedI
   if (digest(join(output, assembly.parent.asset)) !== assembly.parent.sha256) fail("native assembly parent digest differs");
   const parent = archiveFiles(join(output, assembly.parent.asset));
   const neutral = JSON.parse(parent.get("package/package.json").toString("utf8"));
-  if (neutral.name !== assembly.parent.name || neutral.version !== version || neutral.private !== false || [...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent manifest or binary inventory differs");
+  if (!isDeepStrictEqual(neutral, expectedInventory.parent) || [...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent manifest or binary inventory differs");
   const { parent: ignored, ...index } = assembly;
   if (JSON.stringify(JSON.parse(parent.get("package/generated/native/native-targets.json").toString("utf8"))) !== JSON.stringify(index)) fail("neutral parent assembly index differs");
   const nativeFiles = new Set(["binding.cjs", "binding.d.ts", "native-targets.json"].map(name => `package/generated/native/${name}`));
@@ -290,7 +294,7 @@ async function main() {
     }
     const assembly = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: sourceSha, source_sha256: bundles[0].metadata.source_sha256, targets, companions };
     await writeFile(join(native, "native-targets.json"), `${JSON.stringify(assembly, null, 2)}\n`);
-    const parentManifest = { ...manifest, napi: { ...manifest.napi, targets }, optionalDependencies: Object.fromEntries(companions.map(companion => [companion.name, companion.version])) };
+    const parentManifest = qualifiedParentManifest(manifest, targets, companions);
     await writeFile(join(parentRoot, "package.json"), `${JSON.stringify(parentManifest, null, 2)}\n`);
     const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
     await assertSourceSnapshot(source);
