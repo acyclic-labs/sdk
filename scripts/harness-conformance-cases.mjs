@@ -1,5 +1,6 @@
 // Executable case ownership stays in the runner, separate from documentation vectors.
 // Keep registrations as an array: constructing a Map first would erase duplicates.
+// Empty requirements are release-blocking gaps; unrelated tests cannot fill them.
 /** @type {[string, string, [string, string][]][]} */
 export const harnessCaseMarkers = [
   ["harness", "operation-identities-are-stable", [["rust", "executor::tests::operation_identity_rejects_changed_input"]]],
@@ -11,11 +12,11 @@ export const harnessCaseMarkers = [
   ["harness", "effect-attempts-respect-provider-guarantees", [["rust", "core::tests::at_most_once_effect_is_never_redispatched_after_uncertainty"]]],
   ["harness", "typed-approvals-bind-the-exact-action", [["rust", "interaction::tests::approval_binding_cannot_change_with_display_json"], ["rust", "runtime::tests::tool_approval_keeps_terminal_outcomes_distinct"]]],
   ["harness", "structured-parent-waits-release-capacity", [["rust", "scheduler::tests::waiting_parent_releases_execution_capacity"]]],
-  ["harness", "join-preserves-child-slot-order", [["rust", "scheduler::tests::reduction_is_bound_to_the_exact_contract_and_inputs"]]],
+  ["harness", "join-preserves-child-slot-order", []],
   ["harness", "race-uses-first-authoritative-success", [["rust", "scheduler::tests::race_uses_first_observed_success_and_cancels_losers"]]],
-  ["harness", "quorum-fails-when-threshold-is-unreachable", [["rust", "scheduler::tests::failed_dependencies_are_explicitly_rejectable"]]],
+  ["harness", "quorum-fails-when-threshold-is-unreachable", []],
   ["harness", "stock-executor-replay-does-not-repeat-tools", [["rust", "executor::tests::stock_loop_replays_without_reinvoking_models_or_tools"]]],
-  ["harness", "custom-executor-owns-the-whole-turn-loop", [["rust", "executor::tests::interrupted_model_stream_reconciles_without_redispatch"]]],
+  ["harness", "custom-executor-owns-the-whole-turn-loop", []],
   ["harness", "client-replay-is-generation-fenced", [["typescript", "a replay generation cannot change without an explicit rebase"], ["typescript", "client hydrates a durable cursor before its first reconnect"], ["typescript", "rebase fences a delivery buffered by the previous replay connection"]]],
   ["harness", "client-outbox-clears-only-after-authority", [["typescript", "reconnect delivery is contiguous and clears authoritative outbox entries"], ["typescript", "IndexedDB atomically persists outbox acknowledgements and replay cursors across restart"], ["typescript", "IndexedDB preserves enqueue order across restart and isolates database namespaces"], ["typescript", "terminal admission removes a safe command from the retry outbox"]]],
   ["harness", "pagination-is-bounded-and-rebase-safe", [["typescript", "page reset fences an older in-flight response"]]],
