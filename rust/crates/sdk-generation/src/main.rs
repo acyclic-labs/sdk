@@ -1038,7 +1038,7 @@ fn materialize_generated_sources(
     for matches in candidates.values_mut() {
         matches.retain(|candidate| !candidate.starts_with(&staging_root));
     }
-    let mut result = Vec::new();
+    let mut result = BTreeMap::<PathBuf, GeneratedSource>::new();
     for filename in filenames {
         let physical = PathBuf::from(&filename);
         if !physical.is_absolute() {
@@ -1123,13 +1123,18 @@ fn materialize_generated_sources(
             sha256_bytes(logical_identity.as_bytes()).trim_start_matches("sha256:"),
             suffix
         ));
-        result.push(GeneratedSource {
+        let source = GeneratedSource {
             physical_path: physical,
             logical_path,
             sha256: digest,
-        });
+        };
+        // Multiple Rustdoc profiles can spell the same canonical source with
+        // equivalent paths (for example, a `./` segment). The publication
+        // manifest contains one stable source entry; retain the first
+        // attested mapping and avoid emitting duplicate logical paths.
+        result.entry(source.logical_path.clone()).or_insert(source);
     }
-    Ok(result)
+    Ok(result.into_values().collect())
 }
 
 fn stage_generated_source(root: &Path, source: &Path, identity: &str) -> Result<PathBuf, CliError> {
@@ -1644,6 +1649,32 @@ mod tests {
         assert!(candidate.exists());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(foreign.parent().unwrap());
+    }
+
+    #[test]
+    fn equivalent_rustdoc_source_paths_are_deduplicated() {
+        let root = test_root("deduplicate-generated-span");
+        write(&root, "target/candidate/wire.rs", b"pub struct Wire;\n");
+        let canonical = root.join("target/candidate/wire.rs");
+        let equivalent = root.join("target/candidate/./wire.rs");
+        let receipt = root.join("receipt.json");
+        fs::write(
+            &receipt,
+            serde_json::to_vec(&serde_json::json!({
+                "spans": [
+                    { "filename": canonical.to_string_lossy() },
+                    { "filename": equivalent.to_string_lossy() }
+                ]
+            }))
+            .expect("span fixture should serialize"),
+        )
+        .expect("receipt should be writable");
+
+        let sources = materialize_generated_sources(&root, std::slice::from_ref(&receipt))
+            .expect("equivalent source paths should be accepted");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].sha256, sha256_file(&canonical).expect("source should hash"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
