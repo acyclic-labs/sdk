@@ -19,6 +19,7 @@ name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
  "acyclic-workers",
+ "http-body",
  "prost",
  "prost-reflect",
  "rcgen",
@@ -473,6 +474,7 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
+ "http-body",
  "prost",
  "prost-reflect",
  "reqwest",
