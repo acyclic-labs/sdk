@@ -26,6 +26,24 @@ try {
   };
   const harness = await Harness.create(options);
   const contracts = await NativeContracts.create();
+  for (const value of ["replacement \ufffd", "paired \ud83d\ude00", "\u0000"]) {
+    const nativeRoundTrip = contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value })));
+    if (nativeRoundTrip.value !== value) throw new Error("native JSON parser changed a valid Unicode string");
+    const roundTrip = JSON.parse(new TextDecoder().decode(contracts.encodeCanonicalJson({ [value]: value })));
+    if (roundTrip[value] !== value) throw new Error("canonical JSON changed a valid Unicode string or key");
+  }
+  for (const invalid of ["\ud800", "\udc00", "\ud800x", "x\udc00"]) {
+    let nativeRejected = false;
+    try { contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value: invalid }))); }
+    catch { nativeRejected = true; }
+    if (!nativeRejected) throw new Error("native JSON parser accepted an unpaired surrogate");
+    for (const value of [{ value: invalid }, { [invalid]: 1 }, new Map([[invalid, 1]])]) {
+      let rejected = false;
+      try { contracts.encodeCanonicalJson(value); }
+      catch { rejected = true; }
+      if (!rejected) throw new Error("canonical JSON normalized an unpaired UTF-16 string or key");
+    }
+  }
   const provider = { namespace: "browser", family: "filesystem", version: "2" };
   const skillSource = {
     root: { volume: { provider, id: "skills", class: "session_shared", owner: { kind: "session", id: "test" } }, directory: "" },
