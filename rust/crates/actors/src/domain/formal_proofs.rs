@@ -2,8 +2,6 @@
 //!
 //! Observation harnesses quantify full-width numeric values and optional presence
 //! through production conversions and getters, with fixed valid nonnumeric context.
-//! Their fresh solver runs are pending; historical four-harness receipts do not
-//! prove these additions, whole DTOs, serialization, transport, or service behavior.
 
 use super::{ActorLimits, ActorState, DomainError, ErrorCode, PositiveU64, SubscriptionStart, SubscriptionState};
 
