@@ -44,6 +44,51 @@ async fn small_bodies_use_one_journal_append_and_survive_compaction()
 }
 
 #[tokio::test]
+async fn journal_body_reads_share_one_handle_until_compaction_replaces_the_journal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    let opens = || -> Result<u64, &str> {
+        Ok(core
+            .journal
+            .as_ref()
+            .ok_or("missing journal")?
+            .root
+            .journal_opens
+            .load(Ordering::Relaxed))
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            core.get(get("retained"), 6).await?.body,
+            Bytes::from_static(b"before")
+        );
+    }
+    assert_eq!(opens()?, 1);
+    // The cached handle must not keep the journal from being replaced, nor
+    // outlive it: bodies appended to the replacement are read from it.
+    core.collect_local_garbage(10)?;
+    core.put(put("after"), Bytes::from_static(b"after")).await?;
+    for _ in 0..3 {
+        assert_eq!(
+            core.get(get("after"), 5).await?.body,
+            Bytes::from_static(b"after")
+        );
+    }
+    assert_eq!(
+        core.get(get("retained"), 6).await?.body,
+        Bytes::from_static(b"before")
+    );
+    assert_eq!(opens()?, 2);
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(
+        core.get(get("after"), 5).await?.body,
+        Bytes::from_static(b"after")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_incomplete_inline_frame_boundary_recovers_the_previous_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let template = tempfile::tempdir()?;

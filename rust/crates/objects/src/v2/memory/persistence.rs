@@ -142,7 +142,7 @@ struct Tail {
     inline_bytes: u64,
 }
 pub(super) struct Journal {
-    root: PathBuf,
+    root: Arc<crate::physical::LocalRoot>,
     tail: Mutex<Tail>,
     limits: LocalObjectsLimits,
     header: Header,
@@ -234,7 +234,7 @@ impl MemoryObjects {
             }
         }
         let mut report = crate::physical::collect_physical_garbage(
-            &journal.root,
+            &journal.root.path,
             &references,
             maximum_candidates,
             journal.limits.maximum_object_bytes,
@@ -289,6 +289,7 @@ pub(crate) fn open(
         .write(true)
         .open(root.join("mutations.log"))?;
     let header = load_header(&mut file, &root, limits)?;
+    let root = Arc::new(crate::physical::LocalRoot::new(root));
     let (state, operations, inline_bytes) = replay(&mut file, &root, options, limits)?;
     let bytes = file.stream_position()?;
     let mut references = BTreeSet::new();
@@ -302,8 +303,12 @@ pub(crate) fn open(
             body.local_references(&mut references);
         }
     }
-    crate::physical::validate_referenced_segments(&root, &references, limits.maximum_object_bytes)
-        .map_err(corrupt)?;
+    crate::physical::validate_referenced_segments(
+        &root.path,
+        &references,
+        limits.maximum_object_bytes,
+    )
+    .map_err(corrupt)?;
     let key = header.cursor_key.as_slice().try_into().map_err(corrupt)?;
     Ok(MemoryObjects {
         state: Arc::new(Mutex::new(state)),
@@ -391,7 +396,7 @@ fn load_header(
 
 fn replay(
     file: &mut File,
-    root: &Path,
+    root: &Arc<crate::physical::LocalRoot>,
     options: MemoryOptions,
     limits: LocalObjectsLimits,
 ) -> Result<(State, u64, u64), LocalOpenError> {
@@ -562,13 +567,13 @@ impl Journal {
                 }
                 let digest = *blake3::hash(bytes).as_bytes();
                 let (id, offsets) = crate::physical::persist_segment(
-                    &self.root,
+                    &self.root.path,
                     &[(digest, bytes.clone())],
                     self.limits.durability,
                 )
                 .map_err(|_| Error::from(Unavailable))?;
                 Ok(StoredBody::Local {
-                    root: Arc::new(self.root.clone()),
+                    root: Arc::clone(&self.root),
                     digest,
                     length: bytes.len(),
                     location: LocalBodyLocation::Segment {
@@ -812,7 +817,7 @@ fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error
 
 fn restore_body(
     records: Vec<BodyRecord>,
-    root: &Path,
+    root: &Arc<crate::physical::LocalRoot>,
     expected: u64,
 ) -> Result<StoredBody, LocalOpenError> {
     if records.is_empty() || records.len() > 10_000 {
@@ -829,7 +834,7 @@ fn restore_body(
             return Err(LocalOpenError::Corrupt);
         }
         leaves.push(StoredBody::Local {
-            root: Arc::new(root.to_path_buf()),
+            root: Arc::clone(root),
             digest: value.digest.as_slice().try_into().map_err(corrupt)?,
             length: count,
             location: if value.journal {
@@ -856,7 +861,7 @@ fn restore_body(
 fn apply(
     state: &mut State,
     delta: Delta,
-    root: &Path,
+    root: &Arc<crate::physical::LocalRoot>,
     options: MemoryOptions,
     limits: LocalObjectsLimits,
 ) -> Result<(), LocalOpenError> {
@@ -963,7 +968,7 @@ fn apply_uploads(next: &mut State, changes: Vec<UploadChange>) -> Result<(), Loc
 fn apply_parts(
     next: &mut State,
     changes: Vec<PartChange>,
-    root: &Path,
+    root: &Arc<crate::physical::LocalRoot>,
     limits: LocalObjectsLimits,
 ) -> Result<(), LocalOpenError> {
     let mut seen = BTreeSet::new();
