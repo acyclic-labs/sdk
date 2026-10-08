@@ -58,24 +58,46 @@ export function createSourceInspector(root, read = path => {
     const rustRoot = source(`${rustBase}${objects ? "v2/mod.rs" : "lib.rs"}`);
     const grpc = source(`${rustBase}${objects ? "v2/" : ""}grpc.rs`);
     const http = source(`${rustBase}${objects ? "v2/" : ""}http.rs`);
+    // Actors' tonic declarations are generated in Cargo OUT_DIR, so the clean
+    // checkout has no stable generated .rs path to inspect. The checked-in
+    // operation macro, Rust route table, and generated TS facade are the
+    // Rust-owned metadata surfaces for this bounded inspector fallback.
+    const actorsClient = family === "actors" ? source("rust/crates/actors/src/client.rs") : "";
+    const actorsTypescriptClient = family === "actors" ? source("typescript/packages/actors/src/client.ts") : "";
+    const actorsTypescriptService = family === "actors" ? source("typescript/packages/actors/src/generated/actors-service.ts") : "";
+    const actorsTypescriptRoutes = family === "actors" ? source("typescript/packages/actors/src/routes.ts") : "";
     const module = name => new RegExp(`^pub mod ${name};`, "m").test(rustRoot);
-    const rustGrpc = module("grpc") && (objects || stream
+    const rustGrpc = module("grpc") && (family === "actors"
+      ? new RegExp(`\\boperation!\\(\\s*${rustName}\\s*,`).test(actorsClient)
+      : objects || stream
       ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
     const rustHttp = module("http") && rustMethod(objects || stream
       ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName);
     const grpcPath = `${tsBase}${objects ? "v2-grpc" : "grpc"}.ts`;
-    const typescriptGrpcNodeBun = factory(grpcPath, objects ? "createObjectsV2GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
-    const typescriptHttp = objects
+    const typescriptGrpcNodeBun = family === "actors"
+      ? actorsTypescriptService.includes(`readonly ${operation}:`) &&
+        actorsTypescriptClient.includes("nativeBinding()") && actorsTypescriptClient.includes("wasmBinding()")
+      : factory(grpcPath, objects ? "createObjectsV2GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
+    const typescriptHttp = family === "actors"
+      ? actorsTypescriptService.includes(`readonly ${operation}:`) &&
+        actorsTypescriptClient.includes("HttpActorsClient extends ActorsClient") &&
+        actorsTypescriptRoutes.includes(`  \"${operation}\":`)
+      : objects
       ? method(`${tsBase}v2.ts`, "ObjectsV2Provider", operation) && method(`${tsBase}v2-http.ts`, "HttpObjectsV2", "invoke") && source(`${tsBase}v2-http.ts`).includes("extends ObjectsV2Provider")
       : method(`${tsBase}http.ts`, stream ? "HttpStreamProvider" : `Http${family[0].toUpperCase()}${family.slice(1)}Client`, operation);
     const manifestText = source(`typescript/packages/${family}/package.json`);
     const manifest = manifestText ? JSON.parse(manifestText) : {};
-    const typescriptPackageExported = manifest.exports?.["."]?.default === "./dist/index.js" &&
-      manifest.exports?.["./grpc"]?.default === `./dist/${objects ? "v2-grpc" : "grpc"}.js` &&
-      manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
-      (objects ? exported(`${tsBase}index.ts`, "./v2.js") && exported(`${tsBase}index.ts`, "./v2-http.js") : exported(`${tsBase}index.ts`, "./http.js"));
+    const typescriptPackageExported = family === "actors"
+      ? manifest.exports?.["."]?.default === "./dist/index.js" &&
+        manifest.exports?.["./client"]?.default === "./dist/client.js" &&
+        manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
+        exported(`${tsBase}index.ts`, "./client.js")
+      : manifest.exports?.["."]?.default === "./dist/index.js" &&
+        manifest.exports?.["./grpc"]?.default === `./dist/${objects ? "v2-grpc" : "grpc"}.js` &&
+        manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
+        (objects ? exported(`${tsBase}index.ts`, "./v2.js") && exported(`${tsBase}index.ts`, "./v2-http.js") : exported(`${tsBase}index.ts`, "./http.js"));
     return { rustGrpc, rustHttp, typescriptGrpcNodeBun, typescriptHttp, typescriptPackageExported: Boolean(typescriptPackageExported) };
   };
 }
