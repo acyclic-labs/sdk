@@ -260,30 +260,10 @@ export interface ResolvableFsJoinPlan extends FsJoinPlan {
   ): Promise<JoinResult>;
 }
 
-export type TransactionConflictRegionKind =
-  | "file-record" | "metadata" | "file-length" | "content-range"
-  | "sparse-seek" | "directory-name" | "directory-range";
-export type TransactionDependencyUse =
-  | "observation" | "mutation" | "observation-and-mutation";
-export interface TransactionConflict {
-  readonly region: TransactionConflictRegionKind;
-  readonly fileId: Uint8Array | undefined;
-  readonly directoryId: Uint8Array | undefined;
-  readonly offset: bigint | undefined;
-  readonly length: bigint | undefined;
-  readonly sparseTarget: "data" | "hole" | undefined;
-  readonly name: WorkspaceName | undefined;
-  readonly maximumEntries: number | undefined;
-  readonly usage: TransactionDependencyUse;
-  readonly expected: Uint8Array | undefined;
-  readonly actual: Uint8Array | undefined;
-}
-export interface TransactionRebaseResult {
-  readonly status: "rebased" | "conflicted";
-  readonly generationId: Uint8Array | undefined;
-  readonly conflicts: readonly TransactionConflict[];
-  readonly truncated: boolean;
-}
+export type TransactionConflictRegionKind = WasmBinding.BrowserTransactionConflictRegion;
+export type TransactionDependencyUse = WasmBinding.BrowserTransactionDependencyUse;
+export type TransactionConflict = ReadonlyDeep<WasmBinding.BrowserTransactionConflict>;
+export type TransactionRebaseResult = ReadonlyDeep<WasmBinding.BrowserTransactionRebase>;
 
 /** One sparse candidate published atomically as a single immutable generation. */
 export interface FsTransaction {
@@ -1134,7 +1114,6 @@ export type WasmRawJoinPlan = WasmTypedClass<WasmBinding.BrowserJoinPlan, {}, {
 export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   joinInto: [target: WasmRawWorkspace, options: JoinOptions];
 }, {
-  beginTransaction: WasmRawTransaction;
   checkpoint: WasmRawGeneration;
   generation: WasmRawGeneration;
   diff: WasmRawChangeSet;
@@ -1168,10 +1147,7 @@ export interface RawWorkspaceTransaction<Commit = unknown> {
   commit(lease?: OperationWindowLease): Promise<Commit>;
 }
 
-export type WasmRawTransaction = WasmTypedClass<WasmBinding.BrowserTransaction, {}, {
-  commit: WorkspaceCommit;
-  rebase: TransactionRebaseResult;
-}>;
+export type WasmRawTransaction = WasmBinding.BrowserTransaction;
 
 export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, {
   observe: [observation: ResidencyObservation];

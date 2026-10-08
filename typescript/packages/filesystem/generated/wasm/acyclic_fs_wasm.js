@@ -2125,7 +2125,7 @@ export class BrowserTransaction {
     /**
      * Publishes the complete candidate through one idempotent head CAS.
      * @param {BrowserOperationWindowLease | undefined} lease
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceCommit>}
      */
     commit(lease) {
         const ret = wasm.browsertransaction_commit(this.__wbg_ptr, isLikeNone(lease) ? 0 : addToExternrefTable0(lease));
@@ -2212,7 +2212,7 @@ export class BrowserTransaction {
     /**
      * Safely advances this retained candidate and sparsely replays its work.
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserTransactionRebase>}
      */
     rebase(maximum_conflicts) {
         const ret = wasm.browsertransaction_rebase(this.__wbg_ptr, maximum_conflicts);
@@ -3723,7 +3723,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1025, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1027, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_);
             return ret;
         },
