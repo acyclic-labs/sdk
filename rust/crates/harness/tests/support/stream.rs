@@ -30,6 +30,7 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub execution_fault: std::sync::atomic::AtomicU8,
     pub execution_tail: std::sync::atomic::AtomicU64,
     pub execution_faults: std::sync::atomic::AtomicUsize,
+    pub history_read_fault: std::sync::atomic::AtomicU8,
 }
 impl<P> LostSessionAck<P> {
     pub fn new(inner: P) -> Self {
@@ -49,6 +50,7 @@ impl<P> LostSessionAck<P> {
             execution_fault: Default::default(),
             execution_tail: Default::default(),
             execution_faults: Default::default(),
+            history_read_fault: Default::default(),
         }
     }
 
@@ -179,7 +181,39 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         {
             return Err(StreamError::Unavailable);
         }
-        self.inner.read(request).await
+        let fault = self
+            .history_read_fault
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
+        if fault == 0 {
+            return self.inner.read(request).await;
+        }
+        use futures::TryStreamExt as _;
+        let mut records = self
+            .inner
+            .read(request)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        match fault {
+            1 => {
+                if let Some(record) = records.first_mut() {
+                    record.sequence += 1;
+                }
+            }
+            2 => {
+                if let Some(record) = records.last().cloned() {
+                    records.push(record);
+                }
+            }
+            3 => records.clear(),
+            4 => {
+                if let Some(record) = records.first_mut() {
+                    record.value = Bytes::from_static(b"corrupt");
+                }
+            }
+            _ => {}
+        }
+        Ok(Box::pin(futures::stream::iter(records.into_iter().map(Ok))))
     }
     async fn follow(
         &self,

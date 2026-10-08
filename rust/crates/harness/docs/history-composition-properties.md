@@ -703,3 +703,58 @@ Final-source isolated generation also passed in
 `target-b-wasm-canonical-admission-final.log`. All four output hashes exactly
 match the installed and consumer-tested artifacts; their final pins are in
 `target/b-canonical-admission-final-artifact-hashes.json`.
+
+
+## Pinned canonical history reads
+
+`HistoryReader` opens an owner-bound handle to the existing aggregate Stream
+without constructing a reducer, replaying any events or caching history. A
+serializable `HistoryCursor` pins aggregate authority, consumed revision and
+committed upper revision. Each page declares event and encoded-byte limits,
+checks every record's contiguous sequence and authority/revision binding, and
+verifies the existing keyed event-admission attestation. Later appends remain
+outside the cursor. A malformed, oversized or empty nonterminal provider page
+fails explicitly and cannot advance the supplied cursor. The reader performs
+no writes, admissions or payload-body resolution.
+
+Historical extension-migration replay/source lookup and published-fork child
+binding now read exact canonical Stream positions through this reader, rather
+than depending on resident lifetime event bodies. This uses the same owner
+verifier and Stream path as aggregate admission. The pure reducer's resident
+`events_after` now binary-seeks its ordered event vector; it no longer scans a
+lifetime prefix for a small late page. This is an index/search change, not a
+claim that the vector itself has bounded resident size.
+
+The real-provider fixture builds 10,000 committed events, constructs a cold
+reader without an aggregate reopen, and reads the final three at a pinned
+boundary in exactly two record-read calls, each requesting at most two records.
+A later append is excluded, serialized cursors resume at the same boundary,
+terminal reads fetch no records, and write attempts remain zero. Fault pages
+exercise gaps, excess records, missing records and corrupt wire data; byte and
+cursor/authority bounds reject explicitly. A separate fixture rejects validly
+encoded wrong-authority and changed-event-attestation records. These cases do
+not substitute for 10,000 default model turns or cold reducer hydration.
+
+Snapshot v2 still embeds/replays lifetime events; default aggregate open still
+rehydrates from that history. Those paths remain incomplete. Compact derived
+checkpoint state must retain exact owner authentication, installed definitions,
+old-operation identity lookup and in-flight recovery, and normal hydration must
+load bounded needed state. The archival reader is the existing canonical access
+path for historical data excluded from a future compact resident checkpoint;
+it is not a second context store or an independent lifecycle. Browser runtime
+integration and full release qualification remain open.
+
+
+Final strict native all-target/all-feature lint passed in
+`target-b-clippy-history-reader-final.log`; strict WASM library lint passed in
+`target-b-clippy-history-reader-wasm.log`. The final native run passed 274 library,
+nine continuation and two fork tests in `target-b-native-history-reader.log`.
+Four owning source hashes in `target/b-history-reader-source-hashes.json` remained
+unchanged through the terminal runs. Fresh isolated generation passed in
+`target-b-wasm-history-reader.log`; four installed artifact pins are in
+`target/b-history-reader-artifact-hashes.json`. Package/test types passed in
+`target-b-types-history-reader.log`; all 248 Bun tests/1347 expectations passed
+in `target-b-bun-history-reader.log`; Chromium passed the wire page and 54 pure
+compaction checks in `target-b-browser-history-reader.log`. The Rust reader is
+portable and WASM-compiles, but these browser pages do not invoke its new cold
+Stream reader through the runtime binding; that consumer evidence remains open.

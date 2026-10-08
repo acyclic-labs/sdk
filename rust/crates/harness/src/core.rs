@@ -407,7 +407,7 @@ impl AuthorityVerifier {
         Ok(*hasher.finalize().as_bytes())
     }
 
-    fn verify_event(&self, event: &Event) -> Result<()> {
+    pub(crate) fn verify_event(&self, event: &Event) -> Result<()> {
         if event.scope.issuer != self.id || event.attestation != self.attest_event(event)? {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
@@ -1524,6 +1524,10 @@ impl Reducer {
         &self.authority
     }
 
+    pub(crate) fn event_verifier(&self) -> AuthorityVerifier {
+        self.authority_verifier.clone()
+    }
+
     /// Returns the current gapless revision.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -2000,10 +2004,13 @@ impl Reducer {
         if revision > self.revision {
             return Err(Error::Invalid("cursor is beyond the aggregate head".into()));
         }
+        let start = self
+            .events
+            .partition_point(|event| event.revision <= revision);
         Ok(self
             .events
             .iter()
-            .skip_while(|event| event.revision <= revision)
+            .skip(start)
             .take(limit)
             .cloned()
             .collect())

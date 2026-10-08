@@ -1,5 +1,8 @@
 //! Direct Stream persistence for durable aggregate histories.
 
+mod history;
+pub use history::*;
+
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{
@@ -227,12 +230,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         publisher: &dyn ContentPublisher,
         revision: u64,
     ) -> Result<ApplyResult> {
-        let event = self
-            .reducer
-            .events_after(revision - 1, 1)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Storage("retained migration event is missing".into()))?;
+        let event = self.read_event_at(revision).await?;
         let EventPayload::ExtensionStateMigrated { migration } = &event.payload else {
             return Err(Error::Conflict(
                 "operation belongs to another action".into(),
@@ -263,12 +261,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         &self,
         request: &ExtensionMigrationRequest,
     ) -> Result<Vec<u8>> {
-        let prior_event = self
-            .reducer
-            .events_after(request.previous.revision - 1, 1)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::NotFound("prior extension state event".into()))?;
+        let prior_event = self.read_event_at(request.previous.revision).await?;
         if prior_event.revision != request.previous.revision {
             return Err(Error::Conflict(
                 "extension migration source event changed".into(),
@@ -468,12 +461,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .parent_revision
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("fork parent revision overflow".into()))?;
-        let fork_event = parent
-            .reducer
-            .events_after(seed.parent_revision, 1)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::NotFound("published parent fork".into()))?;
+        let fork_event = parent.read_event_at(fork_revision).await?;
         if fork_event.revision != fork_revision
             || fork_event.operation_id != seed.operation_id
             || !matches!(&fork_event.payload,
@@ -499,7 +487,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .conversation()
             .ok_or_else(|| Error::Invalid("fork child is not a conversation".into()))?;
         if conversation.agent == Some(seed.child_agent) {
-            let first = self.reducer.events_after(0, 1)?.into_iter().next();
+            let first = Some(self.read_event_at(1).await?);
             if first.is_some_and(|event| {
                 event.revision == 1
                     && event.operation_id == bind_operation
@@ -689,6 +677,41 @@ impl<P: StreamProvider> StreamAggregate<P> {
     #[must_use]
     pub const fn reducer(&self) -> &Reducer {
         &self.reducer
+    }
+
+    /// Opens an archival reader without replaying or cloning the resident event history.
+    pub fn history_reader(&self) -> Result<HistoryReader<P>> {
+        HistoryReader::new(
+            &self.client,
+            self.reducer.authority(),
+            self.reducer.event_verifier(),
+        )
+    }
+
+    /// Resolves one attested event within this projection's committed boundary.
+    pub async fn read_event_at(&self, revision: u64) -> Result<crate::core::Event> {
+        let after_revision = revision
+            .checked_sub(1)
+            .ok_or_else(|| Error::Invalid("event revision must be positive".into()))?;
+        let cursor = HistoryCursor {
+            authority: self.reducer.authority().clone(),
+            after_revision,
+            through_revision: self.reducer.revision(),
+        };
+        let page = self
+            .history_reader()?
+            .read_page(
+                &cursor,
+                HistoryReadLimits {
+                    maximum_events: 1,
+                    maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                },
+            )
+            .await?;
+        page.events
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::NotFound("committed event is unavailable".into()))
     }
 
     /// Captures the authoritative tail for a finite incremental refresh.
@@ -1580,6 +1603,147 @@ mod tests {
                 .is_ok()
         );
         schemas
+    }
+
+    #[tokio::test]
+    async fn cold_history_reader_bounds_ten_thousand_events_without_reducer_restore() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for identity in 1_u64..=10_000 {
+            let mut next = command(1)?;
+            let mut bytes = [0; 16];
+            bytes
+                .get_mut(..8)
+                .ok_or_else(|| Error::Invalid("fixture identity missing".into()))?
+                .copy_from_slice(&identity.to_le_bytes());
+            next.operation_id = OperationId::from_bytes(bytes);
+            next.idempotency_key = IdempotencyKey::new(format!("history-{identity}"))?;
+            next.expected_revision = writer.reducer().revision();
+            writer.execute(next).await?;
+        }
+        let last = writer.read_event_at(10_000).await?;
+        let mut later = command(2)?;
+        later.expected_revision = writer.reducer().revision();
+        // A cold reader opens no reducer and does not read any event on construction/pin.
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
+        let cursor = reader.pin(9_997).await?;
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        provider.forbid_writes.store(false, Ordering::SeqCst);
+        writer.execute(later).await?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let limits = HistoryReadLimits {
+            maximum_events: 2,
+            maximum_bytes: 131_072,
+        };
+        let first = reader.read_page(&cursor, limits).await?;
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.cursor.after_revision, 9_999);
+        let second = reader.read_page(&first.cursor, limits).await?;
+        assert_eq!(second.events, vec![last]);
+        assert_eq!(second.cursor.after_revision, 10_000);
+        assert!(
+            reader
+                .read_page(&second.cursor, limits)
+                .await?
+                .events
+                .is_empty()
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        assert_eq!(cursor.after_revision, 9_997);
+        let encoded =
+            serde_json::to_vec(&first.cursor).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            serde_json::from_slice::<HistoryCursor>(&encoded)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            first.cursor
+        );
+        for fault in [1, 2, 3, 4] {
+            provider.history_read_fault.store(fault, Ordering::SeqCst);
+            assert!(reader.read_page(&cursor, limits).await.is_err());
+            assert_eq!(reader.read_page(&cursor, limits).await?, first);
+        }
+        assert!(
+            reader
+                .read_page(
+                    &cursor,
+                    HistoryReadLimits {
+                        maximum_bytes: 1,
+                        ..limits
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            reader
+                .read_page(
+                    &cursor,
+                    HistoryReadLimits {
+                        maximum_events: 0,
+                        ..limits
+                    }
+                )
+                .await
+                .is_err()
+        );
+        let mut invalid = cursor.clone();
+        invalid.through_revision = 10_002;
+        assert!(reader.read_page(&invalid, limits).await.is_err());
+        invalid = cursor;
+        invalid.authority.id = "other".into();
+        assert!(matches!(
+            reader.read_page(&invalid, limits).await,
+            Err(Error::Unauthorized(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn history_reader_rejects_unattested_events_and_wrong_authority() -> Result<()> {
+        for wrong_authority in [false, true] {
+            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let mut reducer = Reducer::new(authority(), issuer().verifier(), schemas());
+            let ApplyResult::Applied { mut event } = reducer.apply(command(1)?)? else {
+                return Err(Error::Invalid("fixture needs fresh event".into()));
+            };
+            let mut wire_authority = authority();
+            if wrong_authority {
+                wire_authority.id = "other".into();
+            } else {
+                event.intent_digest = [0; 32];
+            }
+            client
+                .stream(authority().stream_path()?)?
+                .append_batch(
+                    vec![Bytes::from(encode_event(&wire_authority, &event)?)],
+                    Some(0),
+                    None,
+                )
+                .await?;
+            let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
+            let cursor = reader.pin(0).await?;
+            assert!(
+                reader
+                    .read_page(
+                        &cursor,
+                        HistoryReadLimits {
+                            maximum_events: 1,
+                            maximum_bytes: 65_536,
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]
