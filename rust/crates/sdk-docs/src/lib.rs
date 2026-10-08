@@ -1907,6 +1907,19 @@ fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
 fn normalized_rustdoc_digest_bytes(bytes: &[u8], repository_root: &Path) -> Result<Vec<u8>, Error> {
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
     normalize_rustdoc_filenames(&mut value, repository_root);
+    // External-crate load paths describe the physical Cargo output, not API
+    // content. Omit only these paths from the digest copy; retain the original
+    // typed Rustdoc JSON and receipts for artifact/provenance verification.
+    if let Some(crates) = value
+        .get_mut("external_crates")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for external in crates.values_mut() {
+            if let Some(record) = external.as_object_mut() {
+                record.remove("path");
+            }
+        }
+    }
     Ok(serde_json::to_vec(&value)?)
 }
 
@@ -2481,6 +2494,42 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[test]
+    fn rustdoc_digest_omits_only_external_crate_load_paths() {
+        let original = serde_json::json!({
+            "external_crates": {"1": {
+                "name": "dependency", "html_root_url": "https://example.invalid/docs",
+                "path": "checkout-a/target/dependency.rlib"
+            }},
+            "index": {"0": {"path": "demo::Witness", "filename": "src/lib.rs"}}
+        });
+        let digest = |value: &serde_json::Value| {
+            normalized_rustdoc_digest_bytes(&serde_json::to_vec(value).unwrap(), Path::new("."))
+                .unwrap()
+        };
+        let mut relocated = original.clone();
+        relocated["external_crates"]["1"]["path"] =
+            serde_json::json!("checkout-b/target/dependency.rlib");
+        assert_eq!(digest(&original), digest(&relocated));
+        for (pointer, value) in [
+            ("/external_crates/1/name", "different_dependency"),
+            (
+                "/external_crates/1/html_root_url",
+                "https://example.invalid/other",
+            ),
+            ("/index/0/path", "demo::Other"),
+            ("/index/0/filename", "src/other.rs"),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = serde_json::json!(value);
+            assert_ne!(digest(&original), digest(&changed), "{pointer}");
+        }
+        assert_eq!(
+            original["external_crates"]["1"]["path"],
+            "checkout-a/target/dependency.rlib"
+        );
+    }
 
     #[test]
     fn profile_catalog_union_retains_feature_only_items() {

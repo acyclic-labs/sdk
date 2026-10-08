@@ -1078,11 +1078,32 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
 #[test]
 fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let fixture = feature_profile_fixture();
+    fs::create_dir_all(fixture.root.join("rust/crates/helper/src")).unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/helper/Cargo.toml"),
+        "[package]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/helper/src/lib.rs"),
+        "pub struct Witness;\n",
+    )
+    .unwrap();
+    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
+    let mut contents = fs::read_to_string(&manifest).unwrap();
+    contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
+    fs::write(manifest, contents).unwrap();
+    assert!(Command::new("cargo")
+        .args(["+1.98.1", "generate-lockfile", "--offline"])
+        .current_dir(&fixture.root)
+        .status()
+        .unwrap()
+        .success());
     fs::write(fixture.root.join("rust/crates/demo/build.rs"),
         "fn main() { std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), \"pub struct GeneratedWire;\\n\").unwrap(); }\n").unwrap();
     fs::write(
         fixture.root.join("rust/crates/demo/src/lib.rs"),
-        "include!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\n",
+        "include!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\npub fn dependency_witness() -> relocation_helper::Witness { relocation_helper::Witness }\n",
     )
     .unwrap();
     git(&fixture.root, &["add", "."]);
@@ -1121,6 +1142,35 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         assert!(result.status.success(), "{}", output_message(&result));
         assert!(run_drift_execute_profiles(checkout).status.success());
     }
+    let dependency_paths = |checkout: &Fixture| {
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(&checkout.rustdoc).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            for record in raw["external_crates"].as_object().unwrap().values() {
+                if record["name"] == "relocation_helper" {
+                    let physical = record["path"].as_str().unwrap();
+                    assert!(physical.contains(".profile-build"), "{physical}");
+                    paths.push(physical.to_string());
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        assert!(
+            !paths.is_empty(),
+            "actual dependency load paths must be captured"
+        );
+        paths
+    };
+    assert_ne!(
+        dependency_paths(&fixture),
+        dependency_paths(&relocated),
+        "raw Rustdoc must retain the independently relocated dependency artifacts"
+    );
     let path = "preview/feature-profile-catalog/sdk-docs-data.v2.json";
     assert_eq!(
         fs::read(fixture.output.join(path)).unwrap(),
