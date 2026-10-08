@@ -2007,6 +2007,176 @@ mod tests {
         LeaseFence::from(&reservation(lease, 0))
     }
 
+    fn two_slot_parent(orchestration: Orchestration) -> Result<Scheduler> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), orchestration)?)?)?;
+        for (op, slot) in [(2, "a"), (3, "b")] {
+            let mut child = spec(id(op), Orchestration::Leaf)?;
+            child.owner = spec(id(1), Orchestration::Leaf)?.owner;
+            child.parent = Some(ParentLink {
+                operation_id: id(1),
+                slot: slot.into(),
+            });
+            scheduler.apply(scheduler.declare(child)?)?;
+        }
+        for op in [1, 2, 3] {
+            scheduler.apply(SchedulerEvent::Admitted {
+                operation_id: id(op),
+                reservation: reservation(0, 0),
+            })?;
+            scheduler.apply(SchedulerEvent::Started {
+                operation_id: id(op),
+                fence: fence(0),
+            })?;
+        }
+        scheduler.apply(SchedulerEvent::WaitingForChildren {
+            operation_id: id(1),
+            fence: fence(0),
+        })?;
+        Ok(scheduler)
+    }
+
+    #[test]
+    fn join_slot_order_survives_reversed_completion_and_rejects_swapped_digest() -> Result<()> {
+        let mut scheduler = two_slot_parent(Orchestration::Join)?;
+        let a = result_ref(b"11")?;
+        let b = result_ref(b"22")?;
+        for (op, value) in [(3, b.clone()), (2, a.clone())] {
+            scheduler.apply(SchedulerEvent::Completed {
+                operation_id: id(op),
+                outcome: Outcome::Succeeded(value),
+                fence: Some(fence(0)),
+                execution_duration_ns: None,
+            })?;
+            if op == 3 {
+                assert_eq!(scheduler.orchestration(id(1)), OrchestrationDecision::Wait);
+            }
+        }
+        let values = vec![("a".into(), a), ("b".into(), b)];
+        assert_eq!(scheduler.completion_order, vec![id(3), id(2)]);
+        assert_eq!(
+            scheduler.orchestration(id(1)),
+            OrchestrationDecision::Assemble {
+                assembly: AssemblyKind::Join,
+                values: values.clone(),
+                cancel: Vec::new(),
+            }
+        );
+        let digest = assembly_invocation_digest(AssemblyKind::Join, &values)?;
+        let swapped = assembly_invocation_digest(
+            AssemblyKind::Join,
+            &[values[1].clone(), values[0].clone()],
+        )?;
+        assert_ne!(digest, swapped);
+        let before = scheduler.clone();
+        let mut publication = SchedulerEvent::Orchestrated {
+            operation_id: id(1),
+            expected_revision: scheduler
+                .operation(id(1))
+                .ok_or_else(|| Error::NotFound("parent".into()))?
+                .revision,
+            outcome: Outcome::Succeeded(result_ref(b"[11,22]")?),
+            cancel: Vec::new(),
+            reducer: None,
+            reduction_digest: Some(swapped),
+        };
+        assert!(matches!(
+            scheduler.apply(publication.clone()),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(scheduler, before);
+        if let SchedulerEvent::Orchestrated {
+            reduction_digest, ..
+        } = &mut publication
+        {
+            *reduction_digest = Some(digest);
+        }
+        scheduler.apply(publication)?;
+        let parent = scheduler
+            .operation(id(1))
+            .ok_or_else(|| Error::NotFound("parent".into()))?;
+        assert_eq!(parent.phase, OperationPhase::Terminal);
+        assert_eq!(
+            parent.outcome,
+            Some(Outcome::Succeeded(result_ref(b"[11,22]")?))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quorum_waits_for_running_child_then_fails_at_exact_parent_revision() -> Result<()> {
+        let mut scheduler = two_slot_parent(Orchestration::Quorum { required: 2 })?;
+        scheduler.apply(SchedulerEvent::Completed {
+            operation_id: id(2),
+            outcome: Outcome::Succeeded(result_ref(b"11")?),
+            fence: Some(fence(0)),
+            execution_duration_ns: None,
+        })?;
+        assert_eq!(
+            scheduler.operation(id(3)).map(|child| child.phase),
+            Some(OperationPhase::Running)
+        );
+        assert_eq!(scheduler.orchestration(id(1)), OrchestrationDecision::Wait);
+        let failure = Outcome::Failed {
+            message: "quorum is no longer reachable".into(),
+        };
+        let revision = scheduler
+            .operation(id(1))
+            .ok_or_else(|| Error::NotFound("parent".into()))?
+            .revision;
+        let publication = |expected_revision| SchedulerEvent::Orchestrated {
+            operation_id: id(1),
+            expected_revision,
+            outcome: failure.clone(),
+            cancel: Vec::new(),
+            reducer: None,
+            reduction_digest: None,
+        };
+        let before = scheduler.clone();
+        assert!(matches!(
+            scheduler.apply(publication(revision)),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(scheduler, before);
+        scheduler.apply(SchedulerEvent::Completed {
+            operation_id: id(3),
+            outcome: Outcome::Failed {
+                message: "child failed".into(),
+            },
+            fence: Some(fence(0)),
+            execution_duration_ns: None,
+        })?;
+        assert_eq!(
+            scheduler.orchestration(id(1)),
+            OrchestrationDecision::Complete {
+                outcome: failure.clone(),
+                cancel: Vec::new(),
+            }
+        );
+        assert_eq!(
+            scheduler.operation(id(1)).map(|parent| parent.revision),
+            Some(revision)
+        );
+        let before = scheduler.clone();
+        assert!(matches!(
+            scheduler.apply(publication(revision - 1)),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(scheduler, before);
+        scheduler.apply(publication(revision))?;
+        let parent = scheduler
+            .operation(id(1))
+            .ok_or_else(|| Error::NotFound("parent".into()))?;
+        assert_eq!(parent.phase, OperationPhase::Terminal);
+        assert_eq!(parent.outcome, Some(failure.clone()));
+        assert_eq!(parent.revision, revision + 1);
+        assert!(matches!(
+            scheduler.apply(publication(revision)),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
     fn event(scheduler: &Scheduler, step: Step) -> Result<Option<SchedulerEvent>> {
         Ok(Some(match step {
             Step::Declare {
