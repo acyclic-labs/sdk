@@ -248,7 +248,10 @@ export function darwinRustLldPaths(target, sysroot) {
   if (typeof sysroot !== "string" || sysroot.length === 0) throw new Error("Darwin rust-lld requires a Rust sysroot");
   return {
     linkerEnvironment: targetEnvName(target, "LINKER"),
-    linker: resolve(sysroot, "lib", "rustlib", target, "bin", "rust-lld"),
+    // The toolchain ships the Darwin-flavoured rust-lld entry point under
+    // gcc-ld. The generic rust-lld name intentionally rejects direct Darwin
+    // invocations unless a driver supplies -flavor.
+    linker: resolve(sysroot, "lib", "rustlib", target, "bin", "gcc-ld", "ld64.lld"),
     loaderPath: resolve(sysroot, "lib"),
   };
 }

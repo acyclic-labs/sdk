@@ -215,7 +215,7 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
   const lldPaths = darwinRustLldPaths("aarch64-apple-darwin", "/rust/sysroot");
   assert.deepEqual(lldPaths, {
     linkerEnvironment: "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
-    linker: resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "rust-lld"),
+    linker: resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "gcc-ld", "ld64.lld"),
     loaderPath: resolve("/rust/sysroot", "lib"),
   });
   assert.equal(darwinRustLldPaths("x86_64-pc-windows-msvc", "/rust/sysroot"), null);
@@ -257,7 +257,7 @@ test("native qualification rejects build input identity mutations", () => {
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
 
   const darwinLinker = linkerInputs("aarch64-apple-darwin", {
-    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld",
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld64.lld",
     DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
     SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
   });
@@ -431,7 +431,7 @@ test("native qualification restores Darwin rust-lld linker and loader environmen
   let restore;
   try {
     restore = configureDarwinRustLld("aarch64-apple-darwin", { sysroot: "/rust/sysroot", sdkRoot: "/Apple/SDK", linkerExists: () => true });
-    assert.equal(process.env[linkerEnvironment], resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "rust-lld"));
+    assert.equal(process.env[linkerEnvironment], resolve("/rust/sysroot", "lib", "rustlib", "aarch64-apple-darwin", "bin", "gcc-ld", "ld64.lld"));
     assert.equal(process.env.DYLD_LIBRARY_PATH, `${resolve("/rust/sysroot", "lib")}${process.platform === "win32" ? ";" : ":"}ambient-loader`);
     restore();
     restore = undefined;
