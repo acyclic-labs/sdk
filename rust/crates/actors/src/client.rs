@@ -133,6 +133,11 @@ type BrowserClient = GeneratedClient<
     tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, BrowserBearerAuth>,
 >;
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn browser_transport_base_url(endpoint: &str) -> String {
+    endpoint.trim_end_matches('/').to_owned()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 enum Backend {
     Grpc(crate::grpc::Client),
@@ -205,7 +210,8 @@ impl Client {
                 .parse()
                 .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         authorization.set_sensitive(true);
-        let transport = tonic_web_wasm_client::Client::new(endpoint.to_string());
+        let transport =
+            tonic_web_wasm_client::Client::new(browser_transport_base_url(endpoint.as_str()));
         let inner = wire::actors_service_client::ActorsServiceClient::with_interceptor(
             transport,
             BrowserBearerAuth(authorization),
@@ -215,6 +221,21 @@ impl Client {
         Ok(Self {
             inner: Backend::GrpcWeb(inner),
         })
+    }
+}
+
+#[cfg(test)]
+mod browser_transport_tests {
+    #[test]
+    fn browser_base_url_has_one_join_boundary() {
+        for (input, expected) in [
+            ("https://actors.example", "https://actors.example"),
+            ("https://actors.example/", "https://actors.example"),
+            ("https://actors.example/api/", "https://actors.example/api"),
+            ("http://localhost:4317/", "http://localhost:4317"),
+        ] {
+            assert_eq!(super::browser_transport_base_url(input), expected);
+        }
     }
 }
 

@@ -235,11 +235,9 @@ const adapter = connectNodeAdapter({
   },
 });
 const server = createSecureServer({ key: identity.key, cert: identity.certificate, allowHTTP1: true }, adapter);
+const wasmRequests = [];
 const wasmServer = createServer((request, response) => {
-  // tonic-web-wasm-client preserves the endpoint slash when building the RPC
-  // path. Normalize the loopback fixture's resulting double slash before the
-  // maintained Connect adapter resolves its generated handler path.
-  if (request.url?.startsWith("//")) request.url = request.url.slice(1);
+  wasmRequests.push(request.url);
   adapter(request, response);
 });
 await new Promise(resolve => server.listen(0, "localhost", resolve));
@@ -270,6 +268,10 @@ try {
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".actors.") || method.includes(".workers.") ? 3 : 2, method);
   assert.equal(httpSeen.size, 15);
+  if (!hasNativeCompanion()) {
+    assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
+    assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));
+  }
   const actorMethods = new Set(ActorsService.methods.map(method => method.name));
   for (const [method, calls] of httpSeen) assert.equal(calls, actorMethods.has(method) ? 1 : 3, method);
 } finally {
