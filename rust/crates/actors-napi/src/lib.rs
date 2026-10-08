@@ -134,16 +134,13 @@ pub fn current_head_marker(value: bool) -> Result<bool> {
 fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
     let code = error.code_name();
     match error {
-        client::Error::Configuration(message) => NativeActorsErrorMetadata {
-            code: code.to_owned(),
-            message,
-            ..Default::default()
-        },
-        client::Error::Transport(message) => NativeActorsErrorMetadata {
-            code: code.to_owned(),
-            message,
-            ..Default::default()
-        },
+        client::Error::Configuration(message) | client::Error::Transport(message) => {
+            NativeActorsErrorMetadata {
+                code: code.to_owned(),
+                message,
+                ..Default::default()
+            }
+        }
         client::Error::Contract(error) => NativeActorsErrorMetadata {
             code: code.to_owned(),
             message: error.to_string(),

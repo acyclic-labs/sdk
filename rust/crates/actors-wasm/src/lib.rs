@@ -30,7 +30,7 @@ fn nominal_error(error: domain::DomainError) -> JsValue {
     js_error(code, error)
 }
 
-fn nominal_string(value: JsValue, field: &str) -> Result<String, JsValue> {
+fn nominal_string(value: &JsValue, field: &str) -> Result<String, JsValue> {
     value
         .as_string()
         .ok_or_else(|| js_error("invalid_argument", format!("{field} must be a string")))
@@ -39,7 +39,7 @@ fn nominal_string(value: JsValue, field: &str) -> Result<String, JsValue> {
 /// Rust-backed nominal constructor for `ActorId`.
 #[wasm_bindgen(js_name = "ActorId")]
 pub fn actor_id(
-    #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "string")] value: &JsValue,
 ) -> Result<String, JsValue> {
     let value = nominal_string(value, "actor_id")?;
     domain::ActorId::new(value)
@@ -73,7 +73,7 @@ pub fn positive_u64(value: BigInt) -> Result<u64, JsValue> {
 /// Rust-backed nominal constructor for the true-only current-head marker.
 #[wasm_bindgen(js_name = "CurrentHeadMarker")]
 pub fn current_head_marker(
-    #[wasm_bindgen(unchecked_param_type = "boolean")] value: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "boolean")] value: &JsValue,
 ) -> Result<bool, JsValue> {
     let value = value
         .as_bool()
