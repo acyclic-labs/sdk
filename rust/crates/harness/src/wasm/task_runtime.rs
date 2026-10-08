@@ -249,7 +249,9 @@ impl HostTool {
         let result = JsFuture::from(Promise::resolve(&result))
             .await
             .map_err(|_| Error::Storage("host tool result is uncertain".into()))?;
-        from_js(result).map_err(|_| Error::Invalid("host tool result is invalid".into()))
+        // The callback already ran; a malformed receipt cannot establish that
+        // execution was rejected. Retain the original attempt for reconciliation.
+        from_js(result).map_err(|_| Error::Storage("host tool result is uncertain".into()))
     }
 }
 impl ToolExecutor for HostTool {

@@ -181,3 +181,26 @@ The first installed check stopped at a missing locked Node type dependency
 Final browser/installed qualification, successful complete CI and
 landed-tree verification remain open. No unrestricted proof, native
 mount, confinement or cross-provider atomicity claim is made.
+
+The installed 0c78244871 closure subsequently passed 294 Rust and 47
+TypeScript tests, with all seven artifact hashes verified
+(target-i-installed-0c78244871-1.log; target/i-harness-package-0c78244871).
+Forced full run 37722029026 passed Linux generation, installed consumers
+and conformance, then failed protobuf lint on the established Objects and
+Stream CODEC_NONE zero values. A rule-specific exception for those two
+files preserves their valid unencoded-byte wire semantics; full local Buf
+lint passes in target-i-buf-codec-lint-1.log. Other matrix lanes remain
+pending at this checkpoint.
+
+An additional recovery audit found that decoding a malformed host tool
+receipt after its callback ran was classified as Invalid. The callback may
+already have committed its effect, so that classification incorrectly
+recorded terminal ToolFailed. Decode failures now retain uncertainty through
+the existing Storage path, preserving the original attempt for reconciliation.
+The real Chromium negative control on the original source never reached
+reconciliation (target-i-browser-malformed-negative-2.log). The repaired
+fixture passes malformed execution and reconciliation receipts, two reopens,
+exact invocation recovery, one effect, one projection, model steps [0,1]
+and a durable successful outcome (target-i-browser-malformed-positive-4.log).
+This assumes an explicitly registered trusted provider with reconciliation;
+it does not establish exactly-once effects for arbitrary external services.
