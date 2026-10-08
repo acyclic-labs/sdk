@@ -27,6 +27,10 @@ try {
   check("assert.equal(await nativeStreamAvailable(),false)");
 } finally { await rename(moved, companion); }
 try {
+  await rename(binary, `${binary}.missing`);
+  check("await assert.rejects(nativeStreamAvailable())");
+} finally { await rename(`${binary}.missing`, binary); }
+try {
   await writeFile(binary, "corrupt native addon");
   check("await assert.rejects(nativeStreamAvailable())");
 } finally { await writeFile(binary, saved); }
@@ -44,4 +48,4 @@ try {
   await writeFile(fake, "require('@acyclic-labs/stream-missing-transitive');");
   check("await assert.rejects(nativeStreamAvailable())");
 } finally { await writeFile(manifestPath, manifest); await rm(fake); }
-console.log(JSON.stringify({ status: "passed", nativeAvailable: true, missingCompanionFallsBack: true, corruptAddonRejected: true, wrongBindingRejected: true, nonCallableBindingRejected: true, missingConnectAbiRejected: true, missingInternalDependencyRejected: true, missingNamespacedDependencyRejected: true }));
+console.log(JSON.stringify({ status: "passed", nativeAvailable: true, missingCompanionFallsBack: true, missingAddonRejected: true, corruptAddonRejected: true, wrongBindingRejected: true, nonCallableBindingRejected: true, missingConnectAbiRejected: true, missingInternalDependencyRejected: true, missingNamespacedDependencyRejected: true }));

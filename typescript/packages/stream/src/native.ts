@@ -83,6 +83,13 @@ function expectedNativeAbsence(error: unknown): boolean {
       ? (cause as { readonly message: string }).message : "";
     if (!/^Cannot find module ['"](?:\.\/index\.[^'"]+\.node|\.\/index\.wasi\.cjs|@acyclic-labs\/stream-[^'"]+|\.\/index\.wasm[^'"]*)['"]/.test(causeMessage.split(/\r?\n/, 1)[0] ?? causeMessage)) return false;
     if (!importedByNativeLoader(causeMessage)) return false;
+    const companion = causeMessage.match(/^Cannot find module ['"](@acyclic-labs\/stream-[^'"]+)['"]/)?.[1];
+    if (companion !== undefined) {
+      try { requireNative.resolve(`${companion}/package.json`); return false; }
+      catch (error) {
+        if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "MODULE_NOT_FOUND") throw error;
+      }
+    }
     cause = "cause" in cause ? (cause as { readonly cause?: unknown }).cause : undefined;
   }
   return sawCause;
