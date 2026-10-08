@@ -47,12 +47,20 @@ pub fn write_bundle(data: &DocsData, output: &Path, publish: bool) -> Result<(),
     let stable = Version::parse(&data.version)
         .map_err(|e| Error::Invalid(e.to_string()))?
         .pre
-        .is_empty();
+        .is_empty()
+        && !data
+            .source
+            .released_packages
+            .iter()
+            .any(|package| package.yanked);
     write_bundle_inner(data, output, stable, publish, true)
 }
 
 pub(super) fn validate_release_identity(data: &DocsData) -> Result<(), Error> {
-    if data.channel != Channel::Release || data.source.released_packages.is_empty() {
+    if data.channel != Channel::Release
+        || data.source.publication_status != PublicationStatus::RegistryReleased
+        || data.source.released_packages.is_empty()
+    {
         return Err(Error::Invalid(
             "historical data requires verified released package identities".into(),
         ));
@@ -226,7 +234,7 @@ mod tests {
             released_packages: vec![ReleasedPackage {
                 package: "demo-cli".into(),
                 version: version.into(),
-                yanked: true,
+                yanked: false,
                 registry_checksum: "c".repeat(64),
                 source_revision: input.revision.clone(),
                 path_in_vcs: "cli".into(),
@@ -294,7 +302,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
         for version in ["0.1.5", "1.0.0-rc.3", "0.1.1"] {
-            let (input, scope) = fixture(root.path(), version);
+            let (input, mut scope) = fixture(root.path(), version);
+            if version.contains('-') {
+                scope.released_packages[0].yanked = true;
+            }
             if version.contains('-') {
                 assert!(build_data(&input).is_err());
             }
@@ -328,5 +339,75 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("immutable data"));
+    }
+    #[test]
+    fn qualified_candidates_are_explicit_and_cannot_replace_actual_registry_latest() {
+        let root = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let (input, scope) = fixture(root.path(), "0.1.5");
+        let released = build(&input, &scope).unwrap();
+        write_bundle(&released, output.path(), true).unwrap();
+        let mut candidate = released.clone();
+        candidate.version = "0.2.0".into();
+        candidate.source.publication_status = PublicationStatus::Candidate;
+        candidate.source.released_packages.clear();
+        let before = fs::read(output.path().join("sdk-docs-versions.v1.json")).unwrap();
+        assert!(super::super::write_bundle(&candidate, output.path(), true)
+            .unwrap_err()
+            .to_string()
+            .contains("candidate cannot be marked latest"));
+        assert_eq!(
+            before,
+            fs::read(output.path().join("sdk-docs-versions.v1.json")).unwrap()
+        );
+        super::super::write_bundle(&candidate, output.path(), false).unwrap();
+        let index = load_version_index(output.path()).unwrap();
+        assert_eq!(index.latest.as_ref().unwrap().version, "0.1.5");
+        assert_eq!(index.release_candidates.len(), 1);
+        assert_eq!(
+            index.release_candidates[0].publication_status,
+            PublicationStatus::Candidate
+        );
+        assert_eq!(
+            index.release_candidates[0].data_file,
+            "release-candidates/0.2.0/sdk-docs-data.v2.json"
+        );
+        assert!(
+            fs::read_to_string(output.path().join(&index.release_candidates[0].data_file))
+                .unwrap()
+                .contains("\"publicationStatus\": \"candidate\"")
+        );
+    }
+    #[test]
+    fn yanked_stable_is_selectable_immutable_and_never_latest() {
+        let root = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        for (version, yanked, latest) in [
+            ("0.1.0", false, "0.1.0"),
+            ("0.1.1", true, "0.1.0"),
+            ("0.1.5", false, "0.1.5"),
+        ] {
+            let (input, mut scope) = fixture(root.path(), version);
+            scope.released_packages[0].yanked = yanked;
+            let data = build(&input, &scope).unwrap();
+            write_bundle(&data, output.path(), true).unwrap();
+            let mut index = load_version_index(output.path()).unwrap();
+            assert_eq!(index.latest.as_ref().unwrap().version, latest);
+            assert!(index.releases.iter().any(|entry| entry.version == version));
+            if yanked {
+                let mut changed = data.clone();
+                changed.source.released_packages[0].yanked = false;
+                assert!(write_bundle(&changed, output.path(), true).is_err());
+                index.latest = index
+                    .releases
+                    .iter()
+                    .find(|entry| entry.version == version)
+                    .cloned();
+                assert!(validate_version_index(&index, output.path())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("maximum release"));
+            }
+        }
     }
 }

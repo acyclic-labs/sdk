@@ -1173,3 +1173,222 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         .unwrap()
     );
 }
+fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
+    let fixture = feature_profile_fixture();
+    let package = fixture.root.join("rust/crates/demo");
+    fs::create_dir_all(package.join("examples")).unwrap();
+    fs::write(package.join("README.md"), "# Historical source guide\n").unwrap();
+    for name in ["descriptor.bin", "input.json", "schema.proto"] {
+        fs::write(package.join(name), b"original archived input").unwrap();
+    }
+    fs::write(fixture.root.join(".gitignore"), "target/\nrust/crates/demo/descriptor.bin\nrust/crates/demo/input.json\nrust/crates/demo/schema.proto\n").unwrap();
+    let body = match mutation {
+        Some(name) => format!(
+            "std::fs::write(\"rust/crates/demo/{name}\", \"changed archived input\").unwrap();"
+        ),
+        None => String::new(),
+    };
+    fs::write(
+        package.join("examples/historical.rs"),
+        format!("fn main() {{ {body} println!(\"executed-historical-example\"); }}\n"),
+    )
+    .unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "historical docs fixture"],
+    );
+    let support = fixture.output.join("test-support");
+    let archives = support.join("registry");
+    let archive_source = support.join("archive-source/demo-1.0.0");
+    fs::create_dir_all(&archives).unwrap();
+    fs::create_dir_all(archive_source.join("src")).unwrap();
+    fs::create_dir_all(archive_source.join("examples")).unwrap();
+    for name in [
+        "src/lib.rs",
+        "examples/historical.rs",
+        "README.md",
+        "descriptor.bin",
+        "input.json",
+        "schema.proto",
+    ] {
+        fs::copy(package.join(name), archive_source.join(name)).unwrap();
+    }
+    fs::copy(
+        package.join("Cargo.toml"),
+        archive_source.join("Cargo.toml.orig"),
+    )
+    .unwrap();
+    fs::write(
+        archive_source.join("Cargo.toml"),
+        "# Cargo-produced normalized manifest fixture\n",
+    )
+    .unwrap();
+    fs::write(
+        archive_source.join("Cargo.lock"),
+        "# Cargo-produced standalone package lock fixture\n",
+    )
+    .unwrap();
+    fs::write(archive_source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":false},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
+    let archive = archives.join("demo-1.0.0.crate");
+    let packed = Command::new("tar")
+        .args(["-cf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(support.join("archive-source"))
+        .arg("demo-1.0.0")
+        .output()
+        .unwrap();
+    assert!(
+        packed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    let response = serde_json::to_string(&json!({"version":{"crate":"demo","num":"1.0.0","checksum":hash_file(&archive).trim_start_matches("sha256:"),"yanked":false}})).unwrap();
+    // Subprocess fixture for the real registry command boundary. No network
+    // requests or authored documentation JSON enter this qualification test.
+    let curl_source = support.join("fixture-curl.rs");
+    fs::write(
+        &curl_source,
+        format!("fn main() {{ print!(\"{{}}\\n200\", {response:?}); }}"),
+    )
+    .unwrap();
+    let curl = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
+    let compiled = Command::new("rustc")
+        .arg(&curl_source)
+        .arg("--crate-name")
+        .arg("fixture_curl")
+        .arg("-o")
+        .arg(&curl)
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    (fixture, support)
+}
+
+fn run_historical_generate(fixture: &Fixture, support: &Path) -> std::process::Output {
+    let path = std::env::join_paths(
+        std::iter::once(support.to_owned())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .env("PATH", path)
+        .args(["generate", "--root"])
+        .arg(&fixture.root)
+        .arg("--output")
+        .arg(&fixture.output)
+        .args([
+            "--version",
+            "1.0.0",
+            "--channel",
+            "release",
+            "--execute-profiles",
+            "--historical-archives",
+        ])
+        .arg(support.join("registry"))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() {
+    let (fixture, support) = historical_fixture(None);
+    let result = run_historical_generate(&fixture, &support);
+    assert!(result.status.success(), "{}", output_message(&result));
+    let version = fixture.output.join("releases/1.0.0");
+    let data: Value =
+        serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v2.json")).unwrap()).unwrap();
+    assert_eq!(data["source"]["publicationStatus"], "registryReleased");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(version.join("generation-manifest.v1.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["scope"]["kind"], "historicalRelease");
+    assert!(manifest["sourceFiles"]["rust/crates/demo/descriptor.bin"].is_string());
+    assert!(manifest["declaredSourceToolchain"]
+        .as_str()
+        .unwrap()
+        .contains("1.98.1"));
+    let scenarios: Value =
+        serde_json::from_slice(&fs::read(version.join("sdk-docs-scenarios.v1.json")).unwrap())
+            .unwrap();
+    assert_eq!(scenarios.as_array().unwrap().len(), 1);
+    assert_eq!(scenarios[0]["target"], "historical");
+    let index: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("sdk-docs-versions.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["latest"]["version"], "1.0.0");
+    assert_eq!(index["releases"].as_array().unwrap().len(), 1);
+    // Resealing a manifest after omitting an ignored archive member must not
+    // make the archive's authoritative input disappear from final validation.
+    let omitted = "rust/crates/demo/descriptor.bin";
+    manifest["scope"]["archive_source_paths"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|path| path.as_str() != Some(omitted));
+    manifest["sourceFiles"]
+        .as_object_mut()
+        .unwrap()
+        .remove(omitted);
+    let files: BTreeMap<String, String> =
+        serde_json::from_value(manifest["sourceFiles"].clone()).unwrap();
+    manifest["sourceSha256"] = json!(source_digest(&files));
+    write_manifest(&version, &manifest);
+    let altered = Fixture {
+        root: fixture.root.clone(),
+        rustdoc: version.join(".rustdoc"),
+        output: version.clone(),
+    };
+    let drift = run_drift(&altered);
+    assert!(!drift.status.success());
+    assert!(
+        output_message(&drift).contains("retained registry archive closure differs from scope"),
+        "{}",
+        output_message(&drift)
+    );
+    let _ = fs::remove_dir_all(fixture.root);
+    let _ = fs::remove_dir_all(fixture.output);
+}
+
+#[test]
+fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog() {
+    for mutation in ["descriptor.bin", "input.json", "schema.proto"] {
+        let (fixture, support) = historical_fixture(Some(mutation));
+        let result = run_historical_generate(&fixture, &support);
+        assert!(!result.status.success(), "{mutation} was admitted");
+        assert!(
+            output_message(&result).contains("source digest changed since generation"),
+            "{mutation}: {}",
+            output_message(&result)
+        );
+        assert_eq!(
+            fs::read(fixture.root.join("rust/crates/demo").join(mutation)).unwrap(),
+            b"changed archived input"
+        );
+        let executions: Value = serde_json::from_slice(
+            &fs::read(
+                fixture
+                    .output
+                    .join("releases/1.0.0/sdk-docs-scenario-executions.v1.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            executions.as_array().unwrap().len(),
+            1,
+            "example must really execute successfully before outer drift rejects"
+        );
+        assert!(
+            !fixture.output.join("sdk-docs-versions.v1.json").exists(),
+            "mutated historical source must remain unadmitted"
+        );
+        let _ = fs::remove_dir_all(fixture.root);
+        let _ = fs::remove_dir_all(fixture.output);
+    }
+}

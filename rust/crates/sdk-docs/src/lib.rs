@@ -42,9 +42,20 @@ pub enum Channel {
     Release,
 }
 
+/// Whether a qualified bundle is a candidate or an actual registry release.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicationStatus {
+    #[default]
+    Candidate,
+    RegistryReleased,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
+    #[serde(default)]
+    pub publication_status: PublicationStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub released_packages: Vec<historical::ReleasedPackage>,
     pub revision: String,
@@ -202,6 +213,8 @@ pub struct DocsData {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionEntry {
+    #[serde(default)]
+    pub publication_status: PublicationStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub released_packages: Vec<historical::ReleasedPackage>,
     pub version: String,
@@ -214,6 +227,8 @@ pub struct VersionEntry {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionIndex {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_candidates: Vec<VersionEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub historical_prereleases: Vec<VersionEntry>,
     pub schema: String,
@@ -458,6 +473,7 @@ fn build_data_inner(
         version: input.version.clone(),
         channel: input.channel.clone(),
         source: SourceInfo {
+            publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
             revision: input.revision.clone(),
             source_state: input.source_state.clone(),
@@ -473,6 +489,7 @@ fn build_data_inner(
     };
     let mut data = data;
     if let Some(historical) = historical {
+        data.source.publication_status = PublicationStatus::RegistryReleased;
         data.source.released_packages = historical.released_packages.clone();
         historical::validate_release_identity(&data)?;
     }
@@ -619,6 +636,11 @@ fn write_bundle_inner(
     if !data.source.released_packages.is_empty() {
         historical::validate_release_identity(data)?;
     }
+    if mark_latest && data.source.publication_status != PublicationStatus::RegistryReleased {
+        return Err(Error::Invalid(
+            "a release candidate cannot be marked latest without verified registry releases".into(),
+        ));
+    }
     if mark_latest && data.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
     }
@@ -629,6 +651,9 @@ fn write_bundle_inner(
     let _publication_lock = lock_publication(output_dir)?;
     let index = load_version_index(output_dir)?;
     let channel_dir = match data.channel {
+        Channel::Release if data.source.publication_status == PublicationStatus::Candidate => {
+            "release-candidates"
+        }
         Channel::Release => "releases",
         Channel::Preview => "preview",
     };
@@ -652,6 +677,7 @@ fn write_bundle_inner(
         }
     }
     let entry = VersionEntry {
+        publication_status: data.source.publication_status.clone(),
         released_packages: data.source.released_packages.clone(),
         version: data.version.clone(),
         channel: data.channel.clone(),
@@ -688,7 +714,7 @@ fn write_bundle_inner(
 fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
     reject_reparse_ancestors(&index_path)?;
-    let index = if index_path.exists() {
+    let mut index = if index_path.exists() {
         let metadata = fs::symlink_metadata(&index_path)?;
         if !metadata.is_file() {
             return Err(Error::Invalid(format!(
@@ -699,6 +725,7 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
         serde_json::from_slice::<VersionIndex>(&fs::read(&index_path)?)?
     } else {
         VersionIndex {
+            release_candidates: Vec::new(),
             historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
@@ -711,6 +738,22 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
             "unsupported version index schema: {}",
             index.schema
         )));
+    }
+    let mut verified = Vec::new();
+    for entry in index.releases.drain(..) {
+        if entry.publication_status == PublicationStatus::Candidate {
+            index.release_candidates.push(entry);
+        } else {
+            verified.push(entry);
+        }
+    }
+    index.releases = verified;
+    if index
+        .latest
+        .as_ref()
+        .is_some_and(|entry| entry.publication_status == PublicationStatus::Candidate)
+    {
+        index.latest = None;
     }
     validate_version_index(&index, output_dir)?;
     Ok(index)
@@ -736,12 +779,27 @@ fn lock_publication(output_dir: &Path) -> Result<File, Error> {
 }
 
 fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(), Error> {
+    let mut candidates = HashSet::new();
+    for entry in &index.release_candidates {
+        if entry.publication_status != PublicationStatus::Candidate
+            || !entry.released_packages.is_empty()
+        {
+            return Err(Error::Invalid(
+                "candidate catalog entry claims registry release evidence".into(),
+            ));
+        }
+        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        if !candidates.insert(&entry.version) {
+            return Err(Error::Invalid("duplicate release candidate".into()));
+        }
+    }
     let mut prereleases = HashSet::new();
     for entry in &index.historical_prereleases {
         if Version::parse(&entry.version)
             .map_err(|e| Error::Invalid(e.to_string()))?
             .pre
             .is_empty()
+            || entry.publication_status != PublicationStatus::RegistryReleased
             || entry.released_packages.is_empty()
         {
             return Err(Error::Invalid(
@@ -755,6 +813,13 @@ fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(),
     }
     let mut release_versions = HashSet::new();
     for entry in &index.releases {
+        if entry.publication_status != PublicationStatus::RegistryReleased
+            || entry.released_packages.is_empty()
+        {
+            return Err(Error::Invalid(
+                "stable release catalog requires verified registry evidence".into(),
+            ));
+        }
         stable_version(&entry.version)?;
         validate_version_entry(entry, &Channel::Release, output_dir)?;
         if !release_versions.insert(entry.version.as_str()) {
@@ -792,15 +857,29 @@ fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(),
 }
 
 fn validate_latest_release(index: &VersionIndex) -> Result<(), Error> {
-    let Some(maximum) = index.releases.iter().max_by(|left, right| {
-        match (
-            release_version(&left.version),
-            release_version(&right.version),
-        ) {
-            (Ok(left), Ok(right)) => left.cmp(&right),
-            _ => left.version.cmp(&right.version),
+    let Some(maximum) = index
+        .releases
+        .iter()
+        .filter(|entry| {
+            entry.publication_status == PublicationStatus::RegistryReleased
+                && !entry.released_packages.is_empty()
+                && !entry.released_packages.iter().any(|package| package.yanked)
+        })
+        .max_by(|left, right| {
+            match (
+                release_version(&left.version),
+                release_version(&right.version),
+            ) {
+                (Ok(left), Ok(right)) => left.cmp(&right),
+                _ => left.version.cmp(&right.version),
+            }
+        })
+    else {
+        if index.latest.is_some() {
+            return Err(Error::Invalid(
+                "stable latest requires a verified non-yanked release".into(),
+            ));
         }
-    }) else {
         return Ok(());
     };
     match index.latest.as_ref() {
@@ -860,6 +939,12 @@ fn validate_version_entry(
         )));
     }
     let channel_dir = match entry.channel {
+        Channel::Release
+            if entry.publication_status == PublicationStatus::Candidate
+                && entry.data_file.starts_with("release-candidates/") =>
+        {
+            "release-candidates"
+        }
         Channel::Release => "releases",
         Channel::Preview => "preview",
     };
@@ -937,6 +1022,11 @@ fn validate_version_entry(
             "version index entry {} data revision does not match the index",
             entry.version
         )));
+    }
+    if data.source.publication_status != entry.publication_status {
+        return Err(Error::Invalid(
+            "version entry publication status differs from immutable data".into(),
+        ));
     }
     if data.source.released_packages != entry.released_packages {
         return Err(Error::Invalid(
@@ -1028,6 +1118,35 @@ fn merge_version_index(
     mark_latest: bool,
 ) -> Result<VersionIndex, Error> {
     validate_version_index(&index, output_dir)?;
+    if entry.channel == Channel::Release && entry.publication_status == PublicationStatus::Candidate
+    {
+        if mark_latest || !entry.released_packages.is_empty() {
+            return Err(Error::Invalid(
+                "release candidate cannot claim stable latest".into(),
+            ));
+        }
+        if let Some(existing) = index
+            .release_candidates
+            .iter()
+            .find(|item| item.version == entry.version)
+        {
+            if existing != entry {
+                return Err(Error::Invalid(format!(
+                    "refusing to rewrite release candidate {}",
+                    entry.version
+                )));
+            }
+        } else {
+            index.release_candidates.push(entry.clone());
+            index.release_candidates.sort_by(|a, b| {
+                match (release_version(&a.version), release_version(&b.version)) {
+                    (Ok(a), Ok(b)) => a.cmp(&b),
+                    _ => a.version.cmp(&b.version),
+                }
+            });
+        }
+        return Ok(index);
+    }
     if entry.channel == Channel::Release
         && !Version::parse(&entry.version)
             .map_err(|e| Error::Invalid(e.to_string()))?
@@ -2101,6 +2220,13 @@ fn validate_source_digest(value: &str) -> Result<(), Error> {
 }
 
 fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Error> {
+    if (source.publication_status == PublicationStatus::RegistryReleased)
+        != !source.released_packages.is_empty()
+    {
+        return Err(Error::Invalid(
+            "publication status does not match verified released package identities".into(),
+        ));
+    }
     if source.revision.len() < 40
         || source.revision.len() > 64
         || !source.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -2298,6 +2424,7 @@ mod tests {
     #[test]
     fn profile_catalog_union_retains_feature_only_items() {
         let source = SourceInfo {
+            publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
             revision: "a".repeat(40),
             source_state: "working-tree".into(),
@@ -2674,6 +2801,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -2712,7 +2840,7 @@ mod tests {
                 },
             ],
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("publication must reject stale or incomplete navigation");
         assert!(error
             .to_string()
@@ -3073,6 +3201,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "working-tree".into(),
@@ -3092,7 +3221,7 @@ mod tests {
             },
             families: Vec::new(),
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("a release cannot publish an unbound working tree");
         assert!(error.to_string().contains("requires captured-snapshot"));
         assert!(!output.exists());
@@ -3100,7 +3229,7 @@ mod tests {
         data.source.source_state = "captured-snapshot".into();
         data.source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
         data.source.rustdoc_format_versions.clear();
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("publication must include Rustdoc format metadata");
         assert!(error.to_string().contains("format metadata"));
         assert!(!output.exists());
@@ -3124,6 +3253,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3168,6 +3298,7 @@ mod tests {
             .expect("old data parent should be creatable");
         fs::write(&old_path, &old_bytes).expect("old data should be writable");
         let old_entry = VersionEntry {
+            publication_status: PublicationStatus::Candidate,
             released_packages: Vec::new(),
             version: "1.0.0".into(),
             channel: Channel::Release,
@@ -3176,6 +3307,7 @@ mod tests {
             data_sha256: sha256_hex(&old_bytes),
         };
         let old_index = VersionIndex {
+            release_candidates: Vec::new(),
             historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: Some(old_entry.clone()),
@@ -3194,6 +3326,7 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "d".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3218,17 +3351,18 @@ mod tests {
         let same_version = DocsData {
             version: "1.0.0".into(),
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "d".repeat(40),
                 ..new_data.source.clone()
             },
             ..new_data.clone()
         };
-        let error = write_bundle(&same_version, &output, true)
+        let error = write_bundle(&same_version, &output, false)
             .expect_err("v1 to v2 publication at one version must be immutable");
         assert!(error
             .to_string()
-            .contains("refusing to rewrite release 1.0.0"));
+            .contains("refusing to rewrite release candidate 1.0.0"));
         assert_eq!(
             fs::read(&old_path).expect("old data should remain"),
             old_bytes
@@ -3237,7 +3371,7 @@ mod tests {
             fs::read(output.join("sdk-docs-versions.v1.json")).expect("old index should remain"),
             old_index_bytes
         );
-        write_bundle(&new_data, &output, true).expect("v2 publication should preserve v1 history");
+        write_bundle(&new_data, &output, false).expect("v2 publication should preserve v1 history");
 
         assert_eq!(
             fs::read(&old_path).expect("old data should remain"),
@@ -3249,11 +3383,11 @@ mod tests {
         .expect("mixed index should deserialize");
         assert_eq!(
             index.latest.as_ref().map(|entry| entry.version.as_str()),
-            Some("2.0.0")
+            None
         );
-        assert_eq!(index.releases.len(), 2);
+        assert_eq!(index.release_candidates.len(), 2);
         assert!(index
-            .releases
+            .release_candidates
             .iter()
             .any(|entry| entry.data_file.ends_with("sdk-docs-data.v1.json")));
         let old_roundtrip: DocsData = serde_json::from_slice(&old_bytes).expect("v1 should read");
@@ -3276,6 +3410,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3295,7 +3430,7 @@ mod tests {
             },
             families: Vec::new(),
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("directory at the index path must block publication");
         assert!(error
             .to_string()
@@ -3315,6 +3450,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3334,11 +3470,11 @@ mod tests {
             },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("initial release should write");
+        write_bundle(&data, &output, false).expect("initial release should write");
         let mut conflicting = data;
         conflicting.source.revision = "b".repeat(40);
         let error =
-            write_bundle(&conflicting, &output, true).expect_err("release rewrite must fail");
+            write_bundle(&conflicting, &output, false).expect_err("release rewrite must fail");
         assert!(error.to_string().contains("refusing to rewrite"));
         fs::remove_dir_all(output).expect("test output should be removable");
     }
@@ -3350,15 +3486,17 @@ mod tests {
         let _ = fs::remove_dir_all(&output);
         fs::create_dir_all(&output).expect("output directory should be creatable");
         let malformed = VersionIndex {
+            release_candidates: Vec::new(),
             historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: vec![VersionEntry {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 version: "1.0.0".into(),
                 channel: Channel::Release,
                 revision: "a".repeat(40),
-                data_file: "releases/1.0.0/sdk-docs-data.v2.json".into(),
+                data_file: "release-candidates/1.0.0/sdk-docs-data.v2.json".into(),
                 data_sha256: "0".repeat(64),
             }],
             preview: None,
@@ -3376,6 +3514,7 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "b".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3395,7 +3534,7 @@ mod tests {
             },
             families: Vec::new(),
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("malformed prior index must block publication");
         assert!(error.to_string().contains("missing data file"));
         assert_eq!(
@@ -3404,12 +3543,12 @@ mod tests {
         );
         assert!(!output.join("releases").exists());
 
-        let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
+        let data_path = output.join("release-candidates/1.0.0/sdk-docs-data.v2.json");
         fs::create_dir_all(data_path.parent().expect("data file should have a parent"))
             .expect("prior data directory should be creatable");
         fs::write(&data_path, b"prior data").expect("prior data should be writable");
         let prior_data = fs::read(&data_path).expect("prior data should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("wrong prior data hash must block publication");
         assert!(error.to_string().contains("data digest does not match"));
         assert_eq!(
@@ -3434,6 +3573,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3453,16 +3593,16 @@ mod tests {
             },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("initial release should write");
-        let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
+        write_bundle(&data, &output, false).expect("initial release should write");
+        let data_path = output.join("release-candidates/1.0.0/sdk-docs-data.v2.json");
         let valid = fs::read(&data_path).expect("valid bundle should be readable");
-        let schema_path = output.join("releases/1.0.0/sdk-docs-data.v2.schema.json");
+        let schema_path = output.join("release-candidates/1.0.0/sdk-docs-data.v2.schema.json");
         let schema = fs::read(&schema_path).expect("v2 schema sidecar should be readable");
         let index_path = output.join("sdk-docs-versions.v1.json");
         let index_before_sidecar_failure =
             fs::read(&index_path).expect("index should be readable before sidecar checks");
         fs::remove_file(&schema_path).expect("schema sidecar should be removable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("missing v2 schema sidecar must block publication");
         assert!(error.to_string().contains("missing v2 schema sidecar"));
         assert_eq!(
@@ -3474,7 +3614,7 @@ mod tests {
             fs::read(&index_path).expect("index must remain unchanged")
         );
         fs::write(&schema_path, b"{}").expect("corrupt schema sidecar should be writable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("corrupt v2 schema sidecar must block publication");
         assert!(error
             .to_string()
@@ -3502,7 +3642,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
         let missing_digest = sha256_hex(&missing_packages_bytes);
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.data_sha256 = missing_digest.clone();
         }
         if let Some(latest) = &mut index.latest {
@@ -3514,7 +3654,7 @@ mod tests {
         )
         .expect("index should be writable");
         let before_missing = fs::read(&index_path).expect("index should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("v2 bundle without packages must block publication");
         assert!(error.to_string().contains("requires packages"));
         assert_eq!(
@@ -3523,7 +3663,7 @@ mod tests {
         );
         fs::write(&data_path, &valid).expect("valid bundle should be restored");
         let valid_digest = sha256_hex(&valid);
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.data_sha256 = valid_digest.clone();
         }
         if let Some(latest) = &mut index.latest {
@@ -3541,7 +3681,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
         let digest = sha256_hex(invalid);
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.data_sha256 = digest.clone();
         }
         if let Some(latest) = &mut index.latest {
@@ -3553,7 +3693,7 @@ mod tests {
         )
         .expect("index should be writable");
         let before = fs::read(&index_path).expect("index should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("hash-valid invalid JSON must block publication");
         assert!(error.to_string().contains("not valid DocsData"));
         assert_eq!(
@@ -3574,6 +3714,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3593,12 +3734,12 @@ mod tests {
             },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("initial release should write");
+        write_bundle(&data, &output, false).expect("initial release should write");
         let index_path = output.join("sdk-docs-versions.v1.json");
         let mut index: VersionIndex =
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.revision = "b".repeat(40);
         }
         if let Some(latest) = &mut index.latest {
@@ -3610,7 +3751,7 @@ mod tests {
         )
         .expect("index should be writable");
         let before = fs::read(&index_path).expect("index should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("bundle revision mismatch must block publication");
         assert!(error
             .to_string()
@@ -3623,7 +3764,7 @@ mod tests {
     }
 
     #[test]
-    fn version_index_advances_latest_and_preview_without_rewriting_releases() {
+    fn version_index_advances_candidates_and_preview_without_rewriting_data() {
         let output =
             std::env::temp_dir().join(format!("sdk-docs-lifecycle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output);
@@ -3633,6 +3774,7 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: "1".repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3652,16 +3794,16 @@ mod tests {
             },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("first release should write");
+        write_bundle(&data, &output, false).expect("first release should write");
         data.version = "1.1.0".into();
         data.source.revision = "2".repeat(40);
-        write_bundle(&data, &output, true).expect("latest should advance to the next release");
+        write_bundle(&data, &output, false).expect("latest should advance to the next release");
         data.version = "0.9.0".into();
         data.source.revision = "9".repeat(40);
-        write_bundle(&data, &output, true).expect("an older release should remain immutable");
+        write_bundle(&data, &output, false).expect("an older release should remain immutable");
         data.version = "0.10.0".into();
         data.source.revision = "8".repeat(40);
-        write_bundle(&data, &output, true).expect("semantic release ordering should be accepted");
+        write_bundle(&data, &output, false).expect("semantic release ordering should be accepted");
         data.version = "preview-1".into();
         data.channel = Channel::Preview;
         data.source.revision = "3".repeat(40);
@@ -3700,7 +3842,7 @@ mod tests {
         .expect("index should parse");
         assert_eq!(
             index
-                .releases
+                .release_candidates
                 .iter()
                 .map(|entry| entry.version.as_str())
                 .collect::<Vec<_>>(),
@@ -3708,7 +3850,7 @@ mod tests {
         );
         assert_eq!(
             index.latest.as_ref().map(|entry| entry.version.as_str()),
-            Some("1.1.0")
+            None
         );
         assert_eq!(
             index.preview.as_ref().map(|entry| entry.version.as_str()),
@@ -3726,14 +3868,23 @@ mod tests {
     #[test]
     fn version_index_latest_must_be_the_maximum_release() {
         let entry = |version: &str| VersionEntry {
-            released_packages: Vec::new(),
+            publication_status: PublicationStatus::RegistryReleased,
+            released_packages: vec![historical::ReleasedPackage {
+                package: "policy-fixture".into(),
+                version: version.into(),
+                yanked: false,
+                registry_checksum: "a".repeat(64),
+                source_revision: "a".repeat(40),
+                path_in_vcs: "fixture".into(),
+            }],
             version: version.into(),
             channel: Channel::Release,
             revision: "a".repeat(40),
-            data_file: format!("releases/{version}/sdk-docs-data.v2.json"),
+            data_file: format!("release-candidates/{version}/sdk-docs-data.v2.json"),
             data_sha256: "b".repeat(64),
         };
         let stale = VersionIndex {
+            release_candidates: Vec::new(),
             historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: Some(entry("1.0.0")),
@@ -3745,6 +3896,7 @@ mod tests {
         assert!(error.to_string().contains("maximum release 2.0.0"));
 
         let missing = VersionIndex {
+            release_candidates: Vec::new(),
             historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
@@ -3767,6 +3919,7 @@ mod tests {
             version: version.into(),
             channel: Channel::Release,
             source: SourceInfo {
+                publication_status: PublicationStatus::Candidate,
                 released_packages: Vec::new(),
                 revision: revision.to_string().repeat(40),
                 source_state: "captured-snapshot".into(),
@@ -3793,13 +3946,13 @@ mod tests {
         let first_barrier = Arc::clone(&barrier);
         let first = thread::spawn(move || {
             first_barrier.wait();
-            write_bundle(&first_data, &first_output, true)
+            write_bundle(&first_data, &first_output, false)
         });
         let second_output = output.clone();
         let second_barrier = Arc::clone(&barrier);
         let second = thread::spawn(move || {
             second_barrier.wait();
-            write_bundle(&second_data, &second_output, true)
+            write_bundle(&second_data, &second_output, false)
         });
         first
             .join()
@@ -3816,7 +3969,7 @@ mod tests {
         .expect("index should parse");
         assert_eq!(
             index
-                .releases
+                .release_candidates
                 .iter()
                 .map(|entry| entry.version.as_str())
                 .collect::<Vec<_>>(),
@@ -3824,9 +3977,9 @@ mod tests {
         );
         assert_eq!(
             index.latest.as_ref().map(|entry| entry.version.as_str()),
-            Some("2.0.0")
+            None
         );
-        for entry in &index.releases {
+        for entry in &index.release_candidates {
             let bytes = fs::read(output.join(&entry.data_file)).expect("bundle should exist");
             assert_eq!(sha256_hex(&bytes), entry.data_sha256);
         }

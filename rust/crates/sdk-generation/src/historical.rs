@@ -2,7 +2,7 @@
 use cargo_metadata::{Metadata, TargetKind};
 use sdk_docs::historical::ReleasedPackage;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path};
 use std::process::Command;
@@ -15,7 +15,86 @@ pub enum Scope {
     CurrentSdk,
     HistoricalRelease {
         released_packages: Vec<ReleasedPackage>,
+        archive_source_paths: Vec<String>,
     },
+}
+
+impl Scope {
+    pub fn is_current(&self) -> bool {
+        matches!(self, Self::CurrentSdk)
+    }
+    pub fn archive_source_paths(&self) -> &[String] {
+        match self {
+            Self::CurrentSdk => &[],
+            Self::HistoricalRelease {
+                archive_source_paths,
+                ..
+            } => archive_source_paths,
+        }
+    }
+}
+
+/// Verified archive inputs for one immutable historical source/version.
+pub struct Plan {
+    pub released_packages: Vec<ReleasedPackage>,
+    pub source_files: BTreeMap<String, String>,
+    pub archives: Vec<(std::path::PathBuf, RegistryVersion)>,
+}
+
+/// Query every publishable same-version Cargo owner; missing registry versions
+/// are excluded, while errors and missing archives for actual releases fail.
+pub fn plan(
+    metadata: &Metadata,
+    root: &Path,
+    revision: &str,
+    version: &str,
+    archive_dir: &Path,
+) -> Result<Plan, String> {
+    let mut result = Plan {
+        released_packages: Vec::new(),
+        source_files: BTreeMap::new(),
+        archives: Vec::new(),
+    };
+    let mut expected = BTreeSet::new();
+    for package in metadata.packages.iter().filter(|package| {
+        package.version.to_string() == version
+            && package
+                .publish
+                .as_ref()
+                .is_none_or(|registries| !registries.is_empty())
+    }) {
+        let Some(release) = registry_version_optional(package.name.as_ref(), version)? else {
+            continue;
+        };
+        let name = format!("{}-{version}.crate", package.name);
+        expected.insert(name.clone());
+        let archive = archive_dir.join(name);
+        let identity = verify_archive(metadata, root, revision, &release, &archive)?;
+        result
+            .source_files
+            .extend(archive_source_files(metadata, root, &release, &archive)?);
+        result.released_packages.push(identity);
+        result.archives.push((archive, release));
+    }
+    if result.released_packages.is_empty() {
+        return Err(
+            "historical scope has no actual registry releases for this source/version".into(),
+        );
+    }
+    for entry in fs::read_dir(archive_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_file()
+            || !expected.contains(&entry.file_name().to_string_lossy().into_owned())
+        {
+            return Err(
+                "historical archive inventory has an unregistered source or version".into(),
+            );
+        }
+    }
+    result
+        .released_packages
+        .sort_by(|a, b| a.package.cmp(&b.package));
+    Ok(result)
 }
 
 /// The fields read from the authoritative crates.io version endpoint.
@@ -32,25 +111,59 @@ pub struct RegistryVersion {
 pub fn registry_version(package: &str, version: &str) -> Result<RegistryVersion, String> {
     validate_name(package)?;
     validate_version(version)?;
+    registry_version_optional(package, version)?
+        .ok_or("requested package version is absent from the registry".into())
+}
+
+fn registry_version_optional(
+    package: &str,
+    version: &str,
+) -> Result<Option<RegistryVersion>, String> {
+    validate_name(package)?;
+    validate_version(version)?;
     let url = format!("https://crates.io/api/v1/crates/{package}/{version}");
-    let bytes = command_output(Command::new("curl").args([
-        "--fail",
+    // Resolve PATH explicitly: Windows otherwise searches System32 before PATH,
+    // bypassing the caller's selected registry transport executable.
+    let executable = std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|path| path.join(if cfg!(windows) { "curl.exe" } else { "curl" }))
+                .find(|path| path.is_file())
+        })
+        .ok_or("registry transport curl is absent from PATH")?;
+    let bytes = command_output(Command::new(executable).args([
         "--silent",
         "--show-error",
         "--location",
         "--max-time",
         "60",
+        "--write-out",
+        "\n%{http_code}",
         &url,
     ]))?;
+    let split = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .ok_or("registry response lacks HTTP status")?;
+    let status = &bytes[split + 1..];
+    if status == b"404" {
+        return Ok(None);
+    }
+    if status != b"200" {
+        return Err(format!(
+            "registry lookup failed with HTTP {}",
+            String::from_utf8_lossy(status)
+        ));
+    }
     #[derive(Deserialize)]
     struct Response {
         version: RegistryVersion,
     }
-    let response: Response = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let response: Response = serde_json::from_slice(&bytes[..split]).map_err(|e| e.to_string())?;
     if response.version.package != package || response.version.num != version {
         return Err("registry response identity differs from requested release".into());
     }
-    Ok(response.version)
+    Ok(Some(response.version))
 }
 
 /// Verify archive bytes, VCS provenance and exact historical Cargo identity.
@@ -151,7 +264,8 @@ fn verify_archive_sources(
     source: &Path,
     release: &RegistryVersion,
     archive: &Path,
-) -> Result<(), String> {
+) -> Result<BTreeMap<String, String>, String> {
+    let mut source_inputs = BTreeMap::new();
     let prefix = format!("{}-{}/", release.package, release.num);
     let listing = String::from_utf8(command_output(Command::new("tar").arg("-tf").arg(archive))?)
         .map_err(|e| e.to_string())?;
@@ -173,12 +287,13 @@ fn verify_archive_sources(
             continue;
         }
         let original_manifest = relative == "Cargo.toml.orig";
-        if !original_manifest
-            && !matches!(
-                path.extension().and_then(|ext| ext.to_str()),
-                Some("rs" | "md")
-            )
-        {
+        // Cargo creates the normalized manifest and standalone package lock.
+        // The exact archive checksum retains these packaging products; native
+        // generation uses Cargo.toml.orig and the frozen workspace Cargo.lock.
+        if matches!(
+            relative,
+            "Cargo.toml" | "Cargo.lock" | ".cargo_vcs_info.json"
+        ) {
             continue;
         }
         let relative = if original_manifest {
@@ -201,6 +316,13 @@ fn verify_archive_sources(
                 "released archive source bytes differ from checkout: {relative}"
             ));
         }
+        let logical = super::path_string(
+            source
+                .join(relative)
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?,
+        );
+        source_inputs.insert(logical, super::sha256_bytes(&released));
         has_manifest |= original_manifest;
     }
     if !has_manifest {
@@ -241,7 +363,33 @@ fn verify_archive_sources(
             }
         }
     }
-    Ok(())
+    Ok(source_inputs)
+}
+
+/// All non-Cargo-generated archive inputs, verified against the source checkout.
+/// Returned paths extend the maintained generation manifest's source map.
+pub fn archive_source_files(
+    metadata: &Metadata,
+    root: &Path,
+    release: &RegistryVersion,
+    archive: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| {
+            package.name.as_ref() == release.package && package.version.to_string() == release.num
+        })
+        .ok_or("released archive has no matching Cargo identity")?;
+    let source = package
+        .manifest_path
+        .parent()
+        .ok_or("Cargo manifest has no parent")?
+        .as_std_path()
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    verify_archive_sources(&root, package, &source, release, archive)
 }
 
 /// A source-owned example and its exact Cargo invocation inputs.
@@ -303,6 +451,34 @@ pub fn examples(
     Ok(examples)
 }
 
+/// Extend the maintained closure with source files verified from archive members.
+pub fn source_file_hashes(
+    root: &Path,
+    output: &Path,
+    archive_paths: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut files = super::source_file_hashes(root, output).map_err(|e| e.to_string())?;
+    for relative in archive_paths {
+        let path = Path::new(relative);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+        {
+            return Err("historical archive source path escapes source root".into());
+        }
+        let physical = root.join(path).canonicalize().map_err(|e| e.to_string())?;
+        if !physical.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+            return Err("historical archive source escapes source root".into());
+        }
+        files.insert(
+            relative.clone(),
+            super::sha256_file(&physical).map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(files)
+}
+
 /// Run only the actual historical targets; no modern scenario sources are copied.
 pub fn execute_examples(
     root: &Path,
@@ -311,6 +487,7 @@ pub fn execute_examples(
     examples: &[Example],
 ) -> Result<Vec<ExampleExecution>, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let source_files = super::source_file_hashes(&root, target_dir).map_err(|e| e.to_string())?;
     let mut results = Vec::new();
     for example in examples {
         let source = root
@@ -360,6 +537,10 @@ pub fn execute_examples(
             != example.source_sha256
         {
             return Err("historical example source changed during execution".into());
+        }
+        if super::source_file_hashes(&root, target_dir).map_err(|e| e.to_string())? != source_files
+        {
+            return Err("historical source closure changed during example execution".into());
         }
         results.push(ExampleExecution {
             example: example.clone(),
@@ -753,5 +934,102 @@ mod tests {
             native["index"][native["root"].to_string()]["docs"],
             "Source-owned historical command instructions."
         );
+    }
+    #[test]
+    fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
+        let fixture = Fixture::new();
+        let metadata = fixture.metadata();
+        let revision = "a".repeat(40);
+        for name in [
+            "descriptor.bin",
+            "input.json",
+            "schema.proto",
+            "build.rs",
+            ".cargo/config.toml",
+        ] {
+            let path = fixture.0.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"original archived input").unwrap();
+            let (mut release, archive) = fixture.archive(&revision, "");
+            let archived = fixture.0.join("historical-fixture-0.1.0").join(name);
+            fs::create_dir_all(archived.parent().unwrap()).unwrap();
+            fs::copy(&path, &archived).unwrap();
+            command_output(
+                Command::new("tar")
+                    .arg("-cf")
+                    .arg(&archive)
+                    .arg("-C")
+                    .arg(&fixture.0)
+                    .arg("historical-fixture-0.1.0"),
+            )
+            .unwrap();
+            release.checksum = super::super::sha256_file(&archive)
+                .unwrap()
+                .trim_start_matches("sha256:")
+                .into();
+            verify_archive(&metadata, &fixture.0, &revision, &release, &archive).unwrap();
+            assert!(
+                archive_source_files(&metadata, &fixture.0, &release, &archive)
+                    .unwrap()
+                    .contains_key(name)
+            );
+            fs::write(&path, b"changed source input").unwrap();
+            assert!(
+                verify_archive(&metadata, &fixture.0, &revision, &release, &archive)
+                    .unwrap_err()
+                    .contains("source bytes differ")
+            );
+            fs::copy(&archived, &path).unwrap();
+        }
+    }
+
+    #[test]
+    fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutations() {
+        for changed in [
+            "rust/crates/owned/src/lib.rs",
+            "rust/crates/owned/build.rs",
+            "rust/crates/owned/README.md",
+            "Cargo.toml",
+            "Cargo.lock",
+        ] {
+            let fixture = Fixture::new();
+            fs::create_dir_all(fixture.0.join("rust/crates/owned/src")).unwrap();
+            fs::copy(
+                fixture.0.join("src/lib.rs"),
+                fixture.0.join("rust/crates/owned/src/lib.rs"),
+            )
+            .unwrap();
+            fs::write(
+                fixture.0.join("rust/crates/owned/build.rs"),
+                "fn main() {}\n",
+            )
+            .unwrap();
+            fs::write(
+                fixture.0.join("rust/crates/owned/README.md"),
+                "# Source README\n",
+            )
+            .unwrap();
+            let manifest = fs::read_to_string(fixture.0.join("Cargo.toml")).unwrap().replace("edition='2021'", "edition='2021'\nbuild='rust/crates/owned/build.rs'\nreadme='rust/crates/owned/README.md'");
+            fs::write(
+                fixture.0.join("Cargo.toml"),
+                format!("{manifest}\n[lib]\npath='rust/crates/owned/src/lib.rs'\n"),
+            )
+            .unwrap();
+            fs::write(fixture.0.join("examples/old-example.rs"), format!("fn main() {{ std::fs::write({changed:?}, \"mutated documentation input\").unwrap(); }}\n")).unwrap();
+            let metadata = fixture.metadata();
+            let examples = examples(
+                &metadata,
+                &fixture.0,
+                &BTreeSet::from(["historical-fixture".into()]),
+            )
+            .unwrap();
+            let error =
+                execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &examples)
+                    .unwrap_err();
+            assert!(
+                error.contains("source closure changed"),
+                "{changed}: {error}"
+            );
+        }
     }
 }
