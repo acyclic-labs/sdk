@@ -2643,6 +2643,15 @@ mod tests {
         interrupt_summary: bool,
         reconciliations: AtomicUsize,
         dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
+        accounting_fault: Option<AccountingFault>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum AccountingFault {
+        Digest,
+        MissingMessage,
+        ExtraMessage,
+        CompactedPressure,
     }
 
     impl ModelProvider for CountedModel {
@@ -2684,11 +2693,30 @@ mod tests {
                         .map_err(|_| Error::Invalid("synthetic token bound exceeds u32".into()))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(crate::context::ModelTokenCount {
+            let mut count = crate::context::ModelTokenCount {
                 request_digest: request.manifest().request_digest,
                 fixed_tokens: 100,
                 message_tokens,
-            })
+            };
+            match self.accounting_fault {
+                Some(AccountingFault::Digest) => count.request_digest[0] ^= 1,
+                Some(AccountingFault::MissingMessage) => {
+                    count.message_tokens.pop();
+                }
+                Some(AccountingFault::ExtraMessage) => count.message_tokens.push(1),
+                Some(AccountingFault::CompactedPressure)
+                    if request.request().messages.first().is_some_and(|message| {
+                        matches!(
+                            message.content,
+                            ModelContent::Part(ModelContentPart::File { .. })
+                        )
+                    }) =>
+                {
+                    count.fixed_tokens = self.capacity;
+                }
+                _ => {}
+            }
+            Ok(count)
         }
 
         fn generate<'a>(
@@ -2852,6 +2880,69 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn malformed_provider_accounting_rejects_before_projection_or_model_publication()
+    -> Result<()> {
+        for fault in [
+            AccountingFault::Digest,
+            AccountingFault::MissingMessage,
+            AccountingFault::ExtraMessage,
+        ] {
+            let journal = Journal::default();
+            let provider = Arc::new(CountedModel {
+                capacity: 65_536,
+                accounting_fault: Some(fault),
+                ..CountedModel::default()
+            });
+            let executor = StockExecutor::new(
+                Model::new("synthetic", "counter", "1", Value::Null)?,
+                provider.clone(),
+                ContextPipeline::default(),
+                ToolRegistry::new(),
+            );
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("current".into()),
+                selected_context: None,
+                max_steps: 1,
+            };
+            assert!(matches!(
+                executor.execute(input, &journal).await,
+                Err(Error::Invalid(_))
+            ));
+            let records = journal.0.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert!(matches!(records[0].event, ExecutionEvent::Started { .. }));
+            assert!(journal.1.lock().unwrap().is_empty());
+            assert!(provider.requests.lock().unwrap().is_empty());
+            assert!(provider.dispatches.lock().unwrap().is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<()> {
+        let valid = json!({
+            "capacity": {"context_tokens": 65_536, "output_tokens": 4_096},
+            "count": {"request_digest": vec![0_u8; 32], "fixed_tokens": 100, "message_tokens": [10]}
+        });
+        assert!(serde_json::from_value::<ContextAccounting>(valid.clone()).is_ok());
+        for path in ["capacity", "count"] {
+            let mut unknown = valid.clone();
+            unknown[path]["unknown"] = json!(true);
+            assert!(serde_json::from_value::<ContextAccounting>(unknown).is_err());
+        }
+        for invalid in [json!(-1), json!(4_294_967_296_u64), json!(0.5), Value::Null] {
+            let mut fixed = valid.clone();
+            fixed["count"]["fixed_tokens"] = invalid.clone();
+            assert!(serde_json::from_value::<ContextAccounting>(fixed).is_err());
+            let mut message = valid.clone();
+            message["count"]["message_tokens"][0] = invalid;
+            assert!(serde_json::from_value::<ContextAccounting>(message).is_err());
+        }
+        Ok(())
+    }
+
     struct ChangingCompactionSource(AtomicUsize);
 
     impl crate::context::ContextSource for ChangingCompactionSource {
@@ -2874,6 +2965,126 @@ mod tests {
                 ])
             })
         }
+    }
+
+    #[tokio::test]
+    async fn actual_compacted_accounting_rejects_response_without_repeating_summary() -> Result<()>
+    {
+        let journal = Journal::default();
+        let provider = Arc::new(CountedModel {
+            capacity: 65_536,
+            accounting_fault: Some(AccountingFault::CompactedPressure),
+            ..CountedModel::default()
+        });
+        let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
+        let executor = StockExecutor::new(
+            Model::new("synthetic", "counter", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "changing-history",
+                "1",
+                source.clone(),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::new(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("c".repeat(5_000)),
+            selected_context: None,
+            max_steps: 1,
+        };
+        for _ in 0..2 {
+            assert!(matches!(executor.execute(input.clone(), &journal).await,
+                Err(Error::Invalid(message)) if message == "compacted mandatory content exceeds selected model capacity"));
+        }
+        assert_eq!(source.0.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
+        let records = journal.0.lock().unwrap();
+        assert!(records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Summary,
+                ..
+            }
+        )));
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Response,
+                ..
+            }
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary() -> Result<()>
+    {
+        for media in [false, true] {
+            let journal = Journal::default();
+            let operation_id = OperationId::new();
+            let mandatory = if media {
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::File {
+                        file: journal
+                            .stage(operation_id, "media".into(), vec![1; 50_000], "image/png")
+                            .await?,
+                        policy: crate::model::FileProjectionPolicy::Native,
+                    }),
+                }
+            } else {
+                ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("s".repeat(50_000)),
+                }
+            };
+            let context = crate::context::Context {
+                messages: vec![
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("o".repeat(28_000)),
+                    },
+                    mandatory,
+                ],
+                ..crate::context::Context::default()
+            };
+            let provider = Arc::new(CountedModel {
+                capacity: 65_536,
+                ..CountedModel::default()
+            });
+            let executor = StockExecutor::new(
+                Model::new("synthetic", "counter", "1", Value::Null)?,
+                provider.clone(),
+                ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                    "history",
+                    "1",
+                    Arc::new(context),
+                    crate::context::ContextPlacement::Prepend,
+                )) as Arc<dyn crate::context::ContextStage>]),
+                ToolRegistry::new(),
+            );
+            let input = TurnInput {
+                operation_id,
+                input: ModelContent::Text("c".repeat(5_000)),
+                selected_context: None,
+                max_steps: 1,
+            };
+            assert!(matches!(executor.execute(input, &journal).await,
+                Err(Error::Invalid(message)) if message == "mandatory content exceeds selected model capacity"));
+            assert!(provider.requests.lock().unwrap().is_empty());
+            assert!(
+                !journal
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

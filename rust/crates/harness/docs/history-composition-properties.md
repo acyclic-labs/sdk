@@ -295,3 +295,17 @@ turn and its recovery, not persistent compression across later turns. The next
 continuation change must reuse those existing projection/journal mechanisms,
 retain authoritative history and exact prior admissions, and include a changed
 source plus later-turn consumer regression.
+
+Accounting admission negatives passed in
+`target-b-native-accounting-negatives.log` (255 native library tests, zero failed
+or ignored), with strict native all-target lint in
+`target-b-clippy-accounting-negatives-final.log`. The executor hash in
+`target/b-accounting-negatives-source-hashes.json` matched after completion.
+Wrong digest and short/long dimensions reject before projection staging or model
+publication. Unknown nested fields and negative, overflowing, fractional or null
+token counts reject wire decoding. Mandatory instructions and native file
+references exceeding the synthetic provider's declared input headroom reject
+before summary inference. Excess actual compacted accounting rejects response
+publication; an exact retry reuses the captured source and completed summary,
+with one total summary generation and no response generation. These are typed
+synthetic-provider admission tests, not production tokenizer/media qualification.

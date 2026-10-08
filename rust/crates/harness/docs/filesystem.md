@@ -3,7 +3,7 @@
 Enabled by the `filesystem` feature (`filesystem-local` adds the durable local stores).
 
 Stock execution enables `CompactionPolicy::default()` with a 16,384-token
-response reserve and 20,000-token recent suffix. The selected ModelProvider
+response reserve and 20,000-token recent suffix. The selected `ModelProvider`
 supplies its actual capacity and digest-bound additive token counts; unsupported
 accounting is an explicit error before model dispatch. `LocalHarness::with_limits`
 and `with_tools` take an explicit `CompactionPolicy`, while `new` uses the default.
