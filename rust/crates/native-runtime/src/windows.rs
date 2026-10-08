@@ -213,33 +213,83 @@ pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Resul
 /// Writes every byte of each range on the calling thread, continuing
 /// after a short write exactly as the driver does.
 pub(super) fn write_batch_in_place(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
-    for write in writes {
-        let mut offset = write.offset;
-        let mut bytes = &write.bytes[..];
-        while !bytes.is_empty() {
-            let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-            let count = transfer_in_place(file, offset, |handle, overlapped| {
-                // SAFETY: `bytes` stays borrowed for the whole request,
-                // which completes before return.
-                unsafe {
-                    WriteFile(
-                        handle,
-                        bytes.as_ptr(),
-                        length,
-                        std::ptr::null_mut(),
-                        overlapped,
-                    )
-                }
-            })?;
-            if count == 0 {
-                return Err(io::Error::from(io::ErrorKind::WriteZero));
+    writes
+        .iter()
+        .try_for_each(|write| write_all_in_place(file, write.offset, &write.bytes))
+}
+
+fn write_all_in_place(file: &File, mut offset: u64, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        let count = transfer_in_place(file, offset, |handle, overlapped| {
+            // SAFETY: `bytes` stays borrowed for the whole request,
+            // which completes before return.
+            unsafe {
+                WriteFile(
+                    handle,
+                    bytes.as_ptr(),
+                    length,
+                    std::ptr::null_mut(),
+                    overlapped,
+                )
             }
-            let (_, rest) = bytes.split_at(count.min(bytes.len()));
-            offset += (bytes.len() - rest.len()) as u64;
-            bytes = rest;
+        })?;
+        if count == 0 {
+            return Err(io::Error::from(io::ErrorKind::WriteZero));
         }
+        let (_, rest) = bytes.split_at(count.min(bytes.len()));
+        offset += (bytes.len() - rest.len()) as u64;
+        bytes = rest;
     }
     Ok(())
+}
+
+/// Rejects a range the cursor-free overlapped path cannot address.
+fn overlapped_range(offset: u64, length: usize) -> io::Result<u32> {
+    match u32::try_from(length) {
+        Ok(length) if offset != u64::MAX && offset.checked_add(u64::from(length)).is_some() => {
+            Ok(length)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid overlapped I/O range",
+        )),
+    }
+}
+
+/// Reads once through a private overlapped reopen of a borrowed handle, on
+/// the calling thread: the caller's cursor never moves, and the request
+/// needs neither the driver thread nor a completion-port association.
+pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+    let length = overlapped_range(offset, destination.len())?;
+    if length == 0 {
+        return Ok(0);
+    }
+    let reopened = reopen_overlapped(file, FILE_GENERIC_READ)?;
+    let count = transfer_in_place(&reopened, offset, |handle, overlapped| {
+        // SAFETY: `destination` holds `length` writable bytes for the whole
+        // request, which completes before return.
+        unsafe {
+            ReadFile(
+                handle,
+                destination.as_mut_ptr(),
+                length,
+                std::ptr::null_mut(),
+                overlapped,
+            )
+        }
+    })?;
+    if count > destination.len() {
+        return Err(io::Error::other("read completion exceeded buffer"));
+    }
+    Ok(count)
+}
+
+/// Writes every byte through a private overlapped reopen of a borrowed
+/// handle, on the calling thread, exactly as [`read_at`] reads.
+pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
+    overlapped_range(offset, bytes.len())?;
+    write_all_in_place(&reopen_overlapped(file, FILE_GENERIC_WRITE)?, offset, bytes)
 }
 
 const DRIVER_QUEUE: usize = 1024;
@@ -257,15 +307,7 @@ fn read_windows(reads: &[OwnedRead]) -> io::Result<Vec<ReadWindow>> {
     let mut windows: Vec<ReadWindow> = Vec::new();
     windows.try_reserve_exact(reads.len())?;
     for (index, read) in reads.iter().enumerate() {
-        if read.offset == u64::MAX
-            || read.length > u32::MAX as usize
-            || read.offset.checked_add(read.length as u64).is_none()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid overlapped read range",
-            ));
-        }
+        overlapped_range(read.offset, read.length)?;
         if read.length == 0 {
             continue;
         }
@@ -809,17 +851,12 @@ impl DriverState {
             finish(Ok(()));
             return;
         }
-        for write in &writes {
-            if write.offset == u64::MAX
-                || write.bytes.len() > u32::MAX as usize
-                || write.offset.checked_add(write.bytes.len() as u64).is_none()
-            {
-                finish(Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid overlapped write range",
-                )));
-                return;
-            }
+        if let Err(error) = writes
+            .iter()
+            .try_for_each(|write| overlapped_range(write.offset, write.bytes.len()).map(drop))
+        {
+            finish(Err(error));
+            return;
         }
         let fd = match self.attach(file, overlapped, FILE_GENERIC_WRITE) {
             Ok(fd) => fd,

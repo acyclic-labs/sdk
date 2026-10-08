@@ -474,6 +474,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "tokio",
  "tonic",
  "tonic-prost",
  "tracing",

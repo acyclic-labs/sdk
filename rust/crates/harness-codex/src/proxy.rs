@@ -235,7 +235,11 @@ fn stop_reason(stop: &ProxyStop) -> String {
 }
 
 async fn not_served(method: Method, uri: Uri) -> Response {
-    tracing::warn!(%method, path = uri.path(), "codex called a path the proxy does not serve");
+    tracing::warn!(
+        method = method.as_str(),
+        path_len = uri.path().len(),
+        "codex called a route the proxy does not serve"
+    );
     (
         StatusCode::NOT_FOUND,
         axum::Json(json!({"error": {

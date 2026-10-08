@@ -3,6 +3,7 @@
 use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
 use crate::contract::capability;
 use crate::contract::next_revision;
+use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
@@ -294,6 +295,16 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
+        let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
+        traced(span, self.suspend_untraced(revision, command)).await
+    }
+
+    async fn suspend_untraced(&self, revision: u64, command: OperationId) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
@@ -514,11 +525,30 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
     /// Resolves through the conversation-owned ledger with an exact responder grant.
+    pub async fn resolve_interaction(
+        &self,
+        id: InteractionId,
+        response: InteractionResponse,
+        responder: &Scope,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
+        traced(
+            span,
+            self.resolve_interaction_untraced(id, response, responder),
+        )
+        .await
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered interaction resolution transaction"
     )]
-    pub async fn resolve_interaction(
+    async fn resolve_interaction_untraced(
         &self,
         id: InteractionId,
         response: InteractionResponse,
@@ -801,13 +831,15 @@ where
         after: u64,
         maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        Box::pin(async move {
-            Ok(self
-                .replay_verified(operation_id, after, maximum)
-                .await?
-                .into_iter()
-                .map(|(record, _)| record)
-                .collect())
+        let span = obs_span!(
+            "acyclic.harness.journal.replay",
+            rev = after,
+            items = crate::obs::Empty
+        );
+        traced(span, async move {
+            let page = self.replay_verified(operation_id, after, maximum).await?;
+            crate::obs::obs_record!("items" = page.len());
+            Ok(page.into_iter().map(|(record, _)| record).collect())
         })
     }
 
@@ -817,7 +849,8 @@ where
         idempotency_key: String,
         event: ExecutionEvent,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
+        let span = obs_span!("acyclic.harness.journal.append");
+        traced(span, async move {
             if self.owner.is_some() {
                 return self
                     .append_owned(operation_id, None, &idempotency_key, event)
@@ -855,7 +888,11 @@ where
         claim_id: String,
         event: ExecutionEvent,
     ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        let span = obs_span!(
+            "acyclic.harness.journal.append_if_tail",
+            rev = expected_tail
+        );
+        traced(span, async move {
             if self.owner.is_some() {
                 return self
                     .append_owned(operation_id, Some(expected_tail), &claim_id, event)
@@ -904,7 +941,8 @@ where
         bytes: Vec<u8>,
         media_type: &'static str,
     ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
+        let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+        traced(span, async move {
             self.require_operation(operation_id)?;
             if bytes.len() as u64 > self.maximum_payload_bytes {
                 return Err(Error::Invalid(
@@ -936,7 +974,8 @@ where
     }
 
     fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move {
+        let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
+        traced(span, async move {
             if reference.volume() != &self.volume {
                 return Err(Error::Unauthorized(
                     "journal content belongs to another private volume".into(),
@@ -948,11 +987,12 @@ where
                 &self.volume,
                 VolumeOperation::Read,
             )?;
-            Ok(self
+            let bytes = self
                 .host
                 .read_content(reference, &grant, self.maximum_payload_bytes)
-                .await?
-                .to_vec())
+                .await?;
+            crate::obs::obs_record!("bytes" = bytes.len());
+            Ok(bytes.to_vec())
         })
     }
 

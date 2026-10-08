@@ -9,7 +9,7 @@ impl Journal {
         self.check().map_err(|_| LocalOpenError::Unavailable)?;
         let snapshot =
             difference(&State::default(), state, 0).map_err(|_| LocalOpenError::Corrupt)?;
-        let temporary = self.root.join(TEMPORARY);
+        let temporary = self.root.path.join(TEMPORARY);
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -44,11 +44,13 @@ impl Journal {
         drop(std::mem::replace(&mut tail.file, output.file));
         #[cfg(test)]
         self.checkpoint_fault(3)?;
-        if let Err(error) = acyclic_native_runtime::durable_rename(
-            &temporary,
-            &self.root.join("mutations.log"),
-            acyclic_native_runtime::RenameMode::Replace,
-        ) {
+        if let Err(error) = self.root.replace_journal(|| {
+            acyclic_native_runtime::durable_rename(
+                &temporary,
+                &self.root.path.join("mutations.log"),
+                acyclic_native_runtime::RenameMode::Replace,
+            )
+        }) {
             self.poisoned.store(true, Ordering::Release);
             return Err(error.into());
         }

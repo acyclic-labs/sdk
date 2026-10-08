@@ -32,6 +32,20 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Stable classification for tracing's `error.kind`.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::Transport(_) => "transport",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::MalformedResponse => "malformed_response",
+            Self::Service { .. } => "service",
+        }
+    }
+}
+
 /// Plain HTTP is admitted only for `localhost` and loopback IP literals.
 fn loopback(endpoint: &Url) -> bool {
     endpoint.host_str().is_some_and(|host| {
@@ -89,7 +103,42 @@ impl Client {
         })
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.actors.http.call",
+            level = "info",
+            skip_all,
+            fields(
+                route = route,
+                http.status = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+                error.kind = tracing::field::Empty,
+            )
+        )
+    )]
     async fn call<I: Message, O: Message + Default>(
+        &self,
+        route: &'static str,
+        input: &str,
+        output: &str,
+        request: &I,
+    ) -> Result<O, Error> {
+        let result = self.exchange(route, input, output, request).await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let span = tracing::Span::current();
+            match &result {
+                Ok(_) => span.record("outcome", "ok"),
+                Err(error) => span
+                    .record("outcome", "err")
+                    .record("error.kind", error.kind()),
+            };
+        }
+        result
+    }
+
+    async fn exchange<I: Message, O: Message + Default>(
         &self,
         route: &str,
         input: &str,
@@ -116,6 +165,8 @@ impl Client {
             .send()
             .await?;
         let status = response.status();
+        #[cfg(not(target_arch = "wasm32"))]
+        tracing::Span::current().record("http.status", status.as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
