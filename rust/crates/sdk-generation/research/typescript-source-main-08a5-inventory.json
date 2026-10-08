@@ -1,0 +1,1847 @@
+{
+  "schema": "acyclic.sdk.typescript-source-inventory.v2",
+  "sourceRevision": "08a5b8ea796a3b85aeee3e56a79d0439ae68247f",
+  "classification": "Generated means a src/generated path or explicit generated banner in the first five lines. Remaining source includes thin adapters; this inventory does not classify all authored lines as replaceable shared behavior. Lines count nonempty lines including imports and comments.",
+  "families": {
+    "actors": {
+      "generatedFiles": 1,
+      "generatedLines": 11,
+      "authoredFiles": 4,
+      "authoredLines": 220
+    },
+    "filesystem": {
+      "generatedFiles": 0,
+      "generatedLines": 0,
+      "authoredFiles": 24,
+      "authoredLines": 5567
+    },
+    "harness": {
+      "generatedFiles": 4,
+      "generatedLines": 53,
+      "authoredFiles": 22,
+      "authoredLines": 7819
+    },
+    "inference": {
+      "generatedFiles": 0,
+      "generatedLines": 0,
+      "authoredFiles": 5,
+      "authoredLines": 822
+    },
+    "machines": {
+      "generatedFiles": 1,
+      "generatedLines": 9,
+      "authoredFiles": 6,
+      "authoredLines": 475
+    },
+    "objects": {
+      "generatedFiles": 0,
+      "generatedLines": 0,
+      "authoredFiles": 6,
+      "authoredLines": 541
+    },
+    "pi": {
+      "generatedFiles": 0,
+      "generatedLines": 0,
+      "authoredFiles": 1,
+      "authoredLines": 152
+    },
+    "sdk": {
+      "generatedFiles": 0,
+      "generatedLines": 0,
+      "authoredFiles": 1,
+      "authoredLines": 9
+    },
+    "stream": {
+      "generatedFiles": 2,
+      "generatedLines": 51,
+      "authoredFiles": 10,
+      "authoredLines": 1710
+    },
+    "workers": {
+      "generatedFiles": 2,
+      "generatedLines": 21,
+      "authoredFiles": 4,
+      "authoredLines": 217
+    }
+  },
+  "files": [
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/grpc.ts",
+      "bytes": 1990,
+      "lines": 26,
+      "generatedBanner": false,
+      "exports": [
+        "ActorsGrpcOptions",
+        "createActorsGrpcClient"
+      ]
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/http.ts",
+      "bytes": 7497,
+      "lines": 137,
+      "generatedBanner": false,
+      "exports": [
+        "HttpActorsOptions",
+        "ActorsTransportError",
+        "HttpActorsClient",
+        "MAX_BEARER_TOKEN_BYTES"
+      ]
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/index.ts",
+      "bytes": 257,
+      "lines": 4,
+      "generatedBanner": false,
+      "exports": []
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/routes.ts",
+      "bytes": 463,
+      "lines": 11,
+      "generatedBanner": true,
+      "exports": [
+        "HTTP_ROUTES"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/binding-results.ts",
+      "bytes": 6424,
+      "lines": 140,
+      "generatedBanner": false,
+      "exports": [
+        "projectFileKind",
+        "projectRawFileKind",
+        "copyFileRecord",
+        "copyBatchLookupEntries",
+        "copyStatResult",
+        "copyNamedAttributeResult",
+        "copyNamedAttributePage",
+        "copyDirectoryPage",
+        "copyDirectoryRecordPage",
+        "copyBindingChange",
+        "copyGenerationDiff"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/binding-values.ts",
+      "bytes": 633,
+      "lines": 16,
+      "generatedBanner": false,
+      "exports": [
+        "copyBytes",
+        "copyOptionalBytes",
+        "requireIdentity",
+        "requireGenerationIdentity"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/browser.ts",
+      "bytes": 2296,
+      "lines": 49,
+      "generatedBanner": false,
+      "exports": [
+        "openBrowserFs",
+        "openBrowserCompatibilityWire",
+        "openBrowserWorkspaceContextRegistry",
+        "openBrowserOperationWindowCoordinator"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/change-set-adapter.ts",
+      "bytes": 1249,
+      "lines": 27,
+      "generatedBanner": false,
+      "exports": [
+        "createChangeSetAdapter"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/compat.ts",
+      "bytes": 25256,
+      "lines": 614,
+      "generatedBanner": false,
+      "exports": [
+        "CompatibilityJson",
+        "CompatibilityWireKind",
+        "CompatibilityWireEnvelope",
+        "CompatibilityWire",
+        "RawCompatibilityWire",
+        "decodeFixedBytes",
+        "adaptCompatibilityWire",
+        "WorkspaceLineageRecord",
+        "WorkspaceGraph",
+        "WorkspaceContextState",
+        "WorkspaceContextRoot",
+        "WorkspaceContext",
+        "WorkspaceContextRegistry",
+        "OperationWindowLease",
+        "OperationWindowPhase",
+        "OperationWindowClose",
+        "WorkspaceOperationWindowClose",
+        "OperationWindowCoordinator",
+        "FilesystemConflictKind",
+        "ConflictValue",
+        "FilesystemConflict",
+        "MergeResolution",
+        "MergeDriver",
+        "stringifyGitCompatCommand",
+        "gitCompatSafeTimestamp",
+        "parseGitCompatOutputJson",
+        "projectGitCompatOutputJson",
+        "projectGitPendingTransitionJson",
+        "stringifyGitFilesystemResultPublic",
+        "parseGitPendingTransitionJson",
+        "stringifyGitFilesystemResult",
+        "finishGitCompatOutput"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/contracts.ts",
+      "bytes": 55876,
+      "lines": 1221,
+      "generatedBanner": false,
+      "exports": [
+        "FsProfile",
+        "FilePayloadKind",
+        "EngineCapabilities",
+        "FsEngine",
+        "FsVolumeEngine",
+        "HostedFsOptions",
+        "HostedFsCapabilities",
+        "S3Bucket",
+        "S3Region",
+        "S3AccessKeyId",
+        "S3SecretAccessKey",
+        "S3SessionToken",
+        "S3Access",
+        "HostedFsWorkspace",
+        "HostedFsEngine",
+        "WorkspaceCommitStatus",
+        "WorkspaceCommit",
+        "WorkspaceFileKind",
+        "WorkspaceNameEncoding",
+        "WorkspaceName",
+        "WorkspaceMetadata",
+        "WorkspaceStat",
+        "WorkspaceDirectoryEntry",
+        "WorkspaceDirectoryPage",
+        "WorkspaceExtentKind",
+        "WorkspaceExtentSpan",
+        "WorkspaceExtentPlan",
+        "FsWorkspace",
+        "WorkspaceDeleteStatus",
+        "FsGeneration",
+        "FsChangeSet",
+        "JoinHistory",
+        "WorkspaceForkOptions",
+        "JoinOptions",
+        "JoinStatus",
+        "JoinResult",
+        "WorkspaceRebaseOptions",
+        "WorkspaceRebaseStatus",
+        "ResidencyAdmissionStatus",
+        "PromotionAdmissionStatus",
+        "WorkspaceRebaseResult",
+        "FsJoinPlan",
+        "ResolvableFsJoinPlan",
+        "TransactionConflictRegionKind",
+        "TransactionDependencyUse",
+        "TransactionConflict",
+        "TransactionRebaseResult",
+        "FsTransaction",
+        "StorageTier",
+        "ResidencyReason",
+        "SpeculationOptions",
+        "ResidencyObservation",
+        "ObjectResidency",
+        "PromotionDestination",
+        "PromotionRequest",
+        "SpeculationPreemption",
+        "SpeculationMetrics",
+        "Speculation",
+        "VolumeOptions",
+        "VolumeLimits",
+        "DEFAULT_VOLUME_LIMITS",
+        "portableVolumeOptions",
+        "CheckoutOptions",
+        "WorkCounters",
+        "LookupResult",
+        "FileReadResult",
+        "ResolvedFile",
+        "ResolvedFilesResult",
+        "ExtentSeekTarget",
+        "ExtentSeekResult",
+        "FileExtentSpan",
+        "FileExtentPlan",
+        "DirectoryEntry",
+        "DirectoryPage",
+        "MutationResult",
+        "CheckpointResult",
+        "MaterializeOptions",
+        "MaterializationResult",
+        "CaptureResult",
+        "WatchCaptureResult",
+        "WatchReconcileResult",
+        "NativePathComponent",
+        "NativeNamespacePath",
+        "NativeWatchChange",
+        "NativeWatchBatch",
+        "NativeWatcher",
+        "GenerationExportManifest",
+        "GenerationTransferBatch",
+        "GenerationTransferCursor",
+        "CommitResult",
+        "RebaseResult",
+        "FileRecordSnapshot",
+        "FileRecordReadResult",
+        "BatchLookupEntry",
+        "BatchLookupResult",
+        "DirectoryRecordEntry",
+        "DirectoryRecordPage",
+        "FileRecordChange",
+        "TreeEntrySnapshot",
+        "DirectoryBindingChange",
+        "GenerationDiff",
+        "MergeConflict",
+        "MergeConflictSelection",
+        "MergePreparationResult",
+        "LiveMutationResult",
+        "LiveTransactionResult",
+        "NamedAttributeClass",
+        "MetadataResult",
+        "StatResult",
+        "NamedAttributeResult",
+        "NamedAttributePage",
+        "NamedAttributeName",
+        "NamedAttributeWriteMode",
+        "EmptySpecialKind",
+        "DeviceKind",
+        "TransactionOperation",
+        "TransactionResult",
+        "FsCheckout",
+        "NativeMount",
+        "FsVolume",
+        "BrowserFsOptions",
+        "MemoryFsOptions",
+        "NativeFsOptions",
+        "ObjectCacheOptions",
+        "DEFAULT_OBJECT_CACHE_OPTIONS",
+        "ObjectCacheStats",
+        "NativeFsEngine",
+        "NativeWorkspaceMountPublication",
+        "NativeWorkspaceMountOptions",
+        "NativeWorkspaceMount",
+        "NativeFsWorkspace",
+        "NativeSourceOptions",
+        "SourceStatus",
+        "SourceInvalidationReason",
+        "SourceResult",
+        "WasmBindings",
+        "RawWorkspaceContextRegistry",
+        "WasmRawWorkspaceContextRegistry",
+        "WasmRawMergeConflict",
+        "WasmRawJoinResult",
+        "WasmRawObjectCacheStats",
+        "WasmImportManifest",
+        "WasmRawExportManifest",
+        "WasmRawFileRecordSnapshot",
+        "WasmRawGenerationDiff",
+        "WasmRawCommitResult",
+        "WasmRawLiveMutationResult",
+        "WasmRawLiveTransactionResult",
+        "WasmRawFileExtentPlan",
+        "WasmRawExtentSeekResult",
+        "WasmRawGeneration",
+        "RawGenerationChangeSet",
+        "WasmRawChangeSet",
+        "WasmRawJoinPlan",
+        "WasmRawWorkspace",
+        "RawWorkspaceTransaction",
+        "WasmRawTransaction",
+        "WasmRawSpeculation",
+        "WasmRawVolume",
+        "WasmRawCheckout",
+        "WasmRawFs",
+        "WasmRawResolvedFile",
+        "WasmRawResolvedFiles",
+        "NativeBindings",
+        "NativeRawWorkspaceContextRegistry",
+        "NativeRawWorkspaceLineageRecord",
+        "NativeRawWorkspaceGraph",
+        "NativeRawOperationWindowLease",
+        "NativeRawOperationWindowPhase",
+        "NativeRawOperationWindowClose",
+        "NativeRawWorkspaceOperationWindowClose",
+        "NativeRawOperationWindowCoordinator",
+        "NativeRawGitCompatRepository",
+        "NativeRawObjectCacheOptions",
+        "NativeRawLookup",
+        "NativeRawMutation",
+        "NativeRawWatchChange",
+        "NativeRawWatchBatch",
+        "NativeRawWatcher",
+        "NativeRawCheckout",
+        "NativeRawResolvedFile",
+        "NativeRawResolvedFiles",
+        "NativeRawTransactionOperation",
+        "NativeRawCheckpointResult",
+        "NativeRawVolume",
+        "NativeRawGenerationDiff",
+        "NativeRawMergeConflict",
+        "NativeRawMergePreparation",
+        "NativeRawFs",
+        "NativeRawWorkspaceCommit",
+        "NativeRawWorkspace",
+        "NativeRawChangeSet",
+        "NativeRawJoinPlan",
+        "NativeRawJoinResult",
+        "NativeRawSourceResult",
+        "NativeRawGeneration",
+        "NativeRawWorkspaceMount",
+        "NativeRawWorkspaceTransaction",
+        "NativeRawSpeculation",
+        "NativeRawExportManifest"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/endpoint.ts",
+      "bytes": 826,
+      "lines": 14,
+      "generatedBanner": false,
+      "exports": [
+        "secureServiceEndpoint"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/generation-adapter.ts",
+      "bytes": 2116,
+      "lines": 43,
+      "generatedBanner": false,
+      "exports": [
+        "createGenerationAdapter"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/hosted.ts",
+      "bytes": 48845,
+      "lines": 1094,
+      "generatedBanner": false,
+      "exports": [
+        "HostedFsErrorCode",
+        "MAX_BEARER_TOKEN_BYTES",
+        "HostedFsError",
+        "openHostedFs"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/memory-node.ts",
+      "bytes": 908,
+      "lines": 14,
+      "generatedBanner": false,
+      "exports": [
+        "openMemoryFs",
+        "openMemoryFs",
+        "openMemoryFs"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/memory-options.ts",
+      "bytes": 1332,
+      "lines": 24,
+      "generatedBanner": false,
+      "exports": [
+        "DEFAULT_MEMORY_FS_OPTIONS",
+        "resolveMemoryFsOptions",
+        "openMemoryFsWith"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/memory.ts",
+      "bytes": 1261,
+      "lines": 23,
+      "generatedBanner": false,
+      "exports": [
+        "openMemoryFs",
+        "openMemoryFs",
+        "openMemoryFs"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/mounted.ts",
+      "bytes": 11093,
+      "lines": 153,
+      "generatedBanner": false,
+      "exports": [
+        "MountedCheckout",
+        "MountedSnapshot",
+        "CrossVolumeError",
+        "MountedView"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/native.ts",
+      "bytes": 46964,
+      "lines": 965,
+      "generatedBanner": false,
+      "exports": [
+        "openNativeFs",
+        "openNativeGitCompatRepository",
+        "openNativeCompatibilityWire",
+        "openNativeWorkspaceContextRegistry",
+        "openNativeWorkspaceGraph",
+        "openNativeOperationWindowCoordinator"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/operation-windows.ts",
+      "bytes": 5970,
+      "lines": 128,
+      "generatedBanner": false,
+      "exports": [
+        "adaptOperationWindowCoordinator"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/public-types.ts",
+      "bytes": 2290,
+      "lines": 111,
+      "generatedBanner": false,
+      "exports": []
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/transaction-adapter.ts",
+      "bytes": 2463,
+      "lines": 50,
+      "generatedBanner": false,
+      "exports": [
+        "adaptTransaction"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/wasm-adapter.ts",
+      "bytes": 22468,
+      "lines": 300,
+      "generatedBanner": false,
+      "exports": [
+        "adaptWasmFs",
+        "adaptWasmOperationWindows"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/wasm-node.ts",
+      "bytes": 1082,
+      "lines": 25,
+      "generatedBanner": false,
+      "exports": [
+        "nodeWasmBindings"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-context.ts",
+      "bytes": 4357,
+      "lines": 94,
+      "generatedBanner": false,
+      "exports": [
+        "adaptWorkspaceContextRegistry"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-copies.ts",
+      "bytes": 9941,
+      "lines": 206,
+      "generatedBanner": false,
+      "exports": [
+        "workCounterKeys",
+        "copyWork",
+        "bigintRecord",
+        "copyWorkspaceStat",
+        "copyWorkspaceDirectoryPage",
+        "copyWorkspaceExtentPlan",
+        "copyFileExtentPlan",
+        "copyRebaseResult",
+        "copyTransactionResult",
+        "copyCheckoutCommit",
+        "copyLiveMutation",
+        "copyLiveTransaction",
+        "copyTransactionRebase"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-operations.ts",
+      "bytes": 4335,
+      "lines": 97,
+      "generatedBanner": false,
+      "exports": [
+        "workspaceOperations",
+        "adaptJoinPlanBase",
+        "adaptResolvableJoinPlan"
+      ]
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-results.ts",
+      "bytes": 5637,
+      "lines": 106,
+      "generatedBanner": false,
+      "exports": [
+        "decodeMergeConflict",
+        "copyMergeConflict",
+        "parseMergePreparation",
+        "parseJoinResult",
+        "parseWorkspaceRebaseResult",
+        "parseWorkspaceDelete",
+        "parseWorkspaceCommit"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/cache.ts",
+      "bytes": 1907,
+      "lines": 56,
+      "generatedBanner": false,
+      "exports": [
+        "Hydrated",
+        "HydrationCache"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/child-page-contract.ts",
+      "bytes": 138,
+      "lines": 2,
+      "generatedBanner": true,
+      "exports": [
+        "HARNESS_CHILD_PAGE_DEFAULT"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/client.ts",
+      "bytes": 29325,
+      "lines": 643,
+      "generatedBanner": false,
+      "exports": [
+        "ReplayCursor",
+        "ClientEvent",
+        "Delivery",
+        "OfflinePayload",
+        "ClientCommand",
+        "Connection",
+        "Transport",
+        "OutboxStore",
+        "CursorStore",
+        "AtomicClientStateStore",
+        "MemoryOutbox",
+        "MemoryCursorStore",
+        "IndexedDbClientStoreOptions",
+        "IndexedDbClientStore",
+        "ClientListener",
+        "ProjectionStore",
+        "HarnessClient",
+        "AggregateHandle",
+        "AgentHandle",
+        "ConversationHandle",
+        "SessionHandle",
+        "TurnHandle",
+        "TaskHandle",
+        "ReplayError",
+        "TerminalAdmissionError"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/conversation-page-contract.ts",
+      "bytes": 224,
+      "lines": 3,
+      "generatedBanner": true,
+      "exports": [
+        "HARNESS_CONVERSATION_PAGE_DEFAULT",
+        "HARNESS_CONVERSATION_PAGE_MAXIMUM"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/conversation.ts",
+      "bytes": 5461,
+      "lines": 108,
+      "generatedBanner": false,
+      "exports": [
+        "VolumeOwner",
+        "ProviderRef",
+        "VolumeRef",
+        "FileDescriptor",
+        "FileRef",
+        "ContentRef",
+        "TaskOutcomeRecord",
+        "Limits",
+        "DEFAULT_LIMITS",
+        "MAX_LIMITS",
+        "MAX_EXACT_JS_INTEGER",
+        "MAX_LABEL_BYTES",
+        "MAX_PATH_BYTES",
+        "Attachment",
+        "ReferencedAttachments",
+        "ConversationMessageId",
+        "conversationMessageId",
+        "ConversationMessage",
+        "ConversationState",
+        "ConversationPage",
+        "descriptorFor",
+        "verifyFileBytes",
+        "decodeAttachmentManifest"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/enums.ts",
+      "bytes": 3665,
+      "lines": 66,
+      "generatedBanner": false,
+      "exports": [
+        "VolumeClass",
+        "ResourceKind",
+        "GroupPolicy",
+        "AuthorityLevel",
+        "MessageKind",
+        "VolumeOperation",
+        "InteractionKind",
+        "ExtensionForkPolicy",
+        "AggregateKind",
+        "aggregateKindToWire",
+        "decodeAggregateKind",
+        "groupPolicies"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/extension.ts",
+      "bytes": 9255,
+      "lines": 188,
+      "generatedBanner": false,
+      "exports": [
+        "ExtensionDependency",
+        "ExtensionIdentity",
+        "extensionIdentity",
+        "ExtensionLinker",
+        "NativeExtension",
+        "ExtensionLease",
+        "ExtensionLeases",
+        "ExtensionRegistry",
+        "ExtensionRuntime",
+        "NativeExtensionBundle",
+        "ExtensionLifecycleHost",
+        "ExtensionConfiguration",
+        "ExtensionAdmission",
+        "ExtensionStateReference",
+        "ConfigureExtensionAction",
+        "SelectExtensionsAction",
+        "ExtensionAction",
+        "ExtensionCommand",
+        "ExtensionRecord",
+        "ExtensionStateMigration",
+        "MigrateExtensionStateAction",
+        "ExtensionMigrationRequest",
+        "extensionRecord",
+        "extensionStateMigration",
+        "extensionDependency",
+        "extensionConfiguration",
+        "extensionAdmission"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/fork.ts",
+      "bytes": 9721,
+      "lines": 189,
+      "generatedBanner": false,
+      "exports": [
+        "ResourceRef",
+        "resourceRef",
+        "ResourceRevision",
+        "ForkSelection",
+        "AttestedBoundary",
+        "SharedGrant",
+        "ReferenceGrant",
+        "ForkRequest",
+        "ForkPreparation",
+        "CapturedResource",
+        "Capture",
+        "ForkCaptureProvider",
+        "ForkPreparer",
+        "ForkPublisher",
+        "ForkOmission",
+        "ForkReport",
+        "ForkSeed",
+        "forkSeed",
+        "validateForkRequest",
+        "validateForkSeed",
+        "validateForkReport",
+        "forkReadableReferences"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/index.ts",
+      "bytes": 22225,
+      "lines": 490,
+      "generatedBanner": false,
+      "exports": [
+        "AgentId",
+        "ConversationId",
+        "SessionId",
+        "TurnId",
+        "TaskId",
+        "OperationId",
+        "EffectId",
+        "IdentityKindMap",
+        "IdentityKind",
+        "parseIdentity",
+        "Authority",
+        "Scope",
+        "RecordedScope",
+        "PolicyLayer",
+        "Command",
+        "EventReference",
+        "Event",
+        "Snapshot",
+        "ApplyResult",
+        "decodeEventPayload",
+        "HarnessOptions",
+        "ProtocolIdentityValue",
+        "ExtensionSchema",
+        "Harness"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/interaction.ts",
+      "bytes": 4121,
+      "lines": 78,
+      "generatedBanner": false,
+      "exports": [
+        "InteractionId",
+        "ApprovalBinding",
+        "InteractionTicket",
+        "InteractionOutcome",
+        "InteractionResolution",
+        "InteractionResponse",
+        "ResolutionReceipt",
+        "InteractionResolver",
+        "interactionId",
+        "approvalBinding",
+        "responderGrant",
+        "viewerGrant",
+        "interactionTicket",
+        "interactionResolution",
+        "resolutionReceipt"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/limits-contract.ts",
+      "bytes": 2183,
+      "lines": 45,
+      "generatedBanner": true,
+      "exports": [
+        "SessionLimitsWire",
+        "HARNESS_LIMITS_DEFAULT",
+        "HARNESS_LIMITS_MAXIMUM",
+        "HARNESS_MAX_EXACT_JS_INTEGER",
+        "HARNESS_MAX_PATH_BYTES",
+        "HARNESS_MAX_LABEL_BYTES",
+        "HARNESS_MAX_ATTACHMENT_COUNT",
+        "MAX_FORK_AGENTS",
+        "MAX_FORK_RESOURCES",
+        "MAX_FORK_REFERENCES",
+        "MAX_FORK_ATTACHMENT_MANIFEST_BYTES",
+        "MAX_FORK_INHERITED_BYTES",
+        "MAX_FORK_REFERENCE_BYTES",
+        "MAX_FORK_INHERITED_MESSAGES",
+        "HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES",
+        "HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES",
+        "HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS",
+        "HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES",
+        "HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES",
+        "HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS",
+        "HARNESS_PROJECTION_MAX_JSON_BYTES"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/memory-content-store.ts",
+      "bytes": 2392,
+      "lines": 74,
+      "generatedBanner": false,
+      "exports": [
+        "MemoryContentStore"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/memory-conversation.ts",
+      "bytes": 33192,
+      "lines": 567,
+      "generatedBanner": false,
+      "exports": [
+        "MemoryConversationOptions",
+        "MemoryConversation"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/model.ts",
+      "bytes": 7879,
+      "lines": 125,
+      "generatedBanner": false,
+      "exports": [
+        "Model",
+        "ModelRole",
+        "ModelContentPart",
+        "UserContentPart",
+        "ModelContent",
+        "ModelMessage",
+        "ToolJsonValue",
+        "ToolJsonSchema",
+        "ModelJsonValue",
+        "ModelJsonSchema",
+        "ToolDefinition",
+        "ModelToolDefinition",
+        "ModelRequest",
+        "ModelEvent",
+        "ModelAttempt",
+        "ModelProvider",
+        "ToolInvocation",
+        "ToolResult",
+        "ToolExecutor",
+        "ToolProjection",
+        "Tool",
+        "ToolRef",
+        "LiveTool",
+        "validateComponentLabel",
+        "validateToolName",
+        "defineTool",
+        "ContextStage",
+        "ContextBuilder",
+        "AgentInput",
+        "AgentLoopInput",
+        "AgentOutput",
+        "AgentLoop"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/native-contracts.ts",
+      "bytes": 28490,
+      "lines": 531,
+      "generatedBanner": false,
+      "exports": [
+        "TaskAdmissionProjectionInput",
+        "BatchAdmissionProjectionInput",
+        "NativeJsonValue",
+        "TaskAdmissionWire",
+        "DurableBatchWire",
+        "TaskAdmissionIdentities",
+        "ExecutionPlacementWire",
+        "TaskRunLimitsWire",
+        "NativeLimitsWire",
+        "ModelEventAdmissionState",
+        "ModelEventAdmission",
+        "NativeFileRef",
+        "NativeModelContentPart",
+        "NativeModelContent",
+        "NativeSelectedModelContext",
+        "MachineIdentityWire",
+        "WorkflowAdmissionWire",
+        "NativeContracts"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/objects.ts",
+      "bytes": 11935,
+      "lines": 221,
+      "generatedBanner": false,
+      "exports": [
+        "ObjectContentOptions",
+        "ObjectVolumeRef",
+        "ObjectContentStore"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/openai.ts",
+      "bytes": 12203,
+      "lines": 245,
+      "generatedBanner": false,
+      "exports": [
+        "OpenAiFilePolicy",
+        "OpenAiContentPart",
+        "OpenAiCompatibleOptions",
+        "OpenAiCompatibleProvider"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/pagination.ts",
+      "bytes": 3789,
+      "lines": 102,
+      "generatedBanner": false,
+      "exports": [
+        "PageDirection",
+        "Page",
+        "PageLoader",
+        "PageWindow"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/private-directory-page-contract.ts",
+      "bytes": 238,
+      "lines": 3,
+      "generatedBanner": true,
+      "exports": [
+        "HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT",
+        "HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/project.ts",
+      "bytes": 10735,
+      "lines": 189,
+      "generatedBanner": false,
+      "exports": [
+        "ProjectMergeNotice",
+        "ProviderOperationId",
+        "providerOperationId",
+        "ProviderJoinProof",
+        "ProjectMergeReceipt",
+        "ProjectConflict",
+        "ProjectConflictSide",
+        "ProjectConflictSelection",
+        "ProjectJoinOutcome",
+        "ProjectJoinPlan",
+        "ProjectWorkspaceProvider",
+        "PublishProjectMergeAction",
+        "ProjectJoinPreparation",
+        "ParentProjectBinding",
+        "ParentMergePlan",
+        "ParentProjectController"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/projection.ts",
+      "bytes": 15298,
+      "lines": 274,
+      "generatedBanner": false,
+      "exports": [
+        "ModelContextSelection",
+        "ProjectableConversation",
+        "SelectedModelContext",
+        "ConversationProjectionOptions",
+        "FileProjectionOptions",
+        "verifiedContentResolver",
+        "ProjectedFile",
+        "projectModelFile",
+        "selectModelContext"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/runtime.ts",
+      "bytes": 169161,
+      "lines": 2723,
+      "generatedBanner": false,
+      "exports": [
+        "RuntimeTaskId",
+        "BatchId",
+        "GroupId",
+        "MessageId",
+        "InputKey",
+        "Outcome",
+        "TaskFailure",
+        "IndeterminateModelTurnError",
+        "AdmissionUncertainError",
+        "TerminalModelTurnError",
+        "CancelReceipt",
+        "Admission",
+        "Rejection",
+        "TaskEvent",
+        "DurableTaskDriver",
+        "TaskDefinitionOptions",
+        "JsonSchemaValue",
+        "RuntimeSchema",
+        "defineRuntimeSchema",
+        "ResumableTaskOptions",
+        "LiveTask",
+        "ResumableTransition",
+        "ResumableTask",
+        "TaskImplementation",
+        "TaskDefinition",
+        "TaskRef",
+        "RunReceipt",
+        "RunOutput",
+        "SelectedAgentInput",
+        "AgentHarnessHost",
+        "EffectStatus",
+        "TaskMessage",
+        "HostTaskAttachment",
+        "TaskAdmissionRecord",
+        "HostBatchReplay",
+        "BatchAdmissionRequest",
+        "HarnessRuntimeSpawner",
+        "TaskChildrenPage",
+        "HarnessRuntimeState",
+        "HarnessRuntimeHost",
+        "HarnessExecutionProvider",
+        "InteractionHandler",
+        "PolicyDigest",
+        "ComponentIdentity",
+        "PolicyIdentity",
+        "policyIdentity",
+        "Policy",
+        "Interaction",
+        "TypedInteractionInput",
+        "Answer",
+        "ToolApprovalFailureKind",
+        "ToolApprovalError",
+        "Invocation",
+        "EffectiveScope",
+        "PolicyDecision",
+        "ExecutionScope",
+        "GroupPolicies",
+        "Batch",
+        "ExecutionQualificationError",
+        "GroupEntry",
+        "BatchCancellationStatus",
+        "BatchCancellationReport",
+        "GroupOutcome",
+        "Keyed",
+        "Task",
+        "TaskGroup",
+        "GroupError",
+        "TaskContext",
+        "ToolContext",
+        "ContentBindings",
+        "PrivateDirectoryPage",
+        "PrivateDirectoryBindings",
+        "ContentReader",
+        "ContentMountResolver",
+        "composeContentBindings",
+        "HarnessBindings",
+        "InheritedModelPrefix",
+        "HarnessBuilder",
+        "AgentHarness",
+        "TaskRunError"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/rust-policy.ts",
+      "bytes": 953,
+      "lines": 30,
+      "generatedBanner": false,
+      "exports": [
+        "validateAuthorityPathSegment",
+        "isSafeAuthorityId",
+        "validateComponentLabel"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/wasm-runtime.ts",
+      "bytes": 4115,
+      "lines": 75,
+      "generatedBanner": false,
+      "exports": [
+        "REQUIRED_HARNESS_WASM_EXPORTS",
+        "assertHarnessWasmExports",
+        "ensureHarnessWasm"
+      ]
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/wire-transport.ts",
+      "bytes": 34813,
+      "lines": 792,
+      "generatedBanner": false,
+      "exports": [
+        "HttpFetcher",
+        "WireConnection",
+        "WireTransport",
+        "observeWireTransport",
+        "WireOperationHandle",
+        "EmbeddedWireApi",
+        "EmbeddedWireTransport",
+        "JsonlChannel",
+        "JsonlWireTransport",
+        "WebSocketFactory",
+        "WebSocketWireTransport",
+        "HttpSseWireTransport",
+        "GrpcWireTransport",
+        "WireError"
+      ]
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/contract.ts",
+      "bytes": 6933,
+      "lines": 148,
+      "generatedBanner": false,
+      "exports": [
+        "InferenceProtocolErrorCode",
+        "InferenceProtocolError",
+        "retryableOnce",
+        "validateContract",
+        "validateRuntimeShape",
+        "runTerminalMetadata",
+        "validateRunTerminalMetadata",
+        "watchRunStart",
+        "watchRunAdvance",
+        "watchRunFinish"
+      ]
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/handles.ts",
+      "bytes": 13886,
+      "lines": 133,
+      "generatedBanner": false,
+      "exports": [
+        "ContextRevision",
+        "RunId",
+        "OperationId",
+        "WarmCommitment",
+        "ItemId",
+        "ExecutionProfile",
+        "contextRevision",
+        "runId",
+        "operationId",
+        "warmCommitment",
+        "itemId",
+        "executionProfile",
+        "InferenceRequestIdentity",
+        "MutationOptions",
+        "GenerateOptions",
+        "RetentionPolicy",
+        "InferenceOperations",
+        "Inference",
+        "Context",
+        "Run",
+        "Warm",
+        "RunOutcome"
+      ]
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/index.ts",
+      "bytes": 21901,
+      "lines": 439,
+      "generatedBanner": false,
+      "exports": [
+        "InferenceHttpRoute",
+        "validateInferenceHttpPath",
+        "deriveInferenceHttpRoutes",
+        "InferenceTransport",
+        "InferenceClient",
+        "AuthorizationHeaders",
+        "MAX_BEARER_TOKEN_BYTES",
+        "HttpInferenceTransport",
+        "InferenceTransportError"
+      ]
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/widths.ts",
+      "bytes": 3112,
+      "lines": 49,
+      "generatedBanner": false,
+      "exports": [
+        "validateInferenceFixedWidthMetadata",
+        "INFERENCE_FIXED_WIDTHS"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/client.ts",
+      "bytes": 7646,
+      "lines": 86,
+      "generatedBanner": false,
+      "exports": [
+        "MachinesEnvironment",
+        "MachineListOptions",
+        "Machines",
+        "Machine",
+        "MachineFork",
+        "Checkpoint",
+        "Operation",
+        "MachineOutcomeError"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/http.ts",
+      "bytes": 9409,
+      "lines": 77,
+      "generatedBanner": false,
+      "exports": [
+        "HttpMachinesOptions",
+        "HttpMachinesProvider",
+        "MachinesTransportError"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/index.ts",
+      "bytes": 8971,
+      "lines": 157,
+      "generatedBanner": false,
+      "exports": [
+        "IdempotencyKey",
+        "MachineId",
+        "CheckpointId",
+        "OperationId",
+        "idempotencyKey",
+        "machineId",
+        "checkpointId",
+        "operationId",
+        "OperationPhase",
+        "OperationObservation",
+        "Image",
+        "Capability",
+        "CompatibilityPolicy",
+        "SuspensionPolicy",
+        "ExpirationPolicy",
+        "Budgets",
+        "CreateMachine",
+        "MachineContract",
+        "ForkFidelity",
+        "ImageQualification",
+        "MachineState",
+        "Endpoint",
+        "MachineObservation",
+        "CheckpointObservation",
+        "Pressure",
+        "EventFact",
+        "MachineEvent",
+        "UsageReceipt",
+        "MutationOutcome",
+        "MachinePage",
+        "MachineEventPage",
+        "MachinesProvider",
+        "managedOci"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/managed-oci-contract.ts",
+      "bytes": 299,
+      "lines": 9,
+      "generatedBanner": true,
+      "exports": [
+        "MANAGED_OCI_CONTRACT"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/simulator.ts",
+      "bytes": 7045,
+      "lines": 70,
+      "generatedBanner": false,
+      "exports": [
+        "asPublic",
+        "u64Number",
+        "usageOut",
+        "SimulatedMachines"
+      ]
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/wasm-runtime.ts",
+      "bytes": 1610,
+      "lines": 32,
+      "generatedBanner": false,
+      "exports": [
+        "normalizeIdentity"
+      ]
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/index.ts",
+      "bytes": 198,
+      "lines": 4,
+      "generatedBanner": false,
+      "exports": []
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/v2-grpc.ts",
+      "bytes": 14235,
+      "lines": 202,
+      "generatedBanner": false,
+      "exports": [
+        "ObjectsV2GrpcOptions",
+        "createObjectsV2GrpcClients",
+        "GrpcObjectsV2"
+      ]
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/v2-http.ts",
+      "bytes": 10813,
+      "lines": 165,
+      "generatedBanner": false,
+      "exports": [
+        "ObjectsV2HttpOptions",
+        "HttpObjectsV2"
+      ]
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/v2.ts",
+      "bytes": 7748,
+      "lines": 99,
+      "generatedBanner": false,
+      "exports": [
+        "ObjectValue",
+        "ObjectsV2Error",
+        "objectsV2Error",
+        "MAX_BEARER_TOKEN_BYTES",
+        "bodyDecodedLimit",
+        "MemoryObjectsV2"
+      ]
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/wasm-runtime.ts",
+      "bytes": 728,
+      "lines": 18,
+      "generatedBanner": false,
+      "exports": [
+        "ensureObjectsWasm"
+      ]
+    },
+    {
+      "family": "pi",
+      "path": "typescript/packages/pi/src/index.ts",
+      "bytes": 8676,
+      "lines": 152,
+      "generatedBanner": false,
+      "exports": [
+        "PiEvent",
+        "PiBridge",
+        "piProvider",
+        "piProvider",
+        "piProvider",
+        "PiProjectedPart",
+        "PiProjectedMessage",
+        "PiProjectedRequest",
+        "projectPiRequest",
+        "PiDefaultBridge",
+        "piDefaultProvider",
+        "projectPiEvent",
+        "projectPiEvent",
+        "projectPiEvent",
+        "PiProviderError"
+      ]
+    },
+    {
+      "family": "sdk",
+      "path": "typescript/packages/sdk/src/index.ts",
+      "bytes": 465,
+      "lines": 9,
+      "generatedBanner": false,
+      "exports": []
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/client.ts",
+      "bytes": 16149,
+      "lines": 282,
+      "generatedBanner": false,
+      "exports": [
+        "Codec",
+        "JsonPrimitive",
+        "JsonValue",
+        "bytesCodec",
+        "jsonCodec",
+        "jsonCodec",
+        "jsonCodec",
+        "StreamClient",
+        "Stream",
+        "pathValue",
+        "sequence",
+        "positiveInteger",
+        "validateRecords",
+        "validateAppend"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/contract.ts",
+      "bytes": 16739,
+      "lines": 281,
+      "generatedBanner": false,
+      "exports": [
+        "ensureStreamWasm",
+        "readResponseRecords",
+        "validatePathValue",
+        "validateSequenceValue",
+        "HttpRequestRoute",
+        "wireCreateTokenRequest",
+        "wireRequest",
+        "validateWireRequest",
+        "wireAppendRequest",
+        "validateWireAppend",
+        "wireInspectIdempotencyRequest",
+        "wireReadCommitRequest",
+        "encodeHttpRequest",
+        "normalizeWireCommitBytes",
+        "normalizeWireCommit"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/default.ts",
+      "bytes": 6799,
+      "lines": 140,
+      "generatedBanner": false,
+      "exports": [
+        "DefaultStreamProvider"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/grpc.ts",
+      "bytes": 10774,
+      "lines": 154,
+      "generatedBanner": false,
+      "exports": [
+        "StreamGrpcOptions",
+        "createStreamGrpcClient",
+        "GrpcStreamProvider"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/http-contract.ts",
+      "bytes": 1862,
+      "lines": 48,
+      "generatedBanner": true,
+      "exports": [
+        "HTTP_RESPONSE_CONTRACT",
+        "HttpRoute",
+        "HttpResponseFor",
+        "decodeHttpResponseFor",
+        "decodeHttpResponseFor"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/http.ts",
+      "bytes": 14496,
+      "lines": 193,
+      "generatedBanner": false,
+      "exports": [
+        "HttpStreamProviderOptions",
+        "HttpStreamProvider",
+        "MAX_BEARER_TOKEN_BYTES"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/index.ts",
+      "bytes": 261,
+      "lines": 6,
+      "generatedBanner": false,
+      "exports": []
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/memory.ts",
+      "bytes": 9869,
+      "lines": 178,
+      "generatedBanner": false,
+      "exports": [
+        "StreamErrorCode",
+        "BrowserStreamProvider",
+        "MemoryStreamProvider"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/native.ts",
+      "bytes": 16892,
+      "lines": 283,
+      "generatedBanner": false,
+      "exports": [
+        "createNativeStreamCancellation",
+        "nativeStreamAvailable",
+        "NativeStreamProvider"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/token-operations.ts",
+      "bytes": 248,
+      "lines": 3,
+      "generatedBanner": true,
+      "exports": [
+        "TOKEN_OPERATIONS",
+        "TokenOperation"
+      ]
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/types.ts",
+      "bytes": 10766,
+      "lines": 140,
+      "generatedBanner": false,
+      "exports": [
+        "Sequence",
+        "CommitId",
+        "IdempotencyKey",
+        "commitId",
+        "idempotencyKey",
+        "compareStreamPaths",
+        "Record",
+        "EncodedRecord",
+        "AppendResult",
+        "AppendOptions",
+        "ForkOptions",
+        "ReadOptions",
+        "FollowOptions",
+        "StreamChild",
+        "ChildrenPageRequest",
+        "ChildrenPage",
+        "ForkReceipt",
+        "CommitCondition",
+        "CommitMutation",
+        "CommittedMutation",
+        "CommittedEnvelope",
+        "CommitConflict",
+        "CommitResult",
+        "CommitRequest",
+        "CommitOptions",
+        "IdempotencyOutcome",
+        "IdempotencyObservation",
+        "TokenGrant",
+        "CreateTokenRequest",
+        "AccessToken",
+        "ProviderCommitRequest",
+        "StreamProvider",
+        "StreamEnvironment",
+        "StreamFailureCode",
+        "StreamError"
+      ]
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/grpc.ts",
+      "bytes": 1999,
+      "lines": 26,
+      "generatedBanner": false,
+      "exports": [
+        "WorkersGrpcOptions",
+        "createWorkersGrpcClient"
+      ]
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/http.ts",
+      "bytes": 7632,
+      "lines": 133,
+      "generatedBanner": false,
+      "exports": [
+        "HttpWorkersOptions",
+        "WorkersTransportError",
+        "HttpWorkersClient",
+        "MAX_BEARER_TOKEN_BYTES"
+      ]
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/index.ts",
+      "bytes": 336,
+      "lines": 5,
+      "generatedBanner": false,
+      "exports": []
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/module-contract.ts",
+      "bytes": 448,
+      "lines": 11,
+      "generatedBanner": true,
+      "exports": [
+        "WorkerJobContext",
+        "WorkerModule"
+      ]
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/observe.ts",
+      "bytes": 3478,
+      "lines": 53,
+      "generatedBanner": false,
+      "exports": [
+        "OperationEvent",
+        "AcyclicObserver",
+        "OperationSizes",
+        "performanceObserver",
+        "resolveObserver",
+        "observed",
+        "observeInterceptors"
+      ]
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/routes.ts",
+      "bytes": 456,
+      "lines": 10,
+      "generatedBanner": true,
+      "exports": [
+        "HTTP_ROUTES"
+      ]
+    }
+  ]
+}
