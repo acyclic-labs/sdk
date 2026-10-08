@@ -70,10 +70,23 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
+      - name: Install exact Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install maintained NAPI assembly dependencies
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/stream-native-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/ensure-bun.sh
+          bun install --frozen-lockfile
+
       - name: Download exact successful qualification artifact
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          TOOLS_DIR: ${{ runner.temp }}/stream-native-tools
         shell: bash
         run: |
           set -euo pipefail
@@ -93,7 +106,9 @@ jobs:
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
+          cp scripts/assemble-stream-native-package.mjs scripts/build-stream-native.mjs scripts/archive-utils.mjs "$stage/scripts/"
           cp release/npm-packages.json "$stage/release/"
+          node scripts/assemble-stream-native-package.mjs inventory "$stage/release/stream-native-packages.json" "$SOURCE_SHA"
           node - "$stage" <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -115,9 +130,15 @@ jobs:
           test "$native_present" = true
           native_stage="$RUNNER_TEMP/qualified-stream-native"
           mkdir -p "$native_stage"
-          gh run download "$run_id" --name "$native_artifact" --dir "$native_stage"
+          cp -R "$RUNNER_TEMP/qualified/stream-native" "$native_stage/linux"
+          gh run download "$run_id" --name "$native_artifact" --dir "$native_stage/windows"
+          mac_artifact="packages-macos-${run_id}-${run_attempt}"
+          gh run download "$run_id" --name "$mac_artifact" --dir "$RUNNER_TEMP/qualified-macos"
+          cp -R "$RUNNER_TEMP/qualified-macos/stream-native" "$native_stage/macos"
           node scripts/assemble-stream-native-package.mjs \
             "$stage/typescript" "$native_stage" "$SOURCE_SHA"
+          source scripts/ensure-bun.sh
+          bun scripts/check-typescript-tarballs.mjs --archives "$stage/typescript"
 
       - name: Download exact qualified universal plugin
         env:
