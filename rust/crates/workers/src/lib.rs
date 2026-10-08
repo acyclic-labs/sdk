@@ -113,39 +113,81 @@ mod tests {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let message = "quota 100%: caf\u{e9} / %25";
         let mut cases = vec![
-            (Vec::new(), None),
-            (b"not JSON %25".to_vec(), None),
-            (vec![255], None),
-            (br#"{"code":0,"message":"unspecified"}"#.to_vec(), None),
+            (Vec::new(), None, false),
+            (b"not JSON %25".to_vec(), None, false),
+            (vec![255], None, false),
+            (br#"{"code":0,"message":"unspecified"}"#.to_vec(), None, false),
         ];
         for code in [1, 99, -7] {
             cases.push((
                 serde_json::to_vec(&serde_json::json!({ "code": code, "message": message }))?,
                 Some(code),
+                false,
             ));
         }
-        for (body, expected_code) in cases {
+        cases.push((
+            serde_json::to_vec(&serde_json::json!({ "code": 99, "message": message }))?,
+            Some(99),
+            true,
+        ));
+        for (body, expected_code, chunked) in cases {
             for maximum in [body.len().max(1), 1] {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
                 let address = listener.local_addr()?;
+                let client = http::Client::new(&format!("http://{address}"), "secret", maximum)?;
                 let sent = body.clone();
-                let server = tokio::spawn(async move {
+                let mut server = tokio::spawn(async move {
                     let (mut stream, _) = listener.accept().await?;
-                    let mut request = [0; 4096];
-                    stream.read(&mut request).await?;
-                    let mut response = format!("HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", sent.len()).into_bytes();
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        if headers.len() == 4096 {
+                            return Err(std::io::Error::other("fixture request headers too large"));
+                        }
+                        headers.push(stream.read_u8().await?);
+                    }
+                    let headers = std::str::from_utf8(&headers).map_err(std::io::Error::other)?;
+                    let length = headers
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                        .filter(|length| *length <= 4096)
+                        .ok_or_else(|| std::io::Error::other("fixture request length missing or invalid"))?;
+                    stream.read_exact(&mut vec![0; length]).await?;
+                    let framing = if chunked {
+                        "transfer-encoding: chunked".into()
+                    } else {
+                        format!("content-length: {}", sent.len())
+                    };
+                    let mut response = format!("HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\n{framing}\r\nconnection: close\r\n\r\n").into_bytes();
+                    if chunked {
+                        response.extend_from_slice(format!("{:x}\r\n", sent.len()).as_bytes());
+                    }
                     response.extend_from_slice(&sent);
+                    if chunked {
+                        response.extend_from_slice(b"\r\n0\r\n\r\n");
+                    }
                     stream.write_all(&response).await?;
                     Ok::<_, std::io::Error>(())
                 });
-                let client = http::Client::new(&format!("http://{address}"), "secret", maximum)?;
-                let error = client
-                    .inspect_job(&wire::InspectJobRequest {
-                        job_id: "job".into(),
-                    })
-                    .await
-                    .unwrap_err();
-                server.await??;
+                let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    let response = client
+                        .inspect_job(&wire::InspectJobRequest {
+                            job_id: "job".into(),
+                        })
+                        .await;
+                    (&mut server).await??;
+                    Ok::<_, Box<dyn std::error::Error>>(response)
+                })
+                .await;
+                let error = match result {
+                    Ok(response) => response?.unwrap_err(),
+                    Err(error) => {
+                        server.abort();
+                        let _ = server.await;
+                        return Err(error.into());
+                    }
+                };
                 if body.len() > maximum {
                     assert!(matches!(error, http::Error::ResponseTooLarge));
                 } else {
