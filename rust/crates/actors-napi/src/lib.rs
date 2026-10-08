@@ -73,7 +73,7 @@ fn napi_error(metadata: NativeActorsErrorMetadata) -> Error {
 }
 
 fn nominal_error(error: domain::DomainError) -> NativeActorsErrorMetadata {
-    let code = client::Error::Semantic(error).code_name();
+    let code = error.code_name();
     NativeActorsErrorMetadata {
         code: code.to_owned(),
         message: error.to_string(),

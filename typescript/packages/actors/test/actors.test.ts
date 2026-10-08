@@ -4,6 +4,21 @@ import { ActorId, CodeSha256, CurrentHeadMarker, PositiveU64, ActorsClient, type
 import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema, InspectActorResponseSchema, SubscriptionStartSchema } from "../generated/proto/actors/v1/actors_pb.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  if ("message" in error && typeof error.message === "string") {
+    try {
+      const metadata: unknown = JSON.parse(error.message);
+      if (typeof metadata === "object" && metadata !== null && "code" in metadata && typeof metadata.code === "string") {
+        return metadata.code;
+      }
+    } catch {
+      // Native N-API errors use their status code when no structured metadata exists.
+    }
+  }
+  return "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
 describe("Rust-backed Actors client", () => {
   test("exposes nominal constructors from the package entrypoint", async () => {
     const actorId = await ActorId("actor-a");
@@ -14,6 +29,22 @@ describe("Rust-backed Actors client", () => {
     expect(digest).toHaveLength(32);
     expect(positive).toBe(1n);
     expect(currentHead).toBe(true);
+  });
+
+  test("rejects out-of-range positive integers at the Rust bridge", async () => {
+    for (const [value, code] of [
+      [-1n, "not_positive"],
+      [0n, "invalid_argument"],
+      [18_446_744_073_709_551_616n, "not_positive"],
+    ] as const) {
+      try {
+        await PositiveU64(value);
+        throw new Error(`PositiveU64 unexpectedly accepted ${value}`);
+      } catch (error) {
+        expect(errorCode(error)).toBe(code);
+      }
+    }
+    expect(await PositiveU64(18_446_744_073_709_551_615n)).toBe(18_446_744_073_709_551_615n);
   });
 
   test("installs every public operation from the maintained service descriptor", () => {

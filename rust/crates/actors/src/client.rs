@@ -50,26 +50,8 @@ impl Error {
             Self::Configuration(_) => "invalid_argument",
             Self::Transport(_) => "unavailable",
             Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
-            Self::Contract(error) => match error {
-                crate::ContractError::InvalidArgument => "invalid_argument",
-                crate::ContractError::LimitExceeded => "limit_exceeded",
-                crate::ContractError::DuplicateName => "duplicate_name",
-            },
-            Self::Semantic(error) => match error {
-                domain::DomainError::EmptyActorId => "empty_actor_id",
-                domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
-                domain::DomainError::Contract(error) => match error {
-                    crate::ContractError::InvalidArgument => "invalid_argument",
-                    crate::ContractError::LimitExceeded => "limit_exceeded",
-                    crate::ContractError::DuplicateName => "duplicate_name",
-                },
-                domain::DomainError::UnknownActorState(_) => "unknown_actor_state",
-                domain::DomainError::UnknownSubscriptionState(_) => "unknown_subscription_state",
-                domain::DomainError::UnknownErrorCode(_) => "unknown_error_code",
-                domain::DomainError::MissingMessage => "missing_message",
-                domain::DomainError::InvalidSubscription => "invalid_subscription",
-                domain::DomainError::InvalidBinding => "invalid_binding",
-            },
+            Self::Contract(error) => error.code_name(),
+            Self::Semantic(error) => error.code_name(),
             Self::Cancelled => "cancelled",
         }
     }

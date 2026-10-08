@@ -3,12 +3,31 @@ import { create } from "@bufbuild/protobuf";
 import { lifecycle } from "../../objects/test/v2-lifecycle.mjs";
 import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
-import { ActorsClient, ActorsService } from "@acyclic-labs/actors";
+import { ActorId, ActorsClient, ActorsService, CodeSha256, CurrentHeadMarker, PositiveU64 } from "@acyclic-labs/actors";
 import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
 import { HttpStreamProvider, idempotencyKey } from "@acyclic-labs/stream";
 
+function errorCode(error) {
+  if (typeof error !== "object" || error === null) return undefined;
+  if (typeof error.code === "string") return error.code;
+  if (typeof error.message !== "string") return undefined;
+  try {
+    const metadata = JSON.parse(error.message);
+    return typeof metadata?.code === "string" ? metadata.code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 try {
   const options = { endpoint: location.origin, token: "conformance" };
+  for (const [value, code] of [[-1n, "not_positive"], [0n, "invalid_argument"], [18446744073709551616n, "not_positive"]]) {
+    await assert.rejects(PositiveU64(value), error => errorCode(error) === code);
+  }
+  assert.equal(await PositiveU64(18446744073709551615n), 18446744073709551615n);
+  await assert.rejects(ActorId(1), error => errorCode(error) === "invalid_argument");
+  await assert.rejects(CodeSha256(new Array(32).fill(1)), error => errorCode(error) === "invalid_argument");
+  await assert.rejects(CurrentHeadMarker(1), error => errorCode(error) === "invalid_argument");
   const objects = new HttpObjectsV2(options);
   await lifecycle(objects);
   await assert.rejects(new HttpObjectsV2({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);

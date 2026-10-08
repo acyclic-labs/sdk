@@ -74,6 +74,24 @@ pub enum DomainError {
     InvalidBinding,
 }
 
+impl DomainError {
+    /// Returns the stable error code shared by every SDK bridge.
+    #[must_use]
+    pub const fn code_name(&self) -> &'static str {
+        match self {
+            Self::EmptyActorId => "empty_actor_id",
+            Self::InvalidCodeSha256 => "invalid_code_sha256",
+            Self::Contract(error) => error.code_name(),
+            Self::UnknownActorState(_) => "unknown_actor_state",
+            Self::UnknownSubscriptionState(_) => "unknown_subscription_state",
+            Self::UnknownErrorCode(_) => "unknown_error_code",
+            Self::MissingMessage => "missing_message",
+            Self::InvalidSubscription => "invalid_subscription",
+            Self::InvalidBinding => "invalid_binding",
+        }
+    }
+}
+
 fn parse_subscription_state(value: i32) -> Result<SubscriptionState, DomainError> {
     match value {
         0 => Ok(SubscriptionState::Unspecified),
