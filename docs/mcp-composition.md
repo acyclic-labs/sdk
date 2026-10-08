@@ -121,7 +121,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
-| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults and six disk-reopen cases pass; host death, model-tool binding and final platform gates open |
+| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults, six disk-reopen cases and actual host-death control pass; model-tool binding and final platform gates open |
 | Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Pending |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
@@ -338,4 +338,47 @@ of its Cargo/rustc processes and direct children were verified. These are local
 development restart controls, not host-death or final-source cross-platform
 qualification. Host death, model-tool binding, formal/installed-artifact gates,
 actual Chromium, owner review, full CI and
+actual-main landing remain open.
+
+### Native MCP actual host-death development checkpoint
+
+The standalone consumer's test-only controller starts its exact executable as a
+host through the existing `ProcessTree`, with a cleared environment and private
+host-storage reference. Before dispatch, that host syncs inert restart references
+to its owned storage directory. Those references are outside the approved native
+request and its environment. The approved peer initializes, applies the exact
+Unicode/full-width tool arguments, writes physical output and one call-log entry,
+then withholds its response. The controller has a fifteen-second readiness bound;
+the admitted capture has a thirty-second bound for this cut.
+
+After observing application, the controller terminates the contained host and
+checks its failure exit status and the process owner's `is_reaped` state. Windows
+Job cleanup covers the owned host and descendants under the existing containment
+assumptions. Fresh local filesystem and stream instances reconstruct the admitted
+task and native provider. A bounded stream read verifies exactly one native
+attempt and one launch record, including its task/command and exact approval
+digest. Recovery returns indeterminate and changes neither that record nor the
+single call log; after the physical output is removed it creates no new write.
+The reopened SDK destination has no published output.
+
+Cancellation rejects fresh dispatch with `Conflict` while the exact old lease
+still passes reconciliation ownership. A different placement must return
+`Unauthorized`. Reconstructing the same recovered effects after cancellation
+still reconciles the native attempt as indeterminate, with no terminal task
+outcome or observed native receipt. The public ownership check requires a current
+reservation, so this also checks that the old settlement lease was retained.
+Memory, disk and cancelled-host recovery share one ordinary authority/provider
+composition; no process engine or registry implementation was added.
+
+Development controls caught three assertion defects during construction: the
+temporary path needed the native view's canonical spelling, `terminate_after`
+had already released the reaped child before a redundant `try_wait`, and a
+foreign placement returns `Unauthorized` rather than the cancellation phase's
+`Conflict`. The repaired final source passes both positive consumers, five memory
+fault controls, six disk cases and actual host death on Windows. Strict
+library/test/example Clippy passes without new suppressions, and the public
+example still compiles with only `native-execution`. Terminal command results and
+absence of the owned Cargo/rustc and example host/peer processes were verified.
+These are development receipts, not the final cross-platform, formal, Chromium,
+installed-artifact or full-CI qualification. Model-tool binding, owner review and
 actual-main landing remain open.

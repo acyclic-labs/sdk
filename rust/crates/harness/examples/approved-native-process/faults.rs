@@ -138,7 +138,10 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         "MCP applied call with lost response, bounded cleanup and receipt-only recovery passed"
     );
     #[cfg(feature = "filesystem-local")]
-    disk_restart().await?;
+    {
+        disk_restart().await?;
+        host_death().await?;
+    }
     Ok(())
 }
 
@@ -174,6 +177,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
             filesystem,
             receipt_fault,
             lost_response,
+            None,
         )
         .await?;
         if stream.fault.lock().await.is_some() {
@@ -197,7 +201,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
         super::recover_on(
             StreamClient::new(stream),
             filesystem,
-            &evidence,
+            &evidence.restart,
             receipt_fault,
             lost_response,
         )
@@ -205,6 +209,210 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
         println!(
             "MCP disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
         );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "filesystem-local")]
+pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let storage = std::path::PathBuf::from(
+        std::env::var_os("MCP_HOST_STORAGE").ok_or("missing host storage")?,
+    );
+    let filesystem = Fs::local(acyclic_fs::LocalOptions::new(storage.join("filesystem"))).await?;
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default()).await?,
+    );
+    let _ = super::prepare_on(
+        true,
+        StreamClient::new(stream),
+        filesystem,
+        None,
+        true,
+        Some(&storage.join("restart.json")),
+    )
+    .await?;
+    Err("host-death controller failed to terminate the host".into())
+}
+
+#[cfg(feature = "filesystem-local")]
+async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+    let storage = tempfile::tempdir()?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("--mcp-host-death-child")
+        .env_clear()
+        .env("MCP_HOST_STORAGE", storage.path())
+        .current_dir(storage.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut host = acyclic_native_runtime::spawn_process_tree(&mut command)?;
+    let ready = host_ready(&mut host, storage.path()).await;
+    // Stop and reap this exact contained host even when setup never becomes ready.
+    let status = host.terminate_after(Duration::from_millis(250))?;
+    if status.success() || !host.is_reaped() {
+        return Err("host termination did not produce a reaped failure status".into());
+    }
+    let mut seed = ready?;
+    super::verify_mcp_calls(&seed.request.cwd, true)?;
+    seed.applied = true;
+    super::remove_physical_output(&seed.request.cwd, true)?;
+    let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
+        storage.path().join("filesystem"),
+    ))
+    .await?;
+    let stream = StreamClient::new(Arc::new(
+        acyclic_stream::LocalStream::open(storage.path().join("coordinator"), Default::default())
+            .await?,
+    ));
+    let before = launch_only(&stream, &seed).await?;
+    super::recover_on(stream.clone(), filesystem.clone(), &seed, None, true).await?;
+    if launch_only(&stream, &seed).await? != before {
+        return Err("host-death recovery changed the launch-only native receipt".into());
+    }
+    verify_pending_task(stream.clone(), filesystem, &seed).await?;
+    if launch_only(&stream, &seed).await? != before {
+        return Err(
+            "task cancellation converted the unknown native attempt into an observation".into(),
+        );
+    }
+    super::verify_mcp_calls(&seed.request.cwd, true)?;
+    println!(
+        "MCP actual host termination after application, launch-only disk recovery and no replay passed"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "filesystem-local")]
+async fn host_ready(
+    host: &mut acyclic_native_runtime::ProcessTree,
+    storage: &std::path::Path,
+) -> std::result::Result<super::Restart, Box<dyn std::error::Error>> {
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Ok(bytes) = std::fs::read(storage.join("restart.json"))
+                && let Ok(seed) = serde_json::from_slice::<super::Restart>(&bytes)
+                && std::fs::read(seed.request.cwd.join("destination/calls.txt"))
+                    .is_ok_and(|calls| calls == b"call\n")
+                && seed.request.cwd.join("destination/output.txt").exists()
+            {
+                return Ok(seed);
+            }
+            if let Some(status) = host.try_wait()? {
+                return Err(format!("test host exited before MCP application: {status}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?
+}
+
+#[cfg(feature = "filesystem-local")]
+async fn launch_only(
+    stream: &StreamClient<acyclic_stream::LocalStream>,
+    seed: &super::Restart,
+) -> std::result::Result<
+    (acyclic_stream::StreamPath, acyclic_stream::Record),
+    Box<dyn std::error::Error>,
+> {
+    use futures::TryStreamExt as _;
+    let mut children: Vec<_> = stream
+        .children(Some("harness/v2/native-process"), 2)
+        .await?
+        .try_collect()
+        .await?;
+    if children.len() != 1 {
+        return Err("host death did not retain exactly one native attempt".into());
+    }
+    let child = children.pop().ok_or("missing native attempt")?;
+    let receipt = stream.stream(child.path.as_str())?;
+    if receipt.bounds().await?.tail != 1 {
+        return Err("host death did not retain a launch-only receipt".into());
+    }
+    let mut records: Vec<_> = receipt.read(0, 2).await?.try_collect().await?;
+    if records.len() != 1 {
+        return Err("unexpected native receipt record count".into());
+    }
+    let record = records.pop().ok_or("missing native launch record")?;
+    let value: Value = serde_json::from_slice(&record.value)?;
+    for (field, expected) in [
+        ("kind", json!("launch")),
+        ("task", serde_json::to_value(seed.task)?),
+        ("command", serde_json::to_value(seed.command)?),
+        (
+            "approval_digest",
+            serde_json::to_value(seed.request.approval_digest(seed.task, seed.command)?)?,
+        ),
+    ] {
+        if value.get(field) != Some(&expected) {
+            return Err(format!("native launch receipt differs in {field}").into());
+        }
+    }
+    Ok((child.path, record))
+}
+
+#[cfg(feature = "filesystem-local")]
+async fn verify_pending_task(
+    stream: StreamClient<acyclic_stream::LocalStream>,
+    filesystem: Fs<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
+    seed: &super::Restart,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let issuer = super::issuer();
+    let files = Arc::new(FilesystemHost::new(
+        filesystem,
+        seed.destination.provider().clone(),
+    )?);
+    let task = super::runtime(
+        stream.clone(),
+        files.clone(),
+        seed.results_volume.clone(),
+        &issuer,
+        &seed.scope,
+    )
+    .await?;
+    task.task_host()
+        .verify_dispatch_owner(seed.task, seed.fence.clone())
+        .await?;
+    if task.task_host().outcome(seed.task).await?.is_some() {
+        return Err("host-death task acquired a terminal outcome".into());
+    }
+    task.task_host().cancel(seed.task).await?;
+    if !matches!(
+        task.task_host()
+            .verify_dispatch_owner(seed.task, seed.fence.clone())
+            .await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ) {
+        return Err("cancelled host-death task still permits a fresh dispatch".into());
+    }
+    task.task_host()
+        .verify_execution_owner(seed.task, seed.fence.clone())
+        .await?;
+    let mut wrong_fence = seed.fence.clone();
+    wrong_fence.placement.push_str(".different");
+    let rejection = task
+        .task_host()
+        .verify_execution_owner(seed.task, wrong_fence)
+        .await;
+    if !matches!(&rejection, Err(acyclic_harness::Error::Unauthorized(_))) {
+        return Err(format!("wrong-placement settlement check returned {rejection:?}").into());
+    }
+    if task.task_host().outcome(seed.task).await?.is_some() {
+        return Err(
+            "cancellation reported a terminal outcome for the unknown native attempt".into(),
+        );
+    }
+    let recovery = super::recovered_effects(stream, files, &task, seed, &issuer).await?;
+    if recovery
+        .effects
+        .reconcile_task_effect(&recovery.owner, seed.command, &seed.plan)
+        .await?
+        != EffectStatus::Indeterminate
+    {
+        return Err("cancelled host-death reconciliation became an authoritative result".into());
     }
     Ok(())
 }

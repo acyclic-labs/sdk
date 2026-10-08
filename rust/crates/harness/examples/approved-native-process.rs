@@ -12,6 +12,7 @@ use acyclic_harness::{
         SchemaRegistry, Scope,
     },
     distributed::{WorkPull, Worker},
+    durable_host::TaskJournalOwner,
     effect_host::{ConversationEffectHost, TaskEffectPlan},
     effects::EffectRegistry,
     executor::ExecutionJournal,
@@ -150,6 +151,8 @@ async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
     .await
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Restart {
     task: TaskId,
     fence: LeaseFence,
@@ -168,6 +171,12 @@ struct Evidence<A, O> {
     restart: Restart,
     directory: tempfile::TempDir,
     files: std::sync::Weak<Files<A, O>>,
+}
+
+struct Recovery<P> {
+    owner: Arc<TaskJournalOwner<P>>,
+    effects: ConversationEffectHost<P>,
+    content: Arc<dyn ContentResidencyVerifier>,
 }
 
 fn issuer() -> AuthorityIssuer {
@@ -194,12 +203,23 @@ async fn run_on<P: StreamProvider>(
         filesystem.clone(),
         receipt_fault,
         lost_response,
+        None,
     )
     .await?;
     if evidence.files.upgrade().is_some() {
         return Err("initial filesystem host remained live during recovery".into());
     }
-    recover_on(stream, filesystem, &evidence, receipt_fault, lost_response).await
+    if std::fs::canonicalize(evidence.directory.path())? != evidence.restart.request.cwd {
+        return Err("restart metadata changed the owned native directory".into());
+    }
+    recover_on(
+        stream,
+        filesystem,
+        &evidence.restart,
+        receipt_fault,
+        lost_response,
+    )
+    .await
 }
 
 #[allow(
@@ -212,6 +232,7 @@ async fn prepare_on<P, A, O>(
     filesystem: Fs<A, O>,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
+    restart_path: Option<&std::path::Path>,
 ) -> std::result::Result<Evidence<A, O>, Box<dyn std::error::Error>>
 where
     P: StreamProvider,
@@ -327,7 +348,11 @@ where
             action: Action::BindConversation { agent },
         })
         .await?;
-    let directory = tempfile::tempdir()?;
+    let directory = if let Some(path) = restart_path {
+        tempfile::tempdir_in(path.parent().ok_or("restart storage has no parent")?)?
+    } else {
+        tempfile::tempdir()?
+    };
     let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
     if let Some(fields) = allowances.as_object_mut() {
         for value in fields.values_mut() {
@@ -369,7 +394,10 @@ where
         )
         .await?,
     );
-    let request = native_request(mcp, lost_response, view.manifest().clone())?;
+    let mut request = native_request(mcp, lost_response, view.manifest().clone())?;
+    if restart_path.is_some() {
+        request.timeout_ms = 30_000;
+    }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
         issuer.verifier(),
@@ -465,7 +493,26 @@ where
         content.clone(),
         registry,
     )?;
-    let first = effects.run_task_effect(&owner, command, plan.clone()).await;
+    let mut restart = Restart {
+        task: task_id,
+        fence: LeaseFence::from(&lease.reservation),
+        scope: scope.clone(),
+        command,
+        approval,
+        plan: plan.clone(),
+        results_volume,
+        destination: destination.clone(),
+        request: request.clone(),
+        first: None,
+        applied: false,
+    };
+    if let Some(path) = restart_path {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(&serde_json::to_vec(&restart)?)?;
+        file.sync_all()?;
+    }
+    let first = effects.run_task_effect(&owner, command, plan).await;
     let status = verify_first_result(
         first,
         content.as_ref(),
@@ -480,20 +527,10 @@ where
     drop(process);
     drop(view);
     remove_physical_output(directory.path(), applied)?;
+    restart.first = status;
+    restart.applied = applied;
     Ok(Evidence {
-        restart: Restart {
-            task: task_id,
-            fence: LeaseFence::from(&lease.reservation),
-            scope,
-            command,
-            approval,
-            plan,
-            results_volume,
-            destination,
-            request,
-            first: status,
-            applied,
-        },
+        restart,
         directory,
         files: Arc::downgrade(&files),
     })
@@ -502,7 +539,7 @@ where
 async fn recover_on<P, A, O>(
     stream: StreamClient<P>,
     filesystem: Fs<A, O>,
-    evidence: &Evidence<A, O>,
+    seed: &Restart,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>>
@@ -511,7 +548,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let seed = &evidence.restart;
     let issuer = issuer();
     let files = Arc::new(FilesystemHost::new(
         filesystem,
@@ -525,41 +561,11 @@ where
         &seed.scope,
     )
     .await?;
-    let owner = Arc::new(
-        runtime
-            .task_host()
-            .journal_owner(seed.task, seed.fence.clone())
-            .await?,
-    );
-    let authority = recovered_authority(
-        stream.clone(),
-        files.clone(),
-        &seed.results_volume,
-        &issuer,
-        &seed.scope,
-    )?;
-    let content = authority.content.clone();
-    let recovered = Arc::new(
-        NativeProcessProvider::<P, A, O>::recover(
-            owner.clone(),
-            seed.command,
-            seed.plan.clone(),
-            seed.approval,
-            authority,
-        )
-        .await?,
-    );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
-    registry.register(recovered)?;
-    let effects = ConversationEffectHost::new(
-        stream.clone(),
-        issuer.verifier().audience().clone(),
-        issuer,
-        seed.scope.clone(),
-        SchemaRegistry::new(),
-        content.clone(),
-        registry,
-    )?;
+    let Recovery {
+        owner,
+        effects,
+        content,
+    } = recovered_effects(stream.clone(), files.clone(), &runtime, seed, &issuer).await?;
     let recovered_status = effects
         .reconcile_task_effect(&owner, seed.command, &seed.plan)
         .await?;
@@ -578,16 +584,12 @@ where
         .run_task_effect(&owner, seed.command, seed.plan.clone())
         .await?
         != recovered_status
-        || evidence
-            .directory
-            .path()
-            .join("destination/output.txt")
-            .exists()
+        || seed.request.cwd.join("destination/output.txt").exists()
     {
         return Err("receipt recovery repeated native execution".into());
     }
     if mcp {
-        verify_mcp_calls(evidence.directory.path(), seed.applied)?;
+        verify_mcp_calls(&seed.request.cwd, seed.applied)?;
     }
     verify_publication(&files, &seed.destination, seed.applied && !lost_response).await?;
     if receipt_fault.is_none() && !lost_response {
@@ -597,6 +599,60 @@ where
         );
     }
     Ok(())
+}
+
+async fn recovered_effects<P, A, O>(
+    stream: StreamClient<P>,
+    files: Arc<Files<A, O>>,
+    runtime: &Runtime<P, A, O>,
+    seed: &Restart,
+    issuer: &AuthorityIssuer,
+) -> Result<Recovery<P>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let owner = Arc::new(
+        runtime
+            .task_host()
+            .journal_owner(seed.task, seed.fence.clone())
+            .await?,
+    );
+    let authority = recovered_authority(
+        stream.clone(),
+        files,
+        &seed.results_volume,
+        issuer,
+        &seed.scope,
+    )?;
+    let content = authority.content.clone();
+    let recovered = Arc::new(
+        NativeProcessProvider::<P, A, O>::recover(
+            owner.clone(),
+            seed.command,
+            seed.plan.clone(),
+            seed.approval,
+            authority,
+        )
+        .await?,
+    );
+    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    registry.register(recovered)?;
+    let effects = ConversationEffectHost::new(
+        stream,
+        issuer.verifier().audience().clone(),
+        issuer.clone(),
+        seed.scope.clone(),
+        SchemaRegistry::new(),
+        content.clone(),
+        registry,
+    )?;
+    Ok(Recovery {
+        owner,
+        effects,
+        content,
+    })
 }
 
 fn recovered_authority<P, A, O>(
@@ -769,6 +825,10 @@ fn verify_recovered_status(
         } else if *recovered != EffectStatus::Indeterminate {
             return Err("unknown MCP outcome became authoritative".into());
         }
+    } else if first.is_none() {
+        if *recovered != EffectStatus::Indeterminate {
+            return Err("launch without an observation became authoritative".into());
+        }
     } else if Some(recovered) != first {
         return Err("receipt recovery changed the observed result".into());
     }
@@ -902,6 +962,10 @@ fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std:
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    #[cfg(all(test, feature = "filesystem-local"))]
+    if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
+        return faults::host_child().await;
+    }
     if std::env::args()
         .any(|arg| arg == "--mcp-native-child" || arg == "--mcp-native-lost-response")
     {
