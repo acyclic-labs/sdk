@@ -60,13 +60,16 @@ impl Journal {
         if carried.is_empty() {
             return Ok(());
         }
-        let journal = File::open(self.root.path.join("mutations.log"))?;
         let mut moves = LocalBodyRelocations::new();
         let mut batch = Materialized::default();
         let mut entries = carried.into_iter().peekable();
         while let Some(((offset, digest), length)) = entries.next() {
             if !batch.holds(&digest) {
-                let bytes = crate::physical::read_journal_body(&journal, offset, &digest, length)
+                // The shared read handle: compaction closes it before replacing
+                // the journal, after every body here has been read.
+                let bytes = self
+                    .root
+                    .read_journal_body(offset, &digest, length)
                     .map_err(corrupt)?;
                 batch.add(digest, bytes);
             }

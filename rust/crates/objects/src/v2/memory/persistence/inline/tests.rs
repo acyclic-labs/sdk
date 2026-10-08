@@ -81,6 +81,10 @@ async fn journal_body_reads_share_one_handle_until_compaction_replaces_the_journ
     assert_eq!(opens()?, 2);
     drop(core);
     let core = reopen(root.path())?;
+    // Compaction reads the bodies it moves through the same shared handle.
+    core.collect_local_garbage(10)?;
+    let journal = core.journal.as_ref().ok_or("missing journal")?;
+    assert_eq!(journal.root.journal_opens.load(Ordering::Relaxed), 1);
     assert_eq!(
         core.get(get("after"), 5).await?.body,
         Bytes::from_static(b"after")
