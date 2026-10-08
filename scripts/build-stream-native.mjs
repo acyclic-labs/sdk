@@ -236,7 +236,10 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
   return flags.join("\x1f");
 }
 
-/** Return the maintained Apple linker used for reproducible Darwin addons. */
+/**
+ * @param {string} target
+ * @param {string|null} [sdkRoot]
+ */
 export function darwinAppleLdPaths(target, sdkRoot = null) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
   const sdk = sdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
@@ -249,9 +252,20 @@ export function darwinAppleLdPaths(target, sdkRoot = null) {
   };
 }
 
+/**
+ * @param {string} target
+ * @param {{sdkRoot?: string|null, driver?: string, linkerExists?: (path: string) => boolean}} options
+ * @returns {(() => void) & {linkerPath?: string|null}}
+ */
 export function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: suppliedDriver, linkerExists = existsSync } = {}) {
-  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return () => {};
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) {
+    /** @type {(() => void) & {linkerPath?: string|null}} */
+    const restore = () => {};
+    restore.linkerPath = null;
+    return restore;
+  }
   const paths = darwinAppleLdPaths(target, suppliedSdkRoot);
+  if (paths === null) throw new Error("Apple ld configuration requires a Darwin target");
   if (!linkerExists(paths.linker)) throw new Error(`Apple ld is unavailable at ${paths.linker}`);
   const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   const driver = suppliedDriver ?? commandOutput("xcrun", ["--find", "clang"]);
