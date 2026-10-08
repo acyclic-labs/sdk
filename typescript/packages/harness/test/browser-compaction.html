@@ -57,11 +57,11 @@ try {
   rejects(() => contracts.validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
   const request = {
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
-    messages: [{ role: "user", content: "é🦀" }], tools: [], max_output_tokens: 1_024,
+    messages: [{ role: "user", content: "Ã©ðŸ¦€" }], tools: [], max_output_tokens: 1_024,
   };
   // This host's declared token units are UTF-8 bytes plus fixed framing.
   const count = { request_digest: Array.from(contracts.digestCanonicalJson(request)),
-    fixed_tokens: 100, message_tokens: [new TextEncoder().encode("é🦀").byteLength + 10] };
+    fixed_tokens: 100, message_tokens: [new TextEncoder().encode("Ã©ðŸ¦€").byteLength + 10] };
   for (const value of ["replacement \ufffd", "paired \ud83d\ude00", "\u0000"]) {
     const decoded = contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value })));
     check(decoded.value === value, "native valid Unicode round trip");

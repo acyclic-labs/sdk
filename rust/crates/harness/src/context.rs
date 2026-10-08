@@ -49,8 +49,10 @@ pub struct ContextSummary {
 /// The current input is always retained, regardless of this policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CompactionRetention {
     /// Roles retained in full. Defaults to instructions (`System`).
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelRole[]"))]
     pub roles: Vec<ModelRole>,
     /// Retains messages containing native media references in full.
     pub native_media: bool,

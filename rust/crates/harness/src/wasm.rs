@@ -2749,6 +2749,44 @@ pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8
     Ok(prepared.bytes().to_vec())
 }
 
+/// Returns the ordinary replaceable policy used by the stock Rust executor.
+#[wasm_bindgen(js_name = defaultCompactionPolicy, unchecked_return_type = "CompactionPolicy")]
+pub fn default_compaction_policy() -> Result<JsValue, JsValue> {
+    to_js(&crate::context::CompactionPolicy::default())
+}
+
+/// Checks a threshold against actual selected capacity, returning its finite output ceiling.
+#[wasm_bindgen(js_name = validateThresholdCompaction)]
+pub fn validate_threshold_compaction(
+    #[wasm_bindgen(unchecked_param_type = "ThresholdCompaction")] config: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ModelContextCapacity")] capacity: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] output_tokens: JsValue,
+) -> Result<u32, JsValue> {
+    let config: crate::context::ThresholdCompaction = from_js(config)?;
+    let output_tokens = if output_tokens.is_undefined() {
+        None
+    } else {
+        from_js(output_tokens)?
+    };
+    config
+        .validate(from_js(capacity)?, output_tokens)
+        .map_err(js_error)
+}
+
+/// Validates provider-owned counts against the exact canonical prepared request.
+#[wasm_bindgen(js_name = validateModelTokenCount)]
+pub fn validate_model_token_count(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelRequestWire")] request: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ModelTokenCount")] count: JsValue,
+    limits: JsValue,
+) -> Result<u64, JsValue> {
+    let request: crate::model::ModelRequest = from_js(request)?;
+    let prepared =
+        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
+    let count: crate::context::ModelTokenCount = from_js(count)?;
+    count.validate(&prepared).map_err(js_error)
+}
+
 /// Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
 #[wasm_bindgen(js_name = parseSkillMetadata, unchecked_return_type = "SkillMetadata")]
 pub fn parse_skill_metadata(
@@ -2787,6 +2825,14 @@ pub fn project_discovered_context(
 // Tool JSON may contain similar keys without being descriptors.
 fn context_to_js(context: &crate::context::Context) -> Result<JsValue, JsValue> {
     let result = to_js(context)?;
+    if context.current_input_index.is_none() {
+        let object: js_sys::Object = result.clone().dyn_into()?;
+        if !js_sys::Reflect::delete_property(&object, &JsValue::from_str("current_input_index"))? {
+            return Err(JsValue::from_str(
+                "could not omit absent current input index",
+            ));
+        }
+    }
     let metadata = js_sys::Array::new();
     for (name, file) in &context.metadata {
         let entry = js_sys::Array::new();

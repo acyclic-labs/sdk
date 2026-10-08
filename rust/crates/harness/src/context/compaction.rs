@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Actual context and output capacities of one immutable selected model.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelContextCapacity {
     /// Maximum tokens in the provider's complete input plus generated output.
     pub context_tokens: u32,
@@ -35,6 +36,7 @@ impl ModelContextCapacity {
 /// The SDK supplies no tokenizer or model-name capacity catalog.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelTokenCount {
     /// Binds every count to the exact canonical model request.
     pub request_digest: [u8; 32],
@@ -68,6 +70,7 @@ impl ModelTokenCount {
 /// Ordinary configurable threshold compaction; no model-family heuristic.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ThresholdCompaction {
     /// Input headroom retained for each response.
     pub response_reserve_tokens: u32,
@@ -198,6 +201,7 @@ impl ThresholdCompaction {
 /// Replaceable primitive policy. Custom context transformations can disable
 /// the stock threshold and own their explicit admission/projection decisions.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(
     deny_unknown_fields,
     tag = "kind",
