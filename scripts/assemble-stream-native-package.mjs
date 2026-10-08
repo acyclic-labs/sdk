@@ -102,7 +102,7 @@ export async function sourceNativeInventory(sourceSha) {
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-stream-native-inventory-"));
   try {
     await writeFile(join(temporary, "package.json"), JSON.stringify({ ...manifest, napi: { ...manifest.napi, targets } }));
-    const { NapiCli, parseTriple } = await import("@napi-rs/cli");
+    const { NapiCli, parseTriple } = require("@napi-rs/cli");
     const npmDir = join(temporary, "npm");
     await new NapiCli().createNpmDirs({ cwd: temporary, npmDir });
     const companions = await Promise.all(targets.map(async selected_target => {
@@ -238,7 +238,7 @@ async function main() {
     if (neutralManifest.name !== packageManifest.name || neutralManifest.version !== packageManifest.version) fail("neutral parent identity differs from source package");
     neutralManifest.napi = { ...neutralManifest.napi, targets };
     await writeFile(join(packageRoot, "package.json"), `${JSON.stringify(neutralManifest, null, 2)}\n`);
-    const { NapiCli } = await import("@napi-rs/cli");
+    const { NapiCli } = require("@napi-rs/cli");
     const npmDir = join(packageRoot, "npm");
     const napi = new NapiCli();
     await napi.createNpmDirs({ cwd: packageRoot, npmDir });
