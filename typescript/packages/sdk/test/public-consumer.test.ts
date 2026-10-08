@@ -14,7 +14,7 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
   for await (const record of stream.read({ from: 0n, limit: 4 })) records.push(record.value);
   expect(records).toEqual([{ kind: "started" }]);
 
-  const objects = await objectsApi.MemoryObjectsV2.create();
+  const objects = await objectsApi.MemoryObjectsV1.create();
   const bucket = create(objectsApi.BucketRefSchema, { name: "consumer" });
   expect((await objects.createBucket(create(objectsApi.CreateBucketRequestSchema, {
     name: bucket.name,

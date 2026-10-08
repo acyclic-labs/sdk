@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Logical Objects v2 with memory, HTTP, and Node/Bun gRPC providers",
+  "description": "Logical Objects v1 with memory, HTTP, and Node/Bun gRPC providers",
   "keywords": [
     "objects",
     "storage",
@@ -16,34 +16,34 @@
   },
   "type": "module",
   "exports": {
-    "./v2": {
-      "types": "./dist/v2.d.ts",
-      "default": "./dist/v2.js"
+    "./v1": {
+      "types": "./dist/v1.d.ts",
+      "default": "./dist/v1.js"
     },
-    "./v2/proto": {
-      "types": "./generated/proto/objects/v2/objects_pb.d.ts",
-      "default": "./generated/proto/objects/v2/objects_pb.js"
+    "./v1/proto": {
+      "types": "./generated/proto/objects/v1/objects_pb.d.ts",
+      "default": "./generated/proto/objects/v1/objects_pb.js"
     },
-    "./v2/http": {
-      "types": "./dist/v2-http.d.ts",
-      "default": "./dist/v2-http.js"
+    "./v1/http": {
+      "types": "./dist/v1-http.d.ts",
+      "default": "./dist/v1-http.js"
     },
-    "./v2/grpc": {
-      "types": "./dist/v2-grpc.d.ts",
-      "default": "./dist/v2-grpc.js"
+    "./v1/grpc": {
+      "types": "./dist/v1-grpc.d.ts",
+      "default": "./dist/v1-grpc.js"
     },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./proto": {
-      "types": "./generated/proto/objects/v2/objects_pb.d.ts",
-      "default": "./generated/proto/objects/v2/objects_pb.js"
+      "types": "./generated/proto/objects/v1/objects_pb.d.ts",
+      "default": "./generated/proto/objects/v1/objects_pb.js"
     },
-    "./http": { "types": "./dist/v2-http.d.ts", "default": "./dist/v2-http.js" },
+    "./http": { "types": "./dist/v1-http.d.ts", "default": "./dist/v1-http.js" },
     "./grpc": {
-      "default": "./dist/v2-grpc.js",
-      "types": "./dist/v2-grpc.d.ts"
+      "default": "./dist/v1-grpc.js",
+      "types": "./dist/v1-grpc.d.ts"
     }
   },
   "types": "./dist/index.d.ts",

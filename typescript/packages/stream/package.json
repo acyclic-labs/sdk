@@ -21,8 +21,8 @@
       "default": "./dist/index.js"
     },
     "./proto": {
-      "types": "./generated/proto/stream/v2/stream_pb.d.ts",
-      "default": "./generated/proto/stream/v2/stream_pb.js"
+      "types": "./generated/proto/stream/v1/stream_pb.d.ts",
+      "default": "./generated/proto/stream/v1/stream_pb.js"
     },
     "./grpc": {
       "default": "./dist/grpc.js",

@@ -9,7 +9,7 @@ use acyclic_fs::{
     ReplayLimit, Sequence, WorkBudget, WorkspaceDelete, object_digest,
 };
 use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
-use acyclic_objects::v2::{MemoryObjects, ObjectsProvider, wire};
+use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
 use acyclic_stream::{
     AppendRequest, ChildrenRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
     StreamProvider,

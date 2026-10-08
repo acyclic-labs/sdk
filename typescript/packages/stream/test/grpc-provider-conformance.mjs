@@ -4,13 +4,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { ConnectError, Code } from "@connectrpc/connect";
-import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { createClient, ConnectError, Code } from "@connectrpc/connect";
+import { createGrpcTransport, Http2SessionManager, connectNodeAdapter } from "@connectrpc/connect-node";
 import { GrpcStreamProvider } from "../dist/grpc.js";
 import { idempotencyKey, commitId, StreamError } from "../dist/types.js";
 import { ensureStreamWasm } from "../dist/contract.js";
 import { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } from "../generated/proto/stream/v2/stream_pb.js";
+import { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -28,6 +28,13 @@ if (process.argv.includes("--client")) {
   const appended = await provider.append(path, [body("one"), body("two")], { ifTail: 0n, idempotencyKey: key(`${prefix}-append`) });
   assert.equal(appended.ok, true);
   assert.equal(appended.end, 2n);
+  const session = new Http2SessionManager(new URL(options.endpoint), {}, { ca: options.caCertificate });
+  try {
+    const retiredService = { ...StreamService, typeName: "acyclic.stream.v2.StreamService" };
+    retiredService.methods = StreamService.methods.map(method => ({ ...method, parent: retiredService }));
+    const obsolete = createClient(retiredService, createGrpcTransport({ baseUrl: options.endpoint, sessionManager: session, defaultTimeoutMs: 2000 }));
+    await assert.rejects(obsolete.tail({ path }, { headers: { authorization: `Bearer ${options.token}` } }), error => error instanceof ConnectError && error.code === Code.Unimplemented);
+  } finally { session.abort(); }
   assert.equal((await provider.inspectIdempotency(key(`${prefix}-append`))).outcome.type, "append");
   assert.deepEqual(await provider.append(path, [body("one"), body("two")], { ifTail: 0n, idempotencyKey: key(`${prefix}-append`) }), appended);
   await assert.rejects(provider.append(path, [body("changed")], { ifTail: 0n, idempotencyKey: key(`${prefix}-append`) }), error => error instanceof StreamError && error.code === "idempotency_mismatch");
@@ -63,6 +70,9 @@ if (process.argv.includes("--client")) {
   await assert.rejects(provider.tail("invalid//path"), error => error instanceof StreamError && error.code === "invalid_path");
   await assert.rejects(provider.readCommit(commitId(new Uint8Array(32))), error => error instanceof StreamError && error.code === "commit_not_found");
   await assert.rejects(async () => { for await (const _ of provider.read("malformed", { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "invalid_response");
+  for (const codec of [0, 3]) {
+    await assert.rejects(async () => { for await (const _ of provider.read(`invalid-codec-${codec}`, { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "invalid_response");
+  }
   const bounded = new GrpcStreamProvider({ ...options, maximumMessageBytes: 64 });
   await assert.rejects(async () => { for await (const _ of bounded.read("oversize", { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "capacity_exhausted");
   console.log(`${prefix}: Stream provider replay, follow cancellation, forks, multi-path Commit, idempotency, authentication, errors and bounds passed`);
@@ -92,6 +102,12 @@ const adapter = connectNodeAdapter({ routes(router) {
     if (method.methodKind === "server_streaming") {
       implementation[method.localName] = async function* (request, context) {
         authenticate(context);
+        if (request.path === "invalid-codec-0" || request.path === "invalid-codec-3") {
+          const frame = readFrame([{ sequence: 0n, value: new Uint8Array([1]), commitId: new Uint8Array(32) }], false);
+          frame.codec = request.path === "invalid-codec-0" ? 0 : 3;
+          yield frame;
+          return;
+        }
         if (request.path === "malformed" || request.path === "oversize") {
           yield readFrame([{ sequence: request.path === "malformed" ? 1n : 0n, value: new Uint8Array(request.path === "oversize" ? 256 : 1), commitId: new Uint8Array(32) }], false);
           return;

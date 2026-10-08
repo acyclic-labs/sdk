@@ -50,7 +50,7 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 /// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
-/// Generated canonical Stream v2 protocol.
+/// Generated canonical Stream v1 protocol.
 #[allow(
     missing_docs,
     clippy::pedantic,
@@ -58,10 +58,10 @@ pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
     reason = "generated prost and tonic bindings"
 )]
 pub mod wire {
-    include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
+    include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v1/stream_descriptor.bin");
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,

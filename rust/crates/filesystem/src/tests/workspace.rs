@@ -468,12 +468,12 @@ async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box
         let workspace = fs
             .create_workspace_with_config("native-path", config)
             .await?;
-        workspace.write_text("/é.txt", "native").await?;
+        workspace.write_text("/Ã©.txt", "native").await?;
         let mut checkout = workspace
             .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
             .await?;
         let path = NamespacePath::from_portable_in_profile(
-            &PortablePath::parse("/é.txt", config.limits)?,
+            &PortablePath::parse("/Ã©.txt", config.limits)?,
             profile,
             config.limits,
         )?;
@@ -2381,7 +2381,7 @@ impl acyclic_stream::StreamProvider for CutStream {
 
 type CutFs = Fs<
     crate::distributed::StreamAuthorityStore<CutStream>,
-    crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
 >;
 
 /// The first record of one authority, if it has one.
@@ -2419,7 +2419,7 @@ async fn assert_fork_state_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >,
     source_volume: crate::foundation::VolumeId,
     destination: WorkspaceId,
@@ -2480,7 +2480,7 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+            let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
                 crate::LogicalObjectStore::new(Arc::new(objects), bucket),
@@ -2536,15 +2536,15 @@ async fn assert_fork_lineage_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     main: &crate::Workspace<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >,
     fork: &crate::Workspace<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >,
     independent: bool,
     inherits_base: bool,
@@ -2619,7 +2619,7 @@ async fn fork_through_every_cut(
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+            let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
                 crate::LogicalObjectStore::new(Arc::new(objects), bucket),
