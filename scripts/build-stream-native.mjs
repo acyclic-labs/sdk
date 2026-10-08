@@ -559,13 +559,13 @@ function maintainedBunIdentity(version) {
   throw new Error(`maintained Bun ${version} is unavailable${versions.length === 0 ? "" : `; observed ${versions}`}`);
 }
 
-function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: string}} */ { targetDir, outputDir } = {}) {
+function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: string, sourceRoot?: string, platform?: string}} */ { targetDir, outputDir, sourceRoot = root } = {}) {
   if (typeof value !== "string") return value;
   let text = value.replaceAll("\\", "/");
   const prefixes = [
     [targetDir, "<target-dir>"],
     [outputDir, "<output-dir>"],
-    [root, "<source-root>"],
+    [sourceRoot, "<source-root>"],
   ];
   let replacedPrefix = false;
   for (const [prefix, replacement] of prefixes) {
@@ -584,7 +584,7 @@ function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: strin
 }
 
 function portableResolve(value) {
-  if (typeof value === "string" && /^[A-Za-z]:[\\/]/u.test(value)) return value.replaceAll("\\", "/");
+  if (typeof value === "string" && (/^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("/"))) return value.replaceAll("\\", "/");
   return resolve(value);
 }
 
@@ -605,7 +605,7 @@ function normalizeToolPath(value, context) {
 
 function normalizeToolPathList(value, context) {
   if (typeof value !== "string") return value;
-  const separator = process.platform === "win32" ? ";" : ":";
+  const separator = (context.platform ?? process.platform) === "win32" ? ";" : ":";
   return value.split(separator).map(item => normalizeToolPath(item, context)).join(separator);
 }
 
@@ -629,8 +629,8 @@ function isDiagnosticOnlyRustcArgument(value) {
   return typeof value === "string" && /^--diagnostic-width=\d+$/u.test(value);
 }
 
-export function normalizeBuildInputs(value, { targetDir, outputDir }) {
-  const context = { targetDir: portableResolve(targetDir), outputDir: portableResolve(outputDir) };
+export function normalizeBuildInputs(value, { targetDir, outputDir, sourceRoot = root, platform = process.platform }) {
+  const context = { targetDir: portableResolve(targetDir), outputDir: portableResolve(outputDir), sourceRoot, platform };
   const normalized = normalizeBuildInputPaths(value, context);
   normalized.target_dir = "<target-dir>";
   normalized.runtime.node_path = "<runtime>";

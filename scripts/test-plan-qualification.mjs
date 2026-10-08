@@ -58,7 +58,7 @@ test("crate documentation reaches rustdoc and every lane", () => {
 test("TypeScript sources execute only TypeScript-observing lanes", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("typescript/packages/stream/src/index.ts"));
-  assert.deepEqual(differing(before, after), ["linux", "policy", "typescript", "windows"]);
+  assert.deepEqual(differing(before, after), ["linux", "macos", "policy", "typescript", "windows"]);
 });
 
 test("Rust that no package compiles skips the TypeScript lane", () => {
@@ -80,7 +80,7 @@ test("the filesystem package manifest reaches native binding lanes", () => {
 test("unrelated workflows reach only policy and repository lanes", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed(".github/workflows/publish-npm.yml"));
-  assert.deepEqual(differing(before, after), ["linux", "policy"]);
+  assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
 });
 
 test("the qualification workflow reaches every lane", () => {
@@ -115,7 +115,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     marker: everywhere,
     retained: retainedAll,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "windows"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "windows", "macos"]);
   assert.equal(reused.linux, undefined);
   assert.equal(reused.gate.run_id, source.run_id);
 });

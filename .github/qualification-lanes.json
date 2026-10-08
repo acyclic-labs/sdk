@@ -85,8 +85,8 @@
     "workers": 4,
     "artifact": "packages-macos",
     "artifact_path": "packages",
-    "inputs": "rust",
-    "source_bound": false,
+    "inputs": "repository",
+    "source_bound": true,
     "scope": "full"
   },
   {

@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { verifyNativeAssembly } from "./assemble-stream-native-package.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -104,21 +105,30 @@ async function main() {
       : run("node", ["scripts/plugin-qualification.mjs", "verify", "plugin/QUALIFICATION.json", sourceSha, archive, releaseVersion], { stdio: "inherit" });
     if (verification.status !== 0) fail(`qualified archive verification failed for ${item.name}`);
 
+    if (item.directory === "stream") {
+      const assembly = await verifyNativeAssembly(artifactDirectory, sourceSha, releaseVersion);
+      for (const companion of assembly.companions) await publishExact(companion.name, companion.version, join(artifactDirectory, companion.asset));
+    }
+
+    await publishExact(item.name, releaseVersion, archive);
+  }
+}
+
+async function publishExact(name, version, archive) {
     const expectedIntegrity = integrity(archive);
-    const observedIntegrity = publishedIntegrity(item.name, releaseVersion);
+    const observedIntegrity = publishedIntegrity(name, version);
     if (observedIntegrity !== null) {
-      if (observedIntegrity !== expectedIntegrity) fail(`${item.name}@${releaseVersion} exists with different bytes`);
-      console.log(`Already published exact archive: ${item.name}@${releaseVersion}`);
-      await waitForPublishedExact(item.name, releaseVersion, expectedIntegrity);
-      continue;
+      if (observedIntegrity !== expectedIntegrity) fail(`${name}@${version} exists with different bytes`);
+      console.log(`Already published exact archive: ${name}@${version}`);
+      await waitForPublishedExact(name, version, expectedIntegrity);
+      return;
     }
 
     const publication = run("npm", ["publish", archive, "--access", "public", "--tag", "latest", "--provenance"]);
     process.stdout.write(publication.stdout ?? "");
     process.stderr.write(publication.stderr ?? "");
-    await verifyPublicationAttempt(publication, item.name, releaseVersion, expectedIntegrity);
-    console.log(`Published and verified: ${item.name}@${releaseVersion}`);
-  }
+    await verifyPublicationAttempt(publication, name, version, expectedIntegrity);
+    console.log(`Published and verified: ${name}@${version}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

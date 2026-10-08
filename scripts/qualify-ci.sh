@@ -114,6 +114,13 @@ native_binding() {
   CARGO_TARGET_DIR="$target_dir-napi" \
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
 }
+stream_binding() {
+  local target directory="$SDK_ARTIFACT_DIR/packages/stream-native"
+  target="$(rustc --version --verbose | sed -n 's/^host: //p')"
+  node scripts/build-stream-native.mjs build --target "$target" \
+    --output "$directory/bundle" --target-dir "$target_dir-stream-native"
+  cp "$target_dir-stream-native/stream-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
+}
 # The live native-mount tests are the only ignored acyclic-fs library tests.
 # Selecting them from the all-feature workspace build reuses its test binaries
 # instead of rebuilding acyclic-fs under a narrower feature resolution.
@@ -295,6 +302,7 @@ case "$lane" in
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi release
+    stream_binding
     bun run test
     bun scripts/check-typescript-tarballs.mjs
     # WASM builds are path-independent but not host-independent: panic
@@ -450,6 +458,7 @@ case "$lane" in
   macos)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
+    bun install --frozen-lockfile
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo fetch --locked
     background release release_plugin
@@ -459,6 +468,7 @@ case "$lane" in
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
     finish napi release x86_64
+    stream_binding
     native_mount_tests
     fork_join_conformance
     ;;
