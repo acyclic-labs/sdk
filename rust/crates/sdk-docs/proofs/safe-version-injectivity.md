@@ -1,12 +1,20 @@
 # `safe_version` injectivity and static URL proof note
 
-**Candidate source snapshot SHA-256:** `AF949D5FB8E494B66E9F9651EDBB51F235DE771782ADFE973803D36E38E46315`
-**Candidate source:** `rust/crates/sdk-docs/src/lib.rs`, `safe_version` and
-`hex_version` in the candidate source snapshot.
+**Proved implementation block SHA-256:** `3E886AB69BBF0D26693C4F6572286D402BE57A41C7D2D8AB459971C37CD83219`
+**Candidate source:** `rust/crates/sdk-docs/src/lib.rs`.
 
-This note proves the replacement mapping in the candidate source snapshot. It
-does not claim that the baseline commit or any older SDK docs implementation has
-the same bytes or behavior. The recorded source hash covers the exact version-mapping bytes proved here.
+The hash covers the exact UTF-8 bytes, including the final newline, from the
+doc-comment line immediately preceding `pub fn safe_version` through the
+closing brace of `is_windows_reserved_segment` (current lines 2028–2104).
+That canonical block includes `safe_version`, `is_portable_version_byte`,
+`hex_version`, and `is_windows_reserved_segment`; it does not claim that the
+rest of `lib.rs` has the same bytes or behavior. Recompute it by extracting
+that function block from the signed source revision and hashing the bytes
+without normalization.
+
+This note proves the replacement mapping in that implementation block. It does
+not claim that the baseline commit or any older SDK docs implementation has the
+same bytes or behavior.
 
 ## Scope and mapping
 
