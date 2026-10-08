@@ -736,22 +736,54 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Uses the existing conversation reducer and content validation, while the
-    /// task owner compares its uncancelled lease and this conversation tail in
-    /// one Stream transaction. Only request admission uses this task authority;
-    /// responder resolution remains conversation-owned.
+    /// task owner compares its lease and this conversation tail in one Stream
+    /// transaction. Fresh admission rejects cancellation; effect settlement
+    /// remains allowed for that exact owner. Responders remain conversation-owned.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn execute_task_interaction(
+    pub(crate) async fn execute_task_command(
         &mut self,
         command: Command,
         owner: &crate::durable_host::TaskJournalOwner<P>,
     ) -> Result<ApplyResult> {
-        if !matches!(command.action, Action::OpenInteraction { .. }) {
-            return Err(Error::Invalid(
-                "task journal may only admit interaction requests".into(),
-            ));
-        }
-        owner.require_interaction_grant()?;
-        owner.verify(false).await?;
+        use crate::distributed::JournalWrite;
+        let write = match &command.action {
+            Action::OpenInteraction { .. } => {
+                owner.require_interaction_grant()?;
+                JournalWrite::Fresh
+            }
+            Action::PlanEffect {
+                provider,
+                request,
+                result_schema,
+                ..
+            } => {
+                owner.require_effect_grants(provider, true)?;
+                owner.validate_input_file(request)?;
+                owner.validate_input_file(result_schema)?;
+                JournalWrite::Fresh
+            }
+            Action::MarkEffectDispatched { effect_id, .. }
+            | Action::ResolveEffect {
+                observation: crate::core::EffectAttestation { effect_id, .. },
+            } => {
+                let effect = self
+                    .reducer
+                    .effect(*effect_id)
+                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                owner.require_effect_grants(&effect.provider, false)?;
+                if matches!(command.action, Action::ResolveEffect { .. }) {
+                    JournalWrite::Settlement
+                } else {
+                    JournalWrite::Fresh
+                }
+            }
+            _ => {
+                return Err(Error::Invalid(
+                    "task journal action is not an admitted request or effect".into(),
+                ));
+            }
+        };
+        owner.verify(write.settlement()).await?;
         let planned = self.plan_command(&command, false).await?;
         let ApplyResult::Applied { event } = planned else {
             return Ok(planned);
@@ -762,16 +794,17 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let bytes = encode_event(self.reducer.authority(), &event)?;
         let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
         if !owner
-            .append_interaction(
+            .append_conversation(
                 self.stream.path().clone(),
                 command.expected_revision,
                 &key,
                 Bytes::from(bytes),
+                write,
             )
             .await?
         {
             return Err(Error::Conflict(
-                "task interaction publication lost its owner or conversation tail".into(),
+                "task publication lost its owner or conversation tail".into(),
             ));
         }
         self.reducer

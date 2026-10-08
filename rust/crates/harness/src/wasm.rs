@@ -1208,6 +1208,25 @@ pub fn digest_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
         .to_vec())
 }
 
+/// Binds the exact native request without rounding its filesystem work counters
+/// through JavaScript numbers. This performs no native dispatch or path lookup.
+#[cfg(feature = "filesystem")]
+#[wasm_bindgen(js_name = nativeProcessApprovalDigest)]
+pub fn native_process_approval_digest(
+    task: &str,
+    command: &str,
+    request_json: &str,
+) -> Result<Vec<u8>, JsValue> {
+    let task = crate::TaskId::parse(task).map_err(js_error)?;
+    let command = crate::OperationId::parse(command).map_err(js_error)?;
+    let request: crate::filesystem::NativeProcessRequest = serde_json::from_str(request_json)
+        .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))?;
+    request
+        .approval_digest(task, command)
+        .map(|digest| digest.to_vec())
+        .map_err(js_error)
+}
+
 /// Returns the one Rust UUID spelling accepted for a conversation identity.
 #[wasm_bindgen(js_name = validateConversationMessageId)]
 pub fn validate_conversation_message_id(value: &str) -> Result<String, JsValue> {

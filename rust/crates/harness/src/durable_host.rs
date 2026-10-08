@@ -147,6 +147,19 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    pub(crate) fn require_volume_grant(
+        &self,
+        volume: &crate::conversation::VolumeRef,
+        operation: crate::conversation::VolumeOperation,
+    ) -> Result<()> {
+        let grant = volume.capability(operation)?;
+        if !self.input_grants.contains(&grant) {
+            return Err(Error::Unauthorized(format!("task scope lacks {grant}")));
+        }
+        Ok(())
+    }
+
     pub(crate) fn require_interaction_grant(&self) -> Result<()> {
         if !self.input_grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::Unauthorized(
@@ -303,22 +316,30 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .await
     }
 
-    pub(crate) async fn append_interaction(
+    pub(crate) fn require_effect_grants(&self, provider: &str, planning: bool) -> Result<()> {
+        for grant in [
+            capability::EFFECT_RUN.to_owned(),
+            capability::effect_provider(provider),
+        ] {
+            if !self.input_grants.contains(&grant) {
+                return Err(Error::Unauthorized(format!("task scope lacks {grant}")));
+            }
+        }
+        if planning && !self.input_grants.contains(capability::EFFECT_PLAN) {
+            return Err(Error::Unauthorized("task scope lacks effect:plan".into()));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn append_conversation(
         &self,
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
         key: &StreamKey,
         bytes: Bytes,
+        write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
-        self.require_interaction_grant()?;
-        self.append(
-            path,
-            expected_tail,
-            key,
-            bytes,
-            crate::distributed::JournalWrite::Fresh,
-        )
-        .await
+        self.append(path, expected_tail, key, bytes, write).await
     }
 
     pub(crate) async fn append_execution(
@@ -2792,6 +2813,299 @@ mod tests {
             })
         }
     }
+
+    #[cfg(feature = "filesystem")]
+    struct EffectTaskFixture<P> {
+        host: Arc<CoordinatorTaskHost<P>>,
+        binding: TaskJournalOwner<P>,
+        payloads: Arc<MemoryPayloads>,
+        runtime_scope: RuntimeScope,
+    }
+
+    #[cfg(feature = "filesystem")]
+    async fn effect_task_fixture<P: StreamProvider>(
+        stream: StreamClient<P>,
+        provider: &str,
+        additional: Vec<String>,
+    ) -> Result<EffectTaskFixture<P>> {
+        let payloads = Arc::new(MemoryPayloads::new()?);
+        let authority = Authority {
+            kind: AggregateKind::Task,
+            id: "effect-task-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("effect-task", [51; 32], authority.clone());
+        let mut grants = vec![
+            "operation:declare".into(),
+            "operation:observe".into(),
+            "operation:cancel".into(),
+            "task:spawn:test.effect@1".into(),
+            "effect:run".into(),
+            "effect:plan".into(),
+            capability::effect_provider(provider),
+            payloads
+                .volume
+                .capability(crate::conversation::VolumeOperation::Read)?,
+        ];
+        grants.extend(additional);
+        let grants = Capabilities::new(grants);
+        let signed = issuer.root("owner", grants.clone());
+        let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
+        let implementation = Arc::new(BatchMachine {
+            identity: MachineIdentity {
+                name: "test.effect".into(),
+                version: "1".into(),
+                digest: [52; 32],
+            },
+            schema: serde_json::json!({"type":"integer"}),
+        });
+        let definition = TaskDefinition::<Value, Value>::resumable(
+            implementation.clone(),
+            serde_json::json!({"type":"integer"}),
+            serde_json::json!({"type":"integer"}),
+        )?;
+        let task_identity = definition.identity().clone();
+        let machine = implementation.identity.clone();
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let mut machines = MachineRegistry::default();
+        machines.register(implementation)?;
+        let host = Arc::new(CoordinatorTaskHost::new(
+            DistributedCoordinator::open(&stream, payloads.clone()).await?,
+            stream.clone(),
+            payloads.clone(),
+            payloads.clone(),
+            authority,
+            signed,
+            issuer.verifier(),
+            runtime_scope.clone(),
+            tasks,
+            machines,
+            Arc::new(SystemUnixMillisClock),
+        )?);
+        let operation = OperationId::from_bytes([53; 16]);
+        let task = TaskId::from_bytes(operation.into_bytes());
+        host.admit(TaskAdmissionRecord {
+            operation_id: operation,
+            task: task_identity,
+            machine,
+            input: serde_json::json!(0),
+            input_schema: serde_json::json!({"type":"integer"}),
+            output_schema: serde_json::json!({"type":"integer"}),
+            parent: None,
+            grants: runtime_scope.grants().clone(),
+            limits: runtime_scope.limits(),
+            run_limits: runtime_scope.run_limits(),
+            policy: None,
+            extensions: None,
+            execution: None,
+        })
+        .await?;
+        let crate::distributed::WorkPull::Claimed(lease) = host
+            .pull_work(&crate::distributed::Worker {
+                id: "effect-worker".into(),
+                available: Default::default(),
+                labels: BTreeMap::new(),
+            })
+            .await?
+        else {
+            return Err(Error::NotFound("effect lease".into()));
+        };
+        host.start_task(&lease).await?;
+        let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+        let binding = host.journal_owner(task, fence.clone()).await?;
+        Ok(EffectTaskFixture {
+            host,
+            binding,
+            payloads,
+            runtime_scope,
+        })
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn task_effect_dispatch_race_and_cancelled_settlement_use_one_owner() -> Result<()> {
+        use crate::{
+            core::{EffectGuarantee, EffectStatus, SchemaRegistry},
+            effect_host::{ConversationEffectHost, TaskEffectPlan},
+            effects::{EffectDispatch, EffectObservation, EffectProvider, EffectRegistry},
+        };
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct ReceiptProvider {
+            calls: AtomicUsize,
+            known: AtomicBool,
+            request: Mutex<Option<EffectDispatch>>,
+        }
+        impl EffectProvider for ReceiptProvider {
+            fn id(&self) -> &str {
+                "test.receipt"
+            }
+            fn guarantees(&self, _: &str) -> BTreeSet<EffectGuarantee> {
+                BTreeSet::from([EffectGuarantee::AtMostOnce])
+            }
+            fn linearizable_reconciliation(&self) -> bool {
+                false
+            }
+            fn dispatch<'a>(
+                &'a self,
+                request: EffectDispatch,
+            ) -> BoxFuture<'a, Result<EffectObservation>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    *self.request.lock().await = Some(request);
+                    Err(Error::Storage("lost provider reply".into()))
+                })
+            }
+            fn reconcile<'a>(
+                &'a self,
+                attempt: crate::EffectAttemptId,
+            ) -> BoxFuture<'a, Result<Option<EffectObservation>>> {
+                Box::pin(async move {
+                    if !self.known.load(Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    let request = self
+                        .request
+                        .lock()
+                        .await
+                        .clone()
+                        .ok_or_else(|| Error::NotFound("receipt".into()))?;
+                    assert_eq!(request.attempt_id, attempt);
+                    Ok(Some(EffectObservation {
+                        provider: request.provider,
+                        effect_id: request.effect_id,
+                        attempt_id: attempt,
+                        request_digest: request.request_digest,
+                        guarantee: request.guarantee,
+                        status: EffectStatus::Failed {
+                            message: "observed exit".into(),
+                        },
+                    }))
+                })
+            }
+        }
+
+        let EffectTaskFixture {
+            host,
+            binding,
+            payloads,
+            runtime_scope,
+        } = effect_task_fixture(
+            StreamClient::new(Arc::new(MemoryStream::default())),
+            "test.receipt",
+            Vec::new(),
+        )
+        .await?;
+        let stream = binding.stream();
+        let operation = binding.operation_id();
+        let (task, fence) = binding.task_binding();
+        let request = payloads.stage(operation, "request", b"{}").await?;
+        let schema = FileRef::new(
+            request.volume().clone(),
+            request.path(),
+            request.version(),
+            FileDescriptor::from_bytes(b"{}", "application/schema+json")?,
+            "schema.json",
+        )?;
+        let plan = TaskEffectPlan {
+            provider: "test.receipt".into(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            effect_kind: "test.exit.v1".into(),
+            request,
+            result_schema: schema,
+        };
+        let receipt = Arc::new(ReceiptProvider {
+            calls: AtomicUsize::new(0),
+            known: AtomicBool::new(false),
+            request: Mutex::new(None),
+        });
+        let mut providers = EffectRegistry::default().with_result_resolver(payloads.clone());
+        providers.register(receipt.clone())?;
+        let conversation = Authority {
+            kind: AggregateKind::Conversation,
+            id: "effect-conversation".into(),
+        };
+        let conversation_issuer =
+            AuthorityIssuer::new("effect-conversation", [54; 32], conversation.clone());
+        let conversation_scope = conversation_issuer.root("owner", runtime_scope.grants().clone());
+        // Deliberately use another client: task reads and conditional writes must
+        // still use the exact coordinator provider retained by the binding.
+        let effects = ConversationEffectHost::new(
+            StreamClient::new(Arc::new(MemoryStream::default())),
+            conversation.clone(),
+            conversation_issuer.clone(),
+            conversation_scope,
+            SchemaRegistry::new(),
+            payloads.clone(),
+            providers,
+        )?;
+        let command = OperationId::from_bytes([55; 16]);
+        let (first, second) = tokio::join!(
+            effects.run_task_effect(&binding, command, plan.clone()),
+            effects.run_task_effect(&binding, command, plan.clone())
+        );
+        assert!(matches!(
+            (&first, &second),
+            (Err(_), Ok(EffectStatus::Indeterminate)) | (Ok(EffectStatus::Indeterminate), Err(_))
+        ));
+        assert_eq!(receipt.calls.load(Ordering::SeqCst), 1);
+        let mut mutated = plan.clone();
+        mutated.effect_kind = "changed.v1".into();
+        assert!(matches!(
+            effects
+                .run_task_effect(&binding, command, mutated.clone())
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            effects
+                .reconcile_task_effect(&binding, command, &mutated)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        host.cancel(task).await?;
+        assert!(
+            effects
+                .run_task_effect(&binding, command, plan.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            effects
+                .reconcile_task_effect(&binding, command, &plan)
+                .await?,
+            EffectStatus::Indeterminate
+        );
+        receipt.known.store(true, Ordering::SeqCst);
+        assert_eq!(
+            effects
+                .reconcile_task_effect(&binding, command, &plan)
+                .await?,
+            EffectStatus::Failed {
+                message: "observed exit".into()
+            }
+        );
+        let aggregate = crate::store::StreamAggregate::open(
+            &stream,
+            conversation,
+            conversation_issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?;
+        assert_eq!(aggregate.reducer().revision(), 3);
+        assert_eq!(receipt.calls.load(Ordering::SeqCst), 1);
+        host.settle_task(task, fence, Outcome::Cancelled).await?;
+        assert!(
+            effects
+                .reconcile_task_effect(&binding, command, &plan)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    mod native_process_tests;
 
     #[tokio::test]
     async fn model_claims_use_pinned_ceiling_and_current_owner() -> Result<()> {

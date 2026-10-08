@@ -4,9 +4,99 @@ The task, workflow, execution and conversation journals remain authoritative.
 These are implementation invariants and regression targets, not unrestricted
 correctness proofs. No machine-checked proof is supplied by this table.
 
+The optional `native-execution` adapter composes an approved one-shot process
+with these same journals. `FilesystemTaskCommands::with_effects` selects the
+existing effect registry; `acyclic.effect.v1` carries a `TaskEffectPlan` with
+immutable request and result-schema files. The host binds `NativeProcessProvider`
+to one task command, its retained lease, resolved approval and prepared view.
+Portable request, result and namespace data are available with `filesystem`;
+OS dispatch additionally requires `native-execution` on a native target.
+
+Approval covers the exact executable, ordered arguments, working directory,
+selected environment after `env_clear`, output/control allowances and ordered
+volume manifest. The host must maintain the selected executable path's integrity;
+the request does not attest executable binary contents. The manifest pins generations, authority revision digests,
+paths and per-volume work allowances. Host credentials and publication permits
+are capabilities supplied separately. `NativeVolumeView` materializes ordinary
+directories; it does not start an OS mount driver. Source generations cannot
+publish, and source integrity is checked before destination publication. Each
+destination retains its original authority and generation conflict checks.
+Publication across destinations is independent and may partially succeed.
+The result publisher binds one separately authorized output volume. That volume
+must be outside the materialized view: staging the durable result otherwise
+changes a pinned destination head or the protected source volume. Construction
+rejects this unsupported configuration before dispatch. Result-schema storage
+is independent of result storage and needs only its retained read permission.
+
+The existing conversation effect plan and dispatch must commit before the native
+launch receipt. Only the launch-receipt winner starts the process. An observed
+receipt must commit before an effect can return a known result. Recovery reads
+the exact attempt and never repeats a launch whose OS outcome is unknown.
+`NativeProcessResult.success` describes the program exit; a retained invocation
+result can therefore be an effect `Succeeded` even when the program exits
+nonzero or a bounded capture stops with confirmed cleanup. Stopped captures
+retain bounded output prefixes and a typed stop condition, and skip destination
+publication. Unconfirmed cleanup or failed/partial destination publication stays
+`Indeterminate`; `output` can expose its retained diagnostic file without
+changing that status or releasing scheduler ownership. Result staging or
+receipt failure cannot promise a durable output file.
+
+Cancellation first records the existing durable task intent. The process owner
+observes that intent through the retained lease and performs mandatory cleanup;
+the task cannot claim terminal cancellation or released capacity from an unknown
+attempt. Dropping the caller/provider while the host remains alive does not
+destroy the supervisor. Host death leaves a launch-only receipt unknown; no PID
+adoption or implicit replay is provided. Windows job containment and Unix
+process-group cleanup assume cooperative ordinary host processes. They are not
+a confinement boundary; Unix signal delivery does not prove every descendant
+has been reaped. Capture allowance, durable-intent observation and platform
+cleanup have separate bounds rather than one hard wall-clock deadline.
+
+The `native_process_tests` fixtures execute real children and explicitly selected
+Bash, verify multi-volume publication, approval mutation/denial, cancellation
+after provider destruction, receipt acknowledgement faults, bounded output and
+publication conflicts. The receipt-reopen fixture now drops the task, Stream,
+process, view and Filesystem handles and reopens local coordinator and Filesystem
+storage before reconciliation. The separate host-termination fixture kills and
+reaps the actual host child after its native child confirms launch, then reopens
+the same local stores. It checks a launch-only receipt, no replay or destination
+publication, and reservation retention through cancellation. Its Unix child
+finishes within a fixture bound; this does not model power loss or prove orphan
+containment. Formal, installed-consumer, macOS and final-source qualification remain separate gates;
+these regression descriptions do not establish those gates.
+
+The public `approved-native-process` example constructs the existing task,
+approval and effect owners, executes a real child, verifies SDK destination
+publication, destroys its provider and recovers without redispatch. The installed
+package gate runs this example from the archived crate and retains its hashed
+`NATIVE-CONSUMER.log`. `native-process-approval` and its JS fixture compare exact
+Rust/WASM data identities; browser receipts additionally pin the run and generated
+artifact hashes, and a missing browser receipt fails the browser-mode fixture.
+
+| Native invariant | Existing owner/mechanism | Assumptions | Focused verification |
+| --- | --- | --- | --- |
+| Only the exact approved invocation launches. | Typed request digest, resolved task interaction, retained task grants and `TaskJournalOwner` fence checks. | Trusted issuer, immutable content, collision-resistant canonical digest, linearizable Stream. | Approval mutation/denial and unadmitted dispatch controls; public Rust/WASM digest vectors, including exact integers above JavaScript's safe range. |
+| An attempt launches at most once and uncertainty retains ownership. | Conversation dispatch claim, fenced launch/observed receipt, existing effect settlement and scheduler reservation. | Stream durability and linearizability; host-only provider wiring; no PID adoption. | Receipt failures before/after commit, provider destruction, all-local-store reopen, actual host termination, and 256 production owner-guard combinations. The bounded guard check is not a proof of the full scheduler or OS lifecycle. |
+| Protected SDK sources cannot publish, and each destination retains its original publication authority. | Read-only `NativeWorkingSet` candidates, source-integrity verification before publication, original per-volume permit/head checks. | Cooperative materialized directories; no process confinement; independent destination publication. | Real Bash with 19 distinct selected volumes; source-mutation rejection; physical path alias controls; concurrent and partial destination publication. |
+| Known process failures retain bounded output without fresh dispatch. | Shared `ProcessTree` capture/cleanup loop; separately authorized result publisher; observed receipt before effect return. | Selected OS cleanup semantics and durable storage; schema/output/control bounds; result storage outside the view. | Nonzero exit, timeout, overflow, cancellation after provider destruction, result-store alias rejection and a read-only schema volume. Kani proves the shared capture-admission arithmetic only. |
+
+The standalone Kani harness in `tests/formal/native_capture_bounds.rs` includes
+the exact production `filesystem/native_capture_bounds.rs` predicate used by
+`NativeProcessRequest::has_valid_capture_allowances` and native admission. It
+quantifies all five `u32` inputs and checks both accepted and rejected cases,
+including overflow checks and sufficient JSON-result capacity. The separate
+`native_capture_bounds_negative.rs` controls deliberately assert acceptance of
+a zero timeout and an output allowance too large for any `u32` result allowance;
+both must fail. This proves admission arithmetic only, and does not prove OS
+cleanup, authority, receipt linearizability, schema size or scheduler recovery.
+Use Kani 0.68.0, CBMC 6.11.0 and the installation's pinned
+`nightly-2026-08-21` toolchain, explicitly selecting `--solver cadical --jobs 1`.
+Run the positive and negative files independently with the standalone Kani
+driver, and retain its source hashes, tool versions, raw logs and exit statuses.
+
 | Invariant | Production mechanism | Assumptions | Verification and evidence |
 | --- | --- | --- | --- |
-| A task-bound interaction request cannot publish or replay through a replaced/cancelled lease, and request routing does not grant response authority. | `with_interaction_owner` binds the existing conversation owner on the task journal providers; `execute_task_interaction` uses the same conversation reducer/content checks, then `TaskJournalOwner` atomically compares task and conversation tails. Request/outcome observations recheck retained task grants and ownership. Resolution remains conversation-owned. | Linearizable multi-stream transactions, immutable request files, trusted conversation and task bindings; provider uncertainty retains task ownership. | The existing `model_claims_use_pinned_ceiling_and_current_owner` and `owned_task_journal_guards_survive_local_stream_reopen` fixtures now publish/replay one exact approval, reject changed requests and stale journals, and reject prepared appends after lease replacement/cancellation. Cancellation permits outcome observation under the retained lease. This owner-guard fixture uses Memory Filesystem payloads. Separate durable-local worker fixtures now cover full approval-store reopen and passive approval/wake composition; further response/provider faults and platform gates remain open. |
+| A task-bound interaction request cannot publish or replay through a replaced/cancelled lease, and request routing does not grant response authority. | `with_interaction_owner` binds the existing conversation owner on the task journal providers; `execute_task_command` uses the same conversation reducer/content checks, then `TaskJournalOwner` atomically compares task and conversation tails. Request/outcome observations recheck retained task grants and ownership. Resolution remains conversation-owned. | Linearizable multi-stream transactions, immutable request files, trusted conversation and task bindings; provider uncertainty retains task ownership. | The existing `model_claims_use_pinned_ceiling_and_current_owner` and `owned_task_journal_guards_survive_local_stream_reopen` fixtures now publish/replay one exact approval, reject changed requests and stale journals, and reject prepared appends after lease replacement/cancellation. Cancellation permits outcome observation under the retained lease. This owner-guard fixture uses Memory Filesystem payloads. Separate durable-local worker fixtures now cover full approval-store reopen and passive approval/wake composition; further response/provider faults and platform gates remain open. |
 | Stock task tool authorization cannot route its approval through an unfenced global journal or acquire responder rights. | `FilesystemTaskRuntime::with_interaction_owner` binds the conversation owner; each tool context receives the exact leased execution journal through the existing `InteractionRouter` seam and reuses task/operation ticket identity. Model journals receive the same owner when granted. | Trusted provider wiring, linearizable Stream transactions, deterministic pinned policy and immutable files. Confirmed pending approvals suspend only after the shared execution-journal quiescence proof and atomic coordinator comparison; uncertain publication retains ownership. | The durable-local policy test retries a pending ticket twice with zero tool calls, rejects the request owner as responder, resolves under the exact signed responder grant, then drops all store/runtime handles and observes one tool execution/one reconciliation with the retained approval. The model-binding test runs without interaction authority. `pending_approval_releases_slot_and_wakes_after_store_reopen` drops real stores/runtime before the response, verifies an empty worker slot, wakes under an authorized response and observes one execute/one reconcile. `cancelled_approval_is_not_woken_after_store_reopen` rejects cancelled wakes. The coordinator race fixture covers dispatch winning and lost commit acknowledgements with visible/hidden receipts. `model_approval_releases_slot_and_reconciles_tool_after_store_reopen`, `declined_model_approval_wakes_without_tool_dispatch_after_store_reopen` and `cancelled_model_approval_is_not_woken_after_store_reopen` cover model-triggered approval, decline and cancellation on real reopened stores. Further provider faults and final qualification remain open. |
 | Persistent policy composition cannot substitute an admitted policy or bypass its tool decision. | `open_with_policy_and_clock` passes the existing policy to `CoordinatorTaskHost`, `AgentHarness` and `StockExecutor`; admission checks exact identity, task tool authorization precedes `DurableToolRunner` dispatch, and stock request digests pin the policy. | Deterministic policies for their pinned identity, immutable admissions and journaled providers; approval decisions additionally need an interaction binding. | `worker_pinned_policy_approval_denies_dispatch_and_reconciles_after_reopen` denies before provider calls, executes once and reconciles once after full local store/runtime reopen, and rejects observation with a changed policy digest. `worker_pinned_policy_model_binding_survives_reopen` checks the stock model binding during one generate/one reconcile, without qualifying policy-triggered model tool calls. Runtime conversation binding now routes leased task tool approvals through the existing journal. Stock tool and model-triggered approval waits/wakes now use the same fenced scheduler. Passive readiness reads the retained exact approval without policy evaluation or provider callbacks. Execution routes, admitted deadlines and broader provider-fault qualification remain open. |
 | Cancellation never removes an owned reservation without its exact fence. | `Scheduler::apply`: cancellation records intent; owned completion and lease release require `LeaseFence`. | Trusted host acknowledges stopped ownership; Stream compare-and-append is linearizable. | `cancellation_retains_owned_capacity_until_fenced_acknowledgement` covers root/direct-child and partial/full admission; existing running-release test covers the stopped-worker path. |

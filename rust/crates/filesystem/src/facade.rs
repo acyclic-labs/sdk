@@ -8055,6 +8055,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.replica(self.dependencies.independent(), self.mode)
     }
 
+    /// Private native integrity comparison over an immutable selected reader.
+    /// It can accumulate a capture diff but carries no authority head, so it
+    /// cannot publish or fence the source volume, including exclusive writers.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn unpublishable_capture_candidate(&self) -> Self {
+        let mut candidate = self.replica(
+            self.dependencies.independent(),
+            CheckoutMode {
+                access: AccessMode::ReadWrite,
+                consistency: ConsistencyMode::Pinned,
+                mutations: MutationMode::PrivateOverlay,
+            },
+        );
+        candidate.authority_head = None;
+        candidate
+    }
+
     /// Creates a read-only observer of this checkout's current candidate.
     ///
     /// A live checkout is observed at its current generation: advancing it is

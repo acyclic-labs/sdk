@@ -63,7 +63,7 @@ pub use lazy::LazyMountSource;
 
 mod customer;
 pub use customer::{
-    LazyMount, LazyWorkingSet, Mount, MountLifecycleError, MountOptions, MountPublication,
+    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

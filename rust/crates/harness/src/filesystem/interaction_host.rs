@@ -237,7 +237,7 @@ where
             None => aggregate.reducer().revision(),
         };
         aggregate
-            .execute_task_interaction(
+            .execute_task_command(
                 Command {
                     operation_id,
                     idempotency_key: IdempotencyKey::new(format!("interaction:{operation_id}"))?,

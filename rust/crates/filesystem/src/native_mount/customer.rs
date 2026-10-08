@@ -96,9 +96,9 @@ pub struct LazyMount<A, O, D, S> {
 /// changed paths. A selected subdirectory retains its namespace path below
 /// that physical root; its contents are not remapped to the root itself.
 /// Filesystem semantics and fenced publication use an exact-generation
-/// checkout. This handle never rebinds to the live lazy source or starts a
+/// checkout. This handle never rebinds to a live source or starts a
 /// mount driver.
-pub struct LazyWorkingSet<A, O> {
+pub struct NativeWorkingSet<A, O> {
     source: Arc<CheckoutMountSource<A, O>>,
     workspace: Workspace<A, O>,
     source_root: PathBuf,
@@ -107,6 +107,7 @@ pub struct LazyWorkingSet<A, O> {
     expected_generation: GenerationId,
     baseline: Arc<NativeViewBaseline>,
     capture_budget: crate::WorkBudget,
+    writable: bool,
 }
 
 struct AbortTaskOnDrop<T>(tokio::task::JoinHandle<T>);
@@ -117,18 +118,30 @@ impl<T> Drop for AbortTaskOnDrop<T> {
     }
 }
 
-impl<A, O> LazyWorkingSet<A, O>
+impl<A, O> NativeWorkingSet<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Exact generation admitted into the physical view.
+    #[must_use]
+    pub const fn generation_id(&self) -> GenerationId {
+        self.expected_generation
+    }
+
+    /// Physical volume-root directory owned by this prepared view.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.source_root
+    }
+
     /// Revalidates a prepared native view immediately before a quiescent
     /// presentation switch. This is optimistic admission, not a lock on the
     /// workspace head: publication remains fenced by the operation permit.
     /// It reads only the selected directory metadata and the current head.
     pub async fn validate_for_presentation(&self) -> Result<(), MountLifecycleError> {
         let expected = self.expected_generation;
-        if self.workspace.head().await?.id() != expected {
+        if self.writable && self.workspace.head().await?.id() != expected {
             return Err(MountLifecycleError::Workspace(
                 WorkspaceError::StaleGeneration,
             ));
@@ -142,7 +155,7 @@ where
         .await
         .map_err(|error| MountSourceError::Engine(error.to_string()))?
         .map_err(MountLifecycleError::Source)?;
-        if self.workspace.head().await?.id() != expected {
+        if self.writable && self.workspace.head().await?.id() != expected {
             return Err(MountLifecycleError::Workspace(
                 WorkspaceError::StaleGeneration,
             ));
@@ -193,11 +206,39 @@ where
         &self,
         permit: crate::PublicationPermit,
     ) -> Result<(), MountLifecycleError> {
+        if !self.writable {
+            return Err(MountLifecycleError::Source(MountSourceError::Invalid(
+                "read-only native view cannot publish".into(),
+            )));
+        }
+        let current = self.source.shared_checkout().lock().await.generation_id();
+        if self.workspace.head().await?.id() != current {
+            return Err(MountLifecycleError::Source(MountSourceError::Stale));
+        }
         self.capture_host_subtree(&MountPath::root()).await?;
         self.source
-            .sync_async_with_permit(permit)
+            .sync_async_with_permit_budgeted(permit, self.capture_budget)
             .await
             .map_err(MountLifecycleError::Source)
+    }
+
+    /// Checks the complete selected physical subtree against its admitted
+    /// generation without publishing. Host permissions are not a sandbox:
+    /// an approved process may mutate the view, but cannot publish source edits.
+    pub async fn verify_unchanged(&self) -> Result<(), MountLifecycleError> {
+        self.capture_host_subtree(&MountPath::root()).await?;
+        if self
+            .source
+            .shared_checkout()
+            .lock()
+            .await
+            .has_pending_mutations()
+        {
+            return Err(MountLifecycleError::Source(MountSourceError::Invalid(
+                "native source view changed after admission".into(),
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -507,7 +548,7 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         permit: crate::PublicationPermit,
-    ) -> Result<LazyWorkingSet<A, O>, MountLifecycleError> {
+    ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         if !options.destination.is_absolute() {
             return Err(MountLifecycleError::Source(MountSourceError::Invalid(
                 "native working-set root must be absolute".to_owned(),
@@ -527,87 +568,19 @@ where
             .await
             .map_err(|error| MountSourceError::Engine(error.to_string()))??;
         let remaining = exact.work.remaining(budget)?;
-        let materialized = if subdirectory == "/" {
-            exact
-                .value
-                .materialize_with_mode(
-                    options,
-                    remaining,
-                    cancellation,
-                    super::MaterializeMode::ReconstructibleView,
-                )
-                .await?
-        } else {
-            exact
-                .value
-                .materialize_path_with_mode(
-                    subdirectory,
-                    options,
-                    remaining,
-                    cancellation,
-                    super::MaterializeMode::ReconstructibleView,
-                )
-                .await?
-        };
-        // Admission stays inside this operation: an arbitrary directory must
-        // never be rebound to a caller-claimed generation without having been
-        // materialized from that exact generation first.
-        let expected_generation = exact.value.id();
-        let source_root = options.destination.clone();
-        let identity_root = source_root.clone();
-        let source_identity =
-            tokio::task::spawn_blocking(move || capture_root_identity(&identity_root))
-                .await
-                .map_err(|error| MountSourceError::Engine(error.to_string()))?
-                .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-        let options = MountOptions::read_write()
-            .subdirectory(subdirectory)
-            .publication(MountPublication::Manual);
-        let (source, _, root, _) = self
-            .prepare_authored_mount_source(&options, Some(expected_generation))
-            .await?;
-        let relative = crate::namespace_to_host_path(&root)
-            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-        let validated_root = source_root.clone();
-        let selected_root = relative.clone();
-        tokio::task::spawn_blocking(move || {
-            validate_native_working_set_root(&validated_root, &selected_root, source_identity)
-        })
-        .await
-        .map_err(|error| MountSourceError::Engine(error.to_string()))?
-        .map_err(MountLifecycleError::Source)?;
-        #[cfg(unix)]
-        let baseline = NativeViewBaseline::new(source_identity);
-        #[cfg(windows)]
-        let baseline = NativeViewBaseline;
-        let _ = materialized;
-        let final_root = source_root.clone();
-        let final_selected = relative.clone();
-        tokio::task::spawn_blocking(move || {
-            validate_native_working_set_root(&final_root, &final_selected, source_identity)
-        })
-        .await
-        .map_err(|error| MountSourceError::Engine(error.to_string()))?
-        .map_err(MountLifecycleError::Source)?;
-        // Directory validation may wait for host I/O while another writer
-        // advances the workspace. Do not return an already-stale preparation.
-        if self.workspace().head().await?.id() != expected_generation {
-            return Err(MountLifecycleError::Workspace(
-                WorkspaceError::StaleGeneration,
-            ));
-        }
-        Ok(LazyWorkingSet {
-            source,
-            workspace: self.workspace().clone(),
-            source_root,
-            source_identity,
-            selected_root: relative,
-            expected_generation,
-            baseline: Arc::new(baseline),
-            capture_budget: budget,
-        })
+        exact
+            .value
+            .prepare_working_set(
+                &MountOptions::read_write()
+                    .subdirectory(subdirectory)
+                    .publication(MountPublication::Manual),
+                options,
+                remaining,
+                budget,
+                cancellation,
+            )
+            .await
     }
-
     async fn prepare_authored_mount_source(
         &self,
         options: &MountOptions,
@@ -851,12 +824,232 @@ where
     }
 }
 
+impl<A, O> crate::Generation<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Materializes this exact generation and binds its native capture owner.
+    /// Read-only views can be verified but never published. Writable views
+    /// require the admitted generation to remain the workspace head; later
+    /// publication uses the existing conflict and operation-permit mechanism.
+    /// The destination must be an existing empty absolute directory. No live
+    /// OS mount is started, and independent working sets are not jointly atomic.
+    pub async fn prepare_native_working_set(
+        &self,
+        mount: &MountOptions,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
+        self.prepare_working_set(mount, options, budget, budget, cancellation)
+            .await
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded selected-generation materialization and root-identity admission"
+    )]
+    async fn prepare_working_set(
+        &self,
+        mount: &MountOptions,
+        options: &crate::MaterializeOptions,
+        preparation_budget: crate::WorkBudget,
+        capture_budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
+        if !options.destination.is_absolute() || mount.publication != MountPublication::Manual {
+            return Err(MountLifecycleError::Source(MountSourceError::Invalid(
+                "native working set requires an absolute root and manual publication".into(),
+            )));
+        }
+        let workspace = self.workspace();
+        let expected_generation = self.id();
+        if mount.writable && workspace.head().await?.id() != expected_generation {
+            return Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration,
+            ));
+        }
+        let mode = if mount.writable {
+            CheckoutMode::tracking_transaction()
+        } else {
+            CheckoutMode::read_only_pinned()
+        };
+        let receipt = workspace
+            .engine_checkout_measured(
+                GenerationSelector::Exact(expected_generation),
+                mode,
+                preparation_budget,
+                cancellation,
+            )
+            .await?;
+        let remaining = receipt.work.remaining(preparation_budget)?;
+        let mut checkout = if mount.writable {
+            receipt.value
+        } else {
+            receipt.value.unpublishable_capture_candidate()
+        };
+        let config = checkout.volume_config();
+        let root = customer_path(&mount.subdirectory, config)?;
+        let selected = checkout
+            .lookup_no_follow(&root, remaining, cancellation)
+            .await
+            .map_err(WorkspaceError::engine)?;
+        if selected
+            .value
+            .record
+            .is_none_or(|record| record.kind != FileKind::Directory)
+        {
+            return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
+        }
+        let remaining = selected.work.remaining(remaining)?;
+        if mount.subdirectory == "/" {
+            self.materialize_with_mode(
+                options,
+                remaining,
+                cancellation,
+                super::MaterializeMode::ReconstructibleView,
+            )
+            .await?;
+        } else {
+            self.materialize_path_with_mode(
+                &mount.subdirectory,
+                options,
+                remaining,
+                cancellation,
+                super::MaterializeMode::ReconstructibleView,
+            )
+            .await?;
+        }
+        let source_root = options.destination.clone();
+        let selected_root = crate::namespace_to_host_path(&root)
+            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+        let identity_root = source_root.clone();
+        let source_identity =
+            tokio::task::spawn_blocking(move || capture_root_identity(&identity_root))
+                .await
+                .map_err(|error| MountSourceError::Engine(error.to_string()))?
+                .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+        let validated_root = source_root.clone();
+        let relative = selected_root.clone();
+        tokio::task::spawn_blocking(move || {
+            validate_native_working_set_root(&validated_root, &relative, source_identity)
+        })
+        .await
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?
+        .map_err(MountLifecycleError::Source)?;
+        let baseline = if mount.writable {
+            NativeViewBaseline::new(source_identity)
+        } else {
+            NativeViewBaseline::read_only(source_identity)
+        };
+        let shared = Arc::new(SharedCheckout::with_publication(
+            checkout,
+            MountPublication::Manual,
+        ));
+        let source = Arc::new(CheckoutMountSource::new_at(shared, config, root)?);
+        if mount.writable && workspace.head().await?.id() != expected_generation {
+            return Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration,
+            ));
+        }
+        Ok(NativeWorkingSet {
+            source,
+            workspace,
+            source_root,
+            source_identity,
+            selected_root,
+            expected_generation,
+            baseline: Arc::new(baseline),
+            capture_budget,
+            writable: mount.writable,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::demand::native::NativeDemandSource;
     use crate::model::{FilesystemProfile, VolumeLimits};
     use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
+
+    #[tokio::test]
+    async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurrent_head()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("pinned-native-view").await?;
+        workspace.write_text("/file.txt", "original").await?;
+        let admitted = workspace.head().await?;
+        workspace.write_text("/file.txt", "concurrent").await?;
+        let concurrent = workspace.head().await?.id();
+        let source_root = tempfile::tempdir()?;
+        let source = admitted
+            .prepare_native_working_set(
+                &MountOptions::read_only(),
+                &crate::MaterializeOptions::native(source_root.path()),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await?;
+        source.validate_for_presentation().await?;
+        source.verify_unchanged().await?;
+        assert_eq!(
+            std::fs::read_to_string(source_root.path().join("file.txt"))?,
+            "original"
+        );
+        assert_eq!(source.generation_id(), admitted.id());
+        assert!(
+            source
+                .sync_with_permit(PublicationPermit::Unrestricted)
+                .await
+                .is_err()
+        );
+        std::fs::write(source_root.path().join("file.txt"), "source mutation")?;
+        assert!(source.verify_unchanged().await.is_err());
+        assert_eq!(workspace.head().await?.id(), concurrent);
+
+        let destination_root = tempfile::tempdir()?;
+        let write = MountOptions::read_write().publication(MountPublication::Manual);
+        assert!(matches!(
+            admitted
+                .prepare_native_working_set(
+                    &write,
+                    &crate::MaterializeOptions::native(destination_root.path()),
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await,
+            Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration
+            ))
+        ));
+        let destination = workspace
+            .head()
+            .await?
+            .prepare_native_working_set(
+                &write,
+                &crate::MaterializeOptions::native(destination_root.path()),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await?;
+        std::fs::write(destination_root.path().join("file.txt"), "native edit")?;
+        workspace
+            .write_text("/file.txt", "newer concurrent")
+            .await?;
+        assert!(destination.validate_for_presentation().await.is_err());
+        assert!(
+            destination
+                .sync_with_permit(PublicationPermit::Unrestricted)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            workspace.read("/file.txt", 64).await?.as_ref(),
+            b"newer concurrent"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()

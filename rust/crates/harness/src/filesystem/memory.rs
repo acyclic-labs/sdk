@@ -1,7 +1,10 @@
 //! Infrastructure-free Harness storage with the same Stream/Filesystem contracts.
 
 use crate::contract::capability;
-use crate::filesystem::{FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost};
+use crate::filesystem::{
+    FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
+    FilesystemHost,
+};
 use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result,
@@ -348,7 +351,7 @@ impl ToolProjection for LocalListFilesTool {
 
 impl ToolExecutor for LocalStageFileTool {
     fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
-        require_volume_grant(scope, &self.publisher.volume, VolumeOperation::Write)
+        require_volume_grant(scope, self.publisher.volume(), VolumeOperation::Write)
     }
 
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
@@ -362,23 +365,16 @@ impl ToolExecutor for LocalStageFileTool {
                 IdempotencyKey::new(format!("local-tool-stage:{}", invocation.operation_id))?;
             let file = self
                 .publisher
-                .host
-                .put_content(
-                    &self.publisher.volume,
-                    &self.publisher.write,
+                .files
+                .stage_with_retry(
                     &input.path,
                     input.text.as_bytes(),
                     &input.media_type,
                     &input.display_name,
-                    self.maximum_bytes,
                     &retry,
                 )
                 .await?;
-            self.publisher
-                .memory_store
-                .lock()
-                .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-                .stage_reference(&file, input.text.as_bytes(), true)?;
+            let file = self.publisher.retain(file, input.text.as_bytes())?;
             Ok(ToolResult {
                 value: json!({"file": file}),
             })
@@ -458,16 +454,13 @@ impl ToolProjection for LocalReadFileTool {
 }
 
 struct MemoryContentPublisher {
-    host: Arc<MemoryHost>,
-    volume: VolumeRef,
-    write: ContentGrant,
-    maximum_file_bytes: u64,
+    files: FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
 impl ContentPublisher for MemoryContentPublisher {
     fn volume(&self) -> &VolumeRef {
-        &self.volume
+        self.files.volume()
     }
 
     fn stage<'a>(
@@ -479,32 +472,24 @@ impl ContentPublisher for MemoryContentPublisher {
         display_name: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move {
-            let path_digest = blake3::hash(path.as_bytes());
-            let retry = IdempotencyKey::new(format!(
-                "local-upload:{operation_id}:{}",
-                path_digest.to_hex()
-            ))?;
             let persisted = self
-                .host
-                .put_content(
-                    &self.volume,
-                    &self.write,
-                    path,
-                    bytes,
-                    media_type,
-                    display_name,
-                    self.maximum_file_bytes,
-                    &retry,
-                )
+                .files
+                .stage(operation_id, path, bytes, media_type, display_name)
                 .await?;
-            let staged = self
-                .memory_store
-                .lock()
-                .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-                .stage_reference(&persisted, bytes, true)?;
-            debug_assert_eq!(persisted, staged);
-            Ok(persisted)
+            self.retain(persisted, bytes)
         })
+    }
+}
+
+impl MemoryContentPublisher {
+    fn retain(&self, persisted: FileRef, bytes: &[u8]) -> Result<FileRef> {
+        let staged = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+            .stage_reference(&persisted, bytes, true)?;
+        debug_assert_eq!(persisted, staged);
+        Ok(persisted)
     }
 }
 
@@ -698,10 +683,13 @@ impl MemoryHarnessStorage {
             .with_input_verifier(input.clone()),
         );
         let publisher = Arc::new(MemoryContentPublisher {
-            host: Arc::clone(&host),
-            volume: volume.clone(),
-            write: write.clone(),
-            maximum_file_bytes,
+            files: FilesystemContentPublisher::new(
+                Arc::clone(&host),
+                volume.clone(),
+                &issuer.verifier(),
+                &scope,
+                maximum_file_bytes,
+            )?,
             memory_store: memory_store.clone(),
         });
         Ok(Self {
