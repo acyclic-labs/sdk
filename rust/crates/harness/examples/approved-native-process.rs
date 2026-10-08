@@ -18,8 +18,9 @@ use acyclic_harness::{
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
         FilesystemHost, FilesystemTaskRuntime, NATIVE_PROCESS_EFFECT_KIND, NativeProcessAuthority,
-        NativeProcessProvider, NativeProcessRequest, NativeProcessResult, NativeViewOptions,
-        NativeVolumeBinding, NativeVolumeView, workspace_ref,
+        NativeProcessProvider, NativeProcessRequest, NativeProcessResult, NativeProcessStopKind,
+        NativeViewManifest, NativeViewOptions, NativeVolumeBinding, NativeVolumeView,
+        workspace_ref,
     },
     interaction::{Interaction, InteractionResponse},
     mcp::{
@@ -34,7 +35,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream, StreamClient, StreamProvider};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -62,19 +63,16 @@ impl ResumableMachine for Machine {
 }
 
 type Files = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
-type Runtime = FilesystemTaskRuntime<
-    MemoryStream,
-    acyclic_fs::MemoryAuthorityBackend,
-    acyclic_fs::MemoryObjectBackend,
->;
+type Runtime<P> =
+    FilesystemTaskRuntime<P, acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
-async fn runtime(
-    stream: StreamClient<MemoryStream>,
+async fn runtime<P: StreamProvider>(
+    stream: StreamClient<P>,
     files: Arc<Files>,
     volume: VolumeRef,
     issuer: &AuthorityIssuer,
     scope: &Scope,
-) -> Result<Runtime> {
+) -> Result<Runtime<P>> {
     let machine = Arc::new(Machine {
         identity: MachineIdentity {
             name: "example.native".into(),
@@ -136,11 +134,26 @@ async fn runtime(
     Ok(runtime)
 }
 
+async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    run_on(
+        mcp,
+        StreamClient::new(Arc::new(MemoryStream::default())),
+        None,
+        false,
+    )
+    .await
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "self-contained public composition example with explicit capabilities and no private SDK helpers"
 )]
-async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn run_on<P: StreamProvider>(
+    mcp: bool,
+    stream: StreamClient<P>,
+    receipt_fault: Option<(&str, bool)>,
+    lost_response: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let provider = ProviderRef::new("example", "filesystem", "1")?;
     let files = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([1; 16]);
@@ -214,7 +227,6 @@ async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
             &IdempotencyKey::new("example-source")?,
         )
         .await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
     let runtime = runtime(
         stream.clone(),
         files.clone(),
@@ -300,35 +312,7 @@ async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
         )
         .await?,
     );
-    let request = NativeProcessRequest {
-        executable: std::env::current_exe()?,
-        argv: vec![
-            if mcp {
-                "--mcp-native-child"
-            } else {
-                "--native-child"
-            }
-            .into(),
-        ],
-        cwd: view.manifest().options.root.clone(),
-        environment: BTreeMap::from([
-            ("APPROVED_TOKEN".into(), "exact-token".into()),
-            ("MCP_MAX_BYTES".into(), "4096".into()),
-        ]),
-        timeout_ms: 10_000,
-        control_timeout_ms: 250,
-        cancellation_poll_ms: 10,
-        maximum_output_bytes: 8192,
-        maximum_result_bytes: 65_536,
-        mcp_stdio: mcp.then(|| McpStdioRequest {
-            initialization: OperationId::from_bytes([31; 16]),
-            operation: OperationId::from_bytes([32; 16]),
-            method: McpStdioMethod::CallTool,
-            params: json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}}),
-            maximum_bytes: 4096,
-        }),
-        view: view.manifest().clone(),
-    };
+    let request = native_request(mcp, lost_response, view.manifest().clone())?;
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
         issuer.verifier(),
@@ -424,44 +408,21 @@ async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
         content.clone(),
         registry,
     )?;
-    let status = effects
-        .run_task_effect(&owner, command, plan.clone())
-        .await?;
-    let EffectStatus::Succeeded { result } = &status else {
-        return Err(format!("unobserved native result: {status:?}").into());
-    };
-    let output: NativeProcessResult = serde_json::from_slice(&content.read(result).await?)?;
-    if mcp {
-        if request.mcp_response(&output)?
-            != json!({
-                "content":[{"type":"text","text":"héllo"}],
-                "structuredContent":{"text":"héllo","sequence":u64::MAX}
-            })
-        {
-            return Err("incorrect MCP process result".into());
-        }
-    } else if !output.success
-        || !output
-            .stdout
-            .windows(b"exact-token".len())
-            .any(|bytes| bytes == b"exact-token")
-    {
-        return Err("incorrect native result".into());
-    }
-    let destination_ref =
-        workspace_ref(destination.provider().clone(), &destination.storage_name()?)?;
-    if files
-        .read(&destination_ref, None, "/output.txt", 128)
-        .await?
-        .as_ref()
-        != b"public native consumer"
-    {
-        return Err("destination was not published".into());
-    }
+    let first = effects.run_task_effect(&owner, command, plan.clone()).await;
+    let status = verify_first_result(
+        first,
+        content.as_ref(),
+        &request,
+        receipt_fault,
+        lost_response,
+    )
+    .await?;
+    let applied = receipt_fault.is_none_or(|(kind, _)| kind == "observed");
+    verify_publication(&files, &destination, applied && !lost_response).await?;
     drop(effects);
     drop(process);
     drop(view);
-    std::fs::remove_file(directory.path().join("destination/output.txt"))?;
+    remove_physical_output(directory.path(), applied)?;
     let recovered = Arc::new(
         NativeProcessProvider::<
             _,
@@ -478,25 +439,208 @@ async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
         issuer,
         scope,
         SchemaRegistry::new(),
-        content,
+        content.clone(),
         registry,
     )?;
-    if effects.run_task_effect(&owner, command, plan).await? != status
+    let recovered_status = effects
+        .reconcile_task_effect(&owner, command, &plan)
+        .await?;
+    verify_recovered_status(&recovered_status, status.as_ref(), receipt_fault)?;
+    if let EffectStatus::Succeeded { result } = &recovered_status
+        && mcp
+    {
+        let output: NativeProcessResult = serde_json::from_slice(&content.read(result).await?)?;
+        verify_mcp_result(&request, &output, lost_response)?;
+    }
+    if effects.run_task_effect(&owner, command, plan).await? != recovered_status
         || directory.path().join("destination/output.txt").exists()
     {
         return Err("receipt recovery repeated native execution".into());
     }
-    if mcp && std::fs::read(directory.path().join("destination/calls.txt"))? != b"call\n" {
-        return Err("MCP call was not applied exactly once in this observed exchange".into());
+    if mcp {
+        verify_mcp_calls(directory.path(), applied)?;
     }
-    println!(
-        "approved {} execution, SDK publication and receipt-only recovery passed",
-        if mcp { "MCP stdio" } else { "native" }
-    );
+    if receipt_fault.is_none() && !lost_response {
+        println!(
+            "approved {} execution, SDK publication and receipt-only recovery passed",
+            if mcp { "MCP stdio" } else { "native" }
+        );
+    }
     Ok(())
 }
 
-fn mcp_native_child() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn verify_publication(
+    files: &Files,
+    destination: &VolumeRef,
+    expected: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let reference = workspace_ref(destination.provider().clone(), &destination.storage_name()?)?;
+    let published = files.read(&reference, None, "/output.txt", 128).await;
+    if expected {
+        if published?.as_ref() != b"public native consumer" {
+            return Err("destination was not published".into());
+        }
+    } else {
+        match published {
+            Err(acyclic_harness::Error::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err("destination was published without a complete capture".into()),
+        }
+    }
+    Ok(())
+}
+
+fn native_request(
+    mcp: bool,
+    lost_response: bool,
+    view: NativeViewManifest,
+) -> std::result::Result<NativeProcessRequest, Box<dyn std::error::Error>> {
+    Ok(NativeProcessRequest {
+        executable: std::env::current_exe()?,
+        argv: vec![
+            if lost_response {
+                "--mcp-native-lost-response"
+            } else if mcp {
+                "--mcp-native-child"
+            } else {
+                "--native-child"
+            }
+            .into(),
+        ],
+        cwd: view.options.root.clone(),
+        environment: BTreeMap::from([
+            ("APPROVED_TOKEN".into(), "exact-token".into()),
+            ("MCP_MAX_BYTES".into(), "4096".into()),
+        ]),
+        timeout_ms: if lost_response { 1_000 } else { 10_000 },
+        control_timeout_ms: 250,
+        cancellation_poll_ms: 10,
+        maximum_output_bytes: 8192,
+        maximum_result_bytes: 65_536,
+        mcp_stdio: mcp.then(|| McpStdioRequest {
+            initialization: OperationId::from_bytes([31; 16]),
+            operation: OperationId::from_bytes([32; 16]),
+            method: McpStdioMethod::CallTool,
+            params: json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}}),
+            maximum_bytes: 4096,
+        }),
+        view,
+    })
+}
+
+fn remove_physical_output(
+    root: &std::path::Path,
+    applied: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let output = root.join("destination/output.txt");
+    if output.exists() != applied {
+        return Err("physical output disagrees with the receipt fault boundary".into());
+    }
+    if applied {
+        std::fs::remove_file(&output)?;
+    }
+    Ok(())
+}
+
+async fn verify_first_result(
+    first: Result<EffectStatus>,
+    content: &dyn ContentResidencyVerifier,
+    request: &NativeProcessRequest,
+    receipt_fault: Option<(&str, bool)>,
+    lost_response: bool,
+) -> std::result::Result<Option<EffectStatus>, Box<dyn std::error::Error>> {
+    if receipt_fault.is_some() {
+        if first.is_ok() {
+            return Err("receipt fault did not interrupt the effect".into());
+        }
+        return Ok(None);
+    }
+    let status = first?;
+    let EffectStatus::Succeeded { result } = &status else {
+        return Err(format!("unobserved native result: {status:?}").into());
+    };
+    let output: NativeProcessResult = serde_json::from_slice(&content.read(result).await?)?;
+    if request.mcp_stdio.is_some() {
+        verify_mcp_result(request, &output, lost_response)?;
+    } else if !output.success
+        || !output
+            .stdout
+            .windows(b"exact-token".len())
+            .any(|bytes| bytes == b"exact-token")
+    {
+        return Err("incorrect native result".into());
+    }
+    Ok(Some(status))
+}
+
+fn verify_recovered_status(
+    recovered: &EffectStatus,
+    first: Option<&EffectStatus>,
+    receipt_fault: Option<(&str, bool)>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if let Some((kind, lost_reply)) = receipt_fault {
+        if kind == "observed" && lost_reply {
+            if !matches!(recovered, EffectStatus::Succeeded { .. }) {
+                return Err("committed observation was not recovered".into());
+            }
+        } else if *recovered != EffectStatus::Indeterminate {
+            return Err("unknown MCP outcome became authoritative".into());
+        }
+    } else if Some(recovered) != first {
+        return Err("receipt recovery changed the observed result".into());
+    }
+    Ok(())
+}
+
+fn verify_mcp_calls(
+    root: &std::path::Path,
+    applied: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let calls = std::fs::read(root.join("destination/calls.txt"));
+    if applied {
+        if calls? != b"call\n" {
+            return Err("MCP call was not applied exactly once".into());
+        }
+    } else {
+        match calls {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err("unknown launch caused an MCP call".into()),
+        }
+    }
+    Ok(())
+}
+
+fn verify_mcp_result(
+    request: &NativeProcessRequest,
+    output: &NativeProcessResult,
+    lost_response: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if lost_response {
+        if !output.stop.as_ref().is_some_and(|stop| {
+            stop.kind == NativeProcessStopKind::Timeout && stop.cleanup_completed
+        }) || !matches!(request.mcp_response(output), Err(acyclic_harness::Error::Indeterminate(operation)) if operation == OperationId::from_bytes([32; 16]))
+        {
+            return Err(
+                "lost MCP response became authoritative or cleanup was not confirmed".into(),
+            );
+        }
+    } else if request.mcp_response(output)?
+        != json!({
+            "content":[{"type":"text","text":"héllo"}],
+            "structuredContent":{"text":"héllo","sequence":u64::MAX}
+        })
+    {
+        return Err("incorrect MCP process result".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "approved-native-process/faults.rs"]
+mod faults;
+
+fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use bytes::BytesMut;
     use rmcp::transport::async_rw::JsonRpcMessageCodec;
     use std::io::{BufRead as _, Read as _, Write as _};
@@ -562,9 +706,11 @@ fn mcp_native_child() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let arguments = call
         .pointer("/params/arguments")
         .ok_or("missing tool arguments")?;
-    write(json!({"jsonrpc":"2.0","id":operation,"result":{
-        "content":[{"type":"text","text":"héllo"}],
-        "structuredContent":arguments}}))?;
+    if !lost_response {
+        write(json!({"jsonrpc":"2.0","id":operation,"result":{
+            "content":[{"type":"text","text":"héllo"}],
+            "structuredContent":arguments}}))?;
+    }
     // The ordinary owner closes stdin and terminates containment on completion.
     let mut byte = [0];
     let _ = input.read(&mut byte)?;
@@ -573,8 +719,10 @@ fn mcp_native_child() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    if std::env::args().any(|arg| arg == "--mcp-native-child") {
-        return mcp_native_child();
+    if std::env::args()
+        .any(|arg| arg == "--mcp-native-child" || arg == "--mcp-native-lost-response")
+    {
+        return mcp_native_child(std::env::args().any(|arg| arg == "--mcp-native-lost-response"));
     }
     if std::env::args().any(|arg| arg == "--native-child") {
         std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
@@ -583,7 +731,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     if cfg!(test) {
         run(false).await?;
-        run(true).await
+        run(true).await?;
+        #[cfg(test)]
+        faults::run().await?;
+        Ok(())
     } else {
         run(std::env::args().any(|arg| arg == "--mcp-stdio")).await
     }

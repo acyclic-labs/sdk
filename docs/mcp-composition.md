@@ -121,7 +121,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
-| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer passes; MCP-specific fault/restart and model-tool binding gates open |
+| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer and receipt-fault/provider-recovery controls pass; MCP disk reopen, host death and model-tool binding gates open |
 | Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Pending |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
@@ -264,3 +264,39 @@ passed, zero failed/skipped. Generated declarations and consumers use the same
 Rust request/method types and inert validator. Final platform, actual Chromium,
 installed artifacts, MCP-native fault/restart and model-tool binding gates and
 owner seam review remain open; nothing here establishes a qualified main landing.
+
+### Native MCP receipt fault development checkpoint
+
+The standalone approved consumer now injects four native receipt faults through
+a test-only wrapper around the ordinary memory stream backend: rejection before
+the launch commit, a committed launch with lost acknowledgement, rejection before
+the observed-result commit, and a committed observation with lost acknowledgement.
+The wrapper also hides the immediate idempotency inspection after a lost reply,
+so recovery must use retained receipts rather than an immediately recovered reply.
+Each case asserts that its selected fault was consumed.
+
+An independent peer-side call log verifies that neither launch fault executes a
+tool and that both observation faults follow exactly one applied call. Provider
+drop/recovery without a native view recovers a committed observation and its exact
+Unicode/full-width result; the other three cases remain indeterminate. A repeat
+effect invocation returns the same status and performs no new physical write or
+tool call. SDK publication is checked separately from physical application, and
+missing output must be a typed not-found result rather than an arbitrary error.
+
+A fifth control applies the tool and writes its physical output, then withholds
+the response. The approved one-second capture deadline records a timeout with
+confirmed containment cleanup. The native capture receipt remains readable, but
+the MCP result stays indeterminate before and after provider recovery. The
+uncompleted capture publishes no SDK output and repeat admission does not replay
+the call. These controls share the existing process/effect owner; the test wrapper
+does not implement an alternative journal or process engine.
+
+The example's request construction, publication and result checks are shared
+between positive and fault cases. Strict Clippy initially rejected the expanded
+composition's complexity; the checks were factored without adding suppressions.
+The positive native/MCP paths and five fault controls pass on Windows, alongside
+274 Harness library tests and the existing seven-case HTTP disk-reopen matrix.
+Strict library/test/example Clippy passes. These are development receipts with
+memory-backed journals: MCP disk reopen and host death, model-tool binding,
+final-source platform/formal/installed-artifact gates, actual Chromium, owner
+review and actual-main landing remain open.
