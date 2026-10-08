@@ -209,7 +209,7 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
   const darwin = deterministicRustflags("/src", "/target", "aarch64-apple-darwin").split("\x1f");
   assert.ok(darwin.includes("-C"));
   assert.ok(darwin.includes("link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib"));
-  assert.ok(darwin.includes("link-arg=-Wl,-final_output,libacyclic_stream_napi.dylib"));
+  assert.ok(darwin.includes("link-arg=-Wl,-final_output,/__acyclic_stream_output/libacyclic_stream_napi.dylib"));
   assert.ok(darwin.includes("link-arg=-Wl,-reproducible"));
   const lldPaths = darwinRustLldPaths("aarch64-apple-darwin", "/rust/sysroot");
   assert.deepEqual(lldPaths, {
