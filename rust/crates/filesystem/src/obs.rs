@@ -278,6 +278,7 @@ mod worker_context_tests {
     pub(crate) fn assert_filtered_callback_isolation(
         body: impl FnOnce(&tracing::span::EnteredSpan),
     ) {
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let (closed, _) = mpsc::channel();
         let dispatch = tracing::Dispatch::new(
@@ -311,6 +312,7 @@ mod worker_context_tests {
     async fn filtered_facade_retains_one_parent_neutral_work_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing::{Instrument as _, instrument::WithSubscriber as _};
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let (closed, _) = mpsc::channel();
         let dispatch = tracing::Dispatch::new(

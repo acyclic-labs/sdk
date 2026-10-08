@@ -71,6 +71,10 @@ consumer cancellation and retain its own span until actual completion. Native
 filesystem receipt spans record a terminal result only when the operation
 returns; an abandoned future leaves its outcome unset.
 
+Stream gRPC bodies also require EOF for success and record `cancelled` with
+`rpc.code = "Cancelled"` on unfinished consumer drop. Detached provider work
+records its actual terminal worker result even when its caller was cancelled.
+
 **Forbidden fields.** Users attach trace files to bug reports, so never record:
 
 - secrets, tokens, `authorization` or other metadata values, or environment values

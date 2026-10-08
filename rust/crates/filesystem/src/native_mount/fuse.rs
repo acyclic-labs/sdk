@@ -4714,6 +4714,7 @@ mod tests {
 
     #[test]
     fn filtered_callback_error_replies_without_overwriting_parent_errno() {
+        use super::Errno;
         struct Reply(std::cell::Cell<bool>);
         impl Reply {
             fn error(&self, error: Errno) {

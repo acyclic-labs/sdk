@@ -12280,6 +12280,7 @@ async fn local_open_records_its_owned_outcome_even_with_filtered_children()
 -> Result<(), Box<dyn std::error::Error>> {
     use tracing::{Instrument as _, instrument::WithSubscriber as _};
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
+    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
     let directory = tempfile::tempdir()?;
     let invalid = directory.path().join("private-root-sentinel");
     std::fs::write(&invalid, b"private-body-sentinel")?;
