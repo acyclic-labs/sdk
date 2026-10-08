@@ -63,6 +63,9 @@ transport/provider adapters and does not simulate a complete swarm.
 | Current owning Filesystem browser source | Six actual Rust IndexedDB tests in Chromium, zero ignored | target-i-fs-browser-final-1.log |
 | Current generated browser artifact and fixtures | Eight Chromium pages: wire/discovery, initialization retry, timer reload, worker termination/tab fencing, local and HTTP tool recovery, model dispatch/reconciliation, mail faults | target-i-browser-final-contract-1.log |
 | Production canonical mail intent, included in native/installed suites above | 64 intent combinations and six field-removal negative controls | target-i-mail-bounded-model-2.log |
+| Signed 881bbef3bf, including main b94284f885cf | Windows strict native lint, 240 unit and 20 durable-worker tests; strict Filesystem/Harness WASM lint | target-i-main-881bbef3-native-clippy-1.log; target-i-main-881bbef3-native-1.log; target-i-main-881bbef3-fs-wasm-clippy-1.log; target-i-main-881bbef3-harness-wasm-clippy-1.log |
+| Exact 881bbef3bf archive | Linux strict native lint, 240 unit and 20 durable-worker tests; native declarations match | target-i-linux-main-881bbef3-1.log |
+| Exact 881bbef3bf archive through ssh ivar | macOS strict native lint, 240 unit and 20 durable-worker tests | target-i-macos-881bbef3-1.log; target/i-macos-881bbef3-receipts |
 
 The finite mail check uses production MailEvent and the canonical codec: two
 choices each for sender, recipient, message ID, schema revision, route revision
@@ -153,6 +156,28 @@ wrappers for this macro-emission build; the filesystem build tracks its
 declaration environment. Windows generation matches the committed declaration
 (target-i-windows-napi-repair-1.log); strict all-feature filesystem lint passed
 (target-i-filesystem-build-script-clippy-1.log). Linux recovery qualification
-is still running. Qualification of these repairs, successful complete
-CI and landed-tree verification remain open. No unrestricted proof, native
+passed all three cached-output scenarios in target-i-linux-napi-repair-1.log:
+missing dependency output, warm generation and regeneration after a native
+build without declaration output.
+
+Signed merge 881bbef3bf integrated main b94284f885cf without conflicts. The
+exact source archive has SHA256
+d56c2018b146084a1424fdfab1cc0092c9a29df50628b232aec5d8fccc1ea105.
+Its Windows, Linux and macOS native suites passed 240 unit tests and 20
+durable-worker tests each, with zero ignored; both strict WASM checks passed.
+The copied macOS receipt includes hashes of executor, execution journal,
+durable host and task-workflow sources matching this worktree. Only owned
+package build outputs were reclaimed after the job completed; raw receipts
+and source were preserved, and the slot was released to PR5.
+
+Automatic PR run 37720079533 succeeded on 881bbef3bf. Forced full run
+37720933376 failed before any lanes: the manual feature-branch signature
+check uses the merge's first-parent range, which includes the already-landed
+GitHub web-flow signature on b94284f885cf. PR preflight verified the owned SSH
+commits against its merge base. Signature policy is unchanged; the next
+signed documentation checkpoint records these receipts above the merge.
+The first installed check stopped at a missing locked Node type dependency
+(target-i-installed-881bbef3-1.log); it does not qualify the installed closure.
+Final browser/installed qualification, successful complete CI and
+landed-tree verification remain open. No unrestricted proof, native
 mount, confinement or cross-provider atomicity claim is made.
