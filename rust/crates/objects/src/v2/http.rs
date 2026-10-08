@@ -11,8 +11,8 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 
-const FRAME_BYTES: usize = 65536;
-const JSON_FRAME_BYTES: usize = 128 * 1024;
+/// One NDJSON line, bounded by the base64 of one compressed 8 MiB body frame.
+const JSON_FRAME_BYTES: usize = 12 * 1024 * 1024;
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 /// Authenticated native HTTP client for the logical Objects v2 gateway.
@@ -161,7 +161,7 @@ impl HttpObjects {
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
             || token.trim().is_empty()
-            || token.len() > 8192
+            || token.len() > super::MAX_BEARER_TOKEN_BYTES
             || maximum_response_bytes == 0
         {
             return Err(invalid());
@@ -323,9 +323,8 @@ impl HttpObjects {
                 };
             };
             match frame.frame {
-                Some(wire::get_object_response::Frame::Body(bytes))
-                    if bytes.len() <= FRAME_BYTES && bytes.len() as u64 <= remaining =>
-                {
+                Some(wire::get_object_response::Frame::Body(frame)) => {
+                    let bytes = response::body(frame, remaining)?;
                     let remaining = remaining - bytes.len() as u64;
                     Ok(Some((Bytes::from(bytes), (reader, remaining))))
                 }

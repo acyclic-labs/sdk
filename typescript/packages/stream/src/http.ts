@@ -20,7 +20,7 @@ export class HttpStreamProvider implements StreamProvider {
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
-    if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL");
+    if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -192,7 +192,9 @@ async function boundedText(response: Response, maximum: number, sizes?: Operatio
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>(resolve => { const finish = () => { clearTimeout(timeout); signal?.removeEventListener("abort", finish); resolve(); }; const timeout = setTimeout(finish, milliseconds); signal?.addEventListener("abort", finish, { once: true }); }); }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 
-/** Header-safe bearer token: non-blank, at most 8 KiB of UTF-8, and no CR, LF, or NUL. */
+/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
+export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
+/** Header-safe bearer token: non-blank, at most MAX_BEARER_TOKEN_BYTES of UTF-8, and no CR, LF, or NUL. */
 function validBearerToken(token: string): boolean {
-  return token.trim().length > 0 && new TextEncoder().encode(token).byteLength <= 8192 && !/[\r\n\0]/.test(token);
+  return token.trim().length > 0 && new TextEncoder().encode(token).byteLength <= MAX_BEARER_TOKEN_BYTES && !/[\r\n\0]/.test(token);
 }

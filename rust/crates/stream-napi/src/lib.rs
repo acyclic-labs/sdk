@@ -362,9 +362,8 @@ impl NativeStreamFollow {
                         records.take();
                         return Ok(NativeStreamNextResult::end());
                     }
-                    let response = wire::ReadResponse {
-                        record: Some(wire_codec::record_wire(record)),
-                    };
+                    let response =
+                        wire_codec::read_response_wire(vec![wire_codec::record_wire(record)]);
                     return Ok(NativeStreamNextResult::value(
                         encode(&response, "follow").map_err(|error| napi_error(&error))?,
                     ));
@@ -827,9 +826,7 @@ async fn read(
     .await?
     {
         output.push(encode(
-            &wire::ReadResponse {
-                record: Some(wire_codec::record_wire(value)),
-            },
+            &wire_codec::read_response_wire(vec![wire_codec::record_wire(value)]),
             "read",
         )?);
     }

@@ -6,7 +6,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { StreamError, commitId, type StreamFailureCode } from "./types.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
@@ -152,13 +152,15 @@ export class NativeStreamProvider implements StreamProvider {
     let next = request.from;
     let count = 0;
     for (const value of result) {
-      if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
       let response: wire.ReadResponse;
       try { response = fromBinary(wire.ReadResponseSchema, value); }
       catch (error) { throw invalidResponse("read", error); }
-      const record = checkedRecord(response.record, next);
-      next = record.sequence + 1n;
-      yield record;
+      for (const decoded of readResponseRecords(response)) {
+        if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
+        const record = checkedRecord(decoded, next);
+        next = record.sequence + 1n;
+        yield record;
+      }
     }
   }
 
@@ -204,9 +206,11 @@ export class NativeStreamProvider implements StreamProvider {
         let response: wire.ReadResponse;
         try { response = fromBinary(wire.ReadResponseSchema, result.value); }
         catch (error) { throw invalidResponse("follow", error); }
-        const record = checkedRecord(response.record, next);
-        next = record.sequence + 1n;
-        yield record;
+        for (const decoded of readResponseRecords(response)) {
+          const record = checkedRecord(decoded, next);
+          next = record.sequence + 1n;
+          yield record;
+        }
       }
     } finally {
       options.signal?.removeEventListener("abort", abort);

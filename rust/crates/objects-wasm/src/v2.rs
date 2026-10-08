@@ -78,6 +78,14 @@ pub fn validate_objects_v2_get_header(
     acyclic_objects::v2::response::validate_get_header(query, bytes, maximum).map_err(error)
 }
 
+/// Decodes one encoded download `Body` frame of at most `remaining` selected bytes.
+#[wasm_bindgen]
+pub fn decode_objects_v2_body(frame: &[u8], remaining: u64) -> Result<Vec<u8>, JsValue> {
+    let frame =
+        wire::Body::decode(frame).map_err(|_| error(wire::ErrorCode::Unavailable.into()))?;
+    acyclic_objects::v2::response::body(frame, remaining).map_err(error)
+}
+
 #[wasm_bindgen]
 pub struct ObjectsV2Memory {
     inner: MemoryObjects,
@@ -144,7 +152,9 @@ impl ObjectsV2Memory {
                 });
                 for chunk in object.body.chunks(65_536) {
                     let value = wire::GetObjectResponse {
-                        frame: Some(wire::get_object_response::Frame::Body(chunk.to_vec())),
+                        frame: Some(wire::get_object_response::Frame::Body(
+                            acyclic_objects::v2::response::plain_body(chunk.to_vec()),
+                        )),
                     };
                     result.push(&js_sys::Uint8Array::from(value.encode_to_vec().as_slice()));
                 }

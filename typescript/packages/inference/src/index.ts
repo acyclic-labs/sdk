@@ -287,6 +287,9 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
   }
 }
 
+/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
+export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
+
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
   constructor(
@@ -431,8 +434,8 @@ export class HttpInferenceTransport implements InferenceTransport {
     const headers = new Headers(await this.authorization());
     // Headers already rejects CR, LF, and NUL; also bound the credential size.
     const authorization = headers.get("authorization") ?? "";
-    if (authorization.trim().length === 0 || utf8Length(authorization) > 8192) {
-      throw new InferenceTransportError(0, "authorization header must be non-empty and at most 8 KiB");
+    if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
+      throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
     }
     headers.set("content-type", "application/json");
     const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {

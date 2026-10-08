@@ -81,8 +81,30 @@ message FollowRequest {
   uint64 from = 2;
 }
 
+// Encoding of one read frame's data.
+enum Codec {
+  // data is the encoded RecordBatch itself.
+  CODEC_NONE = 0;
+  // data is one or more complete Zstandard frames.
+  CODEC_ZSTD = 1;
+}
+
+// One Stream's consecutive records in ascending sequence order.
+message RecordBatch {
+  repeated Record records = 1;
+}
+
+// One Read or Follow frame. data decodes under codec to exactly decoded_length
+// bytes of an encoded RecordBatch whose records continue the previous frame's.
+// A client rejects decoded_length above STREAM_LIMIT_MAX_COMMAND_BYTES before it
+// allocates or decompresses, rejects any other decoded length, and rejects an
+// unknown codec. A server chooses the codec independently for every frame.
 message ReadResponse {
-  Record record = 1;
+  reserved 1;
+  reserved "record";
+  Codec codec = 2;
+  bytes data = 3;
+  uint64 decoded_length = 4;
 }
 
 message ChildrenRequest {

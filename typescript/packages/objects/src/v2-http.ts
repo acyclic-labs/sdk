@@ -1,7 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_type, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
-import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
+import { MAX_BEARER_TOKEN_BYTES, ObjectsV2Error, ObjectsV2Provider, bodyDecodedLimit, objectsV2Error } from "./v2.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
 export interface ObjectsV2HttpOptions {
@@ -23,7 +23,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     super();
     const endpoint = new URL(options.endpoint);
     if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("invalid Objects HTTP endpoint");
-    if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > 8192 || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
+    if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > MAX_BEARER_TOKEN_BYTES || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
     this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
     this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
@@ -83,7 +83,9 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
         reader = response.body?.getReader();
         const frames: Uint8Array[] = [];
-        const line = new Uint8Array(128 * 1024);
+        // One NDJSON line, bounded by the base64 of one compressed 8 MiB body frame.
+        const lineLimit = 12 * 1024 * 1024;
+        let line = new Uint8Array(64 * 1024);
         let lineLength = 0;
         let wireSize = 0;
         let bodySize = 0n;
@@ -97,14 +99,20 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
           for (let end = 0; end <= value.byteLength; end++) {
             if (end < value.byteLength && value[end] !== 10) continue;
             const fragment = value.subarray(start, end);
-            if (lineLength + fragment.byteLength > line.byteLength) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
+            const needed = lineLength + fragment.byteLength;
+            if (needed > lineLimit) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
+            if (needed > line.byteLength) {
+              const grown = new Uint8Array(Math.min(lineLimit, Math.max(needed, line.byteLength * 2)));
+              grown.set(line.subarray(0, lineLength));
+              line = grown;
+            }
             line.set(fragment, lineLength);
             lineLength += fragment.byteLength;
             if (end === value.byteLength) break;
             start = end + 1;
             const stop = lineLength > 0 && line[lineLength - 1] === 13 ? lineLength - 1 : lineLength;
             if (stop === 0) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-            const decoded = decodeResponse(line.subarray(0, stop), 128 * 1024);
+            const decoded = decodeResponse(line.subarray(0, stop), lineLimit);
             lineLength = 0;
             const { frame } = fromBinary(wire.GetObjectResponseSchema, decoded);
             if (frame.case === "error") throw objectsV2Error({ code: frame.value.code });
@@ -112,8 +120,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
               if (frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
               expected = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.value), maximum);
             } else {
-              if (frame.case !== "body" || frame.value.byteLength > 65536) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-              bodySize += BigInt(frame.value.byteLength);
+              if (frame.case !== "body" || frame.value.decodedLength > bodyDecodedLimit(frame.value)) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+              bodySize += frame.value.decodedLength;
               if (bodySize > maximum) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
               if (bodySize > expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
             }
