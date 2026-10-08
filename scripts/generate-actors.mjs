@@ -61,13 +61,13 @@ async function bufActorOutput(protoFile) {
     await mkdir(join(temporary, "proto/actors/v1"), { recursive: true });
     await cp(protoFile, join(temporary, "proto/actors/v1/actors.proto"));
     await writeFile(join(temporary, "buf.yaml"), "version: v2\nmodules:\n  - path: proto\n");
-    const plugin = (process.env.ACYCLIC_PROTOC_GEN_ES
-      ?? join(root, "node_modules/.bin", process.platform === "win32" ? "protoc-gen-es.cmd" : "protoc-gen-es"))
-      .replaceAll("\\", "/");
+    const plugin = process.env.ACYCLIC_PROTOC_GEN_ES
+      ? [process.env.ACYCLIC_PROTOC_GEN_ES.replaceAll("\\", "/")]
+      : ["bun", "x", "protoc-gen-es"];
     await writeFile(join(temporary, "buf.gen.yaml"), [
       "version: v2",
       "plugins:",
-      `  - local: [${JSON.stringify(plugin)}]`,
+      `  - local: [${plugin.map(argument => JSON.stringify(argument)).join(", ")}]`,
       "    out: generated/typescript",
       "    strategy: all",
       "    opt:",
@@ -144,7 +144,7 @@ async function rustOnly() {
 
 export { check, rustGenerate, rustOnly, write };
 
-if (import.meta.main) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const mode = process.argv[2] ?? "check";
   if (mode === "check") await check();
   else if (mode === "write") await write();
