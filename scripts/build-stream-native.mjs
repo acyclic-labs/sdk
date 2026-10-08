@@ -844,7 +844,7 @@ function assertCleanSource() {
   if (status.trim() !== "") throw new Error("Stream native build requires a clean source closure; commit or stage source changes before building");
 }
 
-function rustMetadata() {
+export function rustMetadata() {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { cwd: root, encoding: "utf8" }));
   const rustPackage = metadata.packages.find(item => item.name === "acyclic-stream-napi");
   const targets = rustPackage?.metadata?.napi?.targets;

@@ -106,7 +106,8 @@ async function main() {
     if (verification.status !== 0) fail(`qualified archive verification failed for ${item.name}`);
 
     if (item.directory === "stream") {
-      const assembly = await verifyNativeAssembly(artifactDirectory, sourceSha, releaseVersion);
+      const inventory = JSON.parse(readFileSync(join(root, "release/stream-native-packages.json"), "utf8"));
+      const assembly = await verifyNativeAssembly(artifactDirectory, sourceSha, releaseVersion, inventory);
       for (const companion of assembly.companions) await publishExact(companion.name, companion.version, join(artifactDirectory, companion.asset));
     }
 

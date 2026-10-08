@@ -57,6 +57,7 @@ test("publication verifies all companion archives and retained attestations befo
   Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
   const receipt = { schema: "acyclic.stream.native-build-inputs-receipt.v1", published_build_inputs_sha256: hash(meta.build_inputs), raw_build_inputs: inputs() };
   const entry = { name: companionName, version: "0.2.0", asset: "native/companion.tgz", selected_target: target, os: ["win32"], cpu: ["x64"], artifact: meta.artifact, sha256: "", metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) };
+  const expectedInventory = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, parent: { name: "@acyclic-labs/stream", version: "0.2.0", private: false }, targets: [target], generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, meta.build_inputs.generator[field]])), companions: [{ selected_target: target, name: companionName, main: addon, os: ["win32"], cpu: ["x64"] }] };
   try {
     await mkdir(join(output, "native"), { recursive: true });
     for (const name of ["binding.cjs", "binding.d.ts"]) await put(join(parent, "generated/native", name), name);
@@ -77,30 +78,56 @@ test("publication verifies all companion archives and retained attestations befo
     const parentReceipt = { name: "@acyclic-labs/stream", version: "0.2.0", asset: parentAsset, sha256: bytesHash(await readFile(join(output, parentAsset))) };
     await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
     await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n${entry.sha256}  ${entry.asset}\n`);
-    await verifyNativeAssembly(output, revision, "0.2.0");
+    await verifyNativeAssembly(output, revision, "0.2.0", expectedInventory);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /trusted native source inventory/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", { ...expectedInventory, targets: [target, "aarch64-apple-darwin"] }), /trusted Rust source inventory/);
     const originalParent = JSON.parse(await readFile(join(parent, "package.json"), "utf8"));
     for (const [field, value] of Object.entries({ name: "@wrong/parent", version: "9.9.9", private: true })) {
       await json(join(parent, "package.json"), { ...originalParent, [field]: value });
       pack(join(directory, "parent"), parentAsset);
       parentReceipt.sha256 = bytesHash(await readFile(join(output, parentAsset)));
       await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
-      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /parent manifest differs/);
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /parent manifest differs/);
     }
     await json(join(parent, "package.json"), originalParent);
     pack(join(directory, "parent"), parentAsset);
     parentReceipt.sha256 = bytesHash(await readFile(join(output, parentAsset)));
     await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
     await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n${entry.sha256}  ${entry.asset}\n`);
-    await assert.rejects(verifyNativeAssembly(output, "2".repeat(40), "0.2.0"), /release identity/);
+    const originalCompanion = JSON.parse(await readFile(join(companion, "package.json"), "utf8"));
+    const originalEntry = { ...entry };
+    const seal = async () => {
+      pack(join(directory, "companion"), entry.asset);
+      entry.sha256 = bytesHash(await readFile(join(output, entry.asset)));
+      await json(join(parent, "generated/native/native-targets.json"), index);
+      pack(join(directory, "parent"), parentAsset);
+      parentReceipt.sha256 = bytesHash(await readFile(join(output, parentAsset)));
+      await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
+      await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n${entry.sha256}  ${entry.asset}\n`);
+    };
+    for (const mutation of [{ name: "@acyclic-labs/stream-darwin-arm64", os: ["darwin"], cpu: ["arm64"] }, { main: "index.darwin-arm64.node" }, { libc: ["musl"] }]) {
+      Object.assign(entry, originalEntry, mutation);
+      await json(join(companion, "package.json"), { ...originalCompanion, ...mutation });
+      await json(join(parent, "package.json"), { ...originalParent, optionalDependencies: { [entry.name]: "0.2.0" } });
+      await seal();
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /maintained source target mapping/);
+      for (const field of Object.keys(mutation)) delete entry[field];
+    }
+    Object.assign(entry, originalEntry);
+    await json(join(companion, "package.json"), originalCompanion);
+    await json(join(parent, "package.json"), originalParent);
+    await seal();
+    await verifyNativeAssembly(output, revision, "0.2.0", expectedInventory);
+    await assert.rejects(verifyNativeAssembly(output, "2".repeat(40), "0.2.0", expectedInventory), /release/);
     await put(join(output, "native/stale.tgz"), "stale");
-    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /missing or extra files/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /missing or extra files/);
     await rm(join(output, "native/stale.tgz"));
     const saved = await readFile(join(output, entry.asset));
     await put(join(output, entry.asset), "corrupt");
-    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /archive digest differs/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /archive digest differs/);
     await put(join(output, entry.asset), saved);
     await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n`);
-    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /checksum inventory/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /checksum inventory/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

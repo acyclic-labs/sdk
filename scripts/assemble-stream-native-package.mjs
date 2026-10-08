@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { tarEntries } from "./archive-utils.mjs";
 import { spawnSync } from "node:child_process";
-import { assertBuildInputs, assertBundle, assertSourceSnapshot, normalizeBuildInputs, sourceSnapshot } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertBundle, assertSourceSnapshot, normalizeBuildInputs, rustMetadata, sourceSnapshot } from "./build-stream-native.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -90,7 +90,33 @@ function archiveFiles(path) {
   return files;
 }
 
-export async function verifyNativeAssembly(output, sourceSha, version) {
+export async function sourceNativeInventory(sourceSha) {
+  if (run("git", ["rev-parse", "HEAD"]).trim() !== sourceSha) fail("native inventory source differs from checkout");
+  run("git", ["diff", "--quiet", "HEAD", "--", "rust/crates/stream-napi/Cargo.toml", "typescript/packages/stream/package.json", "bun.lock"]);
+  const source = await sourceSnapshot();
+  const { rustPackage, targets } = rustMetadata();
+  const manifest = JSON.parse(await readFile(join(root, "typescript/packages/stream/package.json"), "utf8"));
+  if (manifest.version !== rustPackage.version || manifest.private !== false) fail("native source package identity differs from Rust");
+  const cliPackage = JSON.parse(await readFile(require.resolve("@napi-rs/cli/package.json"), "utf8"));
+  const generator = { package: cliPackage.name, version: cliPackage.version, package_sha256: `sha256:${digest(require.resolve("@napi-rs/cli/package.json"))}`, entry_sha256: `sha256:${digest(require.resolve("@napi-rs/cli"))}`, lock_sha256: `sha256:${digest(join(root, "bun.lock"))}` };
+  const temporary = await mkdtemp(join(tmpdir(), "acyclic-stream-native-inventory-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ ...manifest, napi: { ...manifest.napi, targets } }));
+    const { NapiCli, parseTriple } = await import("@napi-rs/cli");
+    const npmDir = join(temporary, "npm");
+    await new NapiCli().createNpmDirs({ cwd: temporary, npmDir });
+    const companions = await Promise.all(targets.map(async selected_target => {
+      const generated = JSON.parse(await readFile(join(npmDir, parseTriple(selected_target).platformArchABI, "package.json"), "utf8"));
+      return { selected_target, name: generated.name, main: generated.main, os: generated.os, cpu: generated.cpu, libc: generated.libc };
+    }));
+    await assertSourceSnapshot(source);
+    if (run("git", ["rev-parse", "HEAD"]).trim() !== sourceSha) fail("native inventory source changed during generation");
+    return { schema: "acyclic.stream.native-source-inventory.v1", source_commit: sourceSha, parent: { name: manifest.name, version: manifest.version, private: manifest.private }, targets, generator, companions };
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+}
+
+export async function verifyNativeAssembly(output, sourceSha, version, expectedInventory) {
+  if (!expectedInventory || expectedInventory.schema !== "acyclic.stream.native-source-inventory.v1" || expectedInventory.source_commit !== sourceSha || expectedInventory.parent.version !== version || expectedInventory.parent.private !== false) fail("trusted native source inventory is required for release");
   const assembly = JSON.parse(await readFile(join(output, "STREAM_NATIVE_PACKAGE.json"), "utf8"));
   if (assembly.schema !== "acyclic.stream.native-package-assembly.v2" || assembly.source_commit !== sourceSha || assembly.parent.version !== version || assembly.parent.name !== "@acyclic-labs/stream") fail("native assembly release identity differs");
   const parentAsset = `acyclic-labs-stream-${version}.tgz`;
@@ -98,6 +124,7 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
   const parent = archiveFiles(join(output, parentAsset));
   const neutral = JSON.parse(parent.get("package/package.json").toString("utf8"));
   if (neutral.name !== assembly.parent.name || neutral.version !== version || neutral.private !== false) fail("neutral parent manifest differs from release identity");
+  if (neutral.name !== expectedInventory.parent.name || JSON.stringify(assembly.targets) !== JSON.stringify(expectedInventory.targets)) fail("native assembly differs from trusted Rust source inventory");
   const { parent: ignored, ...index } = assembly;
   if (JSON.stringify(JSON.parse(parent.get("package/generated/native/native-targets.json").toString("utf8"))) !== JSON.stringify(index)) fail("neutral parent assembly index differs");
   if ([...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent contains a native binary");
@@ -109,6 +136,8 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
     if (digest(archive) !== entry.sha256) fail("native companion archive digest differs");
     const files = archiveFiles(archive);
     const manifest = JSON.parse(files.get("package/package.json").toString("utf8"));
+    const expected = expectedInventory.companions.find(item => item.selected_target === entry.selected_target);
+    if (!expected || ["name", "main", "os", "cpu", "libc"].some(field => JSON.stringify(manifest[field]) !== JSON.stringify(expected[field]))) fail("native companion differs from maintained source target mapping");
     if (manifest.name !== entry.name || manifest.version !== version || manifest.private !== false || JSON.stringify(manifest.os) !== JSON.stringify(entry.os) || JSON.stringify(manifest.cpu) !== JSON.stringify(entry.cpu) || JSON.stringify(manifest.libc) !== JSON.stringify(entry.libc)) fail("native companion manifest differs");
     const originals = {};
     for (const name of ["native-targets.json", "generation-manifest.json", "producer-receipt.json"]) {
@@ -118,6 +147,7 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
       originals[name] = JSON.parse(bytes.toString("utf8"));
     }
     const meta = originals["native-targets.json"];
+    if (Object.keys(expectedInventory.generator).some(field => meta.build_inputs.generator[field] !== expectedInventory.generator[field])) fail("native companion generator differs from trusted source inventory");
     const generation = originals["generation-manifest.json"];
     if (meta.schema !== "acyclic.stream.native-targets.v1" || generation.schema !== "acyclic.stream.native-generation.v1" || meta.version !== version || generation.version !== version || meta.selected_target !== entry.selected_target || generation.selected_target !== entry.selected_target || meta.source_revision !== sourceSha || generation.revision !== sourceSha || meta.source_sha256 !== assembly.source_sha256 || generation.source_sha256 !== assembly.source_sha256 || JSON.stringify(meta.targets) !== JSON.stringify(assembly.targets) || JSON.stringify(generation.targets) !== JSON.stringify(assembly.targets) || JSON.stringify(meta.source_files) !== JSON.stringify(generation.source_files) || JSON.stringify(meta.build_inputs) !== JSON.stringify(generation.build_inputs) || JSON.stringify(meta.artifact) !== JSON.stringify(entry.artifact)) fail("native companion original source or target differs");
     if (!meta.artifact.path.endsWith(".node") || JSON.stringify(meta.artifacts) !== JSON.stringify(generation.artifacts) || JSON.stringify(meta.artifacts.map(artifact => artifact.path).sort()) !== JSON.stringify(["generated/native/binding.cjs", "generated/native/binding.d.ts", meta.artifact.path].sort()) || JSON.stringify(meta.artifacts.find(artifact => artifact.path === meta.artifact.path)) !== JSON.stringify(meta.artifact)) fail("native companion artifact inventory differs");
@@ -133,7 +163,7 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
     dependencies[entry.name] = version;
     metadata.push(meta);
   }
-  assertNativeSet(metadata, assembly.targets, sourceSha);
+  assertNativeSet(metadata, expectedInventory.targets, sourceSha);
   if (JSON.stringify(neutral.optionalDependencies) !== JSON.stringify(dependencies)) fail("neutral parent optional dependencies differ");
   const observed = (await readdir(join(output, "native"))).sort();
   const expected = assembly.companions.map(entry => entry.asset.slice("native/".length)).sort();
@@ -146,6 +176,12 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
 }
 
 async function main() {
+  if (process.argv[2] === "inventory") {
+    const [, output, sourceSha] = process.argv.slice(2);
+    if (!output || !/^[0-9a-f]{40}$/u.test(sourceSha ?? "")) fail("usage: assemble-stream-native-package.mjs inventory OUTPUT SOURCE_SHA");
+    await writeFile(resolve(output), `${JSON.stringify(await sourceNativeInventory(sourceSha), null, 2)}\n`);
+    return;
+  }
   const [typescriptOutput, bundleArgument, sourceSha] = process.argv.slice(2);
   if (!typescriptOutput || !bundleArgument || !/^[0-9a-f]{40}$/.test(sourceSha ?? "")) {
     fail("usage: assemble-stream-native-package.mjs TYPESCRIPT_OUTPUT NATIVE_INPUT_ROOT SOURCE_SHA");
@@ -157,7 +193,8 @@ async function main() {
   const bundleArgumentPath = resolve(bundleArgument);
   const source = await sourceSnapshot();
   const inputs = await nativeInputs(bundleArgumentPath);
-  const targets = JSON.parse(run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"])).packages.find(item => item.name === "acyclic-stream-napi").metadata.napi.targets;
+  const expectedInventory = await sourceNativeInventory(sourceSha);
+  const targets = expectedInventory.targets;
   const bundles = await Promise.all(inputs.bundles.map(async path => ({ path, receipt: "", ...await assertBundle(path) })));
   assertNativeSet(bundles.map(item => item.metadata), targets, sourceSha);
   const generator = bundles[0].metadata.build_inputs.generator;
@@ -253,7 +290,7 @@ async function main() {
   const archives = [...(await readdir(output)).filter(name => name.endsWith(".tgz")), ...(await readdir(join(output, "native"))).filter(name => name.endsWith(".tgz")).map(name => `native/${name}`)].sort();
   const checksums = archives.map(name => `${digest(join(output, name))}  ${name}`).join("\n") + "\n";
   await writeFile(join(output, "SHA256SUMS"), checksums);
-  await verifyNativeAssembly(output, sourceSha, packageManifest.version);
+  await verifyNativeAssembly(output, sourceSha, packageManifest.version, expectedInventory);
   console.log(JSON.stringify({
     schema: "acyclic.stream.native-package-assembly.v2",
     source_commit: sourceSha,

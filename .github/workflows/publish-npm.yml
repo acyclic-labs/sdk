@@ -95,6 +95,7 @@ jobs:
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
           cp scripts/assemble-stream-native-package.mjs scripts/build-stream-native.mjs scripts/archive-utils.mjs "$stage/scripts/"
           cp release/npm-packages.json "$stage/release/"
+          node scripts/assemble-stream-native-package.mjs inventory "$stage/release/stream-native-packages.json" "$SOURCE_SHA"
           node - "$stage" <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
