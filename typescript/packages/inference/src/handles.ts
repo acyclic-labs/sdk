@@ -9,7 +9,7 @@ import {
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { InferenceProtocolError } from "./index.js";
 import { runTerminalMetadata, type RunTerminalKind } from "./contract.js";
-import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
+import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 
 declare const inferenceBrand: unique symbol;
 export type ContextRevision = Uint8Array & { readonly [inferenceBrand]: "ContextRevision" };

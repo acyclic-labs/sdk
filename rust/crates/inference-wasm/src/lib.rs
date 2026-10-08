@@ -13,6 +13,11 @@ pub fn fixed_width_metadata_native() -> Result<String, &'static str> {
     schema::fixed_width_metadata()
 }
 
+/// Return Rust-owned client width names and their descriptor-derived values.
+pub fn client_widths_native() -> Result<String, &'static str> {
+    schema::client_widths()
+}
+
 use wasm_bindgen::prelude::*;
 
 /// Builds every error thrown across the JavaScript boundary: an `Error` whose

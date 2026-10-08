@@ -54,7 +54,7 @@ import {
   WarmContextsService,
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { http_path } from "../generated/proto/validation/v1/options_pb.js";
-import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
+import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";

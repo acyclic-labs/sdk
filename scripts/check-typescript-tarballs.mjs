@@ -205,6 +205,9 @@ const main = async () => {
     run("bun", ["probe.mjs"], { cwd: tempRoot });
     await writeFile(join(tempRoot, "probe-node.mjs"), probeSource("Node", expectedExports));
     run("node", ["probe-node.mjs"], { cwd: tempRoot });
+    await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
+    run("node", ["inference-widths.mjs"], { cwd: tempRoot });
+    run("bun", ["inference-widths.mjs"], { cwd: tempRoot });
     const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
       `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
     const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createActorsGrpcClient } from "@acyclic-labs/actors/grpc";', 'import { createWorkersGrpcClient } from "@acyclic-labs/workers/grpc";', 'import { createObjectsV2GrpcClients } from "@acyclic-labs/objects/grpc";'];

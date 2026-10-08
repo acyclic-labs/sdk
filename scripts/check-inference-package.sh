@@ -103,6 +103,9 @@ EOF
 cd "$work/consumer"
 bun install --ignore-scripts
 bun smoke.mjs
+cp "$root/typescript/packages/inference/test/widths-installed.mjs" "$work/consumer/widths-installed.mjs"
+node widths-installed.mjs
+bun widths-installed.mjs
 
 cd "$root"
 test_root="$work/test"
