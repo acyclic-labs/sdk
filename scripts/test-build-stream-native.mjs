@@ -210,6 +210,7 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
   assert.ok(darwin.includes("-C"));
   assert.ok(darwin.includes("link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib"));
   assert.ok(darwin.includes("link-arg=-Wl,-final_output,libacyclic_stream_napi.dylib"));
+  assert.ok(darwin.includes("link-arg=-Wl,-reproducible"));
   const lldPaths = darwinRustLldPaths("aarch64-apple-darwin", "/rust/sysroot");
   assert.deepEqual(lldPaths, {
     linkerEnvironment: "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
