@@ -711,3 +711,108 @@ proptest::proptest! {
         }
     }
 }
+
+/// `(span, field, value)` for every declared and recorded span field.
+type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+struct Capture(Seen);
+struct Fields<'a>(
+    &'static str,
+    &'a mut Vec<(&'static str, &'static str, String)>,
+);
+impl tracing::field::Visit for Fields<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.1.push((self.0, field.name(), format!("{value:?}")));
+    }
+}
+impl<S> tracing_subscriber::Layer<S> for Capture
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        attributes: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let name = attributes.metadata().name();
+        if let Ok(mut seen) = self.0.lock() {
+            let fields = attributes.metadata().fields();
+            seen.extend(
+                fields
+                    .iter()
+                    .map(|field| (name, field.name(), String::new())),
+            );
+            attributes.record(&mut Fields(name, &mut seen));
+        }
+    }
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if let (Some(span), Ok(mut seen)) = (context.span(id), self.0.lock()) {
+            values.record(&mut Fields(span.name(), &mut seen));
+        }
+    }
+}
+
+#[tokio::test]
+async fn store_spans_record_counts_and_outcomes_but_no_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    // With one live dispatcher, a callsite that a concurrent test reaches
+    // first caches only that thread's (absent) interest; a second one makes
+    // every callsite consult this test's subscriber too.
+    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+    let seen = Seen::default();
+    let _default = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+    );
+    let root = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    assert_eq!(
+        core.get(get("missing"), 1).await.err().map(|e| e.code),
+        Some(NotFound)
+    );
+    core.collect_local_garbage(10)?;
+    drop(core);
+    drop(reopen(root.path())?);
+    let seen = seen.lock().map_err(|_| "capture poisoned")?;
+    let has = |span: &str, field: &str, value: &str| {
+        seen.iter()
+            .any(|(s, f, v)| *s == span && *f == field && v == value)
+    };
+    for (span, field, value) in [
+        ("acyclic.objects.put", "bytes", "6"),
+        ("acyclic.objects.put", "outcome", "\"ok\""),
+        ("acyclic.objects.journal.append", "fsyncs", "1"),
+        ("acyclic.objects.journal.commit", "outcome", "\"ok\""),
+        (
+            "acyclic.objects.get",
+            "error.kind",
+            "\"ERROR_CODE_NOT_FOUND\"",
+        ),
+        ("acyclic.objects.journal.materialize", "segments", "1"),
+        ("acyclic.objects.journal.checkpoint", "outcome", "\"ok\""),
+        ("acyclic.objects.collect_garbage", "outcome", "\"ok\""),
+        ("acyclic.objects.open", "frames", "1"),
+        ("acyclic.objects.journal.replay", "outcome", "\"ok\""),
+    ] {
+        assert!(
+            has(span, field, value),
+            "{span}.{field} != {value}: {seen:?}"
+        );
+    }
+    let path = root.path().to_string_lossy();
+    for (span, field, value) in seen.iter() {
+        assert!(
+            !["path", "token", "content", "body", "authorization"].contains(field),
+            "{span} records {field}"
+        );
+        for leak in ["recovery", "retained", "missing", path.as_ref()] {
+            assert!(!value.contains(leak), "{span}.{field}={value}");
+        }
+    }
+    Ok(())
+}

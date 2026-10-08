@@ -41,12 +41,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return benchmark_capture(writes, file_bytes).await;
     }
     let root = tempfile::tempdir()?;
-    let mut options = LocalOptions::new(root.path());
-    if barrier {
-        options.stream.durability = LocalStreamDurability::Barrier;
-        options.objects.durability = LocalObjectsDurability::Barrier;
-    }
-    let fs = Box::pin(Fs::local(options)).await?;
+    let options = || {
+        let mut options = LocalOptions::new(root.path());
+        if barrier {
+            options.stream.durability = LocalStreamDurability::Barrier;
+            options.objects.durability = LocalObjectsDurability::Barrier;
+        }
+        options
+    };
+    let fs = Box::pin(Fs::local(options())).await?;
     let workspace = Box::pin(fs.create_workspace("benchmark")).await?;
     let started = Instant::now();
     if batch {
@@ -69,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let elapsed = started.elapsed();
+    let read_started = Instant::now();
     for index in 0..writes {
         let value = Box::pin(workspace.read(&format!("/entry-{index:04}"), 64)).await?;
         let expected = format!("value-{index}");
@@ -76,6 +80,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("entry {index} differs from the model").into());
         }
     }
+    let read_elapsed = read_started.elapsed();
+    drop(workspace);
+    drop(fs);
+    // Reopen so reads start from durable storage instead of warm caches.
+    let fs = Box::pin(Fs::local(options())).await?;
+    let workspace = Box::pin(fs.open_workspace("benchmark")).await?;
+    let cold_started = Instant::now();
+    for index in 0..writes {
+        let value = Box::pin(workspace.read(&format!("/entry-{index:04}"), 64)).await?;
+        if value.as_ref() != format!("value-{index}").as_bytes() {
+            return Err(format!("entry {index} differs after reopen").into());
+        }
+    }
+    let cold_elapsed = cold_started.elapsed();
     println!(
         "{}",
         serde_json::json!({
@@ -86,6 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "mode": if batch { "batch" } else { "individual" },
             "writes": writes,
             "elapsed_ms": elapsed.as_millis(),
+            "read_ms": read_elapsed.as_secs_f64() * 1000.0,
+            "cold_read_ms": cold_elapsed.as_secs_f64() * 1000.0,
             "writes_per_second": f64::from(writes) / elapsed.as_secs_f64(),
         })
     );

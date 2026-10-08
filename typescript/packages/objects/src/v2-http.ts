@@ -95,9 +95,9 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
           if (done) break;
           wireSize += value.byteLength;
           if (wireSize > this.maximumResponse) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
-          let start = 0;
-          for (let end = 0; end <= value.byteLength; end++) {
-            if (end < value.byteLength && value[end] !== 10) continue;
+          for (let start = 0; ;) {
+            const newline = value.indexOf(10, start);
+            const end = newline < 0 ? value.byteLength : newline;
             const fragment = value.subarray(start, end);
             const needed = lineLength + fragment.byteLength;
             if (needed > lineLimit) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
@@ -108,8 +108,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
             }
             line.set(fragment, lineLength);
             lineLength += fragment.byteLength;
-            if (end === value.byteLength) break;
-            start = end + 1;
+            if (newline < 0) break;
+            start = newline + 1;
             const stop = lineLength > 0 && line[lineLength - 1] === 13 ? lineLength - 1 : lineLength;
             if (stop === 0) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
             const decoded = decodeResponse(line.subarray(0, stop), lineLimit);

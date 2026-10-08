@@ -62,6 +62,7 @@ use crate::model::{
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
     VolumeLimits,
 };
+use crate::obs::Observe as _;
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
@@ -1785,7 +1786,7 @@ pub enum MergePreparation {
 }
 
 /// Fail-closed embedded facade errors.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum FsError {
     /// Operation was cancelled before further facade work began.
     #[error(transparent)]
@@ -2357,73 +2358,87 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     ///
     /// Fails, sweeping nothing, when anything live cannot be marked, and
     /// stops at the first storage failure while sweeping.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.collect_local_garbage",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn collect_local_garbage(
         &self,
         core_state: Option<&crate::LocalCoreStateStore>,
         cancellation: &CancellationToken,
     ) -> Result<LocalGarbageCollection, FsError> {
-        let collection = Arc::clone(self.inner.objects.collection().ok_or(FsError::Object(
-            ObjectStoreError::Rejected("the local object store does not collect".to_owned()),
-        ))?);
-        let collecting = collection.begin().await;
-        let candidates = self.local_object_candidates(cancellation).await?;
-        let mut marker = crate::kernel::Marker::new(&self.inner.objects, cancellation);
-        let shadow_limits = self
-            .mark_local_authorities(&mut marker, cancellation)
-            .await?;
-        #[cfg(feature = "s3-http")]
-        {
-            let multipart = crate::active_s3_multipart_objects(
-                self.inner.authority.provider().as_ref(),
-                &self.inner.objects,
-                crate::FilesystemS3Limits::default(),
-                crate::S3MultipartRetentionLimits::default(),
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await
-            .map_err(|_| {
-                FsError::Object(ObjectStoreError::Rejected(
-                    "active S3 multipart retention scan failed".to_owned(),
-                ))
-            })?;
-            marker.keep(multipart.value);
-        }
-        if let Some(core_state) = core_state {
-            marker.set_limits(shadow_limits);
-            for record in core_state
-                .lazy_shadow_records()
-                .await
-                .map_err(|error| FsError::Object(ObjectStoreError::Rejected(error.to_string())))?
-            {
-                marker.record(&record).await.map_err(mark_error)?;
-            }
-        }
-        for held in collection.held() {
-            match held {
-                crate::collection::Held::Checkout(held) => {
-                    marker.set_limits(DecodeLimits::for_volume(held.config));
-                    marker
-                        .generation(GenerationId::new(held.base.digest))
-                        .await
-                        .map_err(mark_error)?;
-                    marker.working(&held.working).await.map_err(mark_error)?;
+        crate::obs::outcome(
+            async move {
+                let collection = Arc::clone(self.inner.objects.collection().ok_or(
+                    FsError::Object(ObjectStoreError::Rejected(
+                        "the local object store does not collect".to_owned(),
+                    )),
+                )?);
+                let collecting = collection.begin().await;
+                let candidates = self.local_object_candidates(cancellation).await?;
+                let mut marker = crate::kernel::Marker::new(&self.inner.objects, cancellation);
+                let shadow_limits = self
+                    .mark_local_authorities(&mut marker, cancellation)
+                    .await?;
+                #[cfg(feature = "s3-http")]
+                {
+                    let multipart = crate::active_s3_multipart_objects(
+                        self.inner.authority.provider().as_ref(),
+                        &self.inner.objects,
+                        crate::FilesystemS3Limits::default(),
+                        crate::S3MultipartRetentionLimits::default(),
+                        WorkBudget::UNBOUNDED,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|_| {
+                        FsError::Object(ObjectStoreError::Rejected(
+                            "active S3 multipart retention scan failed".to_owned(),
+                        ))
+                    })?;
+                    marker.keep(multipart.value);
                 }
-                crate::collection::Held::Record { record, config } => {
-                    marker.set_limits(DecodeLimits::for_volume(config));
-                    marker.record(&record).await.map_err(mark_error)?;
+                if let Some(core_state) = core_state {
+                    marker.set_limits(shadow_limits);
+                    for record in core_state.lazy_shadow_records().await.map_err(|error| {
+                        FsError::Object(ObjectStoreError::Rejected(error.to_string()))
+                    })? {
+                        marker.record(&record).await.map_err(mark_error)?;
+                    }
                 }
+                for held in collection.held() {
+                    match held {
+                        crate::collection::Held::Checkout(held) => {
+                            marker.set_limits(DecodeLimits::for_volume(held.config));
+                            marker
+                                .generation(GenerationId::new(held.base.digest))
+                                .await
+                                .map_err(mark_error)?;
+                            marker.working(&held.working).await.map_err(mark_error)?;
+                        }
+                        crate::collection::Held::Record { record, config } => {
+                            marker.set_limits(DecodeLimits::for_volume(config));
+                            marker.record(&record).await.map_err(mark_error)?;
+                        }
+                    }
+                }
+                marker.set_limits(shadow_limits);
+                marker.lineage_roots().await.map_err(mark_error)?;
+                let unmarked = candidates
+                    .into_iter()
+                    .filter(|(object, _)| !marker.marked().contains(object))
+                    .collect::<Vec<_>>();
+                drop(marker);
+                self.sweep_local_objects(&collecting, unmarked, cancellation)
+                    .await
             }
-        }
-        marker.set_limits(shadow_limits);
-        marker.lineage_roots().await.map_err(mark_error)?;
-        let unmarked = candidates
-            .into_iter()
-            .filter(|(object, _)| !marker.marked().contains(object))
-            .collect::<Vec<_>>();
-        drop(marker);
-        self.sweep_local_objects(&collecting, unmarked, cancellation)
-            .await
+            .await,
+        )
     }
 
     /// Every current filesystem key and its conditional-deletion validator.
@@ -2886,13 +2901,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// # Errors
     ///
     /// Returns the same typed failures as [`Self::create_workspace`].
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.create_workspace",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn create_workspace_with_config(
         &self,
         name: impl AsRef<str>,
         config: VolumeConfig,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        self.create_workspace_with_config_operation(name, config, None)
-            .await
+        crate::obs::outcome(
+            self.create_workspace_with_config_operation(name, config, None)
+                .await,
+        )
     }
 
     pub(crate) async fn create_workspace_with_config_operation(
@@ -2933,32 +2959,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Rejects invalid or absent names and malformed or unsupported creation
     /// state.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.open_workspace",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn open_workspace(
         &self,
         name: impl AsRef<str>,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        let name = crate::WorkspaceName::new(name)?;
-        let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
-        let volume = self
-            .open_volume(
-                id.volume_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
-            .value;
-        volume
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        Ok(crate::Workspace {
-            name,
-            id,
-            volume,
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
-        })
+        crate::obs::outcome(
+            async move {
+                let name = crate::WorkspaceName::new(name)?;
+                let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
+                let volume = self
+                    .open_volume(
+                        id.volume_id(),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(crate::workspace::WorkspaceError::engine)?
+                    .value;
+                volume
+                    .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(crate::workspace::WorkspaceError::engine)?;
+                Ok(crate::Workspace {
+                    name,
+                    id,
+                    volume,
+                    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                    source: None,
+                })
+            }
+            .await,
+        )
     }
 
     /// Adopts an already authenticated volume into the workspace facade.
@@ -2992,29 +3032,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// # Errors
     ///
     /// Rejects invalid or absent names and returns typed storage failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.delete_workspace",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn delete_workspace(
         &self,
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::workspace::WorkspaceDelete, crate::workspace::WorkspaceError> {
-        let name = crate::WorkspaceName::new(name)?;
-        let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
-        let volume = match self
-            .open_volume(
-                id.volume_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-        {
-            Ok(volume) => volume.value,
-            Err(failure) if matches!(failure.error, FsError::WorkspaceDeleted) => {
-                return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
+        crate::obs::outcome(
+            async move {
+                let name = crate::WorkspaceName::new(name)?;
+                let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
+                let volume = match self
+                    .open_volume(
+                        id.volume_id(),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                {
+                    Ok(volume) => volume.value,
+                    Err(failure) if matches!(failure.error, FsError::WorkspaceDeleted) => {
+                        return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
+                    }
+                    Err(failure) => return Err(crate::workspace::WorkspaceError::engine(failure)),
+                };
+                self.delete_workspace_volume(&volume, idempotency_key.operation_id())
+                    .await
             }
-            Err(failure) => return Err(crate::workspace::WorkspaceError::engine(failure)),
-        };
-        self.delete_workspace_volume(&volume, idempotency_key.operation_id())
-            .await
+            .await,
+        )
     }
 
     /// Builds and stores the forked generation root for a new workspace, then
@@ -3253,36 +3307,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Makes every object `records` reach durable, so a record another
     /// durable store keeps, such as a removed identity a lazy workspace still
     /// resolves, never outlives its content across a crash.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.make_records_durable",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub(crate) async fn make_records_durable(
         &self,
         config: VolumeConfig,
         records: &[FileRecord],
         cancellation: &CancellationToken,
     ) -> Result<crate::PublicationHold, FsError> {
-        let proven_at = self.inner.objects.collection_sweeps();
-        let (closure, work) = crate::kernel::prove_record_closure_async(
-            &self.inner.objects,
-            records,
-            closure_limits(config),
-            WorkBudget::UNBOUNDED,
-            cancellation,
+        crate::obs::outcome(
+            async move {
+                let proven_at = self.inner.objects.collection_sweeps();
+                let (closure, work) = crate::kernel::prove_record_closure_async(
+                    &self.inner.objects,
+                    records,
+                    closure_limits(config),
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| FsError::from(failure.error))?;
+                let flushed = self
+                    .inner
+                    .objects
+                    .flush_before_publish(
+                        crate::PublicationScope::Closure {
+                            objects: &closure,
+                            proven_at,
+                        },
+                        remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| FsError::from(failure.error))?;
+                Ok(flushed.value)
+            }
+            .await,
         )
-        .await
-        .map_err(|failure| FsError::from(failure.error))?;
-        let flushed = self
-            .inner
-            .objects
-            .flush_before_publish(
-                crate::PublicationScope::Closure {
-                    objects: &closure,
-                    proven_at,
-                },
-                remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| FsError::from(failure.error))?;
-        Ok(flushed.value)
     }
 
     /// Durably retains one generation under a retention label. Repeating the
@@ -4574,6 +4642,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns a typed measured failure for invalid/unsupported semantics,
     /// cancellation, storage, authentication, authority conflict, or budget.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.create_volume",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&volume_id.into_bytes()),
+            )
+        )
+    )]
     pub async fn create_volume_with_id(
         &self,
         volume_id: VolumeId,
@@ -4583,6 +4667,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> FsResult<Volume<A, O>> {
         self.create_volume_with_id_operation(volume_id, config, None, budget, cancellation)
             .await
+            .observe("create_volume")
     }
 
     async fn create_volume_with_id_operation(
@@ -4636,28 +4721,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns a typed measured failure when authority is absent/corrupt, its
     /// creation fact is invalid, semantics are unsupported, or work is denied.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.open_volume",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&volume_id.into_bytes()),
+            )
+        )
+    )]
     pub async fn open_volume(
         &self,
         volume_id: VolumeId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let (creation, work) = self
-            .read_creation(volume_id, WorkCounters::default(), budget, cancellation)
-            .await?;
-        validate_volume_capabilities(creation.config, self.inner.capabilities)
-            .map_err(|failure| OperationFailure::new(failure.error, work))?;
-        Ok(FsReceipt {
-            value: Volume {
-                fs: self.clone(),
-                id: volume_id,
-                config: creation.config,
-            },
-            work,
-        })
+        async move {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::before_work(error.into()))?;
+            let (creation, work) = self
+                .read_creation(volume_id, WorkCounters::default(), budget, cancellation)
+                .await?;
+            validate_volume_capabilities(creation.config, self.inner.capabilities)
+                .map_err(|failure| OperationFailure::new(failure.error, work))?;
+            Ok(FsReceipt {
+                value: Volume {
+                    fs: self.clone(),
+                    id: volume_id,
+                    config: creation.config,
+                },
+                work,
+            })
+        }
+        .await
+        .observe("open_volume")
     }
 
     /// Reads one exact immutable object for resumable manifest transfer.
@@ -4720,6 +4825,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns typed manifest, cursor, cancellation, allocation, storage, or
     /// bounded-work failures with exact retained-buffer accounting.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.export_generation_batch",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+            )
+        )
+    )]
     pub async fn export_generation_batch(
         &self,
         manifest: &GenerationExportManifest,
@@ -4740,6 +4860,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .await
         .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
+        .observe("export_generation_batch")
     }
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
@@ -4752,6 +4873,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns typed manifest, cursor/body bound, cancellation, storage, or
     /// exact-work failures while retaining imported-prefix work.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.import_generation_batch",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+            )
+        )
+    )]
     pub async fn import_generation_batch(
         &self,
         manifest: &GenerationExportManifest,
@@ -4772,6 +4908,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .await
         .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
+        .observe("import_generation_batch")
     }
 
     /// Restores a volume authority from a fully imported immutable generation.
@@ -4784,6 +4921,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Returns typed configuration, volume-identity, closure, authority,
     /// cancellation, or bounded-work failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.restore_volume",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+            )
+        )
+    )]
     pub async fn restore_volume(
         &self,
         manifest: &GenerationExportManifest,
@@ -4791,37 +4943,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        validate_volume_capabilities(manifest.config, self.inner.capabilities)?;
-        let proven_at = self.inner.objects.collection_sweeps();
-        let proof = authenticate_generation_export_manifest_async(
-            &self.inner.objects,
-            manifest,
-            closure_limits(manifest.config),
-            budget,
-            cancellation,
-        )
+        async move {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::before_work(error.into()))?;
+            validate_volume_capabilities(manifest.config, self.inner.capabilities)?;
+            let proven_at = self.inner.objects.collection_sweeps();
+            let proof = authenticate_generation_export_manifest_async(
+                &self.inner.objects,
+                manifest,
+                closure_limits(manifest.config),
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                OperationFailure::new(map_transfer_error(failure.error), *failure.work)
+            })?;
+            let work = proof.work;
+            self.publish_volume_creation(
+                VolumeCreation {
+                    volume_id: manifest.volume_id,
+                    config: manifest.config,
+                    generation_root: manifest.generation_root,
+                    operation_id: Some(operation_id),
+                },
+                &manifest.objects,
+                proven_at,
+                work,
+                budget,
+                cancellation,
+            )
+            .await
+        }
         .await
-        .map_err(|failure| {
-            OperationFailure::new(map_transfer_error(failure.error), *failure.work)
-        })?;
-        let work = proof.work;
-        self.publish_volume_creation(
-            VolumeCreation {
-                volume_id: manifest.volume_id,
-                config: manifest.config,
-                generation_root: manifest.generation_root,
-                operation_id: Some(operation_id),
-            },
-            &manifest.objects,
-            proven_at,
-            work,
-            budget,
-            cancellation,
-        )
-        .await
+        .observe("restore_volume")
     }
 
     /// Durably creates a volume's authority with its creation record, once
@@ -5086,6 +5242,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     ///
     /// Rejects zero bounds, foreign/malformed generations, storage corruption,
     /// cancellation, allocation failure, or work beyond the admitted budget.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.diff_generations",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn diff_generations(
         &self,
         before: GenerationId,
@@ -5094,62 +5266,66 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationDiff> {
-        if maximum_changes == 0 {
-            return Err(OperationFailure::before_work(FsError::InvalidDiff));
+        async move {
+            if maximum_changes == 0 {
+                return Err(OperationFailure::before_work(FsError::InvalidDiff));
+            }
+            if before == after {
+                return Ok(OperationReceipt {
+                    value: GenerationDiff {
+                        files: Vec::new(),
+                        bindings: Vec::new(),
+                        truncated: false,
+                    },
+                    work: WorkCounters::default(),
+                });
+            }
+            let mut work = WorkCounters::default();
+            let before_id = ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: before.digest(),
+            };
+            let after_id = ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: after.digest(),
+            };
+            let (before_root, before_work) = read_generation_root(
+                &self.fs.inner.objects,
+                before_id,
+                self.config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+            work = add(work, before_work)?;
+            let (after_root, after_work) = read_generation_root(
+                &self.fs.inner.objects,
+                after_id,
+                self.config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+            work = add(work, after_work)?;
+            if before_root.volume_id != self.id || after_root.volume_id != self.id {
+                return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+            }
+            diff_generation_file_tables(
+                &self.fs.inner.objects,
+                before_root.file_table,
+                after_root.file_table,
+                maximum_changes,
+                self.config,
+                work,
+                budget,
+                cancellation,
+            )
+            .await
         }
-        if before == after {
-            return Ok(OperationReceipt {
-                value: GenerationDiff {
-                    files: Vec::new(),
-                    bindings: Vec::new(),
-                    truncated: false,
-                },
-                work: WorkCounters::default(),
-            });
-        }
-        let mut work = WorkCounters::default();
-        let before_id = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: before.digest(),
-        };
-        let after_id = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: after.digest(),
-        };
-        let (before_root, before_work) = read_generation_root(
-            &self.fs.inner.objects,
-            before_id,
-            self.config,
-            remaining(work, budget)?,
-            cancellation,
-        )
         .await
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, before_work)?;
-        let (after_root, after_work) = read_generation_root(
-            &self.fs.inner.objects,
-            after_id,
-            self.config,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, after_work)?;
-        if before_root.volume_id != self.id || after_root.volume_id != self.id {
-            return Err(OperationFailure::new(FsError::VolumeMismatch, work));
-        }
-        diff_generation_file_tables(
-            &self.fs.inner.objects,
-            before_root.file_table,
-            after_root.file_table,
-            maximum_changes,
-            self.config,
-            work,
-            budget,
-            cancellation,
-        )
-        .await
+        .observe("diff_generations")
     }
 
     /// Resolves the exact generation root object and, for a writable
@@ -5212,6 +5388,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     /// generation roots, volume mismatch, authority inconsistency,
     /// cancellation, or work outside the admitted budget. Descendant objects
     /// are authenticated lazily by the exact operation that demands them.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.checkout",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn checkout(
         &self,
         selector: GenerationSelector,
@@ -5219,85 +5411,89 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Checkout<A, O>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        validate_checkout(mode, self.config)?;
-        let mut work = WorkCounters::default();
-        let (generation_root, mut authority_head, next_work) = self
-            .resolve_checkout_generation(selector, mode, work, budget, cancellation)
-            .await?;
-        work = next_work;
-        let (root, root_work) = read_generation_root(
-            &self.fs.inner.objects,
-            generation_root,
-            self.config,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, root_work)?;
-        if root.volume_id != self.id {
-            return Err(OperationFailure::new(FsError::VolumeMismatch, work));
-        }
-        if mode.access == AccessMode::ReadWrite
-            && self.config.concurrency == ConcurrencyMode::ExclusiveWriter
-        {
-            let expected = authority_head.ok_or_else(|| {
-                OperationFailure::new(FsError::WritableCheckoutRequiresHead, work)
-            })?;
-            let fenced = self
-                .fs
-                .inner
-                .authority
-                .fence(
-                    volume_authority_id(self.id),
-                    expected,
-                    remaining(work, budget)?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = add(work, fenced.work)?;
-            authority_head = Some(match fenced.value {
-                FenceOutcome::Advanced(head) => head,
-                FenceOutcome::Conflict { actual } => {
-                    return Err(OperationFailure::new(
-                        FsError::ExclusiveWriterConflict { actual },
-                        work,
-                    ));
-                }
-            });
-        }
-        let dependencies = CheckoutDependencies::new(
-            std::iter::empty(),
-            std::iter::empty(),
-            self.config.limits.maximum_checkout_dependencies,
-        )
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-        Ok(FsReceipt {
-            value: Checkout {
-                volume: self.clone(),
+        async move {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::before_work(error.into()))?;
+            validate_checkout(mode, self.config)?;
+            let mut work = WorkCounters::default();
+            let (generation_root, mut authority_head, next_work) = self
+                .resolve_checkout_generation(selector, mode, work, budget, cancellation)
+                .await?;
+            work = next_work;
+            let (root, root_work) = read_generation_root(
+                &self.fs.inner.objects,
                 generation_root,
-                base_file_table: root.file_table,
-                base_root: root.clone(),
-                root: crate::collection::CheckoutRoots::new(
-                    self.fs.inner.objects.collection(),
-                    self.config,
+                self.config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+            work = add(work, root_work)?;
+            if root.volume_id != self.id {
+                return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+            }
+            if mode.access == AccessMode::ReadWrite
+                && self.config.concurrency == ConcurrencyMode::ExclusiveWriter
+            {
+                let expected = authority_head.ok_or_else(|| {
+                    OperationFailure::new(FsError::WritableCheckoutRequiresHead, work)
+                })?;
+                let fenced = self
+                    .fs
+                    .inner
+                    .authority
+                    .fence(
+                        volume_authority_id(self.id),
+                        expected,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+                work = add(work, fenced.work)?;
+                authority_head = Some(match fenced.value {
+                    FenceOutcome::Advanced(head) => head,
+                    FenceOutcome::Conflict { actual } => {
+                        return Err(OperationFailure::new(
+                            FsError::ExclusiveWriterConflict { actual },
+                            work,
+                        ));
+                    }
+                });
+            }
+            let dependencies = CheckoutDependencies::new(
+                std::iter::empty(),
+                std::iter::empty(),
+                self.config.limits.maximum_checkout_dependencies,
+            )
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+            Ok(FsReceipt {
+                value: Checkout {
+                    volume: self.clone(),
                     generation_root,
-                    root,
-                ),
-                authority_head,
-                authored_operation_id: None,
-                live_operation_id: None,
-                last_commit: None,
-                prepared_merge_parent: None,
-                dependencies: DependencyLedger::new(dependencies),
-                mode,
-            },
-            work,
-        })
+                    base_file_table: root.file_table,
+                    base_root: root.clone(),
+                    root: crate::collection::CheckoutRoots::new(
+                        self.fs.inner.objects.collection(),
+                        self.config,
+                        generation_root,
+                        root,
+                    ),
+                    authority_head,
+                    authored_operation_id: None,
+                    live_operation_id: None,
+                    last_commit: None,
+                    prepared_merge_parent: None,
+                    dependencies: DependencyLedger::new(dependencies),
+                    mode,
+                },
+                work,
+            })
+        }
+        .await
+        .observe("checkout")
     }
 
     async fn resolve_head_generation(
@@ -5966,6 +6162,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads one exact logical range without mutating checkout state.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.pinned.read_file_range",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+            )
+        )
+    )]
     pub async fn read_file_range(
         &self,
         path: &NamespacePath,
@@ -5973,29 +6184,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
-        if range.length > self.volume.config.limits.maximum_read_bytes {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
+        async move {
+            if range.length > self.volume.config.limits.maximum_read_bytes {
+                return Err(OperationFailure::before_work(FsError::FileRead(
+                    FileRangeReadError::InvalidRange,
+                )));
+            }
+            let resolved = self.resolve_file(path, budget, cancellation).await?;
+            let mut work = resolved.work;
+            let record = resolved.value;
+            let read = read_file_range_async(
+                &self.volume.fs.inner.objects,
+                FileRangeRequest {
+                    record,
+                    range,
+                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    limits: DecodeLimits::for_volume(self.volume.config),
+                    budget: remaining(work, budget)?,
+                },
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
+            work = add(work, read.work)?;
+            Ok(FsReceipt { value: read, work })
         }
-        let resolved = self.resolve_file(path, budget, cancellation).await?;
-        let mut work = resolved.work;
-        let record = resolved.value;
-        let read = read_file_range_async(
-            &self.volume.fs.inner.objects,
-            FileRangeRequest {
-                record,
-                range,
-                maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                limits: DecodeLimits::for_volume(self.volume.config),
-                budget: remaining(work, budget)?,
-            },
-            cancellation,
-        )
         .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
-        work = add(work, read.work)?;
-        Ok(FsReceipt { value: read, work })
+        .observe("pinned.read_file_range")
     }
 
     /// Reads exact opaque symbolic-link target bytes without following it.
@@ -6410,6 +6625,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects non-writable/prepared checkouts, foreign generations, truncated
     /// change frontiers, malformed storage, cancellation, or bounded-work failure.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.prepare_merge",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn prepare_merge(
         &mut self,
         theirs: GenerationId,
@@ -6418,86 +6649,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<MergePreparation> {
-        if self.mode.access != AccessMode::ReadWrite
-            || self.mode.mutations != MutationMode::PrivateOverlay
-        {
-            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
-        }
-        if self.prepared_merge_parent.is_some() {
-            return Err(OperationFailure::before_work(FsError::PreparedMergePending));
-        }
-        if maximum_changes == 0 || maximum_conflicts == 0 {
-            return Err(OperationFailure::before_work(FsError::MergeChangeLimit));
-        }
-        let theirs_id = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: theirs.digest(),
-        };
-        let (current_head_root, current_head, mut work) = self
-            .volume
-            .resolve_head_generation(budget, cancellation)
-            .await?;
-        if current_head_root != theirs_id {
-            return Err(OperationFailure::new(FsError::MergeParentNotHead, work));
-        }
-        let (theirs_root, theirs_work) = read_generation_root(
-            &self.volume.fs.inner.objects,
-            theirs_id,
-            self.volume.config,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, theirs_work)?;
-        let merged = merge_generation_async(
-            &self.volume.fs.inner.objects,
-            MergeGenerationRequest {
-                base_generation: self.root.base(),
-                base: self.base_root.clone(),
-                ours_generation: (self.root.file_table == self.base_file_table)
-                    .then_some(self.generation_root),
-                ours: self.root.clone(),
-                theirs_generation: theirs_id,
-                theirs: theirs_root,
-                retain_theirs_parent: true,
-                maximum_changes,
-                maximum_conflicts,
-                resolutions: BTreeMap::new(),
-            },
-            DecodeLimits::for_volume(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| map_merge_failure(failure, work))?;
-        work = add(work, merged.work)?;
-        match merged.value {
-            MergeGenerationOutcome::Prepared {
-                generation_root,
-                root,
-                generation_id,
-            } => {
-                self.root.set_working(root);
-                self.generation_root = generation_root;
-                self.prepared_merge_parent = Some(theirs_id);
-                self.authority_head = Some(current_head);
-                Ok(OperationReceipt {
-                    value: MergePreparation::Prepared { generation_id },
-                    work,
-                })
+        async move {
+            if self.mode.access != AccessMode::ReadWrite
+                || self.mode.mutations != MutationMode::PrivateOverlay
+            {
+                return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
             }
-            MergeGenerationOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => Ok(OperationReceipt {
-                value: MergePreparation::Conflicted {
+            if self.prepared_merge_parent.is_some() {
+                return Err(OperationFailure::before_work(FsError::PreparedMergePending));
+            }
+            if maximum_changes == 0 || maximum_conflicts == 0 {
+                return Err(OperationFailure::before_work(FsError::MergeChangeLimit));
+            }
+            let theirs_id = ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: theirs.digest(),
+            };
+            let (current_head_root, current_head, mut work) = self
+                .volume
+                .resolve_head_generation(budget, cancellation)
+                .await?;
+            if current_head_root != theirs_id {
+                return Err(OperationFailure::new(FsError::MergeParentNotHead, work));
+            }
+            let (theirs_root, theirs_work) = read_generation_root(
+                &self.volume.fs.inner.objects,
+                theirs_id,
+                self.volume.config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, theirs_work)?;
+            let merged = merge_generation_async(
+                &self.volume.fs.inner.objects,
+                MergeGenerationRequest {
+                    base_generation: self.root.base(),
+                    base: self.base_root.clone(),
+                    ours_generation: (self.root.file_table == self.base_file_table)
+                        .then_some(self.generation_root),
+                    ours: self.root.clone(),
+                    theirs_generation: theirs_id,
+                    theirs: theirs_root,
+                    retain_theirs_parent: true,
+                    maximum_changes,
+                    maximum_conflicts,
+                    resolutions: BTreeMap::new(),
+                },
+                DecodeLimits::for_volume(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| map_merge_failure(failure, work))?;
+            work = add(work, merged.work)?;
+            match merged.value {
+                MergeGenerationOutcome::Prepared {
+                    generation_root,
+                    root,
+                    generation_id,
+                } => {
+                    self.root.set_working(root);
+                    self.generation_root = generation_root;
+                    self.prepared_merge_parent = Some(theirs_id);
+                    self.authority_head = Some(current_head);
+                    Ok(OperationReceipt {
+                        value: MergePreparation::Prepared { generation_id },
+                        work,
+                    })
+                }
+                MergeGenerationOutcome::Conflicted {
                     conflicts,
                     truncated,
-                },
-                work,
-            }),
+                } => Ok(OperationReceipt {
+                    value: MergePreparation::Conflicted {
+                        conflicts,
+                        truncated,
+                    },
+                    work,
+                }),
+            }
         }
+        .await
+        .observe("prepare_merge")
     }
 
     /// Builds a deterministic complete manifest for the current immutable or
@@ -6548,16 +6783,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns typed canonical encoding, storage, cancellation, allocation, or
     /// bounded-work failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.checkpoint",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn checkpoint(
         &self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        let checkpoint = self.checkpoint_root(budget, cancellation).await?;
-        Ok(FsReceipt {
-            value: GenerationId::new(checkpoint.value.digest),
-            work: checkpoint.work,
-        })
+        async move {
+            let checkpoint = self.checkpoint_root(budget, cancellation).await?;
+            Ok(FsReceipt {
+                value: GenerationId::new(checkpoint.value.digest),
+                work: checkpoint.work,
+            })
+        }
+        .await
+        .observe("checkpoint")
     }
 
     async fn checkpoint_root(
@@ -6634,56 +6889,76 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects pinned, live, or dirty checkouts and returns exact authority,
     /// storage, authentication, cancellation, or budget failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.refresh_head",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn refresh_head(
         &mut self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        if !matches!(
-            self.mode.consistency,
-            ConsistencyMode::Manual | ConsistencyMode::TrackingSafe
-        ) {
-            return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
-        }
-        if self.has_pending_mutations() {
-            return Err(OperationFailure::before_work(
-                FsError::PendingMutationsRequireRebase,
-            ));
-        }
-        let (generation_root, head, mut work) = self
-            .volume
-            .resolve_head_generation(budget, cancellation)
-            .await?;
-        if generation_root == self.generation_root {
+        async move {
+            if !matches!(
+                self.mode.consistency,
+                ConsistencyMode::Manual | ConsistencyMode::TrackingSafe
+            ) {
+                return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
+            }
+            if self.has_pending_mutations() {
+                return Err(OperationFailure::before_work(
+                    FsError::PendingMutationsRequireRebase,
+                ));
+            }
+            let (generation_root, head, mut work) = self
+                .volume
+                .resolve_head_generation(budget, cancellation)
+                .await?;
+            if generation_root == self.generation_root {
+                self.authority_head = Some(head);
+                return Ok(FsReceipt {
+                    value: self.generation_id(),
+                    work,
+                });
+            }
+            let (root, root_work) = read_generation_root(
+                &self.volume.fs.inner.objects,
+                generation_root,
+                self.volume.config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, root_work)?;
+            if root.volume_id != self.volume.id {
+                return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+            }
+            self.generation_root = generation_root;
+            self.root.set(generation_root, root);
+            self.base_root = self.root.clone();
+            self.base_file_table = self.root.file_table;
             self.authority_head = Some(head);
-            return Ok(FsReceipt {
+            self.dependencies.proof().clear();
+            Ok(FsReceipt {
                 value: self.generation_id(),
                 work,
-            });
+            })
         }
-        let (root, root_work) = read_generation_root(
-            &self.volume.fs.inner.objects,
-            generation_root,
-            self.volume.config,
-            remaining(work, budget)?,
-            cancellation,
-        )
         .await
-        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, root_work)?;
-        if root.volume_id != self.volume.id {
-            return Err(OperationFailure::new(FsError::VolumeMismatch, work));
-        }
-        self.generation_root = generation_root;
-        self.root.set(generation_root, root);
-        self.base_root = self.root.clone();
-        self.base_file_table = self.root.file_table;
-        self.authority_head = Some(head);
-        self.dependencies.proof().clear();
-        Ok(FsReceipt {
-            value: self.generation_id(),
-            work,
-        })
+        .observe("refresh_head")
     }
 
     /// Safely advances to the current head and rebases the private candidate.
@@ -6697,7 +6972,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured authority, probe, decode, replay, cancellation, or
     /// budget failures without changing the checkout unless the full rebase succeeds.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.rebase_head",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn rebase_head(
+        &mut self,
+        maximum_conflicts: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<RebaseDecision> {
+        self.rebase_head_unobserved(maximum_conflicts, budget, cancellation)
+            .await
+            .observe("rebase_head")
+    }
+
+    /// [`Self::rebase_head`] without its span, for operations that have their own.
+    async fn rebase_head_unobserved(
         &mut self,
         maximum_conflicts: u32,
         budget: WorkBudget,
@@ -6858,19 +7161,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects non-live checkouts and returns a typed region conflict rather
     /// than crossing any prior observation or pending mutation dependency.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.refresh_live",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn refresh_live(
         &mut self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        if self.mode.consistency != ConsistencyMode::Live {
-            return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
+        async move {
+            if self.mode.consistency != ConsistencyMode::Live {
+                return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
+            }
+            let synchronized = self.synchronize_live(budget, cancellation).await?;
+            Ok(FsReceipt {
+                value: self.generation_id(),
+                work: synchronized.work,
+            })
         }
-        let synchronized = self.synchronize_live(budget, cancellation).await?;
-        Ok(FsReceipt {
-            value: self.generation_id(),
-            work: synchronized.work,
-        })
+        .await
+        .observe("refresh_live")
     }
 
     async fn synchronize_live(
@@ -6886,7 +7209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 });
             }
             let rebase = self
-                .rebase_head(
+                .rebase_head_unobserved(
                     self.volume.config.limits.maximum_checkout_dependencies,
                     budget,
                     cancellation,
@@ -7068,7 +7391,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects non-writable modes and returns exact planning, storage,
     /// cancellation, semantic, or work-budget failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.mutate",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn mutate(
+        &mut self,
+        operations: Vec<Mutation>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        self.mutate_unobserved(operations, budget, cancellation)
+            .await
+            .observe("mutate")
+    }
+
+    /// [`Self::mutate`] without its span, for operations that have their own.
+    async fn mutate_unobserved(
         &mut self,
         operations: Vec<Mutation>,
         budget: WorkBudget,
@@ -7102,6 +7453,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Rejects non-live modes, an existing unresolved candidate, zero bounds,
     /// and returns exact mutation, rebase, publication, cancellation, storage,
     /// or work-budget failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.mutate_live",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn mutate_live(
         &mut self,
         operations: Vec<Mutation>,
@@ -7111,29 +7478,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
-        self.validate_live_operation(maximum_attempts)?;
-        if self.has_pending_mutations() {
-            return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
+        async move {
+            self.validate_live_operation(maximum_attempts)?;
+            if self.has_pending_mutations() {
+                return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
+            }
+            let mutation = self
+                .mutate_candidate(operations, budget, cancellation)
+                .await?;
+            let mut work = mutation.work;
+            let publication = self
+                .resume_live(
+                    operation_id,
+                    maximum_attempts,
+                    maximum_conflicts,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, publication.work)?;
+            Ok(FsReceipt {
+                value: publication.value,
+                work,
+            })
         }
-        let mutation = self
-            .mutate_candidate(operations, budget, cancellation)
-            .await?;
-        let mut work = mutation.work;
-        let publication = self
-            .resume_live(
-                operation_id,
-                maximum_attempts,
-                maximum_conflicts,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, publication.work)?;
-        Ok(FsReceipt {
-            value: publication.value,
-            work,
-        })
+        .await
+        .observe("mutate_live")
     }
 
     /// Compiles, atomically applies, and durably publishes one authored live transaction.
@@ -7927,6 +8298,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Rejects excessive input, unsupported kinds, invalid ranges,
     /// non-writable checkouts, semantic conflicts, cancellation, storage
     /// failures, or work beyond the caller's exact budget.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.apply_authored_transaction",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn apply_authored_transaction(
         &mut self,
         authored: Vec<AuthoredMutation>,
@@ -7988,7 +8375,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 });
             }
             let mutation = self
-                .mutate(operations, remaining(work, budget)?, cancellation)
+                .mutate_unobserved(operations, remaining(work, budget)?, cancellation)
                 .await
                 .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
             work = add(work, mutation.work)?;
@@ -7998,6 +8385,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
         })
         .await
+        .observe("apply_authored_transaction")
     }
 
     /// Applies a large ordered capture without exposing an intermediate candidate.
@@ -8891,14 +9279,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let folded_target = target.case_fold_key();
         let mut after: Option<LogicalName> = None;
         loop {
-            // `list_directory` resolves its own path through
+            // `list_directory_with_bound` resolves its own path through
             // `lookup_no_follow_observed`, which calls back into this
             // function on an exact-match miss; the futures that cycle builds
             // in the heap are what give it a finite type.
             let page = self
-                .list_directory(
+                .list_directory_with_bound(
                     &parent,
                     after.as_ref(),
+                    false,
                     CASE_FOLD_COLLISION_SCAN_PAGE,
                     remaining(work, budget)?,
                     cancellation,
@@ -9348,6 +9737,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured path, blob, mutation, storage, cancellation,
     /// allocation, or bounded-work failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.write_file",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn write_file(
         &mut self,
         path: NamespacePath,
@@ -9364,6 +9769,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             cancellation,
         )
         .await
+        .observe("write_file")
     }
 
     /// Captures one regular file as an ephemeral path-independent open view.
@@ -10130,7 +10536,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await?;
         let mut work = compiled.work;
         let mutation = self
-            .mutate(compiled.value, remaining(work, budget)?, cancellation)
+            .mutate_unobserved(compiled.value, remaining(work, budget)?, cancellation)
             .await
             .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, mutation.work)?;
@@ -10240,72 +10646,95 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Fails as a whole only if the group's summed work overflows; every
     /// other failure, including an exhausted budget, belongs to its change.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.apply_group",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn apply_group(
         &mut self,
         changes: Vec<GroupedChange>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Vec<Result<GroupedOutcome, FsError>>> {
-        let mut work = WorkCounters::default();
-        let mut staged_metadata = AuthoredMetadataCache::new();
-        let mut compiled = Vec::with_capacity(changes.len());
-        for change in changes {
-            let receipt = self
-                .compile_grouped(change, &mut staged_metadata, budget, cancellation)
-                .await;
-            compiled.push(match receipt {
-                Ok(receipt) => {
-                    work = add(work, receipt.work)?;
-                    Ok(receipt.value)
-                }
-                Err(failure) => {
-                    work = add(work, *failure.work)?;
-                    Err(failure.error)
-                }
-            });
-        }
-        let applicable = compiled.iter().filter(|change| change.is_ok()).count();
-        if applicable > 1 {
-            let operations = compiled
-                .iter()
-                .flatten()
-                .flat_map(|(operations, _)| operations.iter().cloned())
-                .collect();
-            match self
-                .mutate(operations, group_budget(budget, applicable), cancellation)
-                .await
-            {
-                Ok(mutation) => {
-                    work = add(work, mutation.work)?;
-                    let value = compiled
-                        .into_iter()
-                        .map(|change| change.map(|(_, outcome)| outcome))
-                        .collect();
-                    return Ok(FsReceipt { value, work });
-                }
-                Err(failure) => work = add(work, *failure.work)?,
+        async move {
+            let mut work = WorkCounters::default();
+            let mut staged_metadata = AuthoredMetadataCache::new();
+            let mut compiled = Vec::with_capacity(changes.len());
+            for change in changes {
+                let receipt = self
+                    .compile_grouped(change, &mut staged_metadata, budget, cancellation)
+                    .await;
+                compiled.push(match receipt {
+                    Ok(receipt) => {
+                        work = add(work, receipt.work)?;
+                        Ok(receipt.value)
+                    }
+                    Err(failure) => {
+                        work = add(work, *failure.work)?;
+                        Err(failure.error)
+                    }
+                });
             }
-        }
-        let mut value = Vec::with_capacity(compiled.len());
-        for change in compiled {
-            let applied = match change {
-                Ok((operations, outcome)) => {
-                    match self.mutate(operations, budget, cancellation).await {
-                        Ok(mutation) => {
-                            work = add(work, mutation.work)?;
-                            Ok(outcome)
-                        }
-                        Err(failure) => {
-                            work = add(work, *failure.work)?;
-                            Err(failure.error)
+            let applicable = compiled.iter().filter(|change| change.is_ok()).count();
+            if applicable > 1 {
+                let operations = compiled
+                    .iter()
+                    .flatten()
+                    .flat_map(|(operations, _)| operations.iter().cloned())
+                    .collect();
+                match self
+                    .mutate_unobserved(operations, group_budget(budget, applicable), cancellation)
+                    .await
+                {
+                    Ok(mutation) => {
+                        work = add(work, mutation.work)?;
+                        let value = compiled
+                            .into_iter()
+                            .map(|change| change.map(|(_, outcome)| outcome))
+                            .collect();
+                        return Ok(FsReceipt { value, work });
+                    }
+                    Err(failure) => work = add(work, *failure.work)?,
+                }
+            }
+            let mut value = Vec::with_capacity(compiled.len());
+            for change in compiled {
+                let applied = match change {
+                    Ok((operations, outcome)) => {
+                        match self
+                            .mutate_unobserved(operations, budget, cancellation)
+                            .await
+                        {
+                            Ok(mutation) => {
+                                work = add(work, mutation.work)?;
+                                Ok(outcome)
+                            }
+                            Err(failure) => {
+                                work = add(work, *failure.work)?;
+                                Err(failure.error)
+                            }
                         }
                     }
-                }
-                Err(error) => Err(error),
-            };
-            value.push(applied);
+                    Err(error) => Err(error),
+                };
+                value.push(applied);
+            }
+            Ok(FsReceipt { value, work })
         }
-        Ok(FsReceipt { value, work })
+        .await
+        .observe("apply_group")
     }
 
     async fn compile_grouped(
@@ -10922,23 +11351,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Rejects clean/non-writable checkouts and returns exact checkpoint,
     /// closure, authority, cancellation, or budget failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.commit",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn commit(
         &mut self,
         operation_id: OperationId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
-        if self.mode.access != AccessMode::ReadWrite
-            || self.mode.mutations != MutationMode::PrivateOverlay
-        {
-            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+        async move {
+            if self.mode.access != AccessMode::ReadWrite
+                || self.mode.mutations != MutationMode::PrivateOverlay
+            {
+                return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+            }
+            self.publish_pending(operation_id, None, budget, cancellation)
+                .await
         }
-        self.publish_pending(operation_id, None, budget, cancellation)
-            .await
+        .await
+        .observe("commit")
     }
 
     /// Publishes this overlay only while the supplied durable operation lease
     /// remains active at the authority linearization point.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.commit_with_permit",
+            level = "info",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn commit_with_permit(
         &mut self,
         operation_id: OperationId,
@@ -10956,6 +11421,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await
         })
         .await
+        .observe("commit_with_permit")
     }
 
     /// Anchors a separately journaled lazy overlay to an exact checkout
@@ -11631,7 +12097,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns the same measured fail-closed outcomes as [`Self::lookup_no_follow`],
     /// plus explicit empty and excessive-batch rejection.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.lookup_batch_no_follow",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn lookup_batch_no_follow(
+        &mut self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<PathBatchLookup> {
+        self.lookup_batch_no_follow_unobserved(paths, budget, cancellation)
+            .await
+            .observe("lookup_batch_no_follow")
+    }
+
+    async fn lookup_batch_no_follow_unobserved(
         &mut self,
         paths: &[NamespacePath],
         budget: WorkBudget,
@@ -11748,6 +12241,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured path, kind, pagination, dependency, storage,
     /// cancellation, or bounded-work failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.list_directory",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn list_directory(
         &mut self,
         path: &NamespacePath,
@@ -11758,6 +12267,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<DirectoryPage> {
         self.list_directory_with_bound(path, after, false, maximum_entries, budget, cancellation)
             .await
+            .observe("list_directory")
     }
 
     async fn list_directory_with_bound(
@@ -12535,6 +13045,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// Returns measured path, kind, range, authentication, dependency,
     /// cancellation, storage, allocation, or bounded-work failures.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.read_file_range",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+                volume_id = crate::obs::hex(&self.volume.id.into_bytes()),
+            )
+        )
+    )]
     pub async fn read_file_range(
         &mut self,
         path: &NamespacePath,
@@ -12542,40 +13068,44 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
-        if range.length > self.volume.config.limits.maximum_read_bytes {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let lookup = self
-            .lookup_no_follow_observed(path, budget, cancellation, false)
-            .await?;
-        let mut work = lookup.work;
-        let record = lookup
-            .value
-            .record
-            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        let mut read = read_file_range_async(
-            &self.volume.fs.inner.objects,
-            FileRangeRequest {
-                record,
-                range,
-                maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                limits: DecodeLimits::for_volume(self.volume.config),
-                budget: remaining(work, budget)?,
-            },
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
-        work = add(work, read.work)?;
-        if self.tracks_observations() && range.length != 0 {
-            work = self
-                .observe_base_regular_range(record.file_id, range, work, budget, cancellation)
+        async move {
+            if range.length > self.volume.config.limits.maximum_read_bytes {
+                return Err(OperationFailure::before_work(FsError::FileRead(
+                    FileRangeReadError::InvalidRange,
+                )));
+            }
+            let lookup = self
+                .lookup_no_follow_observed(path, budget, cancellation, false)
                 .await?;
+            let mut work = lookup.work;
+            let record = lookup
+                .value
+                .record
+                .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+            let mut read = read_file_range_async(
+                &self.volume.fs.inner.objects,
+                FileRangeRequest {
+                    record,
+                    range,
+                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    limits: DecodeLimits::for_volume(self.volume.config),
+                    budget: remaining(work, budget)?,
+                },
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
+            work = add(work, read.work)?;
+            if self.tracks_observations() && range.length != 0 {
+                work = self
+                    .observe_base_regular_range(record.file_id, range, work, budget, cancellation)
+                    .await?;
+            }
+            read.work = work;
+            Ok(FsReceipt { value: read, work })
         }
-        read.work = work;
-        Ok(FsReceipt { value: read, work })
+        .await
+        .observe("read_file_range")
     }
     async fn lookup_file_record_by_id(
         &self,

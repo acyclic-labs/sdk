@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
 use crate::body::StoredBody;
+use crate::obs;
 use bytes::Bytes;
 use imbl::OrdMap;
 use prost::Message;
@@ -614,425 +615,510 @@ impl NativeBatchObjects for MemoryObjects {
         &self,
         requests: Vec<(wire::PutObjectHeader, Bytes)>,
     ) -> Vec<Result<wire::ObjectInfo, Error>> {
-        if requests.is_empty() {
-            return Vec::new();
-        }
-        let Ok(mut state) = self.lock_state() else {
-            return vec![Err(Unavailable.into()); requests.len()];
-        };
-        #[cfg(feature = "local")]
-        if self.journal.is_some() {
-            return self.put_durable_batch_locked(&mut state, requests);
-        }
-        requests
-            .into_iter()
-            .map(|(query, body)| self.put_locked(&mut state, &query, body))
-            .collect()
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.put_batch",
+                batch_len = requests.len()
+            ),
+            async {
+                if requests.is_empty() {
+                    return Vec::new();
+                }
+                let Ok(mut state) = self.lock_state() else {
+                    return vec![Err(Unavailable.into()); requests.len()];
+                };
+                #[cfg(feature = "local")]
+                if self.journal.is_some() {
+                    return self.put_durable_batch_locked(&mut state, requests);
+                }
+                requests
+                    .into_iter()
+                    .map(|(query, body)| self.put_locked(&mut state, &query, body))
+                    .collect()
+            },
+        )
+        .await
     }
 
     async fn get_batch(
         &self,
         requests: Vec<(wire::GetObjectRequest, u64)>,
     ) -> Vec<Result<Object, Error>> {
-        if requests.is_empty() {
-            return Vec::new();
-        }
-        let selected = {
-            let Ok(state) = self.lock_state() else {
-                return vec![Err(Unavailable.into()); requests.len()];
-            };
-            requests
-                .into_iter()
-                .map(|(query, maximum)| get_locked(&state, &query, maximum))
-                .collect::<Vec<_>>()
-        };
-        let mut results = Vec::with_capacity(selected.len());
-        for value in selected {
-            results.push(match value {
-                Ok(value) => value.read().await,
-                Err(error) => Err(error),
-            });
-        }
-        results
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.get_batch",
+                batch_len = requests.len()
+            ),
+            async {
+                if requests.is_empty() {
+                    return Vec::new();
+                }
+                let selected = {
+                    let Ok(state) = self.lock_state() else {
+                        return vec![Err(Unavailable.into()); requests.len()];
+                    };
+                    requests
+                        .into_iter()
+                        .map(|(query, maximum)| get_locked(&state, &query, maximum))
+                        .collect::<Vec<_>>()
+                };
+                let mut results = Vec::with_capacity(selected.len());
+                for value in selected {
+                    results.push(match value {
+                        Ok(value) => value.read().await,
+                        Err(error) => Err(error),
+                    });
+                }
+                results
+            },
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
 impl ObjectsProvider for MemoryObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
-        request::bucket_name(&query.name)?;
-        self.mutate(
-            request::create_bucket_digest(&query)?,
-            &query.mutation,
-            |state| {
-                if state.buckets.contains_key(&query.name) {
-                    return Err(AlreadyExists.into());
-                }
-                let info = wire::Bucket {
-                    bucket: Some(wire::BucketRef {
-                        name: query.name.clone(),
-                    }),
-                    created_at: Some(timestamp()?),
-                };
-                state.buckets.insert(
-                    query.name.clone(),
-                    Bucket {
-                        info: info.clone(),
-                        objects: OrdMap::new(),
-                    },
-                );
-                Ok(info)
-            },
-        )
+        obs::traced(obs::span!(INFO, "acyclic.objects.create_bucket"), async {
+            request::bucket_name(&query.name)?;
+            self.mutate(
+                request::create_bucket_digest(&query)?,
+                &query.mutation,
+                |state| {
+                    if state.buckets.contains_key(&query.name) {
+                        return Err(AlreadyExists.into());
+                    }
+                    let info = wire::Bucket {
+                        bucket: Some(wire::BucketRef {
+                            name: query.name.clone(),
+                        }),
+                        created_at: Some(timestamp()?),
+                    };
+                    state.buckets.insert(
+                        query.name.clone(),
+                        Bucket {
+                            info: info.clone(),
+                            objects: OrdMap::new(),
+                        },
+                    );
+                    Ok(info)
+                },
+            )
+        })
+        .await
     }
     async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
-        let name = request::bucket(&query.bucket)?;
-        Ok(self
-            .lock_state()?
-            .buckets
-            .get(name)
-            .ok_or(Error::from(NotFound))?
-            .info
-            .clone())
+        obs::traced(obs::span!(INFO, "acyclic.objects.head_bucket"), async {
+            let name = request::bucket(&query.bucket)?;
+            Ok(self
+                .lock_state()?
+                .buckets
+                .get(name)
+                .ok_or(Error::from(NotFound))?
+                .info
+                .clone())
+        })
+        .await
     }
     async fn delete_bucket(
         &self,
         query: wire::DeleteBucketRequest,
     ) -> Result<wire::DeleteBucketResponse, Error> {
-        let name = request::bucket(&query.bucket)?;
-        self.mutate(
-            request::delete_bucket_digest(&query)?,
-            &query.mutation,
-            |state| {
-                if state
-                    .buckets
-                    .get(name)
-                    .is_some_and(|bucket| !bucket.objects.is_empty())
-                    || state.uploads.values().any(|upload| upload.bucket == name)
-                {
-                    return Err(PreconditionFailed.into());
-                }
-                Ok(wire::DeleteBucketResponse {
-                    existed: state.buckets.remove(name).is_some(),
-                })
-            },
-        )
+        obs::traced(obs::span!(INFO, "acyclic.objects.delete_bucket"), async {
+            let name = request::bucket(&query.bucket)?;
+            self.mutate(
+                request::delete_bucket_digest(&query)?,
+                &query.mutation,
+                |state| {
+                    if state
+                        .buckets
+                        .get(name)
+                        .is_some_and(|bucket| !bucket.objects.is_empty())
+                        || state.uploads.values().any(|upload| upload.bucket == name)
+                    {
+                        return Err(PreconditionFailed.into());
+                    }
+                    Ok(wire::DeleteBucketResponse {
+                        existed: state.buckets.remove(name).is_some(),
+                    })
+                },
+            )
+        })
+        .await
     }
     async fn put(
         &self,
         query: wire::PutObjectHeader,
         body: Bytes,
     ) -> Result<wire::ObjectInfo, Error> {
-        let mut state = self.lock_state()?;
-        self.put_locked(&mut state, &query, body)
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.put", bytes = body.len()),
+            async {
+                let mut state = self.lock_state()?;
+                self.put_locked(&mut state, &query, body)
+            },
+        )
+        .await
     }
     async fn get(
         &self,
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        let selected = {
-            let state = self.lock_state()?;
-            get_locked(&state, &query, maximum_bytes)?
-        };
-        selected.read().await
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.get", bytes = obs::Empty),
+            async {
+                let selected = {
+                    let state = self.lock_state()?;
+                    get_locked(&state, &query, maximum_bytes)?
+                };
+                let object = selected.read().await?;
+                obs::record!("bytes" = object.body.len());
+                Ok(object)
+            },
+        )
+        .await
     }
     async fn head(
         &self,
         query: wire::HeadObjectRequest,
     ) -> Result<wire::HeadObjectResponse, Error> {
-        request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        let state = self.lock_state()?;
-        let value = state
-            .buckets
-            .get(name)
-            .and_then(|bucket| bucket.objects.get(&query.object_key))
-            .ok_or(Error::from(NotFound))?;
-        read_condition(&value.info, &query.if_match, &query.if_none_match)?;
-        Ok(wire::HeadObjectResponse {
-            object: Some(value.info.clone()),
+        obs::traced(obs::span!(INFO, "acyclic.objects.head"), async {
+            request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
+            let name = request::bucket(&query.bucket)?;
+            request::key(&query.object_key)?;
+            let state = self.lock_state()?;
+            let value = state
+                .buckets
+                .get(name)
+                .and_then(|bucket| bucket.objects.get(&query.object_key))
+                .ok_or(Error::from(NotFound))?;
+            read_condition(&value.info, &query.if_match, &query.if_none_match)?;
+            Ok(wire::HeadObjectResponse {
+                object: Some(value.info.clone()),
+            })
         })
+        .await
     }
     async fn delete(
         &self,
         query: wire::DeleteObjectRequest,
     ) -> Result<wire::DeleteObjectResponse, Error> {
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::preconditions(&query.preconditions)?;
-        self.mutate(request::delete_digest(&query)?, &query.mutation, |state| {
-            let bucket = state.buckets.get_mut(name).ok_or(Error::from(NotFound))?;
-            check_condition(&query.preconditions, bucket.objects.get(&query.object_key))?;
-            Ok(wire::DeleteObjectResponse {
-                existed: bucket.objects.remove(&query.object_key).is_some(),
+        obs::traced(obs::span!(INFO, "acyclic.objects.delete"), async {
+            let name = request::bucket(&query.bucket)?;
+            request::key(&query.object_key)?;
+            request::preconditions(&query.preconditions)?;
+            self.mutate(request::delete_digest(&query)?, &query.mutation, |state| {
+                let bucket = state.buckets.get_mut(name).ok_or(Error::from(NotFound))?;
+                check_condition(&query.preconditions, bucket.objects.get(&query.object_key))?;
+                Ok(wire::DeleteObjectResponse {
+                    existed: bucket.objects.remove(&query.object_key).is_some(),
+                })
             })
         })
+        .await
     }
     async fn list(
         &self,
         query: wire::ListObjectsRequest,
     ) -> Result<wire::ListObjectsResponse, Error> {
-        request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-        let name = request::bucket(&query.bucket)?;
-        let limit = request::page_size(query.page_size)?;
-        if query.prefix.len() > 1024
-            || query.delimiter.len() > 1024
-            || query.prefix.contains('\0')
-            || query.delimiter.contains('\0')
-        {
-            return Err(InvalidArgument.into());
-        }
-        let cursor = self.decode_cursor(&query)?;
-        let state = self.lock_state()?;
-        let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
-        // Logical entries (keys and common prefixes) never sort below the keys
-        // that produce them, so the scan starts strictly after the cursor and
-        // stops at `limit + 1` entries, skipping each common-prefix group by
-        // seeking to its successor.
-        let mut lower = match &cursor {
-            Some(cursor) if *cursor >= query.prefix => Bound::Excluded(cursor.clone()),
-            _ => Bound::Included(query.prefix.clone()),
-        };
-        let mut page = Vec::new();
-        'scan: loop {
-            let mut next = None;
-            for (key, value) in bucket
-                .objects
-                .range::<_, str>((lower.as_ref().map(String::as_str), Bound::Unbounded))
-            {
-                let Some(suffix) = key.strip_prefix(&query.prefix) else {
-                    break 'scan;
-                };
-                if !query.delimiter.is_empty()
-                    && let Some(index) = suffix.find(&query.delimiter)
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.list", items = obs::Empty),
+            async {
+                request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
+                let name = request::bucket(&query.bucket)?;
+                let limit = request::page_size(query.page_size)?;
+                if query.prefix.len() > 1024
+                    || query.delimiter.len() > 1024
+                    || query.prefix.contains('\0')
+                    || query.delimiter.contains('\0')
                 {
-                    let prefix = key
-                        .get(..query.prefix.len() + index + query.delimiter.len())
-                        .ok_or(Error::from(InvalidArgument))?;
-                    next = successor(prefix);
-                    if cursor.as_deref().is_none_or(|cursor| prefix > cursor) {
-                        page.push((prefix.to_owned(), None));
+                    return Err(InvalidArgument.into());
+                }
+                let cursor = self.decode_cursor(&query)?;
+                let state = self.lock_state()?;
+                let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
+                // Logical entries (keys and common prefixes) never sort below the keys
+                // that produce them, so the scan starts strictly after the cursor and
+                // stops at `limit + 1` entries, skipping each common-prefix group by
+                // seeking to its successor.
+                let mut lower = match &cursor {
+                    Some(cursor) if *cursor >= query.prefix => Bound::Excluded(cursor.clone()),
+                    _ => Bound::Included(query.prefix.clone()),
+                };
+                let mut page = Vec::new();
+                'scan: loop {
+                    let mut next = None;
+                    for (key, value) in bucket
+                        .objects
+                        .range::<_, str>((lower.as_ref().map(String::as_str), Bound::Unbounded))
+                    {
+                        let Some(suffix) = key.strip_prefix(&query.prefix) else {
+                            break 'scan;
+                        };
+                        if !query.delimiter.is_empty()
+                            && let Some(index) = suffix.find(&query.delimiter)
+                        {
+                            let prefix = key
+                                .get(..query.prefix.len() + index + query.delimiter.len())
+                                .ok_or(Error::from(InvalidArgument))?;
+                            next = successor(prefix);
+                            if cursor.as_deref().is_none_or(|cursor| prefix > cursor) {
+                                page.push((prefix.to_owned(), None));
+                            }
+                            break;
+                        }
+                        page.push((key.clone(), Some(value.info.clone())));
+                        if page.len() > limit {
+                            break 'scan;
+                        }
                     }
-                    break;
+                    match next {
+                        Some(next) if page.len() <= limit => lower = Bound::Included(next),
+                        _ => break,
+                    }
                 }
-                page.push((key.clone(), Some(value.info.clone())));
-                if page.len() > limit {
-                    break 'scan;
+                let is_truncated = page.len() > limit;
+                page.truncate(limit);
+                let continuation_token = if is_truncated {
+                    page.last()
+                        .map(|(key, _)| self.cursor(&query, key))
+                        .transpose()?
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let mut response = wire::ListObjectsResponse {
+                    is_truncated,
+                    continuation_token,
+                    ..Default::default()
+                };
+                for (key, info) in page {
+                    if let Some(object) = info {
+                        response.entries.push(wire::ListEntry {
+                            object_key: key,
+                            object: Some(object),
+                        });
+                    } else {
+                        response.common_prefixes.push(key);
+                    }
                 }
-            }
-            match next {
-                Some(next) if page.len() <= limit => lower = Bound::Included(next),
-                _ => break,
-            }
-        }
-        let is_truncated = page.len() > limit;
-        page.truncate(limit);
-        let continuation_token = if is_truncated {
-            page.last()
-                .map(|(key, _)| self.cursor(&query, key))
-                .transpose()?
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let mut response = wire::ListObjectsResponse {
-            is_truncated,
-            continuation_token,
-            ..Default::default()
-        };
-        for (key, info) in page {
-            if let Some(object) = info {
-                response.entries.push(wire::ListEntry {
-                    object_key: key,
-                    object: Some(object),
-                });
-            } else {
-                response.common_prefixes.push(key);
-            }
-        }
-        Ok(response)
+                obs::record!("items" = response.entries.len() + response.common_prefixes.len());
+                Ok(response)
+            },
+        )
+        .await
     }
     async fn create_multipart(
         &self,
         query: wire::CreateMultipartRequest,
     ) -> Result<wire::MultipartUpload, Error> {
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::metadata(&query.metadata)?;
-        self.mutate(
-            request::create_multipart_digest(&query)?,
-            &query.mutation,
-            |state| {
-                if !state.buckets.contains_key(name) {
-                    return Err(NotFound.into());
-                }
-                let id = next_id(state)?;
-                state.uploads.insert(
-                    id.clone(),
-                    Upload {
-                        bucket: name.to_owned(),
-                        key: query.object_key.clone(),
-                        metadata: query.metadata.clone(),
-                        parts: BTreeMap::new(),
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.create_multipart"),
+            async {
+                let name = request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                request::metadata(&query.metadata)?;
+                self.mutate(
+                    request::create_multipart_digest(&query)?,
+                    &query.mutation,
+                    |state| {
+                        if !state.buckets.contains_key(name) {
+                            return Err(NotFound.into());
+                        }
+                        let id = next_id(state)?;
+                        state.uploads.insert(
+                            id.clone(),
+                            Upload {
+                                bucket: name.to_owned(),
+                                key: query.object_key.clone(),
+                                metadata: query.metadata.clone(),
+                                parts: BTreeMap::new(),
+                            },
+                        );
+                        Ok(wire::MultipartUpload { upload_id: id })
                     },
-                );
-                Ok(wire::MultipartUpload { upload_id: id })
+                )
             },
         )
+        .await
     }
     async fn upload_part(
         &self,
         query: wire::UploadPartHeader,
         body: Bytes,
     ) -> Result<wire::UploadedPart, Error> {
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        if !(1..=10_000).contains(&query.part_number) || body.len() as u64 > 5 * 1024 * 1024 * 1024
-        {
-            return Err(InvalidArgument.into());
-        }
-        self.mutate(
-            request::upload_part_digest(&query, &body)?,
-            &query.mutation,
-            |state| {
-                upload(state, name, &query.object_key, &query.upload_id)?;
-                let receipt = wire::UploadedPart {
-                    part_number: query.part_number,
-                    etag: next_id(state)?,
-                    size: body.len() as u64,
-                };
-                state
-                    .uploads
-                    .get_mut(&query.upload_id)
-                    .ok_or(Error::from(NotFound))?
-                    .parts
-                    .insert(
-                        query.part_number,
-                        (receipt.clone(), StoredBody::memory(body.clone())),
-                    );
-                Ok(receipt)
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.upload_part", bytes = body.len()),
+            async {
+                let name = request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                if !(1..=10_000).contains(&query.part_number)
+                    || body.len() as u64 > 5 * 1024 * 1024 * 1024
+                {
+                    return Err(InvalidArgument.into());
+                }
+                self.mutate(
+                    request::upload_part_digest(&query, &body)?,
+                    &query.mutation,
+                    |state| {
+                        upload(state, name, &query.object_key, &query.upload_id)?;
+                        let receipt = wire::UploadedPart {
+                            part_number: query.part_number,
+                            etag: next_id(state)?,
+                            size: body.len() as u64,
+                        };
+                        state
+                            .uploads
+                            .get_mut(&query.upload_id)
+                            .ok_or(Error::from(NotFound))?
+                            .parts
+                            .insert(
+                                query.part_number,
+                                (receipt.clone(), StoredBody::memory(body.clone())),
+                            );
+                        Ok(receipt)
+                    },
+                )
             },
         )
+        .await
     }
     async fn list_parts(
         &self,
         query: wire::ListPartsRequest,
     ) -> Result<wire::ListPartsResponse, Error> {
-        request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        let limit = request::page_size(query.page_size)?;
-        if query.after_part_number > 10_000 {
-            return Err(InvalidArgument.into());
-        }
-        let state = self.lock_state()?;
-        let value = upload(&state, name, &query.object_key, &query.upload_id)?;
-        let mut parts = value
-            .parts
-            .range(query.after_part_number + 1..)
-            .map(|(_, part)| part);
-        let page: Vec<_> = parts
-            .by_ref()
-            .take(limit)
-            .map(|(part, _)| part.clone())
-            .collect();
-        let truncated = parts.next().is_some();
-        Ok(wire::ListPartsResponse {
-            next_part_number: if truncated {
-                page.last().map_or(0, |part| part.part_number)
-            } else {
-                0
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.list_parts", items = obs::Empty),
+            async {
+                request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
+                let name = request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                let limit = request::page_size(query.page_size)?;
+                if query.after_part_number > 10_000 {
+                    return Err(InvalidArgument.into());
+                }
+                let state = self.lock_state()?;
+                let value = upload(&state, name, &query.object_key, &query.upload_id)?;
+                let mut parts = value
+                    .parts
+                    .range(query.after_part_number + 1..)
+                    .map(|(_, part)| part);
+                let page: Vec<_> = parts
+                    .by_ref()
+                    .take(limit)
+                    .map(|(part, _)| part.clone())
+                    .collect();
+                let truncated = parts.next().is_some();
+                obs::record!("items" = page.len());
+                Ok(wire::ListPartsResponse {
+                    next_part_number: if truncated {
+                        page.last().map_or(0, |part| part.part_number)
+                    } else {
+                        0
+                    },
+                    parts: page,
+                    is_truncated: truncated,
+                })
             },
-            parts: page,
-            is_truncated: truncated,
-        })
+        )
+        .await
     }
     async fn complete_multipart(
         &self,
         query: wire::CompleteMultipartRequest,
     ) -> Result<wire::ObjectInfo, Error> {
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::preconditions(&query.preconditions)?;
-        if query.parts.is_empty() || query.parts.len() > 10_000 {
-            return Err(InvalidArgument.into());
-        }
-        self.mutate(
-            request::complete_multipart_digest(&query)?,
-            &query.mutation,
-            |state| {
-                let value = upload(state, name, &query.object_key, &query.upload_id)?;
-                let mut size = 0_usize;
-                let mut previous = 0;
-                for (index, selected) in query.parts.iter().enumerate() {
-                    if selected.part_number <= previous {
-                        return Err(InvalidArgument.into());
-                    }
-                    let (receipt, body) = value
-                        .parts
-                        .get(&selected.part_number)
-                        .ok_or(Error::from(PreconditionFailed))?;
-                    if selected != receipt
-                        || (index + 1 < query.parts.len() && body.len() < 5 * 1024 * 1024)
-                    {
-                        return Err(PreconditionFailed.into());
-                    }
-                    size = size
-                        .checked_add(body.len())
-                        .ok_or(Error::from(QuotaExceeded))?;
-                    previous = selected.part_number;
+        obs::traced(
+            obs::span!(INFO, "acyclic.objects.complete_multipart"),
+            async {
+                let name = request::bucket(&query.bucket)?;
+                request::key(&query.object_key)?;
+                request::preconditions(&query.preconditions)?;
+                if query.parts.is_empty() || query.parts.len() > 10_000 {
+                    return Err(InvalidArgument.into());
                 }
-                if size > self.options.maximum_bytes {
-                    return Err(QuotaExceeded.into());
-                }
-                let metadata = value.metadata.clone();
-                let mut bodies = Vec::with_capacity(query.parts.len());
-                for selected in &query.parts {
-                    bodies.push(
-                        value
-                            .parts
-                            .get(&selected.part_number)
-                            .ok_or(Error::from(PreconditionFailed))?
-                            .1
-                            .clone(),
-                    );
-                }
-                let info = publish(
-                    state,
-                    name,
-                    &query.object_key,
-                    metadata,
-                    &query.preconditions,
-                    StoredBody::Composite {
-                        parts: bodies.into(),
-                        length: size,
+                self.mutate(
+                    request::complete_multipart_digest(&query)?,
+                    &query.mutation,
+                    |state| {
+                        let value = upload(state, name, &query.object_key, &query.upload_id)?;
+                        let mut size = 0_usize;
+                        let mut previous = 0;
+                        for (index, selected) in query.parts.iter().enumerate() {
+                            if selected.part_number <= previous {
+                                return Err(InvalidArgument.into());
+                            }
+                            let (receipt, body) = value
+                                .parts
+                                .get(&selected.part_number)
+                                .ok_or(Error::from(PreconditionFailed))?;
+                            if selected != receipt
+                                || (index + 1 < query.parts.len() && body.len() < 5 * 1024 * 1024)
+                            {
+                                return Err(PreconditionFailed.into());
+                            }
+                            size = size
+                                .checked_add(body.len())
+                                .ok_or(Error::from(QuotaExceeded))?;
+                            previous = selected.part_number;
+                        }
+                        if size > self.options.maximum_bytes {
+                            return Err(QuotaExceeded.into());
+                        }
+                        let metadata = value.metadata.clone();
+                        let mut bodies = Vec::with_capacity(query.parts.len());
+                        for selected in &query.parts {
+                            bodies.push(
+                                value
+                                    .parts
+                                    .get(&selected.part_number)
+                                    .ok_or(Error::from(PreconditionFailed))?
+                                    .1
+                                    .clone(),
+                            );
+                        }
+                        let info = publish(
+                            state,
+                            name,
+                            &query.object_key,
+                            metadata,
+                            &query.preconditions,
+                            StoredBody::Composite {
+                                parts: bodies.into(),
+                                length: size,
+                            },
+                        )?;
+                        state.uploads.remove(&query.upload_id);
+                        Ok(info)
                     },
-                )?;
-                state.uploads.remove(&query.upload_id);
-                Ok(info)
+                )
             },
         )
+        .await
     }
     async fn abort_multipart(
         &self,
         query: wire::AbortMultipartRequest,
     ) -> Result<wire::AbortMultipartResponse, Error> {
-        let name = request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        self.mutate(
-            request::abort_multipart_digest(&query)?,
-            &query.mutation,
-            |state| {
-                if state.uploads.contains_key(&query.upload_id) {
-                    upload(state, name, &query.object_key, &query.upload_id)?;
-                }
-                Ok(wire::AbortMultipartResponse {
-                    existed: state.uploads.remove(&query.upload_id).is_some(),
-                })
-            },
-        )
+        obs::traced(obs::span!(INFO, "acyclic.objects.abort_multipart"), async {
+            let name = request::bucket(&query.bucket)?;
+            request::key(&query.object_key)?;
+            self.mutate(
+                request::abort_multipart_digest(&query)?,
+                &query.mutation,
+                |state| {
+                    if state.uploads.contains_key(&query.upload_id) {
+                        upload(state, name, &query.object_key, &query.upload_id)?;
+                    }
+                    Ok(wire::AbortMultipartResponse {
+                        existed: state.uploads.remove(&query.upload_id).is_some(),
+                    })
+                },
+            )
+        })
+        .await
     }
 }
 

@@ -339,65 +339,86 @@ impl<S> StagedObjects<S> {
     /// The caller holds the spill file exclusively. Objects stay resident,
     /// and readable from memory, until the write completes, so a failed
     /// spill leaves staging unchanged apart from recency.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.staged.spill",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+            )
+        )
+    )]
     async fn spill_locked(&self, budget: WorkBudget) -> ObjectResult<()> {
-        let (victims, offset) = {
-            let mut index = self.index_mut();
-            if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
-                return Ok(ObjectReceipt {
-                    value: (),
-                    work: WorkCounters::default(),
+        crate::obs::measured(
+            async move {
+                let (victims, offset) = {
+                    let mut index = self.index_mut();
+                    if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
+                        return Ok(ObjectReceipt {
+                            value: (),
+                            work: WorkCounters::default(),
+                        });
+                    }
+                    (index.spill_victims(), index.spill_end)
+                };
+                let spilled = victims.iter().fold(0_u64, |total, (_, bytes)| {
+                    total.saturating_add(byte_length(bytes))
                 });
-            }
-            (index.spill_victims(), index.spill_end)
-        };
-        let spilled = victims.iter().fold(0_u64, |total, (_, bytes)| {
-            total.saturating_add(byte_length(bytes))
-        });
-        let work = WorkCounters {
-            backend_write_operations: 1,
-            object_bytes_written: spilled,
-            bytes_copied: spilled,
-            allocation_operations: 1,
-            peak_allocation_bytes: spilled,
-            ..WorkCounters::default()
-        };
-        let restore = |index: &mut Index| {
-            for (object_id, _) in &victims {
-                if let Some(Staged::Resident { order, .. }) = index.objects.get(object_id) {
-                    index.order.insert(*order, *object_id);
+                let work = WorkCounters {
+                    backend_write_operations: 1,
+                    object_bytes_written: spilled,
+                    bytes_copied: spilled,
+                    allocation_operations: 1,
+                    peak_allocation_bytes: spilled,
+                    ..WorkCounters::default()
+                };
+                let restore = |index: &mut Index| {
+                    for (object_id, _) in &victims {
+                        if let Some(Staged::Resident { order, .. }) = index.objects.get(object_id) {
+                            index.order.insert(*order, *object_id);
+                        }
+                    }
+                };
+                if let Err(error) = work.verify(budget) {
+                    restore(&mut self.index_mut());
+                    return Err(ObjectFailure::before_work(error.into()));
                 }
+                let mut buffer = Vec::new();
+                if buffer
+                    .try_reserve_exact(usize::try_from(spilled).unwrap_or(usize::MAX))
+                    .is_err()
+                {
+                    restore(&mut self.index_mut());
+                    return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                        "staged spill allocation failed".to_owned(),
+                    )));
+                }
+                for (_, bytes) in &victims {
+                    buffer.extend_from_slice(bytes);
+                }
+                if let Err(error) = self
+                    .spill
+                    .write_all_batch_async(vec![OwnedWrite {
+                        offset,
+                        bytes: Bytes::from(buffer),
+                    }])
+                    .await
+                {
+                    restore(&mut self.index_mut());
+                    return Err(ObjectFailure::new(error.into(), work));
+                }
+                self.index_mut().mark_spilled(&victims, offset);
+                Ok(ObjectReceipt { value: (), work })
             }
-        };
-        if let Err(error) = work.verify(budget) {
-            restore(&mut self.index_mut());
-            return Err(ObjectFailure::before_work(error.into()));
-        }
-        let mut buffer = Vec::new();
-        if buffer
-            .try_reserve_exact(usize::try_from(spilled).unwrap_or(usize::MAX))
-            .is_err()
-        {
-            restore(&mut self.index_mut());
-            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
-                "staged spill allocation failed".to_owned(),
-            )));
-        }
-        for (_, bytes) in &victims {
-            buffer.extend_from_slice(bytes);
-        }
-        if let Err(error) = self
-            .spill
-            .write_all_batch_async(vec![OwnedWrite {
-                offset,
-                bytes: Bytes::from(buffer),
-            }])
-            .await
-        {
-            restore(&mut self.index_mut());
-            return Err(ObjectFailure::new(error.into(), work));
-        }
-        self.index_mut().mark_spilled(&victims, offset);
-        Ok(ObjectReceipt { value: (), work })
+            .await,
+            |receipt| &receipt.work,
+        )
     }
 
     /// Reads spilled objects back in one submission and authenticates each
@@ -829,46 +850,67 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         Ok(ObjectReceipt { value: (), work })
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.staged.flush",
+            level = "debug",
+            skip_all,
+            fields(
+                outcome = crate::obs::Empty,
+                error.kind = crate::obs::Empty,
+                work.items = crate::obs::Empty,
+                work.bytes = crate::obs::Empty,
+                work.durability = crate::obs::Empty,
+            )
+        )
+    )]
     async fn flush_before_publish(
         &self,
         scope: PublicationScope<'_>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<crate::PublicationHold> {
-        let _spill_file = self.spill_io.write().await;
-        // Admitted before the drain: a collection cannot sweep what the
-        // drain stores until the record naming it is written.
-        let (objects, proven_at) = match scope {
-            PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
-            PublicationScope::Everything => (&[][..], self.collection.sweeps()),
-        };
-        let unswept = self
-            .collection
-            .admit(
-                objects,
-                |object_id| self.index().objects.contains_key(object_id),
-                proven_at,
-            )
-            .await
-            .map_err(ObjectFailure::before_work)?;
-        let targets = {
-            let index = self.index();
-            match scope {
-                PublicationScope::Closure { objects, .. } => objects
-                    .iter()
-                    .copied()
-                    .filter(|object_id| index.objects.contains_key(object_id))
-                    .collect(),
-                PublicationScope::Everything => index.objects.keys().copied().collect(),
+        crate::obs::measured(
+            async move {
+                let _spill_file = self.spill_io.write().await;
+                // Admitted before the drain: a collection cannot sweep what the
+                // drain stores until the record naming it is written.
+                let (objects, proven_at) = match scope {
+                    PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
+                    PublicationScope::Everything => (&[][..], self.collection.sweeps()),
+                };
+                let unswept = self
+                    .collection
+                    .admit(
+                        objects,
+                        |object_id| self.index().objects.contains_key(object_id),
+                        proven_at,
+                    )
+                    .await
+                    .map_err(ObjectFailure::before_work)?;
+                let targets = {
+                    let index = self.index();
+                    match scope {
+                        PublicationScope::Closure { objects, .. } => objects
+                            .iter()
+                            .copied()
+                            .filter(|object_id| index.objects.contains_key(object_id))
+                            .collect(),
+                        PublicationScope::Everything => index.objects.keys().copied().collect(),
+                    }
+                };
+                let drained = self
+                    .drain_locked(&unswept, targets, budget, cancellation)
+                    .await?;
+                Ok(ObjectReceipt {
+                    value: unswept.into_hold(),
+                    work: drained.work,
+                })
             }
-        };
-        let drained = self
-            .drain_locked(&unswept, targets, budget, cancellation)
-            .await?;
-        Ok(ObjectReceipt {
-            value: unswept.into_hold(),
-            work: drained.work,
-        })
+            .await,
+            |receipt| &receipt.work,
+        )
     }
 
     fn collection(&self) -> Option<&Arc<crate::Collection>> {

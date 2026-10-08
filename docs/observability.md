@@ -102,7 +102,6 @@ The plugin never writes tracing output to stdout, which carries JSON-RPC.
 | `ACYCLIC_LOG_FILE` | Overrides the `ACYCLIC_LOG` destination |
 | `ACYCLIC_TRACE_FILE` | Writes a Perfetto-compatible Chrome trace. `{pid}` is replaced by the process id. |
 | `ACYCLIC_TRACE_FILTER` | Filter for the trace file. The default is `acyclic_fs=debug,acyclic_stream=debug,acyclic_objects=debug,acyclic_native_runtime=debug,acyclic_plugin=debug`. |
-| `ACYCLIC_TEST_TRACE_DIR` | In tests, writes a Chrome trace per test into this directory. Use it to profile a slow test. |
 | `ACYCLIC_PERF` | In TypeScript, `ACYCLIC_PERF=1` (or `globalThis.ACYCLIC_PERF === true`) records `performance.mark`/`measure` entries named `acyclic.<family>.<op>`. |
 
 The plugin service inherits its environment when it is spawned. Drain it to
@@ -115,8 +114,43 @@ apply a change. `doctor` prints the active filter.
   `tracing::subscriber::with_default`. It then asserts that one representative
   operation emits its span with the required fields, and that no field is named
   `path`, `token`, `content`, `body` or `authorization`.
-- Span tests and the `ACYCLIC_TEST_TRACE_DIR` helper go in the crate's existing
-  test modules or existing `tests/*.rs` files. Each new `tests/*.rs` file is
-  another linked test binary, which slows CI. There is no shared
-  test-support crate.
+- Span tests go in the crate's existing test modules or existing `tests/*.rs`
+  files. Each new `tests/*.rs` file is another linked test binary, which slows
+  CI. There is no shared test-support crate.
 - Gate span tests with `#[cfg(not(target_arch = "wasm32"))]`.
+
+## Profiling a slow test
+
+Each CI lane summary lists the slowest Rust tests with a `cargo nextest run`
+command that reruns one of them alone. Test processes install no subscriber,
+and there is no shared test-support crate to add one per test, so a test trace
+is a local, uncommitted edit: add `tracing-chrome.workspace = true` to the
+crate's `dev-dependencies` and wrap the test body:
+
+```rust
+use tracing_subscriber::prelude::*;
+let (chrome, _flush) = tracing_chrome::ChromeLayerBuilder::new().file("slow.json").build();
+let _trace = tracing::subscriber::set_default(tracing_subscriber::registry().with(chrome));
+```
+
+Open the file in [Perfetto](https://ui.perfetto.dev).
+
+## Benchmarks
+
+`benches/` in objects, stream, harness, filesystem and native-runtime hold
+[divan](https://docs.rs/divan) benchmarks of the local hot paths. They run on
+demand only, never in CI, and `package.exclude` keeps them out of published
+crates. `clippy --all-targets` keeps them compiling.
+
+```sh
+cargo bench -p acyclic-objects --features local --bench objects
+cargo bench -p acyclic-stream --features local --bench stream
+cargo bench -p acyclic-fs --bench filesystem
+cargo bench -p acyclic-harness --bench harness
+cargo bench -p acyclic-native-runtime --bench native_runtime
+```
+
+Pass divan options after `--`, for example `-- --sample-count 10 put_small`.
+Name the bench with `--bench`: the library's test harness rejects those options.
+`bench-fs` and `bench-objects` in the conformance crate measure whole
+workloads (see its README).

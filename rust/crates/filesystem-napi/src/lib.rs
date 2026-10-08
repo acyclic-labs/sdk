@@ -1635,7 +1635,7 @@ impl NativeResolvedFile {
     #[napi(getter)]
     pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
         encode_file_metadata(self.inner.description().metadata)
-            .map(|bytes| Buffer::from(bytes.to_vec()))
+            .map(Buffer::from)
             .map_err(napi_error)
     }
 
@@ -1655,7 +1655,7 @@ impl NativeResolvedFile {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.bytes.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -1669,7 +1669,7 @@ impl NativeResolvedFile {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value)),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -2146,7 +2146,7 @@ impl NativeWorkspace {
                 .read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?),
         )
         .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map(|bytes| Buffer::from(Vec::from(bytes)))
         .map_err(napi_error)
     }
 
@@ -2158,7 +2158,7 @@ impl NativeWorkspace {
             bigint_u64(&length, "length")?,
         ))
         .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map(|bytes| Buffer::from(Vec::from(bytes)))
         .map_err(napi_error)
     }
 
@@ -2174,7 +2174,7 @@ impl NativeWorkspace {
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
         Box::pin(self.inner.read_symbolic_link(&path))
             .await
-            .map(|bytes| Buffer::from(bytes.to_vec()))
+            .map(|bytes| Buffer::from(Vec::from(bytes)))
             .map_err(napi_error)
     }
 
@@ -2605,7 +2605,7 @@ impl NativeGeneration {
                 .read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?),
         )
         .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map(|bytes| Buffer::from(Vec::from(bytes)))
         .map_err(napi_error)
     }
 
@@ -2617,7 +2617,7 @@ impl NativeGeneration {
             bigint_u64(&length, "length")?,
         ))
         .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map(|bytes| Buffer::from(Vec::from(bytes)))
         .map_err(napi_error)
     }
 
@@ -2652,7 +2652,7 @@ impl NativeGeneration {
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
         Box::pin(self.inner.read_symbolic_link(&path))
             .await
-            .map(|bytes| Buffer::from(bytes.to_vec()))
+            .map(|bytes| Buffer::from(Vec::from(bytes)))
             .map_err(napi_error)
     }
 
@@ -4244,7 +4244,7 @@ impl NativeFs {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.bytes.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -4313,7 +4313,7 @@ impl NativeFs {
                 .value
                 .objects
                 .into_iter()
-                .map(|object| Buffer::from(object.bytes.to_vec()))
+                .map(|object| Buffer::from(Vec::from(object.bytes)))
                 .collect(),
             work_json: work_json(&receipt.work)?,
         })
@@ -5158,7 +5158,7 @@ impl NativeCheckout {
         .map_err(napi_error)?;
         Ok(NativeNamedAttributeResult {
             exists: receipt.value.is_some(),
-            bytes: receipt.value.map(|value| Buffer::from(value.to_vec())),
+            bytes: receipt.value.map(|value| Buffer::from(Vec::from(value))),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -5374,7 +5374,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.bytes.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -5407,7 +5407,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.bytes.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -5559,7 +5559,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value)),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -5579,7 +5579,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.to_vec()),
+            bytes: Buffer::from(Vec::from(receipt.value)),
             work_json: work_json(&receipt.work)?,
         })
     }

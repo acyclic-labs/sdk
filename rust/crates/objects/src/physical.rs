@@ -62,7 +62,7 @@ impl LocalRoot {
         replace()
     }
 
-    fn read_journal_body(
+    pub(crate) fn read_journal_body(
         &self,
         offset: u64,
         expected_digest: &[u8; 32],
@@ -633,7 +633,7 @@ fn segment_table_matches(
 
 /// Reads one whole journal-resident body and proves it matches its digest. Inline bodies are
 /// small, so every read of one, ranged or not, is authenticated.
-pub(crate) fn read_journal_body(
+fn read_journal_body(
     journal: &File,
     offset: u64,
     expected_digest: &[u8; 32],

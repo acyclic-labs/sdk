@@ -1,5 +1,5 @@
 // Optional per-call observation (docs/observability.md). Packages are published
-// separately, so each keeps an identical copy of this file.
+// separately, so scripts/generate-observe.mjs copies this source into each.
 
 /** One finished call. It never carries bodies, tokens, paths, or contents. */
 export interface OperationEvent {

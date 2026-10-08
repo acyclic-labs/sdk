@@ -1584,6 +1584,10 @@ mod tests {
 
             release_blocker_tx.send(())?;
             blocker.await?;
+            // The single blocking worker runs its queue in order, so this
+            // returns once the real Journal::open has, and the deadline below
+            // bounds only the CPU-only rest of initialization, never disk I/O.
+            tokio::task::spawn_blocking(|| ()).await?;
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 Arc::clone(&lifecycle).lock_owned(),

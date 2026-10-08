@@ -54,6 +54,7 @@ Beyond rustfmt and clippy's defaults, the workspace enables an additional lint s
   naming the invariant.
 - **Tracing follows [docs/observability.md](docs/observability.md)**: span names, levels,
   forbidden fields, cost rules, and no `tracing` in wasm32 builds.
+- **Benchmarks are on-demand [divan](docs/observability.md#benchmarks) `benches/`**, never run in CI.
 - **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
   into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json .`).
 

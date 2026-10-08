@@ -4172,12 +4172,17 @@ unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
 /// The `ProjFS` entry point for `callback`: it runs the callback on the
 /// provider's stack, not on the stack of the thread `ProjFS` calls from.
 macro_rules! on_provider_stack {
-    ($callback:ident($($argument:ident: $type:ty),*)) => {{
+    ($level:ident, $callback:ident($($argument:ident: $type:ty),*)) => {{
         unsafe extern "system" fn entry($($argument: $type),*) -> HRESULT {
+            let span = callback_span!($level, $callback);
             // SAFETY: `ProjFS` passes the arguments its callback contract
             // promises, and they stay valid until this entry returns.
-            provider_stack::run(|| unsafe { $callback($($argument),*) })
-                .unwrap_or_else(|error| error.code())
+            let result = provider_stack::run(|| unsafe { $callback($($argument),*) })
+                .unwrap_or_else(|error| error.code());
+            if result.is_err() {
+                span.record("errno", result.0);
+            }
+            result
         }
         entry
     }};
@@ -4185,32 +4190,32 @@ macro_rules! on_provider_stack {
 
 fn callbacks() -> PRJ_CALLBACKS {
     PRJ_CALLBACKS {
-        StartDirectoryEnumerationCallback: Some(on_provider_stack!(start_directory(
+        StartDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, start_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID
         ))),
-        EndDirectoryEnumerationCallback: Some(on_provider_stack!(end_directory(
+        EndDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, end_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID
         ))),
-        GetDirectoryEnumerationCallback: Some(on_provider_stack!(get_directory(
+        GetDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, get_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID,
             search_expression: PCWSTR,
             buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE
         ))),
-        GetPlaceholderInfoCallback: Some(on_provider_stack!(placeholder(
+        GetPlaceholderInfoCallback: Some(on_provider_stack!(TRACE, placeholder(
             callback_data: *const PRJ_CALLBACK_DATA
         ))),
-        GetFileDataCallback: Some(on_provider_stack!(file_data(
+        GetFileDataCallback: Some(on_provider_stack!(TRACE, file_data(
             callback_data: *const PRJ_CALLBACK_DATA,
             byte_offset: u64,
             length: u32
         ))),
-        QueryFileNameCallback: Some(on_provider_stack!(query_name(
+        QueryFileNameCallback: Some(on_provider_stack!(TRACE, query_name(
             callback_data: *const PRJ_CALLBACK_DATA
         ))),
-        NotificationCallback: Some(on_provider_stack!(notification(
+        NotificationCallback: Some(on_provider_stack!(DEBUG, notification(
             callback_data: *const PRJ_CALLBACK_DATA,
             is_directory: bool,
             kind: PRJ_NOTIFICATION,

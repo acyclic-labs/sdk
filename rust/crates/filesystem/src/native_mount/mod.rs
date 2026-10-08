@@ -50,6 +50,21 @@ use std::time::SystemTime;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// Enters one driver callback's `acyclic.fs.mount.<callback>` span; the
+/// callback records `errno` on it when it fails.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+macro_rules! callback_span {
+    ($level:ident, $callback:ident $(, $field:ident = $value:expr)* $(,)?) => {
+        tracing::span!(
+            tracing::Level::$level,
+            concat!("acyclic.fs.mount.", stringify!($callback)),
+            $($field = $value,)*
+            errno = crate::obs::Empty,
+        )
+        .entered()
+    };
+}
+
 mod adapter;
 pub use adapter::{CheckoutMountSource, SharedCheckout, SharedCheckoutGuard, SharedCheckoutState};
 
@@ -617,7 +632,7 @@ impl MountPath {
 }
 
 /// Errors returned by the canonical checkout callback bridge.
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, Error, strum::IntoStaticStr)]
 pub enum MountSourceError {
     /// Path is authentically absent.
     #[error("path is absent")]
