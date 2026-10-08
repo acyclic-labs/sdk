@@ -528,9 +528,12 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
+ "acyclic-protify-proc-macro",
  "http-body",
  "prost",
  "prost-reflect",
+ "protify",
+ "protoc-bin-vendored",
  "reqwest",
  "serde_json",
  "sha2",
@@ -538,8 +541,10 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
+ "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
+ "ts-rs",
 ]
 
 [[package]]
