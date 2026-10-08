@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -20,6 +22,16 @@ const services = [ActorsService, WorkersService, StreamService, BucketsService, 
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
+
+function hasNativeCompanion() {
+  const native = fileURLToPath(new URL("../generated/native/", import.meta.url));
+  const name = process.platform === "win32"
+    ? (process.arch === "arm64" ? "index.win32-arm64-msvc.node" : "index.win32-x64-msvc.node")
+    : process.platform === "darwin"
+      ? (process.arch === "arm64" ? "index.darwin-arm64.node" : "index.darwin-x64.node")
+      : (process.arch === "arm64" ? "index.linux-arm64-gnu.node" : "index.linux-x64-gnu.node");
+  return existsSync(join(native, name));
+}
 
 function rustRoutes(packageName, example) {
   const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", packageName, "--example", example], { cwd: root, encoding: "utf8" });
@@ -79,7 +91,7 @@ if (process.argv.includes("--client")) {
   const options = JSON.parse(configText);
   const objects = createObjectsV2GrpcClients(options);
   const actors = new ActorsClient({
-    endpoint: options.endpoint,
+    endpoint: hasNativeCompanion() ? options.endpoint : (options.actorsWasmEndpoint ?? options.endpoint),
     token: options.token,
     caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
   });
@@ -143,7 +155,7 @@ if (process.argv.includes("--client")) {
     }
   }
   const denied = new ActorsClient({
-    endpoint: options.endpoint,
+    endpoint: hasNativeCompanion() ? options.endpoint : (options.actorsWasmEndpoint ?? options.endpoint),
     token: "wrong",
     caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
   });
@@ -222,10 +234,24 @@ const adapter = connectNodeAdapter({
     }
   },
 });
-const server = createSecureServer({ key: identity.key, cert: identity.certificate }, adapter);
+const server = createSecureServer({ key: identity.key, cert: identity.certificate, allowHTTP1: true }, adapter);
+const wasmServer = createServer((request, response) => {
+  // tonic-web-wasm-client preserves the endpoint slash when building the RPC
+  // path. Normalize the loopback fixture's resulting double slash before the
+  // maintained Connect adapter resolves its generated handler path.
+  if (request.url?.startsWith("//")) request.url = request.url.slice(1);
+  adapter(request, response);
+});
 await new Promise(resolve => server.listen(0, "localhost", resolve));
+await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
 await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
-const options = { endpoint: `https://localhost:${server.address().port}`, httpEndpoint: `http://localhost:${httpServer.address().port}`, token: "conformance", caCertificate: identity.certificate };
+const options = {
+  endpoint: `https://localhost:${server.address().port}`,
+  actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
+  httpEndpoint: `http://localhost:${httpServer.address().port}`,
+  token: "conformance",
+  caCertificate: identity.certificate,
+};
 try {
   for (const runtime of [process.execPath, "bun"]) {
     await new Promise((resolve, reject) => {
@@ -249,4 +275,5 @@ try {
 } finally {
   await new Promise(resolve => httpServer.close(resolve));
   await new Promise(resolve => server.close(resolve));
+  await new Promise(resolve => wasmServer.close(resolve));
 }
