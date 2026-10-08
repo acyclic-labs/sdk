@@ -1114,7 +1114,6 @@ export type WasmRawJoinPlan = WasmTypedClass<WasmBinding.BrowserJoinPlan, {}, {
 export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   joinInto: [target: WasmRawWorkspace, options: JoinOptions];
 }, {
-  beginTransaction: WasmRawTransaction;
   checkpoint: WasmRawGeneration;
   generation: WasmRawGeneration;
   diff: WasmRawChangeSet;
