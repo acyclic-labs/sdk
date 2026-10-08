@@ -1185,7 +1185,11 @@ fn materialize_generated_sources(
                             .unwrap_or("generated-source")
                     )
                 });
-            (stage_generated_source(root, candidate, &filename)?, identity)
+            if let Some(parent) = physical.parent() {
+                fs::create_dir_all(parent).map_err(io_error)?;
+            }
+            fs::copy(candidate, &physical).map_err(io_error)?;
+            (physical, identity)
         };
         let physical = physical.canonicalize().map_err(io_error)?;
         let is_generated = !physical.starts_with(root)
