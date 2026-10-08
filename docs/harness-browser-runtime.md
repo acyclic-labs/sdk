@@ -237,3 +237,26 @@ matrix remain required for this repair; earlier source receipts do not qualify
 the changed WASM boundary.
 
 Main refresh incorporated ccf590d3f7479f6acf7f616888562c5dab7e77a2 (#270) through signed merge8e5332dcd8. Its four changed files concern Stream native-bundle build contracts and target metadata; Harness/Filesystem/Stream Rust semantics, WASM build and generated bindings are unchanged from locally qualified d8453a5a17. Combined-source installed and full platform checks remain required. The prior d845 full request37732189061 was verified pending with zero jobs before cancellation; active424 matrix jobs are preserved.
+
+Signed merge 42621df56f8c6c650e26b7370d86afee365932d0 integrates main
+0db1466cd0f2aef5327d3a81c0bae7cdad22a6bd (#278), including #277. Main
+changes Harness canonical serialization and conversation validation, provider
+implementations, the lockfile, generated provider artifacts and build scripts.
+The merge retains browser-only runtime composition and lossless JSON string,
+object-key and Map-key admission. The existing js-sys UTF-16 validator replaces
+the explicit code-unit loop; native benchmark dependencies remain native-only.
+
+Earlier source 7b8a7ab425 passed its installed closure (294 Rust and 48
+TypeScript tests), automatic PR checks and the full matrix's gate, web, Linux,
+Linux musl, ARM64, ARM64 musl, macOS and policy lanes. Windows remains active
+at this checkpoint. Those receipts qualify their exact earlier inputs. They
+do not qualify this combined source. Fresh provider builds, generated-contract
+checks, native and browser execution, installed consumers, full qualification
+and landed-tree verification remain required before readiness and merge.
+
+Qualification artifacts now use the ignored target-i-evidence directory,
+outside Cargo's target tree. The earlier source archive was reproduced with
+SHA256 b7668f216269bc64bcb2678c286c0a99e1c88837b334a3e53606d30d5e5d96da;
+retained root logs remain source-scoped. Missing local package bytes cannot be
+substituted for a qualified retained archive; CI artifact recovery is separate
+from qualification of this integration.
