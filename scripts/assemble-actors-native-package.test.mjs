@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertCommonBindings, assertNativeSet } from "./assemble-actors-native-package.mjs";
+import { assertCommonBindings, assertNativeSet, verifyNativeAssembly } from "./assemble-actors-native-package.mjs";
 import { assertSelectedArtifact } from "./build-actors-native.mjs";
 
 const targets = ["target-a", "target-b", "target-c"];
@@ -67,4 +68,62 @@ test("assembly rejects stale output before discovering Cargo", async () => {
     assert.match(result.stderr, /unstated files: unqualified-companion/);
     assert.doesNotMatch(result.stderr, /cargo.*ENOENT/i);
   } finally { await rm(output, { recursive: true, force: true }); }
+});
+
+test("archive verification binds parent, companion, original source and actual addon bytes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "actors-neutral-archives-"));
+  const output = join(directory, "out"), parent = join(directory, "parent/package"), companion = join(directory, "companion/package");
+  const target = "fixture-target", version = "0.2.0", name = "@acyclic-labs/actors-fixture", main = "index.fixture.node";
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+  const json = async (path, value) => writeFile(path, JSON.stringify(value));
+  const pack = (kind, asset) => execFileSync("tar", ["-czf", join(output, asset), "-C", join(directory, kind), "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  try {
+    await mkdir(join(output, "actors-native"), { recursive: true });
+    await mkdir(join(parent, "generated/native/attestations", target), { recursive: true });
+    await mkdir(companion, { recursive: true });
+    const artifacts = ["binding.cjs", "binding.d.ts", main].map(path => ({ path: `generated/native/${path}`, sha256: `sha256:${hash(Buffer.from(path))}`, bytes: Buffer.byteLength(path) }));
+    const inventory = { schema: "acyclic.actors.native-source-inventory.v1", source_commit: source, source_sha256: "sha256:source", source_files: [{ path: "contract.rs", sha256: "sha256:contract", bytes: 10 }], parent: { name: "@acyclic-labs/actors", version, private: false }, targets: [target], companions: [{ selected_target: target, name, main, os: ["fixture"], cpu: ["fixture"] }] };
+    const generation = { schema: "acyclic.actors.native-generation.v1", package: "acyclic-actors-napi", version, revision: source, selected_target: target, targets: [target], source_sha256: inventory.source_sha256, source_files: inventory.source_files, artifacts };
+    const generationBytes = JSON.stringify(generation);
+    const meta = { ...generation, schema: "acyclic.actors.native-targets.v1", source_revision: source, artifact: artifacts[2], generation_sha256: `sha256:${hash(generationBytes)}` };
+    const entry = { name, version, asset: "actors-native/companion.tgz", selected_target: target, os: ["fixture"], cpu: ["fixture"], artifact: meta.artifact, generation_sha256: meta.generation_sha256 };
+    const index = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: source, source_sha256: inventory.source_sha256, targets: [target], companions: [entry] };
+    const parentReceipt = { name: "@acyclic-labs/actors", version, asset: "acyclic-labs-actors-0.2.0.tgz" };
+    const parentManifest = { ...inventory.parent, optionalDependencies: { [name]: version } };
+    await json(join(parent, "package.json"), parentManifest);
+    await json(join(companion, "package.json"), { name, version, private: false, main, os: entry.os, cpu: entry.cpu });
+    for (const path of ["binding.cjs", "binding.d.ts"]) await writeFile(join(parent, "generated/native", path), path);
+    await writeFile(join(companion, main), main);
+    for (const [path, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", generationBytes]]) {
+      await writeFile(join(companion, path), bytes);
+      await writeFile(join(parent, "generated/native/attestations", target, path), bytes);
+    }
+    const seal = async () => {
+      pack("companion", entry.asset); entry.sha256 = hash(await readFile(join(output, entry.asset)));
+      await json(join(parent, "generated/native/native-targets.json"), index);
+      pack("parent", parentReceipt.asset); parentReceipt.sha256 = hash(await readFile(join(output, parentReceipt.asset)));
+      await json(join(output, "ACTORS_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
+      await writeFile(join(output, "SHA256SUMS"), [parentReceipt, entry].map(item => `${item.sha256}  ${item.asset}`).join("\n"));
+    };
+    const verify = () => verifyNativeAssembly(output, source, version, inventory);
+    await seal(); await verify();
+    await assert.rejects(verifyNativeAssembly(output, source, version), /trusted native source inventory/);
+    await writeFile(join(companion, main), "tampered binary"); await seal();
+    await assert.rejects(verify(), /original native artifact digest differs/);
+    await writeFile(join(companion, main), main);
+    await writeFile(join(parent, "generated/native/binding.cjs"), "changed loader"); await seal();
+    await assert.rejects(verify(), /original native artifact digest differs/);
+    await writeFile(join(parent, "generated/native/binding.cjs"), "binding.cjs");
+    await json(join(parent, "package.json"), { ...parentManifest, optionalDependencies: {} }); await seal();
+    await assert.rejects(verify(), /optional dependencies differ/);
+    await json(join(parent, "package.json"), parentManifest);
+    await writeFile(join(companion, "unqualified.node"), ""); await seal();
+    await assert.rejects(verify(), /unstated files/);
+    await rm(join(companion, "unqualified.node")); await seal(); await verify();
+    await writeFile(join(output, "actors-native/stale.tgz"), "stale");
+    await assert.rejects(verify(), /missing or extra files/);
+    await rm(join(output, "actors-native/stale.tgz"));
+    await rm(join(output, entry.asset));
+    await assert.rejects(verify(), { code: "ENOENT" });
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

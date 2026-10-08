@@ -121,6 +121,12 @@ stream_binding() {
     --output "$directory/bundle" --target-dir "$target_dir-stream-native"
   cp "$target_dir-stream-native/stream-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
 }
+actors_binding() {
+  local target directory="$SDK_ARTIFACT_DIR/packages/actors-native"
+  target="$(rustc --version --verbose | sed -n 's/^host: //p')"
+  node scripts/build-actors-native.mjs build --target "$target" \
+    --output "$directory/bundle" --target-dir "$target_dir-actors-native"
+}
 # The live native-mount tests are the only ignored acyclic-fs library tests.
 # Selecting them from the all-feature workspace build reuses its test binaries
 # instead of rebuilding acyclic-fs under a narrower feature resolution.
@@ -303,6 +309,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi release
     stream_binding
+    actors_binding
     bun run test
     bun scripts/check-typescript-tarballs.mjs
     # WASM builds are path-independent but not host-independent: panic
@@ -469,6 +476,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked --doc
     finish napi release x86_64
     stream_binding
+    actors_binding
     native_mount_tests
     fork_join_conformance
     ;;

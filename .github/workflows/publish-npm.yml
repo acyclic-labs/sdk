@@ -72,6 +72,8 @@ jobs:
 
       - name: Install exact Rust toolchain
         uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Install maintained NAPI assembly dependencies
         env:
@@ -107,8 +109,10 @@ jobs:
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
           cp scripts/assemble-stream-native-package.mjs scripts/build-stream-native.mjs scripts/archive-utils.mjs "$stage/scripts/"
+          cp scripts/assemble-actors-native-package.mjs scripts/build-actors-native.mjs "$stage/scripts/"
           cp release/npm-packages.json "$stage/release/"
           node scripts/assemble-stream-native-package.mjs inventory "$stage/release/stream-native-packages.json" "$SOURCE_SHA"
+          node scripts/assemble-actors-native-package.mjs inventory "$stage/release/actors-native-packages.json" "$SOURCE_SHA"
           node - "$stage" <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -137,7 +141,16 @@ jobs:
           cp -R "$RUNNER_TEMP/qualified-macos/stream-native" "$native_stage/macos"
           node scripts/assemble-stream-native-package.mjs \
             "$stage/typescript" "$native_stage" "$SOURCE_SHA"
+          wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+          export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
           source scripts/ensure-bun.sh
+          actors_stage="$RUNNER_TEMP/qualified-actors-native"
+          mkdir -p "$actors_stage"
+          cp -R "$RUNNER_TEMP/qualified/actors-native" "$actors_stage/linux"
+          cp -R "$RUNNER_TEMP/qualified-macos/actors-native" "$actors_stage/macos"
+          gh run download "$run_id" --name "actors-native-windows-${run_id}-${run_attempt}" --dir "$actors_stage/windows"
+          node scripts/assemble-actors-native-package.mjs release \
+            "$stage/typescript" "$actors_stage" "$SOURCE_SHA"
           bun scripts/check-typescript-tarballs.mjs --archives "$stage/typescript"
 
       - name: Download exact qualified universal plugin

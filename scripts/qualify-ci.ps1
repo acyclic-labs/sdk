@@ -104,6 +104,11 @@ node scripts/build-stream-native.mjs build `
 Copy-Item -LiteralPath (Join-Path $StreamNativeTargetDir 'stream-native-build-inputs.receipt.json') -Destination (Join-Path $StreamNativeRoot 'producer-receipt.json')
 node scripts/build-stream-native.mjs stage --bundle $StreamNativeBundle
 node scripts/build-stream-native.mjs check
+$ActorsNativeBundle = Join-Path $env:SDK_ARTIFACT_DIR 'actors-native-bundle/bundle'
+node scripts/build-actors-native.mjs build `
+    --target x86_64-pc-windows-msvc `
+    --output $ActorsNativeBundle `
+    --target-dir "$CargoTargetDir-actors-native"
 $release = Start-Background release @"
 `$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
 node scripts/build-product.mjs

@@ -30,6 +30,7 @@ const sourceRoots = [
   "typescript/packages/actors/generated/proto",
   "scripts/build-actors-native.mjs",
   "scripts/assemble-actors-native-package.mjs",
+  "scripts/archive-utils.mjs",
   "scripts/build-wasm.mjs",
   // The packaged semantic bindings and Proto contract are rendered from Rust.
   // Attest their production entrypoint and Buf inputs as well as the crate.

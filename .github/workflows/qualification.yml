@@ -305,12 +305,15 @@ jobs:
           pids=()
           while IFS=$'\t' read -r run artifact; do
             destination="${artifact%-*-*}"
-            if [[ "$artifact" == stream-native-windows-* ]]; then
-              destination=stream-native-windows
-            fi
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$artifact" \
               --dir "forward/$destination" &
             pids+=("$!")
+            if [[ "$artifact" == stream-native-windows-* ]]; then
+              actors_artifact="${artifact/stream-native-windows/actors-native-windows}"
+              gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$actors_artifact" \
+                --dir "forward/actors-native-windows" &
+              pids+=("$!")
+            fi
           done < <(jq -r 'to_entries[] | select(.value.artifact != "") | [.value.run_id, .value.artifact] | @tsv' <<<"$REUSED")
           for pid in "${pids[@]}"; do wait "$pid"; done
 
@@ -356,6 +359,16 @@ jobs:
         with:
           name: stream-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: forward/stream-native-windows
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Forward actors-native-windows
+        if: hashFiles('forward/actors-native-windows/**') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: actors-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/actors-native-windows
           compression-level: 0
           if-no-files-found: error
           retention-days: 90

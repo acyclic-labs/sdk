@@ -173,8 +173,9 @@ const main = async () => {
     }
     const nativeTarballs = new Map();
     if (assembledDirectory) {
-      const assembly = JSON.parse(await readFile(join(assembledDirectory, "STREAM_NATIVE_PACKAGE.json"), "utf8"));
-      const { sourceNativeInventory, verifyNativeAssembly } = await import("./assemble-stream-native-package.mjs");
+      for (const family of ["stream", "actors"]) {
+      const assembly = JSON.parse(await readFile(join(assembledDirectory, `${family.toUpperCase()}_NATIVE_PACKAGE.json`), "utf8"));
+      const { sourceNativeInventory, verifyNativeAssembly } = await import(`./assemble-${family}-native-package.mjs`);
       const inventory = await sourceNativeInventory(assembly.source_commit);
       await verifyNativeAssembly(assembledDirectory, assembly.source_commit, assembly.parent.version, inventory);
       const host = run("rustc", ["-vV"]).match(/^host: (.+)$/m)?.[1];
@@ -189,6 +190,7 @@ const main = async () => {
         throw new Error("Rust host companion differs from the JavaScript runtime platform");
       }
       nativeTarballs.set(companion.name, join(assembledDirectory, companion.asset));
+      }
     }
     const manifests = await Promise.all(packageDirectories.map(packageJson));
     for (let i = 0; i < manifests.length; i += 1) {
@@ -245,6 +247,13 @@ const main = async () => {
         await readFile(join(packagesRoot, "stream/test/native-companion-installed.mjs")));
       run("node", ["stream-native-companion.mjs"], { cwd: tempRoot });
       run("bun", ["stream-native-companion.mjs"], { cwd: tempRoot });
+      await writeFile(join(tempRoot, "actors-native-companion.mjs"),
+        await readFile(join(packagesRoot, "actors/test/native-companion-installed.mjs")));
+      const identity = join(tempRoot, "actors-test-identity.json");
+      await writeFile(identity, run("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"]));
+      const actorsEnv = { ...process.env, ACTORS_TLS_IDENTITY: identity };
+      run("node", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
+      run("bun", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
     }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });

@@ -202,3 +202,13 @@ runs:
         if-no-files-found: error
         include-hidden-files: false
         retention-days: 90
+
+    - name: Retain Windows Actors native bundle
+      if: runner.os == 'Windows'
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      with:
+        name: actors-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/artifacts/actors-native-bundle
+        compression-level: 0
+        if-no-files-found: error
+        retention-days: 90
