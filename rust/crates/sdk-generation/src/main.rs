@@ -776,7 +776,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             .map(|release| release.package.clone())
             .collect::<BTreeSet<_>>();
         let examples = historical::examples(&metadata, &root, &owners).map_err(CliError)?;
-        let executions = historical::execute_examples_with_metadata(
+        let executions = historical::execute_examples_with_context(
             &root,
             cargo_path
                 .as_deref()
@@ -788,6 +788,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             } else {
                 Some(&plan.owner_metadata)
             },
+            plan.captured_source.as_ref(),
         )
         .map_err(CliError)?;
         write_immutable(&scenario_path, &json_bytes(&examples)?)?;
@@ -1259,7 +1260,9 @@ fn execute_historical_profiles(
     cargo: &Path,
     plan: &historical::Plan,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
-    use sdk_docs::rustdoc_profiles::{execute_target_profile_with_cargo, RustdocTarget};
+    use sdk_docs::rustdoc_profiles::{
+        execute_target_profile_with_context, CargoExecutionContext, RustdocTarget,
+    };
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
@@ -1335,7 +1338,13 @@ fn execute_historical_profiles(
                         .ok_or_else(|| CliError("profile receipt has no parent".into()))?,
                 )
                 .map_err(io_error)?;
-                execute_target_profile_with_cargo(
+                let config = historical::producer_config(
+                    root,
+                    plan.captured_source.as_ref(),
+                    release.package.as_str(),
+                )
+                .map_err(CliError)?;
+                execute_target_profile_with_context(
                     if plan.captured_source.is_some() {
                         package.manifest_path.clone().into_std_path_buf()
                     } else {
@@ -1346,7 +1355,10 @@ fn execute_historical_profiles(
                     &available,
                     output.join(".profile-build"),
                     &receipt,
-                    Some(cargo),
+                    CargoExecutionContext {
+                        cargo_path: Some(cargo),
+                        config_path: config.as_deref(),
+                    },
                     &rustdoc_target,
                 )
                 .map_err(profile_error)?;

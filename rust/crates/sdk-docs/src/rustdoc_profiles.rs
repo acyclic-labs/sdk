@@ -90,6 +90,23 @@ fn package_by_name<'a>(metadata: &'a Metadata, name: &str) -> Option<&'a Package
         .find(|package| package.name.as_ref() == name)
 }
 
+/// One producer identity shared by metadata and compilation. Current Git
+/// callers use no config; archived sources may select a retained external lock.
+#[derive(Clone, Copy, Default)]
+pub struct CargoExecutionContext<'a> {
+    pub cargo_path: Option<&'a Path>,
+    pub config_path: Option<&'a Path>,
+}
+
+impl CargoExecutionContext<'_> {
+    pub fn configure(self, command: &mut Command) {
+        if let Some(config) = self.config_path {
+            command.arg("--config").arg(config);
+            command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+        }
+    }
+}
+
 /// Read the exact Cargo metadata used by a profile invocation.
 pub fn load_metadata(manifest: impl AsRef<Path>) -> Result<Metadata, ProfileError> {
     load_metadata_with_cargo(manifest, None)
@@ -104,11 +121,36 @@ pub fn load_metadata_with_cargo(
     manifest: impl AsRef<Path>,
     cargo_path: Option<&Path>,
 ) -> Result<Metadata, ProfileError> {
+    load_metadata_with_context(
+        manifest,
+        CargoExecutionContext {
+            cargo_path,
+            config_path: None,
+        },
+    )
+}
+
+pub fn load_metadata_with_context(
+    manifest: impl AsRef<Path>,
+    context: CargoExecutionContext<'_>,
+) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
-    if let Some(cargo_path) = cargo_path {
+    if let Some(cargo_path) = context.cargo_path {
         command.cargo_path(cargo_path);
     }
-    command.other_options(vec!["--locked".to_owned()]);
+    let mut options = vec!["--locked".to_owned()];
+    if let Some(config) = context.config_path {
+        options.push("--config".into());
+        options.push(
+            config
+                .to_str()
+                .ok_or_else(|| {
+                    ProfileError::InvalidRustdoc("producer config path is not UTF-8".into())
+                })?
+                .to_owned(),
+        );
+    }
+    command.other_options(options);
     command
         .no_deps()
         .manifest_path(manifest.as_ref())
@@ -346,6 +388,11 @@ pub fn historical_profiles_for_package(
         })?;
         let mut features = BTreeSet::new();
         for feature in policy.features {
+            if feature.contains('/') {
+                // The existing Cargo invocation validates qualified feature expressions.
+                features.insert(feature);
+                continue;
+            }
             if !owner.features.contains_key(&feature) {
                 return Err(ProfileError::InvalidFeature {
                     package: package.to_owned(),
@@ -440,6 +487,34 @@ pub fn execute_target_profile_with_cargo(
     cargo_path: Option<&Path>,
     rustdoc_target: &RustdocTarget,
 ) -> Result<RustdocObservation, ProfileError> {
+    execute_target_profile_with_context(
+        manifest,
+        metadata,
+        profile,
+        available_targets,
+        target_dir,
+        output_json,
+        CargoExecutionContext {
+            cargo_path,
+            config_path: None,
+        },
+        rustdoc_target,
+    )
+}
+
+// Same maintained Cargo boundary; config and executable form one producer context.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_target_profile_with_context(
+    manifest: impl AsRef<Path>,
+    metadata: &Metadata,
+    profile: &ProfileSpec,
+    available_targets: &BTreeSet<String>,
+    target_dir: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    context: CargoExecutionContext<'_>,
+    rustdoc_target: &RustdocTarget,
+) -> Result<RustdocObservation, ProfileError> {
+    let cargo_path = context.cargo_path;
     if !available_targets.contains(&profile.target) {
         return Err(ProfileError::UnsupportedTarget {
             target: profile.target.clone(),
@@ -528,6 +603,7 @@ pub fn execute_target_profile_with_cargo(
                 .join(","),
         );
     }
+    context.configure(&mut command);
     command.args(["--", "-Z", "unstable-options", "--output-format", "json"]);
     let output = command.output().map_err(|error| {
         ProfileError::InvalidRustdoc(format!(
@@ -1233,7 +1309,7 @@ mod tests {
         let root = fixture.path();
         fs::create_dir(root.join("src")).unwrap();
         fs::create_dir_all(root.join("helper/src")).unwrap();
-        fs::write(root.join("Cargo.toml"), "[package]\nname='profile-owner'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[dependencies]\nhelper-alias={package='profile-helper',path='helper',default-features=false}\n").unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='profile-owner'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[dependencies]\nhelper-alias={package='profile-helper',path='helper',default-features=false}\n[package.metadata.docs.rs]\nfeatures=['helper-alias/native']\n").unwrap();
         fs::write(root.join("src/lib.rs"), "pub use helper_alias::Witness;\n").unwrap();
         fs::write(root.join("helper/Cargo.toml"), "[package]\nname='profile-helper'\nversion='0.1.0'\nedition='2021'\n[features]\nnative=[]\n").unwrap();
         fs::write(
@@ -1263,12 +1339,12 @@ mod tests {
             .unwrap()
             .to_owned();
         let available = BTreeSet::from([target.clone()]);
-        let profile = ProfileSpec {
-            package: "profile-owner".into(),
-            target,
-            default_features: true,
-            features: BTreeSet::from(["helper-alias/native".into()]),
-        };
+        let profile =
+            historical_profiles_for_package(&metadata, "profile-owner", &target, &available)
+                .unwrap()
+                .into_iter()
+                .find(|profile| profile.features.contains("helper-alias/native"))
+                .expect("historical docs.rs planner must retain qualified Cargo features");
         let receipt = root.join("receipt.json");
         execute_profile_with_cargo(
             root.join("Cargo.toml"),

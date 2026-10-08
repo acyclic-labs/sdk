@@ -172,7 +172,53 @@ pub fn archive_plan(
             return Err("registry archive lacks its normalized Cargo manifest".into());
         }
         let lock = manifest.with_file_name("Cargo.lock");
-        let resolution_lock = if members.contains_key("Cargo.lock") {
+        let config_directory = source_root.join(format!(".docs-producer/{directory}"));
+        let config = config_directory.join("config.toml");
+        let resolution_lock = if config_directory.exists() {
+            // Explicit retained config is the only opt-in. Never retry a failed
+            // published resolution with an implicit replacement or source patch.
+            validate_producer_config(source_root, &directory)?;
+            let mut expected = BTreeSet::from(["config.toml".into()]);
+            let producer_lock = config_directory.join("Cargo.lock");
+            if producer_lock.exists() {
+                expected.insert("Cargo.lock".into());
+            }
+            validate_archive_inventory(&config_directory, &expected)?;
+            let config_digest = super::sha256_file(&config).map_err(|e| e.to_string())?;
+            let original_lock = match members.get("Cargo.lock") {
+                Some(bytes) => OriginalLock::Published {
+                    sha256: super::sha256_bytes(bytes),
+                },
+                None => OriginalLock::Absent,
+            };
+            if !producer_lock.exists() {
+                let mut command = Command::new(cargo);
+                command
+                    .args(["generate-lockfile", "--manifest-path"])
+                    .arg(&manifest);
+                sdk_docs::rustdoc_profiles::CargoExecutionContext {
+                    cargo_path: Some(cargo),
+                    config_path: Some(&config),
+                }
+                .configure(&mut command);
+                command_output(&mut command)?;
+            }
+            let producer = ProducerResolution {
+                lock_path: format!(".docs-producer/{directory}/Cargo.lock"),
+                lock_sha256: super::sha256_file(&producer_lock).map_err(|e| e.to_string())?,
+                config_path: format!(".docs-producer/{directory}/config.toml"),
+                config_sha256: config_digest,
+            };
+            plan.source_files.extend(verify_producer_resolution(
+                source_root,
+                &directory,
+                &producer,
+            )?);
+            ResolutionLock::SeparateDocsProducer {
+                original_lock,
+                producer,
+            }
+        } else if members.contains_key("Cargo.lock") {
             ResolutionLock::Published {
                 sha256: super::sha256_file(&lock).map_err(|e| e.to_string())?,
             }
@@ -191,10 +237,32 @@ pub fn archive_plan(
                 .insert(format!("{directory}/Cargo.lock"), digest.clone());
             ResolutionLock::DocsProducer { sha256: digest }
         };
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(&manifest, Some(cargo))
-            .map_err(|e| e.to_string())?;
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+            &manifest,
+            sdk_docs::rustdoc_profiles::CargoExecutionContext {
+                cargo_path: Some(cargo),
+                config_path: matches!(
+                    &resolution_lock,
+                    ResolutionLock::SeparateDocsProducer { .. }
+                )
+                .then_some(config.as_path()),
+            },
+        )
+        .map_err(|e| e.to_string())?;
         validate_archive_owner(&metadata, &manifest, &release.package, &release.num)?;
         let publisher_vcs = archive_vcs(&members)?;
+        let identity = ArchiveSource {
+            package: release.package.clone(),
+            version: release.num.clone(),
+            registry_checksum: release.checksum.clone(),
+            publisher_vcs: publisher_vcs.clone(),
+            resolution_lock: resolution_lock.clone(),
+        };
+        // Independently reread original members plus selected config/lock after
+        // lock generation and metadata; command success cannot hide input drift.
+        let (_, verified_files) =
+            verify_imported_archive(source_root, &release, &archive, &identity)?;
+        plan.source_files.extend(verified_files);
         plan.released_packages.push(ReleasedPackage {
             package: release.package.clone(),
             version: release.num.clone(),
@@ -429,17 +497,46 @@ fn verify_producer_resolution(
         }
         files.insert(logical.clone(), digest);
     }
-    let lock = root.join(&producer.lock_path);
-    let expected_config = format!(
-        "[resolver]\nlockfile-path = {}\n",
-        serde_json::to_string(&lock.to_string_lossy()).map_err(|e| e.to_string())?
-    );
-    if fs::read(root.join(&producer.config_path)).map_err(|e| e.to_string())?
-        != expected_config.as_bytes()
-    {
+    validate_producer_config(&root, directory)?;
+    Ok(files)
+}
+
+fn validate_producer_config(root: &Path, directory: &str) -> Result<(), String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let config = root.join(format!(".docs-producer/{directory}/config.toml"));
+    if config.canonicalize().map_err(|e| e.to_string())? != config {
+        return Err("producer config contains a linked or redirected path".into());
+    }
+    // Config-file paths are relative to TWO levels above the config file.
+    let expected = format!("[resolver]\nlockfile-path = \"{directory}/Cargo.lock\"\n");
+    if fs::read(config).map_err(|e| e.to_string())? != expected.as_bytes() {
         return Err("producer config must select only the captured external lock".into());
     }
-    Ok(files)
+    Ok(())
+}
+
+/// Derive the same verified owner config at every maintained Cargo boundary.
+pub fn producer_config(
+    root: &Path,
+    captured: Option<&CapturedSource>,
+    package: &str,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(CapturedSource::RegistryArchives { archives }) = captured else {
+        return Ok(None);
+    };
+    let archive = archives
+        .iter()
+        .find(|archive| archive.package == package)
+        .ok_or("producer Cargo owner is absent from captured archives")?;
+    let ResolutionLock::SeparateDocsProducer { producer, .. } = &archive.resolution_lock else {
+        return Ok(None);
+    };
+    verify_producer_resolution(
+        root,
+        &format!("{}-{}", archive.package, archive.version),
+        producer,
+    )?;
+    Ok(Some(root.join(&producer.config_path)))
 }
 
 pub fn imported_metadata(
@@ -455,8 +552,15 @@ pub fn imported_metadata(
         let manifest = root
             .join(format!("{}-{}", archive.package, archive.version))
             .join("Cargo.toml");
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(&manifest, Some(cargo))
-            .map_err(|e| e.to_string())?;
+        let config = producer_config(root, Some(captured), &archive.package)?;
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+            &manifest,
+            sdk_docs::rustdoc_profiles::CargoExecutionContext {
+                cargo_path: Some(cargo),
+                config_path: config.as_deref(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
         validate_archive_owner(&metadata, &manifest, &archive.package, &archive.version)?;
         result.insert(archive.package.clone(), metadata);
     }
@@ -913,6 +1017,17 @@ pub fn execute_examples_with_metadata(
     examples: &[Example],
     owner_metadata: Option<&BTreeMap<String, Metadata>>,
 ) -> Result<Vec<ExampleExecution>, String> {
+    execute_examples_with_context(root, cargo, target_dir, examples, owner_metadata, None)
+}
+
+pub fn execute_examples_with_context(
+    root: &Path,
+    cargo: &Path,
+    target_dir: &Path,
+    examples: &[Example],
+    owner_metadata: Option<&BTreeMap<String, Metadata>>,
+    captured: Option<&CapturedSource>,
+) -> Result<Vec<ExampleExecution>, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let capture = || {
         if owner_metadata.is_some() {
@@ -965,6 +1080,12 @@ pub fn execute_examples_with_metadata(
             .args(["--package", &example.package, "--example", &example.target])
             .arg("--target-dir")
             .arg(target_dir);
+        let config = producer_config(&root, captured, &example.package)?;
+        sdk_docs::rustdoc_profiles::CargoExecutionContext {
+            cargo_path: Some(cargo),
+            config_path: config.as_deref(),
+        }
+        .configure(&mut command);
         if !example.required_features.is_empty() {
             command
                 .arg("--features")
@@ -1144,6 +1265,11 @@ mod tests {
     #[test]
     fn separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift() {
         let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("Cargo.lock"),
+            "broken original published lock\n",
+        )
+        .unwrap();
         let original = fs::read(fixture.0.join("Cargo.lock")).unwrap();
         let directory = "historical-fixture-0.1.0";
         let prefix = format!(".docs-producer/{directory}/");
@@ -1156,19 +1282,20 @@ mod tests {
             .canonicalize()
             .unwrap()
             .join("Cargo.lock");
-        let config = format!(
-            "[resolver]\nlockfile-path = {}\n",
-            serde_json::to_string(&external_lock.to_string_lossy()).unwrap()
-        );
+        let config = format!("[resolver]\nlockfile-path = \"{directory}/Cargo.lock\"\n");
         fs::write(producer_dir.join("config.toml"), &config).unwrap();
-        command_output(
-            Command::new(cargo())
-                .args(["generate-lockfile", "--offline", "--manifest-path"])
-                .arg(fixture.0.join("Cargo.toml"))
-                .arg("--config")
-                .arg(producer_dir.join("config.toml")),
-        )
-        .unwrap();
+        let cargo = cargo();
+        let config_path = producer_dir.join("config.toml");
+        let context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
+            cargo_path: Some(&cargo),
+            config_path: Some(&config_path),
+        };
+        let mut generate = Command::new(&cargo);
+        generate
+            .args(["generate-lockfile", "--offline", "--manifest-path"])
+            .arg(fixture.0.join("Cargo.toml"));
+        context.configure(&mut generate);
+        command_output(&mut generate).unwrap();
         assert_eq!(fs::read(fixture.0.join("Cargo.lock")).unwrap(), original);
         assert!(external_lock.is_file());
         let mut producer = ProducerResolution {
@@ -1183,6 +1310,69 @@ mod tests {
                 .len(),
             2
         );
+        let relocated = Fixture::new();
+        let relocated_producer = relocated.0.join(&prefix);
+        fs::create_dir_all(&relocated_producer).unwrap();
+        fs::copy(&external_lock, relocated_producer.join("Cargo.lock")).unwrap();
+        fs::write(relocated_producer.join("config.toml"), &config).unwrap();
+        assert_eq!(
+            verify_producer_resolution(&relocated.0, directory, &producer).unwrap(),
+            verify_producer_resolution(&fixture.0, directory, &producer).unwrap()
+        );
+        fs::write(relocated.0.join("Cargo.lock"), &original).unwrap();
+        let relocated_config = relocated_producer.join("config.toml");
+        let relocated_context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
+            cargo_path: Some(&cargo),
+            config_path: Some(&relocated_config),
+        };
+        let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+            relocated.0.join("Cargo.toml"),
+            relocated_context,
+        )
+        .unwrap();
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+            fixture.0.join("Cargo.toml"),
+            context,
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.packages[0].name,
+            relocated_metadata.packages[0].name
+        );
+        let rustc = cargo
+            .parent()
+            .unwrap()
+            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+        let host = String::from_utf8(command_output(Command::new(rustc).arg("-vV")).unwrap())
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .unwrap()
+            .to_owned();
+        let profile = sdk_docs::rustdoc_profiles::ProfileSpec {
+            package: "historical-fixture".into(),
+            target: host.clone(),
+            default_features: true,
+            features: BTreeSet::new(),
+        };
+        for (root, metadata, context) in [
+            (&fixture.0, &metadata, context),
+            (&relocated.0, &relocated_metadata, relocated_context),
+        ] {
+            sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+                root.join("Cargo.toml"),
+                metadata,
+                &profile,
+                &BTreeSet::from([host.clone()]),
+                root.join("target"),
+                root.join("receipt.json"),
+                context,
+                &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
+            )
+            .unwrap();
+            assert_eq!(fs::read(root.join("Cargo.lock")).unwrap(), original);
+        }
+        assert_eq!(fs::read(relocated.0.join("Cargo.lock")).unwrap(), original);
         let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
         let imported_lock = fixture.0.join(directory).join("Cargo.lock");
         fs::write(&imported_lock, &original).unwrap();
@@ -1215,6 +1405,27 @@ mod tests {
                 producer: producer.clone(),
             },
         };
+        let captured = CapturedSource::RegistryArchives {
+            archives: vec![identity.clone()],
+        };
+        let owners = BTreeMap::from([("historical-fixture".into(), metadata.clone())]);
+        let discovered = examples(
+            &metadata,
+            &fixture.0,
+            &BTreeSet::from(["historical-fixture".into()]),
+        )
+        .unwrap();
+        let executed = execute_examples_with_context(
+            &fixture.0,
+            &cargo,
+            &fixture.0.join("target"),
+            &discovered,
+            Some(&owners),
+            Some(&captured),
+        )
+        .unwrap();
+        assert_eq!(executed.len(), 1);
+        assert_eq!(fs::read(fixture.0.join("Cargo.lock")).unwrap(), original);
         let (_, inputs) =
             verify_imported_archive(&fixture.0, &release, &archive, &identity).unwrap();
         assert_eq!(inputs.get(&producer.lock_path), Some(&producer.lock_sha256));
