@@ -1093,21 +1093,8 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
                 "retained registry archive closure differs from scope".into(),
             ));
         }
-        let actual_inventory = fs::read_dir(output.join("registry-archives"))
-            .map_err(io_error)?
-            .map(|entry| {
-                let entry = entry.map_err(io_error)?;
-                if !entry.file_type().map_err(io_error)?.is_file() {
-                    return Err(CliError("non-file retained registry archive".into()));
-                }
-                Ok(entry.file_name().to_string_lossy().into_owned())
-            })
-            .collect::<Result<BTreeSet<_>, CliError>>()?;
-        if actual_inventory != inventory {
-            return Err(CliError(
-                "retained registry archive inventory differs".into(),
-            ));
-        }
+        historical::validate_archive_inventory(&output.join("registry-archives"), &inventory)
+            .map_err(CliError)?;
     }
     for (path, expected) in &manifest.rustdoc_files {
         let relative = path.strip_prefix("rustdoc/").unwrap_or(path);

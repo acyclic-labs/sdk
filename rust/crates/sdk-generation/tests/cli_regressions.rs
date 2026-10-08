@@ -1314,6 +1314,7 @@ fn registry_archive_fixture(
     dirty: bool,
     published_lock: bool,
     mutation: Option<&str>,
+    publisher_vcs: bool,
 ) -> (Fixture, PathBuf) {
     let (fixture, support) = historical_fixture(None);
     let package = fixture.root.join("rust/crates/demo");
@@ -1355,6 +1356,9 @@ fn registry_archive_fixture(
     assert!(extracted.status.success(), "{}", output_message(&extracted));
     let source = unpack.join("demo-1.0.0");
     fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
+    if !publisher_vcs {
+        fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
+    }
     if !published_lock {
         fs::remove_file(source.join("Cargo.lock")).unwrap();
     }
@@ -1374,8 +1378,13 @@ fn registry_archive_fixture(
 
 #[test]
 fn registry_archive_native_source_is_not_a_publisher_git_retag() {
-    for (dirty, published_lock) in [(true, true), (false, false)] {
-        let (fixture, support) = registry_archive_fixture(dirty, published_lock, None);
+    for (dirty, published_lock, publisher_vcs) in [
+        (true, true, true),
+        (false, false, true),
+        (false, true, false),
+    ] {
+        let (fixture, support) =
+            registry_archive_fixture(dirty, published_lock, None, publisher_vcs);
         let publisher = git_revision(&fixture.root);
         let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
         assert!(result.status.success(), "{}", output_message(&result));
@@ -1387,8 +1396,14 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
         assert_ne!(data["source"]["revision"], publisher);
         assert_eq!(data["source"]["sourceState"], "registry-archives");
         let archive = &data["source"]["capturedSource"]["archives"][0];
-        assert_eq!(archive["publisherVcs"]["revision"], publisher);
-        assert_eq!(archive["publisherVcs"]["dirty"], dirty);
+        if publisher_vcs {
+            assert_eq!(archive["publisherVcs"]["revision"], publisher);
+            assert_eq!(archive["publisherVcs"]["dirty"], dirty);
+        } else {
+            assert!(archive["publisherVcs"].is_null());
+            assert_eq!(data["source"]["releasedPackages"][0]["sourceRevision"], "");
+            assert_eq!(data["source"]["releasedPackages"][0]["pathInVcs"], "");
+        }
         assert_eq!(
             archive["resolutionLock"]["kind"],
             if published_lock {
@@ -1476,7 +1491,7 @@ fn historical_source_help_and_flag_contract_are_explicit() {
 
 #[test]
 fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
-    let (fixture, support) = registry_archive_fixture(true, true, Some("input.json"));
+    let (fixture, support) = registry_archive_fixture(true, true, Some("input.json"), true);
     let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
     assert!(!result.status.success());
     assert!(

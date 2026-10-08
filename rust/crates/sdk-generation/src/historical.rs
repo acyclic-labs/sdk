@@ -192,23 +192,7 @@ pub fn archive_plan(
         };
         let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(&manifest, Some(cargo))
             .map_err(|e| e.to_string())?;
-        let canonical_manifest = manifest.canonicalize().map_err(|e| e.to_string())?;
-        let owner = metadata
-            .packages
-            .iter()
-            .find(|owner| {
-                owner
-                    .manifest_path
-                    .as_std_path()
-                    .canonicalize()
-                    .ok()
-                    .as_deref()
-                    == Some(&canonical_manifest)
-            })
-            .ok_or("archive Cargo metadata has no original package manifest")?;
-        if owner.name.as_ref() != release.package || owner.version.to_string() != release.num {
-            return Err("normalized Cargo package differs from registry release".into());
-        }
+        validate_archive_owner(&metadata, &manifest, &release.package, &release.num)?;
         let publisher_vcs = archive_vcs(&members)?;
         plan.released_packages.push(ReleasedPackage {
             package: release.package.clone(),
@@ -409,26 +393,36 @@ pub fn imported_metadata(
             .join("Cargo.toml");
         let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(&manifest, Some(cargo))
             .map_err(|e| e.to_string())?;
-        let canonical = manifest.canonicalize().map_err(|e| e.to_string())?;
-        let owner = metadata
-            .packages
-            .iter()
-            .find(|package| {
-                package
-                    .manifest_path
-                    .as_std_path()
-                    .canonicalize()
-                    .ok()
-                    .as_deref()
-                    == Some(&canonical)
-            })
-            .ok_or("normalized archive manifest is absent from Cargo metadata")?;
-        if owner.name.as_ref() != archive.package || owner.version.to_string() != archive.version {
-            return Err("normalized archive Cargo identity differs from captured source".into());
-        }
+        validate_archive_owner(&metadata, &manifest, &archive.package, &archive.version)?;
         result.insert(archive.package.clone(), metadata);
     }
     Ok(result)
+}
+
+fn validate_archive_owner(
+    metadata: &Metadata,
+    manifest: &Path,
+    name: &str,
+    version: &str,
+) -> Result<(), String> {
+    let canonical = manifest.canonicalize().map_err(|e| e.to_string())?;
+    let owner = metadata
+        .packages
+        .iter()
+        .find(|package| {
+            package
+                .manifest_path
+                .as_std_path()
+                .canonicalize()
+                .ok()
+                .as_deref()
+                == Some(&canonical)
+        })
+        .ok_or("normalized archive manifest is absent from Cargo metadata")?;
+    if owner.name.as_ref() != name || owner.version.to_string() != version {
+        return Err("normalized archive Cargo identity differs from captured source".into());
+    }
+    Ok(())
 }
 
 pub fn owner_index(owners: &BTreeMap<String, Metadata>) -> Result<Metadata, String> {
