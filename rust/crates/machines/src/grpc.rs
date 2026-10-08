@@ -262,433 +262,643 @@ impl MachinesProvider for GrpcProvider {
         ProviderAssurance::CustomerHosted
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.qualify_image",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        let response = self
-            .client()
-            .qualify_image(wire::QualifyImageRequest {
-                protocol: Some(protocol()),
-                image: Some(encode_image(&image)?),
-            })
-            .await
-            .map_err(|error| read_error(&error))?
-            .into_inner();
-        decode_qualification(response, &image)
+        obs::finish(
+            async {
+                let response = self
+                    .client()
+                    .qualify_image(wire::QualifyImageRequest {
+                        protocol: Some(protocol()),
+                        image: Some(encode_image(&image)?),
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                decode_qualification(response, &image)
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.create",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
-        let key = request.idempotency_key;
-        let response = self
-            .client()
-            .create(wire::CreateMachineRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-                image: Some(encode_image(&request.image)?),
-                compatibility: Some(encode_compatibility(&request.compatibility)?),
-                suspension: Some(encode_suspension(request.suspension)?),
-                expiration: Some(encode_expiration(request.expiration)?),
-                network_policy_digest: request.network_policy_digest.to_vec(),
-                budgets: Some(wire::Budgets {
-                    spend_micros: request.budgets.spend_micros,
-                    concurrency: request.budgets.concurrency,
-                }),
-            })
-            .await
-            .map_err(|error| mutation_error(key, &error))?
-            .into_inner();
-        let operation = decode_operation(response.operation.as_ref())?;
-        let machine = decode_machine(response.machine.as_ref())?;
-        let _contract = decode_contract(response.contract.as_ref())?;
-        self.wait(key, operation).await?;
-        self.inspect_machine(machine)
-            .await
-            .map(MutationOutcome::Created)
+        obs::finish(
+            async {
+                let key = request.idempotency_key;
+                let response = self
+                    .client()
+                    .create(wire::CreateMachineRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        image: Some(encode_image(&request.image)?),
+                        compatibility: Some(encode_compatibility(&request.compatibility)?),
+                        suspension: Some(encode_suspension(request.suspension)?),
+                        expiration: Some(encode_expiration(request.expiration)?),
+                        network_policy_digest: request.network_policy_digest.to_vec(),
+                        budgets: Some(wire::Budgets {
+                            spend_micros: request.budgets.spend_micros,
+                            concurrency: request.budgets.concurrency,
+                        }),
+                    })
+                    .await
+                    .map_err(|error| mutation_error(key, &error))?
+                    .into_inner();
+                let operation = decode_operation(response.operation.as_ref())?;
+                let machine = decode_machine(response.machine.as_ref())?;
+                let _contract = decode_contract(response.contract.as_ref())?;
+                self.wait(key, operation).await?;
+                self.inspect_machine(machine)
+                    .await
+                    .map(MutationOutcome::Created)
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.inspect_machine",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn inspect_machine(
         &self,
         machine: MachineId,
     ) -> Result<MachineObservation, ProviderError> {
-        self.client()
-            .inspect_machine(wire::InspectMachineRequest {
-                protocol: Some(protocol()),
-                machine: Some(encode_machine(machine)),
-            })
-            .await
-            .map_err(|error| read_error(&error))
-            .and_then(|response| decode_machine_observation(response.into_inner(), machine))
+        obs::finish(
+            async {
+                self.client()
+                    .inspect_machine(wire::InspectMachineRequest {
+                        protocol: Some(protocol()),
+                        machine: Some(encode_machine(machine)),
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))
+                    .and_then(|response| decode_machine_observation(response.into_inner(), machine))
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.list_machines",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn list_machines(
         &self,
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page limit must be 1..=256".into(),
-            ));
-        }
-        let page = self
-            .client()
-            .list_machines(wire::ListMachinesRequest {
-                protocol: Some(protocol()),
-                after: after.map(encode_machine),
-                limit,
-            })
-            .await
-            .map_err(|error| read_error(&error))?
-            .into_inner();
-        let mut previous = after;
-        let mut machines = Vec::with_capacity(page.machines.len());
-        for value in page.machines {
-            let expected = decode_machine(value.machine.as_ref())?;
-            if previous.is_some_and(|cursor| expected <= cursor) {
-                return Err(ProviderError::Rejected(
-                    "server returned a noncanonical machine page".into(),
-                ));
+        obs::finish(
+            async {
+                if limit == 0 || limit > MAX_PAGE_SIZE {
+                    return Err(ProviderError::Invalid(
+                        "machine page limit must be 1..=256".into(),
+                    ));
+                }
+                let page = self
+                    .client()
+                    .list_machines(wire::ListMachinesRequest {
+                        protocol: Some(protocol()),
+                        after: after.map(encode_machine),
+                        limit,
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                let mut previous = after;
+                let mut machines = Vec::with_capacity(page.machines.len());
+                for value in page.machines {
+                    let expected = decode_machine(value.machine.as_ref())?;
+                    if previous.is_some_and(|cursor| expected <= cursor) {
+                        return Err(ProviderError::Rejected(
+                            "server returned a noncanonical machine page".into(),
+                        ));
+                    }
+                    machines.push(decode_machine_observation(value, expected)?);
+                    previous = Some(expected);
+                }
+                let next = page
+                    .next
+                    .as_ref()
+                    .map(|value| decode_machine(Some(value)))
+                    .transpose()?;
+                if machines.len()
+                    > usize::try_from(limit)
+                        .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
+                    || next.is_some() && next != machines.last().map(|value| value.id)
+                {
+                    return Err(ProviderError::Rejected(
+                        "server returned a malformed machine cursor".into(),
+                    ));
+                }
+                Ok(MachinePage { machines, next })
             }
-            machines.push(decode_machine_observation(value, expected)?);
-            previous = Some(expected);
-        }
-        let next = page
-            .next
-            .as_ref()
-            .map(|value| decode_machine(Some(value)))
-            .transpose()?;
-        if machines.len()
-            > usize::try_from(limit)
-                .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
-            || next.is_some() && next != machines.last().map(|value| value.id)
-        {
-            return Err(ProviderError::Rejected(
-                "server returned a malformed machine cursor".into(),
-            ));
-        }
-        Ok(MachinePage { machines, next })
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.checkpoint",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn checkpoint(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let value = self
-            .client()
-            .checkpoint(wire::CheckpointMachineRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-                machine: Some(encode_machine(machine)),
-            })
-            .await
-            .map_err(|error| mutation_error(key, &error))?
-            .into_inner();
-        let operation = decode_operation(value.operation.as_ref())?;
-        let checkpoint = decode_checkpoint(value.checkpoint.as_ref())?;
-        if decode_machine(value.source.as_ref())? != machine {
-            return Err(ProviderError::Rejected(
-                "checkpoint source was substituted".into(),
-            ));
-        }
-        self.wait(key, operation).await?;
-        self.inspect_checkpoint(checkpoint)
-            .await
-            .map(MutationOutcome::Checkpointed)
+        obs::finish(
+            async {
+                let value = self
+                    .client()
+                    .checkpoint(wire::CheckpointMachineRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        machine: Some(encode_machine(machine)),
+                    })
+                    .await
+                    .map_err(|error| mutation_error(key, &error))?
+                    .into_inner();
+                let operation = decode_operation(value.operation.as_ref())?;
+                let checkpoint = decode_checkpoint(value.checkpoint.as_ref())?;
+                if decode_machine(value.source.as_ref())? != machine {
+                    return Err(ProviderError::Rejected(
+                        "checkpoint source was substituted".into(),
+                    ));
+                }
+                self.wait(key, operation).await?;
+                self.inspect_checkpoint(checkpoint)
+                    .await
+                    .map(MutationOutcome::Checkpointed)
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.inspect_checkpoint",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn inspect_checkpoint(
         &self,
         checkpoint: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
-        self.client()
-            .inspect_checkpoint(wire::InspectCheckpointRequest {
-                protocol: Some(protocol()),
-                checkpoint: Some(encode_checkpoint(checkpoint)),
-            })
-            .await
-            .map_err(|error| read_error(&error))
-            .and_then(|response| decode_checkpoint_observation(&response.into_inner(), checkpoint))
+        obs::finish(
+            async {
+                self.client()
+                    .inspect_checkpoint(wire::InspectCheckpointRequest {
+                        protocol: Some(protocol()),
+                        checkpoint: Some(encode_checkpoint(checkpoint)),
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))
+                    .and_then(|response| {
+                        decode_checkpoint_observation(&response.into_inner(), checkpoint)
+                    })
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.fork",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn fork(
         &self,
         checkpoint: CheckpointId,
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        if count.get() > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
-        let value = self
-            .client()
-            .fork(wire::ForkCheckpointRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-                checkpoint: Some(encode_checkpoint(checkpoint)),
-                count: count.get(),
-            })
-            .await
-            .map_err(|error| mutation_error(key, &error))?
-            .into_inner();
-        if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint
-            || value.children.len()
-                != usize::try_from(count.get())
-                    .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
-        {
-            return Err(ProviderError::Rejected(
-                "fork result was substituted".into(),
-            ));
-        }
-        let operation = decode_operation(value.operation.as_ref())?;
-        self.wait(key, operation).await?;
-        let mut seen = BTreeSet::new();
-        let mut children = Vec::with_capacity(value.children.len());
-        for child in value.children {
-            let child = decode_machine(Some(&child))?;
-            if !seen.insert(child) {
-                return Err(ProviderError::Rejected(
-                    "fork returned duplicate children".into(),
-                ));
+        obs::finish(
+            async {
+                if count.get() > MAX_FORK_CHILDREN {
+                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
+                }
+                let value = self
+                    .client()
+                    .fork(wire::ForkCheckpointRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        checkpoint: Some(encode_checkpoint(checkpoint)),
+                        count: count.get(),
+                    })
+                    .await
+                    .map_err(|error| mutation_error(key, &error))?
+                    .into_inner();
+                if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint
+                    || value.children.len()
+                        != usize::try_from(count.get())
+                            .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
+                {
+                    return Err(ProviderError::Rejected(
+                        "fork result was substituted".into(),
+                    ));
+                }
+                let operation = decode_operation(value.operation.as_ref())?;
+                self.wait(key, operation).await?;
+                let mut seen = BTreeSet::new();
+                let mut children = Vec::with_capacity(value.children.len());
+                for child in value.children {
+                    let child = decode_machine(Some(&child))?;
+                    if !seen.insert(child) {
+                        return Err(ProviderError::Rejected(
+                            "fork returned duplicate children".into(),
+                        ));
+                    }
+                    children.push(self.inspect_machine(child).await?);
+                }
+                Ok(MutationOutcome::Forked(children))
             }
-            children.push(self.inspect_machine(child).await?);
-        }
-        Ok(MutationOutcome::Forked(children))
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.fork_machine",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn fork_machine(
         &self,
         machine: MachineId,
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        if count.get() > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
-        let value = self
-            .client()
-            .fork_machine(wire::ForkMachineRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-                machine: Some(encode_machine(machine)),
-                count: count.get(),
-            })
-            .await
-            .map_err(|error| mutation_error(key, &error))?
-            .into_inner();
-        let admitted = decode_fork_machine_admission(&value)?;
-        if admitted.source != machine
-            || admitted.children.len()
-                != usize::try_from(count.get())
-                    .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
-        {
-            return Err(ProviderError::Rejected(
-                "fork result was substituted".into(),
-            ));
-        }
-        self.wait(key, admitted.operation).await?;
-        admitted.observe(self).await
+        obs::finish(
+            async {
+                if count.get() > MAX_FORK_CHILDREN {
+                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
+                }
+                let value = self
+                    .client()
+                    .fork_machine(wire::ForkMachineRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        machine: Some(encode_machine(machine)),
+                        count: count.get(),
+                    })
+                    .await
+                    .map_err(|error| mutation_error(key, &error))?
+                    .into_inner();
+                let admitted = decode_fork_machine_admission(&value)?;
+                if admitted.source != machine
+                    || admitted.children.len()
+                        != usize::try_from(count.get())
+                            .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
+                {
+                    return Err(ProviderError::Rejected(
+                        "fork result was substituted".into(),
+                    ));
+                }
+                self.wait(key, admitted.operation).await?;
+                admitted.observe(self).await
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.machines.suspend",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn suspend(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.machine_mutation(machine, key, MachineMutation::Suspend)
-            .await
+        obs::finish(
+            async {
+                self.machine_mutation(machine, key, MachineMutation::Suspend)
+                    .await
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.wake",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn wake(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.machine_mutation(machine, key, MachineMutation::Wake)
-            .await
+        obs::finish(
+            async {
+                self.machine_mutation(machine, key, MachineMutation::Wake)
+                    .await
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.set_suspension_policy",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn set_suspension_policy(
         &self,
         machine: MachineId,
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let value = self
-            .client()
-            .set_suspension_policy(wire::SetSuspensionPolicyRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-                machine: Some(encode_machine(machine)),
-                policy: Some(encode_suspension(policy)?),
-            })
-            .await
-            .map_err(|error| mutation_error(key, &error))?
-            .into_inner();
-        if decode_machine(value.machine.as_ref())? != machine
-            || decode_suspension(value.policy.as_ref())? != policy
-        {
-            return Err(ProviderError::Rejected(
-                "policy result was substituted".into(),
-            ));
-        }
-        self.wait(key, decode_operation(value.operation.as_ref())?)
-            .await?;
-        Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
+        obs::finish(
+            async {
+                let value = self
+                    .client()
+                    .set_suspension_policy(wire::SetSuspensionPolicyRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        machine: Some(encode_machine(machine)),
+                        policy: Some(encode_suspension(policy)?),
+                    })
+                    .await
+                    .map_err(|error| mutation_error(key, &error))?
+                    .into_inner();
+                if decode_machine(value.machine.as_ref())? != machine
+                    || decode_suspension(value.policy.as_ref())? != policy
+                {
+                    return Err(ProviderError::Rejected(
+                        "policy result was substituted".into(),
+                    ));
+                }
+                self.wait(key, decode_operation(value.operation.as_ref())?)
+                    .await?;
+                Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.destroy_machine",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn destroy_machine(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.machine_mutation(machine, key, MachineMutation::Destroy)
-            .await
+        obs::finish(
+            async {
+                self.machine_mutation(machine, key, MachineMutation::Destroy)
+                    .await
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.destroy_checkpoint",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn destroy_checkpoint(
         &self,
         checkpoint: CheckpointId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let value = self
-            .client()
-            .destroy_checkpoint(wire::CheckpointMutationRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-                checkpoint: Some(encode_checkpoint(checkpoint)),
-            })
-            .await
-            .map_err(|error| mutation_error(key, &error))?
-            .into_inner();
-        if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint {
-            return Err(ProviderError::Rejected(
-                "checkpoint result was substituted".into(),
-            ));
-        }
-        self.wait(key, decode_operation(value.operation.as_ref())?)
-            .await?;
-        Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
+        obs::finish(
+            async {
+                let value = self
+                    .client()
+                    .destroy_checkpoint(wire::CheckpointMutationRequest {
+                        protocol: Some(protocol()),
+                        idempotency_key: Some(encode_key(key)),
+                        checkpoint: Some(encode_checkpoint(checkpoint)),
+                    })
+                    .await
+                    .map_err(|error| mutation_error(key, &error))?
+                    .into_inner();
+                if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint {
+                    return Err(ProviderError::Rejected(
+                        "checkpoint result was substituted".into(),
+                    ));
+                }
+                self.wait(key, decode_operation(value.operation.as_ref())?)
+                    .await?;
+                Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.events",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn events(
         &self,
         machine: MachineId,
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "event page limit must be 1..=1024".into(),
-            ));
-        }
-        let value = self
-            .client()
-            .events(wire::EventsRequest {
-                protocol: Some(protocol()),
-                machine: Some(encode_machine(machine)),
-                after_sequence: after_sequence.unwrap_or(0),
-                limit,
-            })
-            .await
-            .map_err(|error| read_error(&error))?
-            .into_inner();
-        let mut previous = after_sequence.unwrap_or(0);
-        let mut events = Vec::with_capacity(value.events.len());
-        for item in value.events {
-            let event = decode_event(&item, machine)?;
-            if event.sequence <= previous {
-                return Err(ProviderError::Rejected(
-                    "event sequence is not increasing".into(),
-                ));
+        obs::finish(
+            async {
+                if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
+                    return Err(ProviderError::Invalid(
+                        "event page limit must be 1..=1024".into(),
+                    ));
+                }
+                let value = self
+                    .client()
+                    .events(wire::EventsRequest {
+                        protocol: Some(protocol()),
+                        machine: Some(encode_machine(machine)),
+                        after_sequence: after_sequence.unwrap_or(0),
+                        limit,
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                let mut previous = after_sequence.unwrap_or(0);
+                let mut events = Vec::with_capacity(value.events.len());
+                for item in value.events {
+                    let event = decode_event(&item, machine)?;
+                    if event.sequence <= previous {
+                        return Err(ProviderError::Rejected(
+                            "event sequence is not increasing".into(),
+                        ));
+                    }
+                    previous = event.sequence;
+                    events.push(event);
+                }
+                let next_sequence = (value.next_sequence != 0).then_some(value.next_sequence);
+                if events.len()
+                    > usize::try_from(limit)
+                        .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?
+                    || next_sequence.is_some()
+                        && next_sequence != events.last().map(|event| event.sequence)
+                {
+                    return Err(ProviderError::Rejected("event cursor is malformed".into()));
+                }
+                Ok(EventPage {
+                    events,
+                    next_sequence,
+                })
             }
-            previous = event.sequence;
-            events.push(event);
-        }
-        let next_sequence = (value.next_sequence != 0).then_some(value.next_sequence);
-        if events.len()
-            > usize::try_from(limit)
-                .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?
-            || next_sequence.is_some() && next_sequence != events.last().map(|event| event.sequence)
-        {
-            return Err(ProviderError::Rejected("event cursor is malformed".into()));
-        }
-        Ok(EventPage {
-            events,
-            next_sequence,
-        })
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.usage",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn usage(
         &self,
         machine: MachineId,
         start_unix_ms: u64,
         end_unix_ms: u64,
     ) -> Result<UsageReceipt, ProviderError> {
-        if start_unix_ms >= end_unix_ms {
-            return Err(ProviderError::Invalid(
-                "usage interval must be non-empty".into(),
-            ));
-        }
-        let value = self
-            .client()
-            .usage(wire::UsageRequest {
-                protocol: Some(protocol()),
-                machine: Some(encode_machine(machine)),
-                start_unix_ms,
-                end_unix_ms,
-            })
-            .await
-            .map_err(|error| read_error(&error))?
-            .into_inner();
-        decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
+        obs::finish(
+            async {
+                if start_unix_ms >= end_unix_ms {
+                    return Err(ProviderError::Invalid(
+                        "usage interval must be non-empty".into(),
+                    ));
+                }
+                let value = self
+                    .client()
+                    .usage(wire::UsageRequest {
+                        protocol: Some(protocol()),
+                        machine: Some(encode_machine(machine)),
+                        start_unix_ms,
+                        end_unix_ms,
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.recover",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        let (operation, value) = self.recovered_admission(key).await?;
-        self.wait(key, operation).await?;
-        decode_recovered(self, value).await
+        obs::finish(
+            async {
+                let (operation, value) = self.recovered_admission(key).await?;
+                self.wait(key, operation).await?;
+                decode_recovered(self, value).await
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.recover_operation",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
-        self.recovered_admission(key)
-            .await
-            .map(|(operation, _)| operation)
+        obs::finish(
+            async {
+                self.recovered_admission(key)
+                    .await
+                    .map(|(operation, _)| operation)
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.inspect_operation",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn inspect_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
-        self.client()
-            .inspect_operation(operation_request(operation))
-            .await
-            .map_err(|error| read_error(&error))
-            .and_then(|response| decode_operation_observation(&response.into_inner(), operation))
+        obs::finish(
+            async {
+                self.client()
+                    .inspect_operation(operation_request(operation))
+                    .await
+                    .map_err(|error| read_error(&error))
+                    .and_then(|response| {
+                        decode_operation_observation(&response.into_inner(), operation)
+                    })
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.cancel",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        self.client()
-            .cancel(operation_request(operation))
-            .await
-            .map_err(|error| read_error(&error))
-            .and_then(|response| decode_operation_observation(&response.into_inner(), operation))
+        obs::finish(
+            async {
+                self.client()
+                    .cancel(operation_request(operation))
+                    .await
+                    .map_err(|error| read_error(&error))
+                    .and_then(|response| {
+                        decode_operation_observation(&response.into_inner(), operation)
+                    })
+            }
+            .await,
+        )
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.watch_operation",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn watch_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
-        let stream = self
-            .client()
-            .watch_operation(operation_request(operation))
-            .await
-            .map_err(|error| read_error(&error))?
-            .into_inner();
-        let stream = stream::unfold((stream, false), move |(mut stream, done)| async move {
-            if done {
-                return None;
+        obs::finish(
+            async {
+                let stream = self
+                    .client()
+                    .watch_operation(operation_request(operation))
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                let stream =
+                    stream::unfold((stream, false), move |(mut stream, done)| async move {
+                        if done {
+                            return None;
+                        }
+                        match stream.message().await {
+                            Ok(Some(value)) => {
+                                let value = decode_operation_observation(&value, operation);
+                                let decode_failed = value.is_err();
+                                let terminal = value.as_ref().is_ok_and(|value| {
+                                    !matches!(value.phase, OperationPhase::Pending)
+                                });
+                                Some((value, (stream, terminal || decode_failed)))
+                            }
+                            Ok(None) | Err(_) => {
+                                Some((Err(operation_watch_error(operation)), (stream, true)))
+                            }
+                        }
+                    });
+                Ok(Box::pin(stream) as OperationStream)
             }
-            match stream.message().await {
-                Ok(Some(value)) => {
-                    let value = decode_operation_observation(&value, operation);
-                    let decode_failed = value.is_err();
-                    let terminal = value
-                        .as_ref()
-                        .is_ok_and(|value| !matches!(value.phase, OperationPhase::Pending));
-                    Some((value, (stream, terminal || decode_failed)))
-                }
-                Ok(None) | Err(_) => Some((Err(operation_watch_error(operation)), (stream, true))),
-            }
-        });
-        Ok(Box::pin(stream))
+            .await,
+        )
     }
 }
 
@@ -718,29 +928,42 @@ impl GrpcProvider {
         let operation = validate_recovered_admission(&value)?;
         Ok((operation, value))
     }
+    #[tracing::instrument(
+        name = "acyclic.machines.wait",
+        level = "debug",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
     async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
-        let mut stream = self
-            .client()
-            .watch_operation(operation_request(operation))
-            .await
-            .map_err(|error| watch_error(key, error))?
-            .into_inner();
-        loop {
-            let next = tokio::time::timeout(WATCH_TIMEOUT, stream.message())
-                .await
-                .map_err(|_| ProviderError::Indeterminate(key))?
-                .map_err(|_| ProviderError::Indeterminate(key))?;
-            let Some(value) = next else {
-                return Err(ProviderError::Indeterminate(key));
-            };
-            match decode_operation_observation(&value, operation)?.phase {
-                OperationPhase::Pending => {}
-                OperationPhase::Succeeded => return Ok(()),
-                OperationPhase::Cancelled => return Err(ProviderError::Cancelled),
-                OperationPhase::Failed => return Err(ProviderError::Failed),
-                OperationPhase::Indeterminate => return Err(ProviderError::Indeterminate(key)),
+        obs::finish(
+            async {
+                let mut stream = self
+                    .client()
+                    .watch_operation(operation_request(operation))
+                    .await
+                    .map_err(|error| watch_error(key, &error))?
+                    .into_inner();
+                loop {
+                    let next = tokio::time::timeout(WATCH_TIMEOUT, stream.message())
+                        .await
+                        .map_err(|_| ProviderError::Indeterminate(key))?
+                        .map_err(|_| ProviderError::Indeterminate(key))?;
+                    let Some(value) = next else {
+                        return Err(ProviderError::Indeterminate(key));
+                    };
+                    match decode_operation_observation(&value, operation)?.phase {
+                        OperationPhase::Pending => {}
+                        OperationPhase::Succeeded => return Ok(()),
+                        OperationPhase::Cancelled => return Err(ProviderError::Cancelled),
+                        OperationPhase::Failed => return Err(ProviderError::Failed),
+                        OperationPhase::Indeterminate => {
+                            return Err(ProviderError::Indeterminate(key));
+                        }
+                    }
+                }
             }
-        }
+            .await,
+        )
     }
     async fn machine_mutation(
         &self,
@@ -1452,6 +1675,7 @@ fn decode_operation_observation(
     Ok(OperationObservation { id, phase })
 }
 fn mutation_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
+    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -1462,13 +1686,15 @@ fn mutation_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
         _ => ProviderError::Rejected(value.message().into()),
     }
 }
-fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
+fn watch_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
+    obs::failed_rpc(value);
     ProviderError::Indeterminate(key)
 }
 fn operation_watch_error(operation: OperationId) -> ProviderError {
     ProviderError::OperationIndeterminate(operation)
 }
 fn recovery_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
+    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -1479,6 +1705,7 @@ fn recovery_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
     }
 }
 fn read_error(value: &tonic::Status) -> ProviderError {
+    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -2224,6 +2451,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpcs_emit_spans_with_status_codes_and_no_credentials()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::sync::Mutex;
+        use tracing::field::{Field, Visit};
+        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+
+        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+        struct Capture(Seen);
+        struct Fields<'a>(
+            &'static str,
+            &'a mut Vec<(&'static str, &'static str, String)>,
+        );
+        impl Visit for Fields<'_> {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.1.push((self.0, field.name(), value.to_owned()));
+            }
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.1.push((self.0, field.name(), format!("{value:?}")));
+            }
+        }
+        impl<S> tracing_subscriber::Layer<S> for Capture
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_record(
+                &self,
+                id: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                context: Context<'_, S>,
+            ) {
+                let name = context.span(id).unwrap().name();
+                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
+            }
+        }
+
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000031")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000032")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
+        let pending = operation_state(operation, wire::OperationStatus::Pending);
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: pending.clone(),
+            cancelled: pending,
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+        // With one live dispatcher, a callsite that a concurrent test reaches
+        // first caches only that thread's (absent) interest; a second one
+        // makes every callsite consult this test's subscriber too.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let seen = Seen::default();
+        let default = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+        );
+        machines.inspect_operation(operation).await?;
+        let substituted = OperationId::parse("00000000-0000-0000-0000-000000000034")?;
+        assert!(machines.inspect_operation(substituted).await.is_err());
+        drop(default);
+        let _ = shutdown.send(());
+        server.await??;
+
+        let seen = seen.lock().unwrap();
+        let span = "acyclic.machines.inspect_operation";
+        let records = |field: &str| {
+            seen.iter()
+                .filter(|(s, f, _)| *s == span && *f == field)
+                .map(|(_, _, value)| value.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(records("outcome"), ["ok", "err"], "{seen:?}");
+        let invalid_argument = i32::from(tonic::Code::InvalidArgument).to_string();
+        assert_eq!(records("rpc.code"), ["0", invalid_argument.as_str()]);
+        assert_eq!(records("error.kind"), ["rejected"]);
+        for (span, field, value) in seen.iter() {
+            assert!(
+                !["path", "token", "content", "body", "authorization"].contains(field),
+                "{span} records {field}"
+            );
+            assert!(!value.contains("substituted"), "{value}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn all_operation_observation_paths_reject_substituted_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000021")?;
@@ -2396,13 +2709,13 @@ mod tests {
             ProviderError::Unsupported("capability unavailable".into())
         );
         assert_eq!(
-            watch_error(key, tonic::Status::unimplemented("watch unavailable")),
+            watch_error(key, &tonic::Status::unimplemented("watch unavailable")),
             ProviderError::Indeterminate(key)
         );
         assert_eq!(
             watch_error(
                 key,
-                tonic::Status::resource_exhausted("watch capacity unavailable"),
+                &tonic::Status::resource_exhausted("watch capacity unavailable"),
             ),
             ProviderError::Indeterminate(key)
         );

@@ -29,4 +29,6 @@ pub use contract::{
 #[cfg(feature = "host")]
 mod host;
 #[cfg(feature = "host")]
+mod obs;
+#[cfg(feature = "host")]
 pub use host::*;

@@ -307,14 +307,21 @@ impl MemoryObjects {
         let mut input = requests.into_iter().peekable();
         let mut results = Vec::with_capacity(input.len());
         while input.peek().is_some() {
-            // Eight maximal inline bodies and their bounded canonical metadata
-            // fit one private record; larger bodies use segment references.
+            // Group puts while their bounded record bytes fit one private
+            // record, so a typical small publish costs one synchronization.
             let mut next = state.clone();
-            let batch = input
-                .by_ref()
-                .take(8)
-                .map(|(query, body)| staged.put_locked(&mut next, &query, body))
-                .collect::<Vec<_>>();
+            let mut bytes = 0_usize;
+            let mut batch = Vec::new();
+            while let Some((query, body)) = input.next_if(|(query, body)| {
+                let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
+                let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
+                if fits {
+                    bytes = total;
+                }
+                fits
+            }) {
+                batch.push(staged.put_locked(&mut next, &query, body));
+            }
             if next.sequence == state.sequence {
                 results.extend(batch);
                 continue;

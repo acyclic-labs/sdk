@@ -310,4 +310,104 @@ mod tests {
             assert!(http::Client::new(endpoint, "t", 1).is_err());
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn client_calls_emit_spans_without_credentials() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tonic::codegen::Service as _;
+        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+
+        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+        struct Capture(Seen);
+        struct Fields<'a>(&'static str, &'a Seen);
+        impl tracing::field::Visit for Fields<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                let value = format!("{value:?}").trim_matches('"').to_owned();
+                self.1.lock().unwrap().push((self.0, field.name(), value));
+            }
+        }
+        impl<S> tracing_subscriber::Layer<S> for Capture
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_new_span(
+                &self,
+                attrs: &tracing::span::Attributes<'_>,
+                _: &tracing::span::Id,
+                _: Context<'_, S>,
+            ) {
+                attrs.record(&mut Fields(attrs.metadata().name(), &self.0));
+            }
+            fn on_record(
+                &self,
+                id: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                ctx: Context<'_, S>,
+            ) {
+                values.record(&mut Fields(ctx.span(id).unwrap().name(), &self.0));
+            }
+        }
+        // A second live dispatcher keeps callsites consulting this test's subscriber.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let seen = Seen::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        tokio::spawn(async move {
+            let (mut http, _) = listener.accept().await?;
+            let mut buffer = vec![0; 65_536];
+            let _ = http.read(&mut buffer).await?;
+            http.write_all(b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n")
+                .await?;
+            drop(http);
+            // The gRPC connection fails its HTTP/2 handshake.
+            drop(listener.accept().await?);
+            Ok::<_, std::io::Error>(())
+        });
+        let client = http::Client::new(&format!("http://{address}"), "secret-token", 1024)?;
+        assert!(matches!(
+            client.submit_job(&wire::SubmitJobRequest::default()).await,
+            Err(http::Error::Service { status: 503, .. })
+        ));
+        let mut channel = grpc::TracedChannel(
+            tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
+        );
+        std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
+        let request = tonic::codegen::http::Request::builder()
+            .uri(format!(
+                "http://{address}/acyclic.workers.v1.WorkersService/SubmitJob"
+            ))
+            .body(tonic::body::Body::empty())?;
+        assert!(channel.call(request).await.is_err());
+
+        let seen = seen.lock().unwrap();
+        for expected in [
+            (
+                "acyclic.workers.http.call",
+                "route",
+                "v1/workers/jobs/submit",
+            ),
+            ("acyclic.workers.http.call", "http.status", "503"),
+            ("acyclic.workers.http.call", "error.kind", "service"),
+            ("acyclic.workers.grpc.call", "rpc", "SubmitJob"),
+            ("acyclic.workers.grpc.call", "error.kind", "transport"),
+        ] {
+            assert!(
+                seen.iter()
+                    .any(|(s, f, v)| (*s, *f, v.as_str()) == expected),
+                "{expected:?} not in {seen:?}"
+            );
+        }
+        assert!(
+            seen.iter()
+                .all(|(_, field, value)| *field != "authorization" && !value.contains("secret"))
+        );
+        Ok(())
+    }
 }
