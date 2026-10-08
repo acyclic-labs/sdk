@@ -5,16 +5,18 @@ const identity = target => JSON.stringify(target);
 
 // Cargo remains the authority for source, toolchain, lockfile and feature
 // freshness. Never discover or execute a binary by guessing its target path.
-/** @param {{ phase?: string, toolchain_ms?: number, rustc_ms?: number, cargo_version?: string, rustc_version?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
-export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_CARGO_BIN || "cargo", report = {}) {
+/** @param {{ phase?: string, toolchain_ms?: number, rustc_ms?: number, cargo_version?: string, rustc_version?: string, rustc_error?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
+export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_CARGO_BIN || "cargo", report = {}, saveProgress = () => {}) {
   if (targets.length === 0) throw new Error("Rust contract target set is empty");
   const capture = (phase, args, executable = cargo) => {
     report.phase = phase;
+    saveProgress();
     const started = performance.now();
     const result = spawnSync(executable, args, {
       cwd: root, encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "inherit"],
     });
     report[`${phase}_ms`] = performance.now() - started;
+    saveProgress();
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`Rust contract command failed with status ${result.status ?? "unknown"}`);
     return result.stdout;
@@ -23,7 +25,12 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   report.cargo_version = capture("toolchain", ["--version"]).trim();
   // A direct probe is useful context, but Cargo config/wrappers may select a
   // different compiler. Do not present this as the build's compiler identity.
-  report.rustc_version = capture("rustc", ["-Vv"], process.env.RUSTC || "rustc").trim();
+  try {
+    report.rustc_version = capture("rustc", ["-Vv"], process.env.RUSTC || "rustc").trim();
+  } catch (error) {
+    report.rustc_error = String(error);
+    saveProgress();
+  }
   const metadata = JSON.parse(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]));
   const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
   /** @type {Map<string, string | undefined>} */
@@ -49,6 +56,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   ]);
   report.artifacts = [];
   report.phase = "artifact-discovery";
+  saveProgress();
   for (const line of output.split(/\r?\n/).filter(line => line.startsWith("{"))) {
     const message = JSON.parse(line);
     if (message.reason !== "compiler-artifact") continue;

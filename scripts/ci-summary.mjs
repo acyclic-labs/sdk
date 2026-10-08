@@ -61,7 +61,7 @@ if (contracts) {
     ["Last recorded phase", cell(report.phase)],
     ["Observed source", cell(report.source_commit ?? "not observed")],
     ["Cargo identity", cell(report.cargo_version)],
-    ["Direct rustc probe (Cargo selection may differ)", cell(report.rustc_version)],
+    ["Direct rustc probe (Cargo selection may differ)", cell(report.rustc_error ?? report.rustc_version)],
     ["Toolchain inspection", seconds((report.toolchain_ms + report.rustc_ms) / 1000)],
     ["Cargo metadata", seconds(report.metadata_ms / 1000)],
     ["Cargo build (including lock waits)", seconds(report.build_ms / 1000)],

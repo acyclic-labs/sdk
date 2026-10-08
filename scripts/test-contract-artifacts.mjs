@@ -26,6 +26,16 @@ test("compiler artifact discovery rejects identity substitution and partial comp
     const build = () => buildContractTargets(root, targets, process.execPath);
     emit(artifacts);
     assert.deepEqual(build(), artifacts.map(item => item.executable));
+    const previousRustc = process.env.RUSTC;
+    try {
+      process.env.RUSTC = join(root, "missing-diagnostic-compiler");
+      const report = {};
+      assert.deepEqual(buildContractTargets(root, targets, process.execPath, report), artifacts.map(item => item.executable));
+      assert.match(report.rustc_error, /ENOENT/);
+    } finally {
+      if (previousRustc === undefined) delete process.env.RUSTC;
+      else process.env.RUSTC = previousRustc;
+    }
     // The stale path exists, so path guessing would incorrectly accept it.
     put("beta-contract", "stale bytes");
     emit([artifacts[0]]);
@@ -135,12 +145,16 @@ test("the generator compares executed bytes and records failure without changing
     await exited;
     stopCompiler();
     assert.equal(receipt().status, "incomplete", "abrupt termination must not reuse the previous success");
+    assert.equal(receipt().phase, "metadata");
+    assert.equal(receipt().source_commit, sourceSha);
+    assert.ok(receipt().toolchain_ms > 0);
     const incompleteSummary = spawnSync(process.execPath, [fileURLToPath(new URL("ci-summary.mjs", import.meta.url)), join(root, "diagnostics/observability")], { env, encoding: "utf8" });
     assert.equal(incompleteSummary.status, 0, incompleteSummary.stderr);
     assert.match(incompleteSummary.stdout, /incomplete/);
-    assert.match(incompleteSummary.stdout, /not observed/);
+    assert.match(incompleteSummary.stdout, /metadata/);
+    assert.match(incompleteSummary.stdout, new RegExp(sourceSha));
     for (const replacement of [
-      { status: "success" },
+      { status: "success", source_commit: null },
       { source_commit: "another-source" },
       { run_id: "another-run" },
     ]) {
