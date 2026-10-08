@@ -820,6 +820,7 @@ export function assertBuildInputs(value) {
   assertNullableStringFields(linker.configured, ["target"], "linker.configured");
   assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "DYLD_LIBRARY_PATH", "SDKROOT", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
   const actualLinker = assertStringFields(linker.actual, ["source", "rustc", "target"], "linker.actual");
+  if (actualLinker.target !== value.target) throw new Error("native build linker invocation target differs from build input target");
   if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
   if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");
   assertStringArray(actualLinker.args, "linker.actual.args");
@@ -939,7 +940,7 @@ function pathFromArtifact(output, artifactPath) {
  * @param {string} output
  * @param {{ expectedTarget?: string, verifySource?: boolean }} options
  */
-async function assertBundle(output, { expectedTarget, verifySource = true } = {}) {
+export async function assertBundle(output, { expectedTarget, verifySource = true } = {}) {
   const metadataPath = resolve(output, "native-targets.json");
   const generationPath = resolve(output, generationManifestName);
   const metadataBytes = await readFile(metadataPath);
@@ -959,6 +960,7 @@ async function assertBundle(output, { expectedTarget, verifySource = true } = {}
   if (JSON.stringify(metadata.targets) !== JSON.stringify(targets) || JSON.stringify(generation.targets) !== JSON.stringify(targets)) throw new Error(`native bundle ${output} target metadata differs from Rust`);
   if (expectedTarget !== undefined && metadata.selected_target !== expectedTarget) throw new Error(`native bundle selected target ${metadata.selected_target} differs from ${expectedTarget}`);
   if (!targets.includes(metadata.selected_target) || generation.selected_target !== metadata.selected_target) throw new Error("native bundle selected target is not Rust-qualified");
+  if (metadata.build_inputs.target !== metadata.selected_target) throw new Error("native bundle build input target differs from selected target");
   if (verifySource) {
     const revision = sourceRevision();
     const current = await sourceSnapshot();
@@ -968,6 +970,9 @@ async function assertBundle(output, { expectedTarget, verifySource = true } = {}
   }
   const artifacts = generation.artifacts;
   if (!Array.isArray(artifacts) || !Array.isArray(metadata.artifacts) || JSON.stringify(metadata.artifacts) !== JSON.stringify(artifacts) || metadata.artifact === undefined) throw new Error("native bundle artifact attestation is invalid");
+  const actual = await bundleArtifacts(output);
+  if (JSON.stringify(artifacts) !== JSON.stringify(actual.artifacts)) throw new Error("native bundle artifact attestation differs from actual bundle");
+  if (JSON.stringify(metadata.artifact) !== JSON.stringify(actual.node)) throw new Error("native bundle selected artifact is not the actual .node artifact");
   if (metadata.artifact.sha256 !== artifacts.find(item => item.path === metadata.artifact.path)?.sha256) throw new Error("native bundle selected artifact digest differs");
   for (const artifact of artifacts) {
     const bytes = await readFile(pathFromArtifact(output, artifact.path));
@@ -985,6 +990,12 @@ async function assertExistingBundle(output) {
   if (!(await assertOwnedDirectory(output, { allowMissing: true }))) return false;
   await assertBundle(output, { verifySource: false });
   return true;
+}
+
+export async function prepareBuildOutput(output) {
+  await assertExistingBundle(output);
+  await mkdir(dirname(output), { recursive: true });
+  return mkdtemp(resolve(dirname(output), ".acyclic-stream-native-build-"));
 }
 
 export async function publishBundle(candidate, output, { validateExisting = assertExistingBundle, cleanup = rm } = {}) {
@@ -1021,10 +1032,10 @@ export async function publishBundle(candidate, output, { validateExisting = asse
 async function build(options) {
   if (options.target === undefined) throw new Error(`build requires --target <rust-triple>\n\n${usage()}`);
   if (options.output === undefined) throw new Error(`build requires --output <native-bundle>; stage copies the completed bundle into the package\n\n${usage()}`);
+  if (process.env.RUSTC_WORKSPACE_WRAPPER) throw new Error("native build provenance does not support RUSTC_WORKSPACE_WRAPPER: workspace delegates can change compiler arguments after capture; unset RUSTC_WORKSPACE_WRAPPER");
   assertCleanSource();
   const output = resolve(options.output);
-  await assertExistingBundle(output);
-  const buildOutput = await mkdtemp(resolve(dirname(output), ".acyclic-stream-native-build-"));
+  const buildOutput = await prepareBuildOutput(output);
   let published = false;
   try {
   const packageManifest = await packageJson();

@@ -8,9 +8,75 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, capturedCompilerIdentity, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, darwinRustObjcopyIdentity, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertBundle, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, capturedCompilerIdentity, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, darwinRustObjcopyIdentity, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, prepareBuildOutput, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+
+test("native build preparation creates a missing nested parent before Cargo discovery", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-prepare-"));
+  const output = resolve(parent, "missing", "nested", "bundle");
+  const priorPath = process.env.PATH;
+  const priorWindowsPath = process.env.Path;
+  try {
+    process.env.PATH = ""; process.env.Path = "";
+    const candidate = await prepareBuildOutput(output);
+    assert.equal((await readdir(candidate)).length, 0);
+    assert.ok(candidate.startsWith(resolve(parent, "missing", "nested")));
+    assert.deepEqual((await readdir(parent)), ["missing"]);
+  } finally {
+    if (priorPath === undefined) delete process.env.PATH; else process.env.PATH = priorPath;
+    if (priorWindowsPath === undefined) delete process.env.Path; else process.env.Path = priorWindowsPath;
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("native build preparation refuses an existing unowned output without creating scratch or deleting data", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-prepare-owned-"));
+  const output = resolve(parent, "bundle");
+  try {
+    await mkdir(output);
+    await writeFile(resolve(output, "keep.txt"), "keep\n");
+    await assert.rejects(prepareBuildOutput(output), /ENOENT/);
+    assert.equal(await readFile(resolve(output, "keep.txt"), "utf8"), "keep\n");
+    assert.deepEqual(await readdir(parent), ["bundle"]);
+  } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("native bundle validation rejects self-consistent manifests with missing or incorrectly selected artifacts", async () => {
+  const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { cwd: root, encoding: "utf8" }));
+  const rustPackage = metadata.packages.find(item => item.name === "acyclic-stream-napi");
+  const targets = rustPackage.metadata.napi.targets;
+  const digest = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  for (const mutation of ["valid", "missing-loader", "missing-declarations", "multiple-nodes", "wrong-selected", "omitted-artifact", "input-target"]) {
+    const output = await mkdtemp(resolve(tmpdir(), "stream-native-bundle-contract-"));
+    try {
+      let names = ["binding.cjs", "binding.d.ts", "addon.node"];
+      if (mutation === "missing-loader") names = names.filter(name => name !== "binding.cjs");
+      if (mutation === "missing-declarations") names = names.filter(name => name !== "binding.d.ts");
+      if (mutation === "multiple-nodes") names.push("second.node");
+      const artifacts = [];
+      for (const name of names.sort()) {
+        const bytes = Buffer.from(`fixture ${name}\n`);
+        await writeFile(resolve(output, name), bytes);
+        artifacts.push({ path: `generated/native/${name}`, sha256: digest(bytes), bytes: bytes.length });
+      }
+      if (mutation === "omitted-artifact") artifacts.splice(artifacts.findIndex(item => item.path.endsWith("binding.d.ts")), 1);
+      const generation = { schema: "acyclic.stream.native-generation.v1", package: rustPackage.name, version: rustPackage.version, source_path: "rust/crates/stream-napi/Cargo.toml", targets, selected_target: targets[0], build_inputs: validBuildInputs(), artifacts };
+      if (mutation === "input-target") {
+        generation.build_inputs.target = "x86_64-unknown-linux-gnu";
+        generation.build_inputs.generator.options.target = "x86_64-unknown-linux-gnu";
+        generation.build_inputs.linker.actual.target = "x86_64-unknown-linux-gnu";
+      }
+      const generationBytes = Buffer.from(JSON.stringify(generation));
+      await writeFile(resolve(output, "generation-manifest.json"), generationBytes);
+      const selected = artifacts.find(item => item.path.endsWith(mutation === "wrong-selected" ? "binding.cjs" : ".node"));
+      await writeFile(resolve(output, "native-targets.json"), JSON.stringify({ ...generation, schema: "acyclic.stream.native-targets.v1", generation_manifest: "generated/native/generation-manifest.json", generation_sha256: digest(generationBytes), artifact: selected }));
+      const operation = assertBundle(output, { verifySource: false });
+      if (mutation === "valid") await operation;
+      else await assert.rejects(operation, mutation.startsWith("missing") ? /missing generated binding loader or declarations/ : mutation === "multiple-nodes" ? /exactly one .node artifact/ : mutation === "wrong-selected" ? /selected artifact is not the actual .node artifact/ : mutation === "input-target" ? /build input target differs from selected target/ : /artifact attestation differs from actual bundle/);
+    } finally { await rm(output, { recursive: true, force: true }); }
+  }
+});
 
 test("native build requires an output bundle before discovering Cargo", () => {
   const result = spawnSync(process.execPath, [resolve(root, "scripts/build-stream-native.mjs"), "build", "--target", "x86_64-pc-windows-msvc"], {
@@ -19,6 +85,20 @@ test("native build requires an output bundle before discovering Cargo", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /build requires --output <native-bundle>/u);
   assert.doesNotMatch(result.stderr, /ENOENT|requires a clean source closure|spawn.*cargo/u);
+});
+
+test("native build rejects a workspace compiler delegate before source checks, tools, or output writes", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-workspace-wrapper-"));
+  const output = resolve(parent, "missing", "native-bundle");
+  try {
+    const result = spawnSync(process.execPath, [resolve(root, "scripts/build-stream-native.mjs"), "build", "--target", "x86_64-pc-windows-msvc", "--output", output], {
+      env: { ...process.env, PATH: "", Path: "", RUSTC_WORKSPACE_WRAPPER: resolve(parent, "mutating-delegate") }, encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /native build provenance does not support RUSTC_WORKSPACE_WRAPPER/u);
+    assert.doesNotMatch(result.stderr, /ENOENT|requires a clean source closure|spawn.*cargo/u);
+    assert.deepEqual(await readdir(parent), [], "rejection must precede parent or scratch creation");
+  } finally { await rm(parent, { recursive: true, force: true }); }
 });
 
 test("native compiler identity binds the captured executable instead of PATH preflight", async () => {
@@ -321,6 +401,7 @@ test("native qualification rejects build input identity mutations", () => {
     ["bun", value => { value.runtime.bun.maintained = "1.4.1"; }, /build input attestation differs/],
     ["invocation", value => { value.invocation.script = "scripts/other-build.mjs"; }, /build input attestation differs/],
     ["linker", value => { value.linker.actual.linker = "C:/Program Files/LLVM/lld-link.exe"; }, /build input attestation differs/],
+    ["linker target", value => { value.linker.actual.target = "x86_64-unknown-linux-gnu"; }, /linker invocation target differs from build input target/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
     ["incremental policy", value => { Object.assign(value.profile, { cargo_incremental: null }); }, /incremental policy is not pinned to zero/],
@@ -692,7 +773,9 @@ test("native capture invokes the exact rustc executable when no nested wrapper i
   }
 });
 
-test("native capture restores nested wrappers and PATH and receipts retain the invoked workspace wrapper", async () => {
+// This exercises forwarding/restoration only; native build rejects an original
+// workspace delegate because forwarding cannot attest its final compiler argv.
+test("capture helper forwards and restores nested wrappers and PATH", async () => {
   const prior = {
     RUSTC_WRAPPER: process.env.RUSTC_WRAPPER,
     RUSTC_WORKSPACE_WRAPPER: process.env.RUSTC_WORKSPACE_WRAPPER,
