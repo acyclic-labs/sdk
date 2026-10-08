@@ -12,7 +12,10 @@ summarise it.
   dependency enables only `std` and `attributes`. Its span tests use
   `tracing-subscriber.workspace = true` under the matching `dev-dependencies`
   table.
-- Instrument with `#[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(...))]`.
+- Own the operation span explicitly when recording completion; filesystem
+  `obs::span!`/`in_span`/`scope` erase tracing on wasm32. Attribute instrumentation
+  remains suitable for spans that do not record completion through current-span
+  helpers.
   Each crate has a private `obs` module whose `obs_event!`/`obs_record!` macros
   expand to nothing on wasm32.
 - wasm32 builds stay free of tracing. Nothing installs a subscriber there, and
@@ -54,6 +57,20 @@ ends.
   that method to any error enum that lacks one. RPCs also record `rpc.code`
   (the tonic `Code` or the HTTP status).
 
+Record completion on the operation's own span handle. A filtered child span
+must not record on its visible parent. Preserve span and subscriber context
+when work crosses a worker boundary; enter spans only while polling or running
+the work, never across an unrelated asynchronous wait.
+
+Objects RPC success includes body consumption and decoding. Streamed download
+success requires validated EOF and the selected length, rather than headers or
+merely receiving the expected bytes. Terminal errors record `err` and their
+semantic kind; unfinished or unpolled RPC/body drop records `err`/`cancelled`.
+This is the consumer's lifetime: submitted native work may continue after
+consumer cancellation and retain its own span until actual completion. Native
+filesystem receipt spans record a terminal result only when the operation
+returns; an abandoned future leaves its outcome unset.
+
 **Forbidden fields.** Users attach trace files to bug reports, so never record:
 
 - secrets, tokens, `authorization` or other metadata values, or environment values
@@ -79,17 +96,32 @@ constants, never the request path. The same rules apply to the TypeScript
 
 Do not add a second set of counters.
 
-- `WorkCounters::emit(&self, op: &'static str, outcome: &'static str)` emits one
+- `WorkCounters::emit` emits one
   `debug!` event with all `WorkCounters` fields, under their `WorkCounters`
   names. It does so only when
   `tracing::enabled!(target: "acyclic.work", Level::DEBUG)` is true.
-- Each fs `info`/`debug` span also declares three `Empty` summary fields, filled
-  from the receipt:
+- Each receipt-returning fs `info`/`debug` span also declares three `Empty`
+  summary fields, filled from the receipt:
   - `work.items`: `items_examined`
   - `work.bytes`: `object_bytes_read + object_bytes_written + authority_bytes_written`
   - `work.durability`: `durability_operations`
-- `Observe::observe(self, op)` on `MeasuredResult` does both at the return
-  point, for success and failure alike.
+- `Observe::observe_on(self, span, op)` on `MeasuredResult` does both at the return
+  point, for success and failure alike, only at receipt-returning facade
+  operations. Observed facade operations do not call another observed facade
+  operation. Sum `acyclic.work` events to account for that facade work once.
+  Each event has an explicit operation span parent; if that span is filtered,
+  the event has no parent. Its static `op` still identifies the receipt, and
+  filtering spans does not suppress independently enabled work events.
+- Kernel, native capture, materialization, and other nested operations use
+  `obs::measured` to record summaries on their own spans without emitting
+  `acyclic.work`. Their `work.*` fields overlap with caller receipts and must
+  not be added together. Direct calls to those APIs are visible through spans,
+  but are outside the facade event ledger.
+- Convenience entry points that delegate to an instrumented implementation
+  share that implementation's span. Blocking workers retain the caller's span
+  and scoped subscriber through the actual work, including after caller drop.
+  An abandoned operation has no terminal outcome unless it returns; a retained
+  worker span is not evidence that its caller succeeded.
 
 ## Enablement
 

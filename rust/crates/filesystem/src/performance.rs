@@ -340,11 +340,12 @@ impl WorkCounters {
     /// Emits this receipt as one `acyclic.work` debug event whose fields carry
     /// the counter names; a disabled callsite costs one interest check.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn emit(&self, op: &'static str, outcome: &'static str) {
+    pub(crate) fn emit(&self, span: &tracing::Span, op: &'static str, outcome: &'static str) {
         macro_rules! event {
             ($($field:ident),*) => {
                 tracing::debug!(
                     target: "acyclic.work",
+                    parent: span,
                     op,
                     outcome,
                     $($field = self.$field,)*

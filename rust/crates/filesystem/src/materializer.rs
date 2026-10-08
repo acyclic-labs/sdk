@@ -474,21 +474,19 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         Ok(())
     }
 
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.materializer.persist",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     async fn persist(
         &self,
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.materializer.persist",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 for _ in 0..MAXIMUM_CAS_ATTEMPTS {
                     let expected = next_revision(&mut journal.revision);
                     if self
@@ -508,7 +506,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                     journal = current;
                 }
                 Err(MaterializationError::Contended)
-            }
+            })
             .await,
         )
     }

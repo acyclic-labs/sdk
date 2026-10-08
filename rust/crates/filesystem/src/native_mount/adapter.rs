@@ -2461,15 +2461,6 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     /// Publishes pending mutations only while the supplied operation lease is
     /// still active in the shared authority provider.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.mount.sync",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn sync_async_with_permit(
         &self,
         permit: crate::PublicationPermit,
@@ -2478,12 +2469,20 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        crate::obs::outcome({
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.mount.sync",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(&span, async {
             let mut checkout = self.checkout.lock().await;
             checkout
                 .seal_with_permit(permit, false, &self.cancellation)
                 .await
         })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     pub(super) async fn sync_async_with_permit_force(
@@ -2505,75 +2504,67 @@ impl<A, O> CheckoutMountSource<A, O> {
     /// Callers must publish pending native mutations first. Exact read
     /// dependencies are retained and checked against the candidate head;
     /// conflict leaves the mounted generation unchanged.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.mount.refresh",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn refresh_async(&self) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        crate::obs::outcome(
-            async move {
-                let mut checkout = self.checkout.lock().await;
-                checkout.ensure_publication_resolved()?;
-                let base = checkout.private_candidate();
-                let decision = checkout
-                    .rebase_head(
-                        self.limits.maximum_checkout_dependencies,
-                        WorkBudget::UNBOUNDED,
-                        &self.cancellation,
-                    )
-                    .await
-                    .map_err(engine_error)?;
-                match decision.value {
-                    RebaseDecision::Safe { .. } => {
-                        self.record_advance(&mut checkout, &base).await;
-                        Ok(())
-                    }
-                    RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.mount.refresh",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            let base = checkout.private_candidate();
+            let decision = checkout
+                .rebase_head(
+                    self.limits.maximum_checkout_dependencies,
+                    WorkBudget::UNBOUNDED,
+                    &self.cancellation,
+                )
+                .await
+                .map_err(engine_error)?;
+            match decision.value {
+                RebaseDecision::Safe { .. } => {
+                    self.record_advance(&mut checkout, &base).await;
+                    Ok(())
                 }
+                RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
             }
-            .await,
-        )
+        })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Adopts the workspace head after this checkout's mutations were
     /// synchronized and a separate fenced operation published that head.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.mount.advance_to_head",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn advance_to_head_async(&self) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        crate::obs::outcome(
-            async move {
-                let mut checkout = self.checkout.lock().await;
-                checkout.ensure_publication_resolved()?;
-                let base = checkout.private_candidate();
-                checkout
-                    .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
-                    .await
-                    .map_err(engine_error)?;
-                self.record_advance(&mut checkout, &base).await;
-                Ok(())
-            }
-            .await,
-        )
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.mount.advance_to_head",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let result = crate::obs::in_span(&span, async move {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            let base = checkout.private_candidate();
+            checkout
+                .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
+                .await
+                .map_err(engine_error)?;
+            self.record_advance(&mut checkout, &base).await;
+            Ok(())
+        })
+        .await;
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Records exactly what advancing the checkout from `base` changed in

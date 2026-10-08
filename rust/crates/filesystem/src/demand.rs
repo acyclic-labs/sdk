@@ -856,9 +856,10 @@ pub mod native {
             observer: Option<Arc<dyn DemandDirectoryObserver>>,
         ) -> Result<Self, DemandError> {
             let path = path.as_ref().to_path_buf();
-            tokio::task::spawn_blocking(move || {
-                Self::open_blocking(path, profile, limits, reference, observer)
-            })
+            tokio::task::spawn_blocking(crate::obs::in_context(
+                crate::obs::caller_context(),
+                move || Self::open_blocking(path, profile, limits, reference, observer),
+            ))
             .await
             .map_err(|_| DemandError::WorkerUnavailable)?
         }
@@ -994,10 +995,13 @@ pub mod native {
             let source = self.clone();
             let cancel_on_drop = CancelWorkerOnDrop(CancellationToken::new());
             let worker_cancellation = cancel_on_drop.0.clone();
-            let mut worker = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                job(source, worker_cancellation)
-            });
+            let mut worker = tokio::task::spawn_blocking(crate::obs::in_context(
+                crate::obs::caller_context(),
+                move || {
+                    let _permit = permit;
+                    job(source, worker_cancellation)
+                },
+            ));
             let result = tokio::select! {
                 result = &mut worker => result,
                 () = cancellation.cancelled() => {

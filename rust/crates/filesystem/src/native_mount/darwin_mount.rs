@@ -1716,6 +1716,7 @@ fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
 /// [`DarwinMountContext::revalidate`]). A panic fails it with `EIO`.
 fn callback<T>(
     address: usize,
+    span: &tracing::span::EnteredSpan,
     operation: impl FnOnce(&'static DarwinMountContext) -> Result<T, i32>,
 ) -> Result<T, i32> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1726,22 +1727,24 @@ fn callback<T>(
     }))
     .unwrap_or(Err(libc::EIO))
     .inspect_err(|error| {
-        tracing::Span::current().record("errno", error);
+        span.record("errno", error);
     })
 }
 
 fn ffi_status(
     address: usize,
+    span: &tracing::span::EnteredSpan,
     operation: impl FnOnce(&'static DarwinMountContext) -> Result<c_int, i32>,
 ) -> c_int {
-    callback(address, operation).unwrap_or_else(|error| -error)
+    callback(address, span, operation).unwrap_or_else(|error| -error)
 }
 
 fn ffi_offset(
     address: usize,
+    span: &tracing::span::EnteredSpan,
     operation: impl FnOnce(&'static DarwinMountContext) -> Result<i64, i32>,
 ) -> i64 {
-    callback(address, operation).unwrap_or_else(|error| -i64::from(error))
+    callback(address, span, operation).unwrap_or_else(|error| -i64::from(error))
 }
 
 #[unsafe(no_mangle)]
@@ -1752,7 +1755,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     result: *mut NativeStat,
 ) -> c_int {
     let _span = callback_span!(TRACE, getattr, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let attributes = context.attributes(&mount_path(path)?, handle)?;
         // SAFETY: the bridge passes a valid, writable `NativeStat` for the callback.
         unsafe { result.write(attributes) };
@@ -1768,7 +1771,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     handle: *mut u64,
 ) -> c_int {
     let _span = callback_span!(TRACE, open);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             context.admit_write()?;
         }
@@ -1789,7 +1792,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     handle: *mut u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, create);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let path = mount_path(path)?;
         let lookup = context.mutate(|| {
             context
@@ -1811,7 +1814,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, release, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         if handle == 0 {
             return Ok(0);
         }
@@ -1835,7 +1838,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     offset: i64,
 ) -> c_int {
     let _span = callback_span!(TRACE, read, fh = handle, offset = offset, len = length);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let requested_length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let bytes = context
@@ -1862,7 +1865,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     offset: i64,
 ) -> c_int {
     let _span = callback_span!(TRACE, write, fh = handle, offset = offset, len = length);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         // SAFETY: the bridge forwards FUSE's `length`-byte write buffer, readable for
@@ -1883,7 +1886,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     length: i64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, truncate, fh = handle, len = length);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
         context.mutate_file(&mount_path(path)?, handle, |file| file.resize(length))?;
         Ok(0)
@@ -1895,7 +1898,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) -> c_int {
     let _span = callback_span!(DEBUG, flush, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         context.flush_on_close(handle)?;
         Ok(0)
     })
@@ -1907,7 +1910,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
     let _span = callback_span!(DEBUG, fsync);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         context.sync()?;
         Ok(0)
     })
@@ -1919,7 +1922,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
     let _span = callback_span!(TRACE, durable_writes);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         Ok(c_int::from(!context.source.flush_publishes()))
     })
 }
@@ -1931,7 +1934,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     handle: *mut u64,
 ) -> c_int {
     let _span = callback_span!(TRACE, opendir);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let path = mount_path(path)?;
         let binding_epoch = context.source.binding_epoch();
         let epochs = context.cache_epochs();
@@ -1965,7 +1968,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(TRACE, readdir, fh = handle, offset = offset);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let directory = context
             .directories
             .lock()
@@ -2189,7 +2192,7 @@ fn checkpoint_directory(
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_releasedir(address: usize, handle: u64) -> c_int {
     let _span = callback_span!(TRACE, releasedir, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         context
             .directories
             .lock()
@@ -2209,7 +2212,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     gid: u32,
 ) -> c_int {
     let _span = callback_span!(TRACE, mkdir);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let path = mount_path(path)?;
         context.mutate(|| {
             context
@@ -2228,7 +2231,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
     directory: c_int,
 ) -> c_int {
     let _span = callback_span!(TRACE, remove);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let path = mount_path(path)?;
         let lookup = context.lookup(&path)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
@@ -2254,7 +2257,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     flags: u32,
 ) -> c_int {
     let _span = callback_span!(DEBUG, rename);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         if flags & !RENAME_NOREPLACE != 0 {
             return Err(libc::EOPNOTSUPP);
         }
@@ -2280,7 +2283,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     destination: *const c_char,
 ) -> c_int {
     let _span = callback_span!(TRACE, link);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let (source, destination) = (mount_path(source)?, mount_path(destination)?);
         context.mutate(|| context.source.hard_link(&source, &destination))?;
         context.namespace_changed();
@@ -2297,7 +2300,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
     gid: u32,
 ) -> c_int {
     let _span = callback_span!(TRACE, symlink);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         // SAFETY: the bridge forwards FUSE's NUL-terminated link target, valid for
         // the callback.
         let target = unsafe { CStr::from_ptr(target) }.to_bytes();
@@ -2322,7 +2325,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
     length: usize,
 ) -> c_int {
     let _span = callback_span!(TRACE, readlink);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         if length == 0 {
             return Err(libc::ERANGE);
         }
@@ -2353,7 +2356,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     gid: u32,
 ) -> c_int {
     let _span = callback_span!(TRACE, mknod);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let kind = match mode & mode::IFMT {
             mode::IFIFO => MountNodeKind::Fifo,
             mode::IFSOCK => MountNodeKind::Socket,
@@ -2388,7 +2391,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, chmod, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         context.mutate_metadata(&mount_path(path)?, handle, |metadata| {
             let kind = metadata_or(metadata.posix_mode, 0) & mode::IFMT;
             metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
@@ -2407,7 +2410,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, chown, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         context.mutate_metadata(&mount_path(path)?, handle, |metadata| {
             if uid != u32::MAX {
                 metadata.posix_uid = MetadataField::Value(uid);
@@ -2429,7 +2432,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, utimens, fh = handle);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         // SAFETY: the bridge passes null (rejected here) or a `NativeTimes` valid for
         // the callback.
         let times = unsafe { times.as_ref() }.ok_or(libc::EINVAL)?;
@@ -2459,7 +2462,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     length: usize,
 ) -> c_int {
     let _span = callback_span!(TRACE, getxattr);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let path = mount_path(path)?;
         if !context.may_have_named_attributes(&path)? {
             return Err(libc::ENOATTR);
@@ -2483,7 +2486,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     flags: c_int,
 ) -> c_int {
     let _span = callback_span!(TRACE, setxattr);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         if length > MAXIMUM_CALLBACK_BYTES {
             return Err(libc::E2BIG);
         }
@@ -2514,7 +2517,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
     length: usize,
 ) -> c_int {
     let _span = callback_span!(TRACE, listxattr);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let path = mount_path(path)?;
         if !context.may_have_named_attributes(&path)? {
             return copy_variable_result(&[], list, length);
@@ -2558,7 +2561,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     name: *const c_char,
 ) -> c_int {
     let _span = callback_span!(TRACE, removexattr);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let (path, name) = (mount_path(path)?, c_bytes(name)?);
         context.mutate(|| context.source.remove_attribute(&path, name))?;
         Ok(0)
@@ -2574,7 +2577,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
     whence: c_int,
 ) -> i64 {
     let _span = callback_span!(TRACE, lseek, fh = handle, offset = offset);
-    ffi_offset(address, |context| {
+    ffi_offset(address, &_span, |context| {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let target = match whence {
             libc::SEEK_DATA => MountSeekTarget::Data,
@@ -2600,7 +2603,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
     length: i64,
 ) -> c_int {
     let _span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
-    ffi_status(address, |context| {
+    ffi_status(address, &_span, |context| {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
         let (operation, permitted_flags) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
@@ -2646,7 +2649,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
     flags: c_int,
 ) -> i64 {
     let _span = callback_span!(TRACE, copy_file_range, fh = source_handle);
-    ffi_offset(address, |context| {
+    ffi_offset(address, &_span, |context| {
         if flags != 0 {
             return Err(libc::EINVAL);
         }
@@ -2767,6 +2770,13 @@ fn driver_errno(error: i32) -> NativeMountError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn filtered_callback_error_does_not_overwrite_parent_errno() {
+        crate::obs::assert_filtered_callback_isolation(|span| {
+            assert!(super::callback(0, span, |_| Ok::<(), i32>(())).is_err());
+        });
+    }
     use super::*;
     use crate::native_mount::MountPublication;
 
