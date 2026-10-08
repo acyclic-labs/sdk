@@ -629,6 +629,7 @@ pub fn execute_all(
 }
 
 fn sanitize_compiler_environment(command: &mut Command) {
+    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
     for (key, _) in env::vars_os() {
         let uppercase = key.to_string_lossy().to_ascii_uppercase();
         let remove = matches!(

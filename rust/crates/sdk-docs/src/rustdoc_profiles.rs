@@ -100,9 +100,11 @@ pub struct CargoExecutionContext<'a> {
 
 impl CargoExecutionContext<'_> {
     pub fn configure(self, command: &mut Command) {
+        // A published or captured producer lock is authoritative even when
+        // there is no external config. Ambient overrides cannot select another.
+        command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
         if let Some(config) = self.config_path {
             command.arg("--config").arg(config);
-            command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
         }
     }
 }
@@ -135,6 +137,7 @@ pub fn load_metadata_with_context(
     context: CargoExecutionContext<'_>,
 ) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
+    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
     if let Some(cargo_path) = context.cargo_path {
         command.cargo_path(cargo_path);
     }

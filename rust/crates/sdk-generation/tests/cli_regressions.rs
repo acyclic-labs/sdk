@@ -1339,6 +1339,15 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
+    run_historical_generate_mode_with_env(fixture, support, mode, None)
+}
+
+fn run_historical_generate_mode_with_env(
+    fixture: &Fixture,
+    support: &Path,
+    mode: Option<&str>,
+    override_lock: Option<&Path>,
+) -> std::process::Output {
     let path = std::env::join_paths(
         std::iter::once(support.to_owned())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -1362,6 +1371,9 @@ fn run_historical_generate_mode(
         .arg(support.join("registry"));
     if let Some(mode) = mode {
         command.args(["--historical-source", mode]);
+    }
+    if let Some(lock) = override_lock {
+        command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
     }
     command.output().unwrap()
 }
@@ -1466,6 +1478,101 @@ fn registry_archive_fixture_configured(
     }
     write_registry_transport(&support);
     (fixture, support)
+}
+
+#[test]
+fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
+    for published in [true, false] {
+        let (fixture, support) = registry_archive_fixture(false, published, None, true);
+        let foreign = support.join("foreign/Cargo.lock");
+        fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        fs::write(&foreign, "invalid foreign lock must never be selected\n").unwrap();
+        let archive = support.join("registry/demo-1.0.0.crate");
+        let original_archive = fs::read(&archive).unwrap();
+        let result = run_historical_generate_mode_with_env(
+            &fixture,
+            &support,
+            Some("registry-archives"),
+            Some(&foreign),
+        );
+        assert!(result.status.success(), "{}", output_message(&result));
+        assert_eq!(
+            fs::read(&foreign).unwrap(),
+            b"invalid foreign lock must never be selected\n"
+        );
+        assert_eq!(fs::read(&archive).unwrap(), original_archive);
+        let data: Value = serde_json::from_slice(
+            &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v2.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            data["source"]["capturedSource"]["archives"][0]["resolutionLock"]["kind"],
+            if published {
+                "published"
+            } else {
+                "docsProducer"
+            }
+        );
+        let _ = fs::remove_dir_all(fixture.root);
+        let _ = fs::remove_dir_all(fixture.output);
+    }
+}
+
+#[test]
+fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
+    fn add_input_during_profile(package: &Path) {
+        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+        fs::write(
+            package.join("Cargo.toml"),
+            manifest.replace(
+                "include = [",
+                "build = \"build.rs\"\ninclude = [\"build.rs\", ",
+            ),
+        )
+        .unwrap();
+        fs::write(package.join("build.rs"), "fn main() { std::fs::write(std::path::Path::new(&std::env::var(\"CARGO_MANIFEST_DIR\").unwrap()).join(\"unverified-added.json\"), \"{}\").unwrap(); }\n").unwrap();
+    }
+    for during_profile in [false, true] {
+        let (fixture, support) = registry_archive_fixture_configured(
+            false,
+            true,
+            None,
+            true,
+            "demo",
+            if during_profile {
+                Some(add_input_during_profile)
+            } else {
+                None
+            },
+        );
+        if !during_profile {
+            let unknown = fixture
+                .output
+                .join("releases/1.0.0/sources/.docs-producer/unknown-owner/config.toml");
+            fs::create_dir_all(unknown.parent().unwrap()).unwrap();
+            fs::write(unknown, "unknown producer input").unwrap();
+        }
+        let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+        assert!(!result.status.success());
+        assert!(
+            output_message(&result).contains(if during_profile {
+                "source closure changed during qualification before manifest admission"
+            } else {
+                "initial imported source closure differs from verified archive inputs"
+            }),
+            "{}",
+            output_message(&result)
+        );
+        assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+        if during_profile {
+            assert!(fixture
+                .output
+                .join("releases/1.0.0/sources/demo-1.0.0/unverified-added.json")
+                .exists());
+        }
+        let _ = fs::remove_dir_all(fixture.root);
+        let _ = fs::remove_dir_all(fixture.output);
+    }
 }
 
 #[test]

@@ -374,6 +374,13 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     };
     let source_files =
         historical::scope_source_file_hashes(&root, &output, &scope).map_err(CliError)?;
+    if let Some(plan) = &historical_plan {
+        if plan.captured_source.is_some() && source_files != plan.source_files {
+            return Err(CliError(
+                "initial imported source closure differs from verified archive inputs".into(),
+            ));
+        }
+    }
     let source_sha256 = digest_map(&source_files);
     let source_state = if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
         "registry-archives"
@@ -827,6 +834,13 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         )?;
         None
     };
+    if historical::scope_source_file_hashes(&root, &output, &scope).map_err(CliError)?
+        != source_files
+    {
+        return Err(CliError(
+            "source closure changed during qualification before manifest admission".into(),
+        ));
+    }
     let pre_manifest_artifacts = artifact_hashes_with_scope(&output, &scope)?;
     let release_manifest = release_manifest::build(
         &root,

@@ -226,11 +226,16 @@ pub fn archive_plan(
             // Reuse an already captured producer resolution; the locked Cargo
             // metadata/profile commands below validate it without updating it.
             if !lock.exists() {
-                command_output(
-                    Command::new(cargo)
-                        .args(["generate-lockfile", "--manifest-path"])
-                        .arg(&manifest),
-                )?;
+                let mut command = Command::new(cargo);
+                command
+                    .args(["generate-lockfile", "--manifest-path"])
+                    .arg(&manifest);
+                sdk_docs::rustdoc_profiles::CargoExecutionContext {
+                    cargo_path: Some(cargo),
+                    config_path: None,
+                }
+                .configure(&mut command);
+                command_output(&mut command)?;
             }
             let digest = super::sha256_file(&lock).map_err(|e| e.to_string())?;
             plan.source_files
