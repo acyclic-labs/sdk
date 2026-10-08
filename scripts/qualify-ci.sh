@@ -350,6 +350,7 @@ case "$lane" in
     ;;
   policy)
     bash scripts/test-qualify-ci-preflight.sh
+    node --test scripts/wasm-size-report.test.mjs
     if [[ "$full_qualification" != true ]]; then
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
