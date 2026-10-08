@@ -834,11 +834,11 @@ mod tests {
     }
 
     #[test]
-    fn latency_admission_and_renewal_bind_authority_and_policy() {
+    fn latency_admission_binds_authority_and_policy() {
         let mut view = idle_view();
         view.idle_kv = None;
         view.latency_profile = vec![6; 32];
-        let mut request = wire::RetainWarmRequest {
+        let request = wire::RetainWarmRequest {
             identity: Some(wire::RequestIdentity {
                 client_instance: vec![1; 16],
                 request_id: vec![2; 16],
@@ -889,8 +889,28 @@ mod tests {
         for related in [vec![], vec![255]] {
             assert!(validate_customer_wire("warm_context", &bytes, &[2; 32], &related).is_err());
         }
+        assert!(
+            validate_customer_wire(
+                "warm_context",
+                &idle_view().encode_to_vec(),
+                &[2; 32],
+                &request.encode_to_vec()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn latency_renewal_binds_authority_and_policy() {
+        let mut view = idle_view();
+        view.idle_kv = None;
+        view.latency_profile = vec![6; 32];
+        let bytes = view.encode_to_vec();
         let renewal = wire::RenewWarmRequest {
-            identity: request.identity.take(),
+            identity: Some(wire::RequestIdentity {
+                client_instance: vec![1; 16],
+                request_id: vec![2; 16],
+            }),
             commitment: view.commitment.clone(),
             expires_at_ms: view.expires_at_ms,
             ..Default::default()
@@ -945,15 +965,6 @@ mod tests {
             .is_err()
         );
         assert!(validate_customer_wire("warm_commitment", &bytes, &[1; 32], &[255]).is_err());
-        assert!(
-            validate_customer_wire(
-                "warm_context",
-                &idle_view().encode_to_vec(),
-                &[2; 32],
-                &request.encode_to_vec()
-            )
-            .is_err()
-        );
     }
 
     #[test]
