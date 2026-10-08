@@ -350,7 +350,7 @@ export function linkerInputs(target, environment = process.env, { attestApple = 
   };
   return {
     configured,
-    apple: target.endsWith("-apple-darwin") && attestApple ? appleToolchainIdentity(environment) : null,
+    apple: target.endsWith("-apple-darwin") && attestApple ? appleToolchainIdentity(target, environment) : null,
     environment: {
       LINK: envValue("LINK", environment),
       CC: envValue("CC", environment),
@@ -366,7 +366,23 @@ export function linkerInputs(target, environment = process.env, { attestApple = 
   };
 }
 
-function appleToolchainIdentity(environment) {
+export function darwinRustObjcopyIdentity(target, commands = { output: commandOutput, optional: optionalCommandIdentity, identity: executableIdentity }) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  const args = ["--print", "target-libdir", "--target", target];
+  const libdir = commands.output("rustc", args);
+  const executable = resolve(libdir, "../bin/rust-objcopy");
+  if (commands.optional(executable, ["--version"]) === null) {
+    const toolchain = commands.output("rustup", ["show", "active-toolchain"]).split(/\s/u)[0];
+    if (commands.output("rustup", ["run", toolchain, "rustc", ...args]) !== libdir) {
+      throw new Error("active rustup toolchain differs from the Darwin Rust compiler");
+    }
+    commands.output("rustup", ["component", "add", "llvm-tools-preview", "--toolchain", toolchain]);
+  }
+  return commands.identity(executable, ["--version"], executable);
+}
+
+function appleToolchainIdentity(target, environment) {
+  const rustObjcopy = darwinRustObjcopyIdentity(target);
   const sdkPath = envValue("SDKROOT", environment) ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   const sdkSelector = sdkPath ?? "macosx";
   return {
@@ -378,6 +394,7 @@ function appleToolchainIdentity(environment) {
     clang: executableIdentity("xcrun", ["--sdk", sdkSelector, "clang", "--version"], commandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"])),
     ld: executableIdentity("/usr/bin/ld", ["-v"], "/usr/bin/ld"),
     codesign: executableFileIdentity("codesign", commandOutput("xcrun", ["--find", "codesign"])),
+    rust_objcopy: rustObjcopy,
   };
 }
 
@@ -627,6 +644,7 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
     normalized.linker.apple.clang.command = "xcrun";
     normalized.linker.apple.ld.command = "/usr/bin/ld";
     normalized.linker.apple.codesign.command = "codesign";
+    normalized.linker.apple.rust_objcopy.command = "rust-objcopy";
   }
   for (const field of ["LINK", "CC", "AR", "RUSTC_LINKER"]) normalized.linker.environment[field] = normalizeToolPath(value.linker.environment[field], context);
   normalized.linker.environment.DYLD_LIBRARY_PATH = normalizeToolPathList(value.linker.environment.DYLD_LIBRARY_PATH, context);
@@ -783,7 +801,7 @@ export function assertBuildInputs(value) {
   if (linker.apple != null) {
     const apple = assertObject(linker.apple, "linker.apple");
     assertStringFields(apple.sdk, ["path", "version", "build"], "linker.apple.sdk");
-    for (const tool of ["clang", "ld", "codesign"]) {
+    for (const tool of ["clang", "ld", "codesign", "rust_objcopy"]) {
       const identity = assertStringFields(apple[tool], ["command", "output"], `linker.apple.${tool}`);
       assertStringArray(identity.args, `linker.apple.${tool}.args`);
       assertDigest(identity.executable_sha256, `linker.apple.${tool}.executable_sha256`);

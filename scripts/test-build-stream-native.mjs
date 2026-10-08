@@ -7,14 +7,70 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, darwinRustObjcopyIdentity, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, signDarwinAddon, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 test("non-Darwin builds do not discover Apple signing tools or read signing artifacts", () => {
   for (const target of ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]) {
     assert.equal(signDarwinAddon("nonexistent-signing-output", target), null);
+    assert.equal(darwinRustObjcopyIdentity(target, {
+      output: () => { throw new Error("unexpected tool discovery"); },
+      optional: () => { throw new Error("unexpected version probe"); },
+      identity: () => { throw new Error("unexpected executable read"); },
+    }), null);
   }
+});
+
+test("Darwin strip preflight installs only the matching active toolchain's missing LLVM tools", () => {
+  const libdir = resolve(tmpdir(), "pinned-rust/lib/rustlib/aarch64-apple-darwin/lib");
+  const executable = resolve(libdir, "../bin/rust-objcopy");
+  const calls = [];
+  let available = false;
+  const identity = { command: executable, args: ["--version"], output: "LLVM 22", executable_sha256: `sha256:${"a".repeat(64)}` };
+  const commands = {
+    output(command, args) {
+      calls.push([command, ...args]);
+      if (args[0] === "show") return "1.98.1-aarch64-apple-darwin (overridden by rust-toolchain.toml)";
+      if (args[0] === "component") { available = true; return ""; }
+      return libdir;
+    },
+    optional() { return available ? identity : null; },
+    identity(command, args, path) {
+      assert.equal(command, executable); assert.equal(path, executable); assert.deepEqual(args, ["--version"]);
+      if (!available) throw new Error("strip helper still unavailable");
+      return identity;
+    },
+  };
+  assert.deepEqual(darwinRustObjcopyIdentity("aarch64-apple-darwin", commands), identity);
+  assert.deepEqual(calls.at(-1), ["rustup", "component", "add", "llvm-tools-preview", "--toolchain", "1.98.1-aarch64-apple-darwin"]);
+  calls.length = 0;
+  darwinRustObjcopyIdentity("aarch64-apple-darwin", commands);
+  assert.equal(calls.length, 1, "working strip helper must not invoke rustup");
+  available = false;
+  assert.throws(() => darwinRustObjcopyIdentity("aarch64-apple-darwin", { ...commands,
+    output: (command, args) => args[0] === "run" ? "another-sysroot" : commands.output(command, args),
+  }), /differs from the Darwin Rust compiler/);
+  assert.throws(() => darwinRustObjcopyIdentity("aarch64-apple-darwin", { ...commands,
+    identity: () => { throw new Error("strip helper still unavailable"); },
+  }), /strip helper still unavailable/);
+});
+
+test("Apple strip identity is required, normalized, and protected against mutation", () => {
+  const tool = { command: "/pinned/rust/bin/rust-objcopy", args: ["--version"], output: "LLVM 22", executable_sha256: `sha256:${"a".repeat(64)}` };
+  const valid = { ...validBuildInputs(), linker: { ...validBuildInputs().linker, apple: {
+    sdk: { path: "/SDK", version: "26", build: "test" }, clang: tool, ld: tool, codesign: tool, rust_objcopy: tool,
+  } } };
+  assertBuildInputs(valid);
+  const normalized = normalizeBuildInputs(valid, { targetDir: "C:/runner/_work/target-stream-native", outputDir: "C:/runner/_work/native-bundle" });
+  assert.equal(normalized.linker.apple.rust_objcopy.command, "rust-objcopy");
+  assert.equal(buildInputsReceipt(valid, normalized).raw_build_inputs.linker.apple.rust_objcopy.command, tool.command);
+  const changed = structuredClone(valid);
+  changed.linker.apple.rust_objcopy.executable_sha256 = `sha256:${"b".repeat(64)}`;
+  assert.throws(() => assertMatchingBuildInputs(valid, changed), /build input attestation differs/);
+  const missing = structuredClone(valid);
+  Reflect.deleteProperty(missing.linker.apple, "rust_objcopy");
+  assert.throws(() => assertBuildInputs(missing), /rust_objcopy/);
 });
 
 test("native qualification rejects a compiled path dependency mutation", async () => {
