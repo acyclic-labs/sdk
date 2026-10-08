@@ -1502,35 +1502,42 @@ impl ConversationState {
 
     /// Appends one ordered, validated message.
     pub fn append(&mut self, message: ConversationMessage) -> Result<()> {
+        self.validate_append(&message)?;
+        // Foreign-owned refs may be carried globally. Their bytes are gated by
+        // the provider's owner-mediated read grant at event admission/resolution.
+        self.messages.push(message);
+        Ok(())
+    }
+
+    /// Admits `message` as the next append without copying the history; one
+    /// pass over prior messages answers identity, reply, and tool-call checks.
+    pub(crate) fn validate_append(&self, message: &ConversationMessage) -> Result<()> {
         self.agent
             .ok_or_else(|| Error::Conflict("conversation is unbound".into()))?;
         message.validate()?;
         let expected = (self.messages.len() as u64)
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))?;
-        if message.sequence != expected || self.messages.iter().any(|prior| prior.id == message.id)
-        {
+        let (mut duplicate, mut parent, mut call) = (false, false, false);
+        for prior in &self.messages {
+            duplicate |= prior.id == message.id;
+            if Some(prior.id) == message.reply_to {
+                parent = true;
+                call |= prior.kind == MessageKind::ToolCall
+                    && prior.tool_call_id.as_deref() == message.tool_call_id.as_deref();
+            }
+        }
+        if message.sequence != expected || duplicate {
             return Err(Error::Conflict(
                 "message sequence or identity is invalid".into(),
             ));
         }
-        if let Some(parent) = message.reply_to
-            && !self.messages.iter().any(|prior| prior.id == parent)
-        {
+        if message.reply_to.is_some() && !parent {
             return Err(Error::Invalid("message reply target is missing".into()));
         }
-        if message.kind == MessageKind::ToolResult
-            && !self.messages.iter().any(|prior| {
-                prior.kind == MessageKind::ToolCall
-                    && Some(prior.id) == message.reply_to
-                    && prior.tool_call_id.as_deref() == message.tool_call_id.as_deref()
-            })
-        {
+        if message.kind == MessageKind::ToolResult && !call {
             return Err(Error::Invalid("tool result has no preceding call".into()));
         }
-        // Foreign-owned refs may be carried globally. Their bytes are gated by
-        // the provider's owner-mediated read grant at event admission/resolution.
-        self.messages.push(message);
         Ok(())
     }
 }
