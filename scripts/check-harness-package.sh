@@ -49,6 +49,9 @@ bun_wasm_bindgen_bin="$(bash "$root/scripts/ensure-wasm-bindgen.sh")"
 bun scripts/check-metadata.mjs
 mkdir -p "$wasm_output"
 bun scripts/build-wasm.mjs harness "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
+# Harness's optional Objects adapter is typechecked through its existing project
+# reference, whose public transports also require their generated WASM types.
+bun scripts/build-wasm.mjs objects "" "$cargo_bin" "$bun_wasm_bindgen_bin"
 bun x tsc -b typescript/packages/harness/tsconfig.json
 for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
   acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
