@@ -6,6 +6,33 @@
 export type FileKind = "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
 
 /**
+ * Exact result of advancing a retained transaction to the current head.
+ */
+export interface BrowserTransactionRebase {
+    status: BrowserTransactionRebaseStatus;
+    generationId: Uint8Array | undefined;
+    conflicts: BrowserTransactionConflict[];
+    truncated: boolean;
+}
+
+/**
+ * One observation or mutation dependency that prevents a safe rebase.
+ */
+export interface BrowserTransactionConflict {
+    region: BrowserTransactionConflictRegion;
+    fileId: Uint8Array | undefined;
+    directoryId: Uint8Array | undefined;
+    offset: bigint | undefined;
+    length: bigint | undefined;
+    sparseTarget: BrowserTransactionSparseSeek | undefined;
+    name: BrowserWorkspaceName | undefined;
+    maximumEntries: number | undefined;
+    usage: BrowserTransactionDependencyUse;
+    expected: Uint8Array | undefined;
+    actual: Uint8Array | undefined;
+}
+
+/**
  *Auto-generated discriminant enum variants
  */
 export type FilePayloadKind = "inline-regular" | "regular" | "directory" | "symbolic-link" | "empty" | "device" | "reparse-point";
@@ -368,7 +395,7 @@ export interface BrowserWorkCounters {
 }
 
 export interface BrowserWorkspaceCommit {
-    status: "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+    status: BrowserWorkspaceCommitStatus;
     generationId: Uint8Array | undefined;
 }
 
@@ -460,6 +487,16 @@ export type BrowserOperationWindowClose = { kind: "still-active"; remaining: num
 export type BrowserOperationWindowPhase = { kind: "idle" } | { kind: "active"; pinnedParent: Uint8Array; pendingParent: Uint8Array | undefined; activeLeaseCount: number } | { kind: "reconciling"; ticket: Uint8Array; pinnedParent: Uint8Array; pendingParent: Uint8Array | undefined };
 
 export type BrowserPathBatch = string[];
+
+export type BrowserTransactionConflictRegion = "file-record" | "metadata" | "file-length" | "content-range" | "sparse-seek" | "directory-name" | "directory-range";
+
+export type BrowserTransactionDependencyUse = "observation" | "mutation" | "observation-and-mutation";
+
+export type BrowserTransactionRebaseStatus = "rebased" | "conflicted";
+
+export type BrowserTransactionSparseSeek = "data" | "hole";
+
+export type BrowserWorkspaceCommitStatus = "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
 
 export type BrowserWorkspaceOperationClose = { kind: "still-active"; remaining: number } | { kind: "already-closed" } | { kind: "reconciled"; rebase: BrowserWorkspaceRebaseResult };
 
@@ -1399,7 +1436,7 @@ export class BrowserTransaction {
     /**
      * Publishes the complete candidate through one idempotent head CAS.
      */
-    commit(lease: BrowserOperationWindowLease | undefined): Promise<any>;
+    commit(lease: BrowserOperationWindowLease | undefined): Promise<BrowserWorkspaceCommit>;
     /**
      * Clones one complete regular file without copying its body.
      */
@@ -1427,7 +1464,7 @@ export class BrowserTransaction {
     /**
      * Safely advances this retained candidate and sparsely replays its work.
      */
-    rebase(maximum_conflicts: number): Promise<any>;
+    rebase(maximum_conflicts: number): Promise<BrowserTransactionRebase>;
     /**
      * Removes one existing namespace binding inside this transaction.
      */
