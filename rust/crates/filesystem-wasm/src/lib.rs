@@ -3044,8 +3044,9 @@ mod bindings {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct ImportManifest {
+        #[serde(with = "serde_bytes")]
         manifest_bytes: Vec<u8>,
-        objects: Vec<Vec<u8>>,
+        objects: Vec<serde_bytes::ByteBuf>,
     }
 
     #[derive(Serialize, Tsify)]
@@ -3789,10 +3790,12 @@ mod bindings {
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
-            let objects = serde_wasm_bindgen::from_value::<Vec<Vec<u8>>>(objects)
+            // `ByteBuf` and `serde_bytes` take serde-wasm-bindgen's one-memcpy
+            // `Uint8Array` path; plain `Vec<u8>` iterates every byte through JS.
+            let objects = serde_wasm_bindgen::from_value::<Vec<serde_bytes::ByteBuf>>(objects)
                 .map_err(js_error)?
                 .into_iter()
-                .map(bytes::Bytes::from)
+                .map(|object| bytes::Bytes::from(object.into_vec()))
                 .collect::<Vec<_>>();
             let cancellation = CancellationToken::default();
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
