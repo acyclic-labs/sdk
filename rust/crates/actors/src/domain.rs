@@ -93,12 +93,7 @@ impl DomainError {
 }
 
 fn parse_subscription_state(value: i32) -> Result<SubscriptionState, DomainError> {
-    match value {
-        0 => Ok(SubscriptionState::Unspecified),
-        1 => Ok(SubscriptionState::Active),
-        2 => Ok(SubscriptionState::Paused),
-        other => Err(DomainError::UnknownSubscriptionState(other)),
-    }
+    SubscriptionState::try_from(value)
 }
 
 fn encode_subscription_state(value: SubscriptionState) -> i32 {
@@ -106,13 +101,7 @@ fn encode_subscription_state(value: SubscriptionState) -> i32 {
 }
 
 fn parse_actor_state(value: i32) -> Result<ActorState, DomainError> {
-    match value {
-        0 => Ok(ActorState::Unspecified),
-        1 => Ok(ActorState::Active),
-        2 => Ok(ActorState::Hibernated),
-        3 => Ok(ActorState::Paused),
-        other => Err(DomainError::UnknownActorState(other)),
-    }
+    ActorState::try_from(value)
 }
 
 fn encode_actor_state(value: ActorState) -> i32 {
@@ -120,20 +109,7 @@ fn encode_actor_state(value: ActorState) -> i32 {
 }
 
 fn parse_error_code(value: i32) -> Result<ErrorCode, DomainError> {
-    match value {
-        0 => Ok(ErrorCode::Unspecified),
-        1 => Ok(ErrorCode::InvalidArgument),
-        2 => Ok(ErrorCode::CapabilityDenied),
-        3 => Ok(ErrorCode::CapabilityExpired),
-        4 => Ok(ErrorCode::ActorNotFound),
-        5 => Ok(ErrorCode::SubscriptionNotFound),
-        6 => Ok(ErrorCode::IdempotencyMismatch),
-        7 => Ok(ErrorCode::Conflict),
-        8 => Ok(ErrorCode::AdmissionDenied),
-        9 => Ok(ErrorCode::CheckpointFailed),
-        10 => Ok(ErrorCode::DependencyUnavailable),
-        other => Err(DomainError::UnknownErrorCode(other)),
-    }
+    ErrorCode::try_from(value)
 }
 
 fn encode_error_code(value: ErrorCode) -> i32 {

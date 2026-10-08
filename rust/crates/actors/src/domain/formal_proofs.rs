@@ -3,8 +3,13 @@
 use super::{ActorLimits, ActorState, DomainError, ErrorCode, PositiveU64, SubscriptionStart, SubscriptionState};
 
 fn assert_subscription_state_mapping(raw: i32) {
-    match SubscriptionState::try_from(raw) {
-        Ok(value) => assert_eq!(i32::from(value), raw),
+    let expected = raw == SubscriptionState::Unspecified as i32
+        || raw == SubscriptionState::Active as i32
+        || raw == SubscriptionState::Paused as i32;
+    let result = super::parse_subscription_state(raw);
+    assert_eq!(result.is_ok(), expected);
+    match result {
+        Ok(value) => assert_eq!(super::encode_subscription_state(value), raw),
         Err(DomainError::UnknownSubscriptionState(found)) => assert_eq!(found, raw),
         _ => {
             assert!(false);
@@ -13,8 +18,14 @@ fn assert_subscription_state_mapping(raw: i32) {
 }
 
 fn assert_actor_state_mapping(raw: i32) {
-    match ActorState::try_from(raw) {
-        Ok(value) => assert_eq!(i32::from(value), raw),
+    let expected = raw == ActorState::Unspecified as i32
+        || raw == ActorState::Active as i32
+        || raw == ActorState::Hibernated as i32
+        || raw == ActorState::Paused as i32;
+    let result = super::parse_actor_state(raw);
+    assert_eq!(result.is_ok(), expected);
+    match result {
+        Ok(value) => assert_eq!(super::encode_actor_state(value), raw),
         Err(DomainError::UnknownActorState(found)) => assert_eq!(found, raw),
         _ => {
             assert!(false);
@@ -23,8 +34,21 @@ fn assert_actor_state_mapping(raw: i32) {
 }
 
 fn assert_error_code_mapping(raw: i32) {
-    match ErrorCode::try_from(raw) {
-        Ok(value) => assert_eq!(i32::from(value), raw),
+    let expected = raw == ErrorCode::Unspecified as i32
+        || raw == ErrorCode::InvalidArgument as i32
+        || raw == ErrorCode::CapabilityDenied as i32
+        || raw == ErrorCode::CapabilityExpired as i32
+        || raw == ErrorCode::ActorNotFound as i32
+        || raw == ErrorCode::SubscriptionNotFound as i32
+        || raw == ErrorCode::IdempotencyMismatch as i32
+        || raw == ErrorCode::Conflict as i32
+        || raw == ErrorCode::AdmissionDenied as i32
+        || raw == ErrorCode::CheckpointFailed as i32
+        || raw == ErrorCode::DependencyUnavailable as i32;
+    let result = super::parse_error_code(raw);
+    assert_eq!(result.is_ok(), expected);
+    match result {
+        Ok(value) => assert_eq!(super::encode_error_code(value), raw),
         Err(DomainError::UnknownErrorCode(found)) => assert_eq!(found, raw),
         _ => {
             assert!(false);
