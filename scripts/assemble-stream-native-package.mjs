@@ -146,8 +146,8 @@ export async function verifyNativeAssembly(output, sourceSha, version) {
 
 async function main() {
   const [typescriptOutput, bundleArgument, sourceSha] = process.argv.slice(2);
-  if (!typescriptOutput || !bundleArgument || !/^[0-9a-f]{40,64}$/.test(sourceSha ?? "")) {
-    fail("usage: assemble-stream-native-package.mjs TYPESCRIPT_OUTPUT NATIVE_BUNDLE SOURCE_SHA");
+  if (!typescriptOutput || !bundleArgument || !/^[0-9a-f]{40}$/.test(sourceSha ?? "")) {
+    fail("usage: assemble-stream-native-package.mjs TYPESCRIPT_OUTPUT NATIVE_INPUT_ROOT SOURCE_SHA");
   }
   const expectedSource = run("git", ["rev-parse", "HEAD"]).trim();
   if (expectedSource !== sourceSha) fail(`native package source ${sourceSha} differs from checkout ${expectedSource}`);
@@ -182,6 +182,7 @@ async function main() {
     const repacked = join(temporary, "repacked");
     await mkdir(unpacked, { recursive: true });
     await mkdir(repacked, { recursive: true });
+    archiveFiles(archive);
     run("tar", ["-xzf", archive, "-C", unpacked]);
     const packageRoot = join(unpacked, "package");
     const native = join(packageRoot, "generated/native");
