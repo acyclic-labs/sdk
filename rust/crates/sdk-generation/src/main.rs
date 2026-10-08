@@ -230,6 +230,16 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         .then(|| pinned_cargo(&root))
         .transpose()?;
     let metadata = load_metadata(&root, cargo_path.as_deref())?;
+    if args.channel == Channel::Release {
+        let published = published_packages(&root)?;
+        let versions = metadata
+            .packages
+            .iter()
+            .filter(|package| published.iter().any(|name| name == package.name.as_ref()))
+            .map(|package| package.version.to_string())
+            .collect::<BTreeSet<_>>();
+        validate_release_package_versions(&args.version, &versions)?;
+    }
     let toolchain = cargo_path
         .as_deref()
         .map(toolchain_identity)
@@ -926,6 +936,24 @@ fn published_packages(root: &Path) -> Result<Vec<String>, CliError> {
         .collect()
 }
 
+fn validate_release_package_versions(
+    requested: &str,
+    package_versions: &BTreeSet<String>,
+) -> Result<(), CliError> {
+    if package_versions.len() != 1 {
+        return Err(CliError(format!(
+            "release package versions must agree before docs can be released: {package_versions:?}"
+        )));
+    }
+    let expected = package_versions.first().expect("length checked above");
+    if requested != expected {
+        return Err(CliError(format!(
+            "release docs version `{requested}` does not match SDK package version `{expected}`; use preview for candidate labels"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_published_coverage(
     published: &[String],
     data: &sdk_docs::DocsData,
@@ -1447,6 +1475,18 @@ fn git_dirty(root: &Path) -> Result<bool, CliError> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn release_version_must_match_published_sdk_version() {
+        let versions = BTreeSet::from(["0.2.0".to_owned()]);
+        let error = validate_release_package_versions("0.1.0", &versions)
+            .expect_err("a stale docs version must not be released");
+        assert!(error
+            .to_string()
+            .contains("does not match SDK package version"));
+        validate_release_package_versions("0.2.0", &versions)
+            .expect("matching SDK and docs versions should be accepted");
+    }
 
     fn test_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
