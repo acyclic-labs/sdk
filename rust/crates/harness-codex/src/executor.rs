@@ -34,6 +34,31 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, ffi::OsString, path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::mpsc;
+use tracing::{Instrument as _, Span};
+
+/// A span with the `outcome` and `error.kind` slots that [`traced`] fills.
+macro_rules! op_span {
+    ($level:ident, $name:literal) => {
+        tracing::span!(
+            tracing::Level::$level,
+            $name,
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty
+        )
+    };
+}
+
+/// Runs `future` inside `span` and records its outcome there.
+async fn traced<T>(span: Span, future: impl Future<Output = Result<T>>) -> Result<T> {
+    let result = future.instrument(span.clone()).await;
+    match &result {
+        Ok(_) => span.record("outcome", "ok"),
+        Err(error) => span
+            .record("outcome", "err")
+            .record("error.kind", error.kind()),
+    };
+    result
+}
 
 /// Where the proxy forwards model calls.
 #[derive(Clone, Debug, PartialEq)]
@@ -223,9 +248,9 @@ impl CodexExecutor {
             (None, Some(thread)) => (Some(thread.clone()), prompt),
             (None, None) => (None, prompt),
         };
-        let mut session = self
-            .launch(operation, remaining, resume.as_deref(), prompt)
-            .await?;
+        let span = op_span!(DEBUG, "acyclic.harness.codex.launch");
+        let launch = self.launch(operation, remaining, resume.as_deref(), prompt);
+        let mut session = traced(span, launch).await?;
         let mut turn = TurnJournal {
             journal,
             operation,
@@ -240,7 +265,8 @@ impl CodexExecutor {
         let ended = self
             .drive(&mut session.process, session.deadline, &mut turn)
             .await?;
-        conclude(&mut turn, ended).await
+        let span = op_span!(DEBUG, "acyclic.harness.codex.conclude");
+        traced(span, conclude(&mut turn, ended)).await
     }
 
     /// Starts the proxy, the MCP endpoint and Codex for one run.
@@ -340,7 +366,10 @@ impl CodexExecutor {
                 Next::Line(line) => {
                     turn.drain_calls().await?;
                     let Ok(event) = parse_line(&line) else {
-                        tracing::warn!(line, "codex wrote a line that is not an event");
+                        tracing::warn!(
+                            line_len = line.len(),
+                            "codex wrote a line that is not an event"
+                        );
                         continue;
                     };
                     if let Some(observer) = &self.observer {
@@ -468,7 +497,8 @@ impl Executor for CodexExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        self.run(input, journal).boxed()
+        let span = op_span!(INFO, "acyclic.harness.codex.run");
+        traced(span, self.run(input, journal)).boxed()
     }
 }
 
@@ -693,9 +723,9 @@ impl TurnJournal<'_> {
     }
 
     async fn append(&self, key: &str, event: ExecutionEvent) -> Result<()> {
-        self.journal
-            .append(self.operation, format!("codex:{}:{key}", self.run), event)
-            .await
+        let span = op_span!(TRACE, "acyclic.harness.codex.append");
+        let key = format!("codex:{}:{key}", self.run);
+        traced(span, self.journal.append(self.operation, key, event)).await
     }
 
     async fn model_event(&self, step: u32, key: &str, event: &ModelEvent) -> Result<()> {

@@ -3134,4 +3134,103 @@ mod tests {
         assert!(read.require(file.volume(), VolumeOperation::Read).is_ok());
         Ok(())
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn execution_journal_emits_spans_without_content_fields() -> Result<()> {
+        use crate::executor::{ExecutionEvent, ExecutionJournal as _};
+        use crate::obs::capture;
+        let (seen, _guard) = capture::install();
+        let provider = ProviderRef::new("example", "filesystem", "3")?;
+        let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+        let owner = AgentId::from_bytes([5; 16]);
+        let volume = VolumeRef::new(
+            provider,
+            "agent-private-traced",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(owner),
+        )?;
+        host.create_volume(&volume).await?;
+        let issuer = AuthorityIssuer::new(
+            "test",
+            [6; 32],
+            Authority {
+                kind: AggregateKind::Task,
+                id: "task".into(),
+            },
+        );
+        let scope = issuer.root_for_agent(
+            owner,
+            "owner",
+            Capabilities::new([
+                volume.capability(VolumeOperation::Read)?,
+                volume.capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let journal = FilesystemExecutionJournal::new(
+            acyclic_stream::StreamClient::new(Arc::new(acyclic_stream::MemoryStream::default())),
+            host,
+            volume,
+            issuer.verifier(),
+            scope,
+            65_536,
+        )?;
+        let operation = crate::OperationId::from_bytes([7; 16]);
+        let request = journal
+            .stage(
+                operation,
+                "request".into(),
+                b"{\"secret\":1}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        assert_eq!(journal.load(&request).await?.len(), 12);
+        journal
+            .append(
+                operation,
+                "start".into(),
+                ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+            )
+            .await?;
+        assert!(
+            journal
+                .append_if_tail(
+                    operation,
+                    1,
+                    "model".into(),
+                    ExecutionEvent::ModelStarted {
+                        step: 0,
+                        request_digest: [1; 32],
+                        request
+                    },
+                )
+                .await?
+        );
+        assert_eq!(journal.replay(operation, 0, 8).await?.len(), 2);
+        let unkeyed = ExecutionEvent::Started {
+            request_digest: [2; 32],
+        };
+        assert!(
+            journal
+                .append(operation, String::new(), unkeyed)
+                .await
+                .is_err()
+        );
+
+        let has = |span, field, value| capture::has(&seen, span, field, value);
+        assert!(has("acyclic.harness.journal.stage", "bytes", "12"));
+        assert!(has("acyclic.harness.journal.load", "bytes", "12"));
+        assert!(has("acyclic.harness.journal.append", "outcome", "ok"));
+        assert!(has(
+            "acyclic.harness.journal.append",
+            "error.kind",
+            "ERROR_CODE_INVALID"
+        ));
+        assert!(has("acyclic.harness.journal.append_if_tail", "rev", "1"));
+        assert!(has("acyclic.harness.journal.replay", "items", "2"));
+        capture::assert_clean(&seen, &["secret", "agent-private-traced", ".system"]);
+        Ok(())
+    }
 }

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, rename, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -144,9 +145,32 @@ function commandOutput(command, args) {
 }
 
 function requiredCommandIdentity(command, args) {
-  const output = commandOutput(command, args);
+  const result = spawnSync(command, args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0) {
+    throw Object.assign(new Error(`${command} exited with status ${result.status}`), {
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   if (output.length === 0) throw new Error(`${command} did not report a version`);
   return { command, args, output };
+}
+
+function executableIdentity(command, args, executable) {
+  return {
+    ...requiredCommandIdentity(command, args),
+    executable_sha256: digest(readFileSync(executable)),
+  };
+}
+
+function executableFileIdentity(command, executable) {
+  return { command, args: [], output: executable, executable_sha256: digest(readFileSync(executable)) };
 }
 
 function optionalCommandIdentity(command, args) {
@@ -163,7 +187,14 @@ function envValue(name, environment = process.env) {
 }
 
 export async function ensureCargoTargetDirectory(targetDir) {
-  await mkdir(targetDir, { recursive: true });
+  try {
+    const existing = await lstat(targetDir);
+    if (existing.isSymbolicLink()) throw new Error(`native target directory is a symlink or junction: ${targetDir}`);
+    if (!existing.isDirectory()) throw new Error(`native target directory is not a directory: ${targetDir}`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    await mkdir(targetDir, { recursive: true });
+  }
   const tagPath = resolve(targetDir, "CACHEDIR.TAG");
   try {
     const existing = (await readFile(tagPath)).toString("utf8");
@@ -216,17 +247,71 @@ function splitRustflags(value) {
   return flags;
 }
 
-export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
+export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null, darwinLinker?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS, darwinLinker = null } = {}) {
   const prior = encoded !== null && typeof encoded === "string"
     ? (encoded.length === 0 ? [] : encoded.split("\x1f"))
     : plain !== null && typeof plain === "string" ? splitRustflags(plain) : [];
   const flags = [
     ...prior,
-    `--remap-path-prefix=${resolve(sourceRoot).replaceAll("\\", "/")}=/__acyclic_stream_source`,
-    `--remap-path-prefix=${resolve(targetDir).replaceAll("\\", "/")}=/__acyclic_stream_target`,
+    `--remap-path-prefix=${portableResolve(sourceRoot)}=/__acyclic_stream_source`,
+    `--remap-path-prefix=${portableResolve(targetDir)}=/__acyclic_stream_target`,
   ];
   if (typeof target === "string" && target.endsWith("-pc-windows-msvc")) flags.push("-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro");
+  if (typeof target === "string" && target.endsWith("-apple-darwin")) {
+    // NAPI-RS emits a dylib-backed addon on Darwin. Apple's maintained ld is
+    // used with ad hoc signing disabled; the finished addon is signed once,
+    // deterministically, after NAPI's copy step.
+    flags.push("-C", `link-arg=-fuse-ld=${darwinLinker ?? "/usr/bin/ld"}`, "-C", "link-arg=-Wl,-no_adhoc_codesign", "-C", "link-arg=-Wl,-reproducible", "-C", "link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib", "-C", "link-arg=-Wl,-final_output,/__acyclic_stream_output/libacyclic_stream_napi.dylib");
+  }
   return flags.join("\x1f");
+}
+
+/**
+ * @param {string} target
+ * @param {string|null} [sdkRoot]
+ */
+export function darwinAppleLdPaths(target, sdkRoot = null) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  const sdk = sdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  if (typeof sdk !== "string" || sdk.length === 0) throw new Error("Darwin Apple ld requires a macOS SDK");
+  return {
+    linkerEnvironment: targetEnvName(target, "LINKER"),
+    linker: "/usr/bin/ld",
+    driver: "/usr/bin/clang",
+    sdkRoot: sdk,
+  };
+}
+
+/**
+ * @param {string} target
+ * @param {{sdkRoot?: string|null, driver?: string, linkerExists?: (path: string) => boolean}} options
+ * @returns {(() => void) & {linkerPath?: string|null}}
+ */
+export function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: suppliedDriver, linkerExists = existsSync } = {}) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) {
+    /** @type {(() => void) & {linkerPath?: string|null}} */
+    const restore = () => {};
+    restore.linkerPath = null;
+    return restore;
+  }
+  const paths = darwinAppleLdPaths(target, suppliedSdkRoot);
+  if (paths === null) throw new Error("Apple ld configuration requires a Darwin target");
+  if (!linkerExists(paths.linker)) throw new Error(`Apple ld is unavailable at ${paths.linker}`);
+  const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const sdkSelector = sdkRoot ?? "macosx";
+  const driver = suppliedDriver ?? commandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"]);
+  const priorTargetLinker = envValue(paths.linkerEnvironment);
+  const priorSdkRoot = envValue("SDKROOT");
+  process.env[paths.linkerEnvironment] = driver;
+  process.env.SDKROOT = sdkRoot;
+  const restore = () => {
+    if (priorTargetLinker === null) delete process.env[paths.linkerEnvironment];
+    else process.env[paths.linkerEnvironment] = priorTargetLinker;
+    if (priorSdkRoot === null) delete process.env.SDKROOT;
+    else process.env.SDKROOT = priorSdkRoot;
+  };
+  restore.linkerPath = paths.linker;
+  return restore;
 }
 
 export async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
@@ -234,10 +319,11 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
   const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
   const priorCargoIncremental = envValue("CARGO_INCREMENTAL");
   const priorReleaseIncremental = envValue("CARGO_PROFILE_RELEASE_INCREMENTAL");
+  const restoreDarwinAppleLd = configureDarwinAppleLd(target);
   try {
     process.env.CARGO_INCREMENTAL = "0";
     process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "false";
-    process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
+    process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags, darwinLinker: restoreDarwinAppleLd.linkerPath ?? null });
     delete process.env.RUSTFLAGS;
     return await operation();
   } finally {
@@ -249,6 +335,7 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
     else process.env.CARGO_INCREMENTAL = priorCargoIncremental;
     if (priorReleaseIncremental === null) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
     else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
+    restoreDarwinAppleLd();
   }
 }
 
@@ -256,23 +343,41 @@ function targetEnvName(target, suffix) {
   return `CARGO_TARGET_${target.replaceAll("-", "_").toUpperCase()}_${suffix}`;
 }
 
-export function linkerInputs(target, environment = process.env) {
+export function linkerInputs(target, environment = process.env, { attestApple = process.platform === "darwin" } = {}) {
   const targetLinkerName = targetEnvName(target, "LINKER");
   const configured = {
     target: envValue(targetLinkerName, environment),
   };
   return {
     configured,
+    apple: target.endsWith("-apple-darwin") && attestApple ? appleToolchainIdentity(environment) : null,
     environment: {
       LINK: envValue("LINK", environment),
       CC: envValue("CC", environment),
       AR: envValue("AR", environment),
       RUSTC_LINKER: envValue("RUSTC_LINKER", environment),
+      DYLD_LIBRARY_PATH: envValue("DYLD_LIBRARY_PATH", environment),
+      SDKROOT: envValue("SDKROOT", environment),
       VCINSTALLDIR: envValue("VCINSTALLDIR", environment),
       VCToolsInstallDir: envValue("VCToolsInstallDir", environment),
       WindowsSdkDir: envValue("WindowsSdkDir", environment),
       VisualStudioVersion: envValue("VisualStudioVersion", environment),
     },
+  };
+}
+
+function appleToolchainIdentity(environment) {
+  const sdkPath = envValue("SDKROOT", environment) ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const sdkSelector = sdkPath ?? "macosx";
+  return {
+    sdk: {
+      path: sdkPath,
+      version: commandOutput("xcrun", ["--sdk", sdkSelector, "--show-sdk-version"]),
+      build: commandOutput("xcrun", ["--sdk", sdkSelector, "--show-sdk-build-version"]),
+    },
+    clang: executableIdentity("xcrun", ["--sdk", sdkSelector, "clang", "--version"], commandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"])),
+    ld: executableIdentity("/usr/bin/ld", ["-v"], "/usr/bin/ld"),
+    codesign: executableFileIdentity("codesign", commandOutput("xcrun", ["--find", "codesign"])),
   };
 }
 
@@ -453,6 +558,11 @@ function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: strin
   return value;
 }
 
+function portableResolve(value) {
+  if (typeof value === "string" && /^[A-Za-z]:[\\/]/u.test(value)) return value.replaceAll("\\", "/");
+  return resolve(value);
+}
+
 function normalizeBuildInputPaths(value, context) {
   if (typeof value === "string") return normalizedPath(value, context);
   if (Array.isArray(value)) return value.map(item => normalizeBuildInputPaths(item, context));
@@ -466,6 +576,12 @@ function normalizeToolPath(value, context) {
   if (normalized !== "<host-path>") return normalized;
   const parts = value.replaceAll("\\", "/").split("/").filter(Boolean);
   return `<toolchain-path>/${parts.slice(-3).join("/")}`;
+}
+
+function normalizeToolPathList(value, context) {
+  if (typeof value !== "string") return value;
+  const separator = process.platform === "win32" ? ";" : ":";
+  return value.split(separator).map(item => normalizeToolPath(item, context)).join(separator);
 }
 
 function normalizeFlagValue(value, context) {
@@ -489,12 +605,11 @@ function isDiagnosticOnlyRustcArgument(value) {
 }
 
 export function normalizeBuildInputs(value, { targetDir, outputDir }) {
-  const context = { targetDir: resolve(targetDir), outputDir: resolve(outputDir) };
+  const context = { targetDir: portableResolve(targetDir), outputDir: portableResolve(outputDir) };
   const normalized = normalizeBuildInputPaths(value, context);
   normalized.target_dir = "<target-dir>";
   normalized.runtime.node_path = "<runtime>";
-  normalized.runtime.bun.actual.command = "bun";
-  normalized.invocation.runtime = "bun";
+  if (normalized.runtime.bun.actual !== null) normalized.runtime.bun.actual.command = "bun";
   normalized.generator.options.output_dir = "<output-dir>";
   normalized.generator.options.target_dir = "<target-dir>";
   normalized.linker.actual.rustc = "rustc";
@@ -507,7 +622,15 @@ export function normalizeBuildInputs(value, { targetDir, outputDir }) {
     return arg;
   });
   normalized.linker.configured.target = normalizeToolPath(value.linker.configured.target, context);
+  if (normalized.linker.apple != null) {
+    normalized.linker.apple.sdk.path = "<sdk-root>";
+    normalized.linker.apple.clang.command = "xcrun";
+    normalized.linker.apple.ld.command = "/usr/bin/ld";
+    normalized.linker.apple.codesign.command = "codesign";
+  }
   for (const field of ["LINK", "CC", "AR", "RUSTC_LINKER"]) normalized.linker.environment[field] = normalizeToolPath(value.linker.environment[field], context);
+  normalized.linker.environment.DYLD_LIBRARY_PATH = normalizeToolPathList(value.linker.environment.DYLD_LIBRARY_PATH, context);
+  normalized.linker.environment.SDKROOT = normalizeToolPath(value.linker.environment.SDKROOT, context);
   for (const field of ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]) normalized.environment[field] = normalizeFlagValue(value.environment[field], context);
   return normalized;
 }
@@ -526,14 +649,16 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
   if (typeof target !== "string" || target.length === 0) throw new Error("native build inputs require a target");
   const wrapper = envValue("RUSTC_WRAPPER");
   const maintainedBun = await maintainedBunVersion();
-  const bunIdentity = maintainedBunIdentity(maintainedBun);
+  const bunIdentity = typeof process.versions.bun === "string"
+    ? maintainedBunIdentity(maintainedBun)
+    : null;
   const configBytes = await readFile(resolve(root, ".cargo/config.toml"));
   return {
     schema: buildInputsSchema,
     target,
     target_dir: resolve(targetDir),
     runtime: {
-      node: process.version,
+      node: process.versions.node ?? process.version,
       node_path: process.execPath,
       platform: process.platform,
       arch: process.arch,
@@ -541,7 +666,7 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
     },
     invocation: {
       script: "scripts/build-stream-native.mjs",
-      runtime: process.execPath,
+      runtime: typeof process.versions.bun === "string" ? "bun" : "node",
       args: process.argv.slice(2),
     },
     compiler: {
@@ -652,12 +777,30 @@ export function assertBuildInputs(value) {
   const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
   const linker = assertObject(value.linker, "linker");
+  if (value.target.endsWith("-apple-darwin") && linker.apple == null) {
+    throw new Error("Darwin native build inputs are missing Apple tool identity");
+  }
+  if (linker.apple != null) {
+    const apple = assertObject(linker.apple, "linker.apple");
+    assertStringFields(apple.sdk, ["path", "version", "build"], "linker.apple.sdk");
+    for (const tool of ["clang", "ld", "codesign"]) {
+      const identity = assertStringFields(apple[tool], ["command", "output"], `linker.apple.${tool}`);
+      assertStringArray(identity.args, `linker.apple.${tool}.args`);
+      assertDigest(identity.executable_sha256, `linker.apple.${tool}.executable_sha256`);
+    }
+  }
   assertNullableStringFields(linker.configured, ["target"], "linker.configured");
-  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
+  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "DYLD_LIBRARY_PATH", "SDKROOT", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
   const actualLinker = assertStringFields(linker.actual, ["source", "rustc", "target"], "linker.actual");
   if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
   if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");
   assertStringArray(actualLinker.args, "linker.actual.args");
+  if (value.target.endsWith("-apple-darwin")) {
+    const signing = assertStringFields(value.signing, ["command", "output"], "signing");
+    assertStringArray(signing.args, "signing.args");
+    if (signing.command !== "codesign") throw new Error("native signing command is unsupported");
+    if (!signing.args.includes("--timestamp=none") || !signing.args.includes("acyclic.stream.napi")) throw new Error("native signing policy is invalid");
+  }
   return value;
 }
 
@@ -729,6 +872,30 @@ async function bundleArtifacts(output) {
     artifacts.push({ path: relativeArtifactPath(name), sha256: digest(bytes), bytes: bytes.length });
   }
   return { artifacts, node: artifacts.find(item => item.path.endsWith(".node")) };
+}
+
+function signDarwinAddon(output, target, codesignExecutable = commandOutput("xcrun", ["--find", "codesign"])) {
+  if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
+  const name = readdir(output).then(entries => entries.find(entry => entry.endsWith(".node")));
+  return name.then(async artifactName => {
+    if (artifactName === undefined) throw new Error(`native bundle ${output} has no Darwin addon to sign`);
+    const artifact = resolve(output, artifactName);
+    const args = ["--force", "--sign", "-", "--identifier", "acyclic.stream.napi", "--timestamp=none", artifact];
+    execFileSync(codesignExecutable, args, { stdio: "inherit" });
+    const verified = spawnSync(codesignExecutable, ["--verify", "--strict", artifact], { encoding: "utf8" });
+    if (verified.status !== 0) {
+      const verification = `${verified.stdout ?? ""}${verified.stderr ?? ""}`;
+      throw new Error(`codesign strict verification failed: ${verification.trim()}`);
+    }
+    const observed = spawnSync(codesignExecutable, ["-dvv", artifact], { encoding: "utf8" });
+    const details = `${observed.stdout ?? ""}${observed.stderr ?? ""}`;
+    if (observed.status !== 0) throw new Error(`codesign verification failed: ${details.trim()}`);
+    return {
+      command: "codesign",
+      args: args.map(value => value === artifact ? "<artifact>" : value),
+      output: details.replaceAll(artifact, "<artifact>").trim(),
+    };
+  });
 }
 
 function pathFromArtifact(output, artifactPath) {
@@ -873,10 +1040,6 @@ async function build(options) {
     };
     let rustcCapture = await createRustcInvocationCapture();
     try {
-      // Record the stable workspace-wrapper identity that Cargo actually
-      // invokes. buildInputs() runs before capture setup and only sees the
-      // ambient process environment.
-      attestedInputs.environment.RUSTC_WORKSPACE_WRAPPER = process.env.RUSTC_WORKSPACE_WRAPPER ?? null;
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
       await rm(resolve(buildOutput, generationManifestName), { force: true });
@@ -903,6 +1066,8 @@ async function build(options) {
   });
   await assertSourceSnapshot(source);
   if (sourceRevision() !== revision) throw new Error("Stream native source changed during native build");
+  const signing = await signDarwinAddon(buildOutput, options.target, attestedInputs.linker.apple?.codesign?.output);
+  if (signing !== null) attestedInputs.signing = signing;
   const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: buildOutput });
   const receipt = buildInputsReceipt(attestedInputs, publishedInputs);
   // Keep host-specific compiler paths and argv in the Cargo target directory;

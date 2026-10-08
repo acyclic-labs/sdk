@@ -697,7 +697,7 @@ proptest::proptest! {
                 naive_changes(before, &next)?
             );
             let mut replayed = before.clone();
-            apply(&mut replayed, delta, root.path(), core.options, LocalObjectsLimits::default())?;
+            apply(&mut replayed, delta, &Arc::new(crate::physical::LocalRoot::new(root.path().to_path_buf())), core.options, LocalObjectsLimits::default())?;
             proptest::prop_assert_eq!(view(&replayed)?, view(&next)?);
             states.push(next);
             lengths.push(fs::metadata(&journal)?.len());

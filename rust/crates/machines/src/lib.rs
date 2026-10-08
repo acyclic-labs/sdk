@@ -22,6 +22,8 @@ use uuid::Uuid;
 #[cfg(feature = "grpc")]
 mod grpc;
 #[cfg(feature = "grpc")]
+mod obs;
+#[cfg(feature = "grpc")]
 pub use grpc::Tls;
 
 /// Generated revision-one public transport. Service implementations consume this module;
@@ -544,6 +546,25 @@ pub enum ProviderError {
     Failed,
     #[error("operation cancelled")]
     Cancelled,
+}
+
+impl ProviderError {
+    /// Stable, message-free name of this failure class.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::NotFound(_) => "not_found",
+            Self::Conflict(_) => "conflict",
+            Self::Unsupported(_) => "unsupported",
+            Self::Invalid(_) => "invalid",
+            Self::Rejected(_) => "rejected",
+            Self::Unavailable => "unavailable",
+            Self::Indeterminate(_) => "indeterminate",
+            Self::OperationIndeterminate(_) => "operation_indeterminate",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 /// Public provider interface shared by deterministic and managed implementations.

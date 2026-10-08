@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 /** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
 
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, configureDarwinAppleLd, createRustcInvocationCapture, darwinAppleLdPaths, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -127,8 +127,8 @@ function validBuildInputs() {
     schema: "acyclic.stream.native-build-inputs.v3",
     target: "x86_64-pc-windows-msvc",
     target_dir: "C:/runner/_work/target-stream-native",
-    runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: { command: "bun", args: ["--version"], output: "1.4.2" } } },
-    invocation: { script: "scripts/build-stream-native.mjs", runtime: "C:/Program Files/nodejs/node.exe", args: ["build", "--target", "x86_64-pc-windows-msvc"] },
+    runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: null } },
+    invocation: { script: "scripts/build-stream-native.mjs", runtime: "node", args: ["build", "--target", "x86_64-pc-windows-msvc"] },
     compiler: {
       rustc: { command: "rustc", args: ["--version", "--verbose"], output: "rustc 1.98.1\nhost: x86_64-pc-windows-msvc" },
       cargo: { command: "cargo", args: ["--version", "--verbose"], output: "cargo 1.98.1\nhost: x86_64-pc-windows-msvc" },
@@ -153,7 +153,7 @@ function validBuildInputs() {
     },
     linker: {
       configured: { target: null },
-      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
+      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, DYLD_LIBRARY_PATH: null, SDKROOT: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
       actual: {
         source: "rustc-invocation",
         rustc: "C:/Rust/bin/rustc.exe",
@@ -205,6 +205,20 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
     plain: "-C link-arg=\"C:\\Program Files\\SDK\\link.exe\"",
   }).split("\x1f");
   assert.deepEqual(windowsPath.slice(0, 2), ["-C", "link-arg=C:\\Program Files\\SDK\\link.exe"]);
+
+  const darwin = deterministicRustflags("/src", "/target", "aarch64-apple-darwin").split("\x1f");
+  assert.ok(darwin.includes("-C"));
+  assert.ok(darwin.includes("link-arg=-Wl,-install_name,@rpath/libacyclic_stream_napi.dylib"));
+  assert.ok(darwin.includes("link-arg=-Wl,-final_output,/__acyclic_stream_output/libacyclic_stream_napi.dylib"));
+  assert.ok(darwin.includes("link-arg=-Wl,-reproducible"));
+  const applePaths = darwinAppleLdPaths("aarch64-apple-darwin", "/Apple/SDK");
+  assert.deepEqual(applePaths, {
+    linkerEnvironment: "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+    linker: "/usr/bin/ld",
+    driver: "/usr/bin/clang",
+    sdkRoot: "/Apple/SDK",
+  });
+  assert.equal(darwinAppleLdPaths("x86_64-pc-windows-msvc", "/Apple/SDK"), null);
 });
 
 test("native qualification rejects build input identity mutations", () => {
@@ -241,6 +255,20 @@ test("native qualification rejects build input identity mutations", () => {
     RUSTC_LINKER: "C:/ambient/lld-link.exe",
   });
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
+
+  const missingDarwinIdentity = structuredClone(valid);
+  missingDarwinIdentity.target = "aarch64-apple-darwin";
+  missingDarwinIdentity.generator.options.target = missingDarwinIdentity.target;
+  assert.throws(() => assertBuildInputs(missingDarwinIdentity), /missing Apple tool identity/);
+
+  const darwinLinker = linkerInputs("aarch64-apple-darwin", {
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "/usr/bin/clang",
+    DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
+    SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
+  }, { attestApple: false });
+  assert.equal(darwinLinker.configured.target, "/usr/bin/clang");
+  assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
+  assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
 });
 
 test("native qualification normalizes host paths in published build inputs", () => {
@@ -255,7 +283,7 @@ test("native qualification normalizes host paths in published build inputs", () 
   });
   assert.equal(normalized.target_dir, "<target-dir>");
   assert.equal(normalized.runtime.node_path, "<runtime>");
-  assert.equal(normalized.invocation.runtime, "bun");
+  assert.equal(normalized.invocation.runtime, "node");
   assert.equal(normalized.generator.options.output_dir, "<output-dir>");
   assert.equal(normalized.generator.options.target_dir, "<target-dir>");
   assert.equal(normalized.linker.actual.rustc, "rustc");
@@ -397,6 +425,56 @@ test("native qualification restores Rustflags when setup fails", async () => {
   else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
 });
 
+test("native qualification restores Darwin Apple linker environment", () => {
+  const linkerEnvironment = "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER";
+  const priorLinker = process.env[linkerEnvironment];
+  const priorLoader = process.env.DYLD_LIBRARY_PATH;
+  const priorSdkRoot = process.env.SDKROOT;
+  process.env[linkerEnvironment] = "ambient-linker";
+  process.env.DYLD_LIBRARY_PATH = "ambient-loader";
+  process.env.SDKROOT = "ambient-sdk";
+  let restore;
+  try {
+    const priorPath = process.env.PATH;
+    restore = configureDarwinAppleLd("aarch64-apple-darwin", { sdkRoot: "/Apple/SDK", driver: "/usr/bin/clang", linkerExists: () => true });
+    assert.equal(process.env[linkerEnvironment], "/usr/bin/clang");
+    assert.equal(process.env.PATH, priorPath);
+    assert.equal(process.env.DYLD_LIBRARY_PATH, "ambient-loader");
+    restore();
+    restore = undefined;
+    assert.equal(process.env[linkerEnvironment], "ambient-linker");
+    assert.equal(process.env.DYLD_LIBRARY_PATH, "ambient-loader");
+    assert.equal(process.env.SDKROOT, "ambient-sdk");
+    assert.equal(process.env.PATH, priorPath);
+  } finally {
+    restore?.();
+    if (priorLinker === undefined) delete process.env[linkerEnvironment];
+    else process.env[linkerEnvironment] = priorLinker;
+    if (priorLoader === undefined) delete process.env.DYLD_LIBRARY_PATH;
+    else process.env.DYLD_LIBRARY_PATH = priorLoader;
+    if (priorSdkRoot === undefined) delete process.env.SDKROOT;
+    else process.env.SDKROOT = priorSdkRoot;
+  }
+});
+
+test("native qualification selects the supplied Darwin SDK for clang", () => {
+  const restore = configureDarwinAppleLd("aarch64-apple-darwin", {
+    sdkRoot: "/Applications/Custom SDK.sdk",
+    driver: "/Applications/Custom SDK.sdk/usr/bin/clang",
+    linkerExists: () => true,
+  });
+  assert.equal(process.env.SDKROOT, "/Applications/Custom SDK.sdk");
+  assert.equal(process.env.CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER, "/Applications/Custom SDK.sdk/usr/bin/clang");
+  restore();
+});
+
+test("native qualification refuses a Darwin host without Apple ld", () => {
+  assert.throws(
+    () => configureDarwinAppleLd("aarch64-apple-darwin", { sdkRoot: "/Apple/SDK", driver: "/usr/bin/clang", linkerExists: () => false }),
+    /Apple ld is unavailable/u,
+  );
+});
+
 test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-edge-test-"));
   const node = process.execPath.replaceAll("\\", "/");
@@ -493,6 +571,39 @@ test("native qualification records explicit and implicit rustc linkers through a
   }
 });
 
+test("native capture invokes the exact rustc executable when no nested wrapper is configured", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "stream-native-direct-rustc-test-"));
+  const node = process.execPath.replaceAll("\\", "/");
+  const rustcSource = resolve(directory, "rustc.mjs");
+  const windows = process.platform === "win32";
+  const rustcCommand = resolve(directory, windows ? "rustc.cmd" : "rustc");
+  const priorWrapper = process.env.RUSTC_WORKSPACE_WRAPPER;
+  const invoke = (wrapper, args) => windows
+    ? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "call", wrapper, ...args], { stdio: "inherit" })
+    : execFileSync(wrapper, args, { stdio: "inherit" });
+  try {
+    await writeFile(rustcSource, "process.exit(0);\n");
+    if (windows) await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
+    else {
+      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
+      await chmod(rustcCommand, 0o700);
+    }
+    delete process.env.RUSTC_WORKSPACE_WRAPPER;
+    const capture = await createRustcInvocationCapture();
+    try {
+      invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link"]);
+      const receipt = await capture.read("x86_64-unknown-linux-gnu");
+      assert.equal(receipt.rustc, rustcCommand);
+    } finally {
+      await capture.close();
+    }
+  } finally {
+    if (priorWrapper === undefined) delete process.env.RUSTC_WORKSPACE_WRAPPER;
+    else process.env.RUSTC_WORKSPACE_WRAPPER = priorWrapper;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("native capture restores nested wrappers and PATH and receipts retain the invoked workspace wrapper", async () => {
   const prior = {
     RUSTC_WRAPPER: process.env.RUSTC_WRAPPER,
@@ -559,5 +670,19 @@ test("native builds create a Cargo cache tag only for an empty producer target d
   } finally {
     await rm(empty, { recursive: true, force: true });
     await rm(populated, { recursive: true, force: true });
+  }
+});
+
+test("native builds reject a target directory symlink before creating cache state", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-target-link-test-"));
+  const target = resolve(parent, "target");
+  const destination = resolve(parent, "destination");
+  try {
+    await symlink(destination, target, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(ensureCargoTargetDirectory(target), /symlink or junction/u);
+    assert.equal((await readdir(parent)).includes("target"), true);
+    await assert.rejects(readFile(resolve(target, "CACHEDIR.TAG")));
+  } finally {
+    await rm(parent, { recursive: true, force: true });
   }
 });
