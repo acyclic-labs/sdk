@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { validateArchive } from "./validate-npm-package.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const assembledDirectory = process.argv[2] === "--archives" ? resolve(process.argv[3]) : undefined;
 const packagesRoot = join(root, "typescript", "packages");
 const releasePackages = JSON.parse(await readFile(join(root, "release", "npm-packages.json"), "utf8"));
 const publishedPackageEntries = releasePackages.filter(item => item.source === "typescript");
@@ -26,7 +27,7 @@ for (const entry of publishedPackageEntries) {
     throw new Error(`published package is absent from the workspace: ${entry.name}`);
   }
 }
-const packageEntries = workspacePackageEntries;
+const packageEntries = assembledDirectory ? publishedPackageEntries : workspacePackageEntries;
 const packageDirectories = packageEntries.map(item => item.directory);
 const rootManifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const rootTsconfig = JSON.parse(await readFile(join(root, "tsconfig.json"), "utf8"));
@@ -38,7 +39,7 @@ for (const entry of packageEntries) {
   }
 }
 
-const expectedExports = {
+const representativeExports = {
   "@acyclic-labs/actors": "HttpActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
   "@acyclic-labs/harness": "Harness",
@@ -50,8 +51,11 @@ const expectedExports = {
   "@acyclic-labs/stream": "MemoryStreamProvider",
   "@acyclic-labs/workers": "HttpWorkersClient",
 };
+const expectedExports = assembledDirectory
+  ? Object.fromEntries(packageEntries.map(entry => [entry.name, representativeExports[entry.name]]))
+  : representativeExports;
 for (const entry of packageEntries) {
-  if (!(entry.name in expectedExports)) {
+  if (!(entry.name in representativeExports)) {
     throw new Error(`missing tarball smoke contract for ${entry.name}`);
   }
 }
@@ -139,6 +143,7 @@ const checks = {
   },
 };
 for (const [name, check] of Object.entries(checks)) {
+  if (!(name in expected)) continue;
   const module = await import(name);
   if (!(await check(module))) throw new Error(name + " representative API check failed");
 }
@@ -162,11 +167,37 @@ const main = async () => {
         throw new Error(`published release identity differs for ${entry.directory}`);
       }
     }
+    const nativeTarballs = new Map();
+    if (assembledDirectory) {
+      const assembly = JSON.parse(await readFile(join(assembledDirectory, "STREAM_NATIVE_PACKAGE.json"), "utf8"));
+      const { sourceNativeInventory, verifyNativeAssembly } = await import("./assemble-stream-native-package.mjs");
+      const inventory = await sourceNativeInventory(assembly.source_commit);
+      await verifyNativeAssembly(assembledDirectory, assembly.source_commit, assembly.parent.version, inventory);
+      const host = run("rustc", ["-vV"]).match(/^host: (.+)$/m)?.[1];
+      const selected = assembly.companions.filter(companion => companion.selected_target === host);
+      if (selected.length !== 1) throw new Error(`assembly requires exactly one Rust host companion: ${host}`);
+      const companion = selected[0];
+      const report = process.platform === "linux"
+        ? /** @type {{ header: { glibcVersionRuntime?: string } }} */ (process.report.getReport()) : undefined;
+      const libc = report?.header.glibcVersionRuntime ? "glibc" : "musl";
+      if (!companion.os.includes(process.platform) || !companion.cpu.includes(process.arch)
+        || (companion.libc && !companion.libc.includes(libc))) {
+        throw new Error("Rust host companion differs from the JavaScript runtime platform");
+      }
+      nativeTarballs.set(companion.name, join(assembledDirectory, companion.asset));
+    }
     const manifests = await Promise.all(packageDirectories.map(packageJson));
     for (let i = 0; i < manifests.length; i += 1) {
       const manifest = manifests[i];
       if (manifest.name !== packageEntries[i].name) {
         throw new Error(`release identity differs for ${packageDirectories[i]}`);
+      }
+      if (assembledDirectory) {
+        const entry = publishedPackageEntries[i];
+        const archive = join(assembledDirectory, "acyclic-labs-" + entry.slug + "-" + manifest.version + ".tgz");
+        validateArchive(archive, manifest.name, manifest.version, "typescript/packages/" + entry.directory);
+        tarballs.set(manifest.name, archive);
+        continue;
       }
       const packageDirectory = join(packagesRoot, packageDirectories[i]);
       if (!hasExportedFiles(manifest, packageDirectory)) {
@@ -185,7 +216,7 @@ const main = async () => {
       }
       tarballs.set(manifest.name, resolve(packedPath));
     }
-    const tarballSpec = (file) => `file:./${relative(tempRoot, file).split(sep).join("/")}`;
+    const tarballSpec = (file) => "file:" + resolve(file).split(sep).join("/");
     const dependencies = Object.fromEntries([...tarballs].map(([name, file]) => [name, tarballSpec(file)]));
     const peerDependencies = Object.fromEntries(manifests.flatMap((manifest) => Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => !tarballs.has(name))));
     await writeFile(join(tempRoot, "package.json"), JSON.stringify({
@@ -193,18 +224,24 @@ const main = async () => {
       type: "module",
       workspaces: [],
       dependencies: { ...dependencies, ...peerDependencies, "@types/node": rootManifest.devDependencies["@types/node"] },
-      overrides: Object.fromEntries([...tarballs].map(([name, file]) => [name, tarballSpec(file)])),
+      overrides: Object.fromEntries([...tarballs, ...nativeTarballs].map(([name, file]) => [name, tarballSpec(file)])),
     }, null, 2));
     await writeFile(join(tempRoot, "probe.mjs"), probeSource("Bun", expectedExports));
     // Tarball install keys collide in Bun's shared Windows cache across smoke
     // runs. Keep the installed-package qualification isolated with its packs.
-    run("bun", ["install", "--no-progress"], {
+    run("bun", ["install", ...(assembledDirectory ? ["--ignore-scripts"] : []), "--no-progress"], {
       cwd: tempRoot,
       env: { ...process.env, BUN_INSTALL_CACHE_DIR: join(tempRoot, "install-cache") },
     });
     run("bun", ["probe.mjs"], { cwd: tempRoot });
     await writeFile(join(tempRoot, "probe-node.mjs"), probeSource("Node", expectedExports));
     run("node", ["probe-node.mjs"], { cwd: tempRoot });
+    if (assembledDirectory) {
+      await writeFile(join(tempRoot, "stream-native-companion.mjs"),
+        await readFile(join(packagesRoot, "stream/test/native-companion-installed.mjs")));
+      run("node", ["stream-native-companion.mjs"], { cwd: tempRoot });
+      run("bun", ["stream-native-companion.mjs"], { cwd: tempRoot });
+    }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });
     run("bun", ["inference-widths.mjs"], { cwd: tempRoot });

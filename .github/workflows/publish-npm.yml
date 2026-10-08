@@ -86,6 +86,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          TOOLS_DIR: ${{ runner.temp }}/stream-native-tools
         shell: bash
         run: |
           set -euo pipefail
@@ -136,6 +137,8 @@ jobs:
           cp -R "$RUNNER_TEMP/qualified-macos/stream-native" "$native_stage/macos"
           node scripts/assemble-stream-native-package.mjs \
             "$stage/typescript" "$native_stage" "$SOURCE_SHA"
+          source scripts/ensure-bun.sh
+          bun scripts/check-typescript-tarballs.mjs --archives "$stage/typescript"
 
       - name: Download exact qualified universal plugin
         env:
