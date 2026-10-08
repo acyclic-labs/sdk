@@ -1076,6 +1076,42 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         fs::read(relocated.output.join(path)).unwrap(),
         "independent clean profile outputs must publish identical content identities and bytes"
     );
+    let data: Value =
+        serde_json::from_slice(&fs::read(fixture.output.join(path)).unwrap()).unwrap();
+    let mut spans = Vec::new();
+    fn source_paths(value: &Value, paths: &mut Vec<String>) {
+        if let Some(object) = value.as_object() {
+            if let Some(path) = object
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| path.starts_with("generated/rustdoc/"))
+            {
+                paths.push(path.to_string());
+            }
+            for child in object.values() {
+                source_paths(child, paths);
+            }
+        } else if let Some(array) = value.as_array() {
+            for child in array {
+                source_paths(child, paths);
+            }
+        }
+    }
+    source_paths(&data, &mut spans);
+    assert!(
+        !spans.is_empty(),
+        "generated source spans must appear in the actual docs data"
+    );
+    for path in spans {
+        assert_eq!(
+            fs::read(fixture.output.join(&path)).unwrap(),
+            b"pub struct GeneratedWire;\n"
+        );
+        assert_eq!(
+            fs::read(fixture.output.join(&path)).unwrap(),
+            fs::read(relocated.output.join(&path)).unwrap()
+        );
+    }
     assert_eq!(
         fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
         fs::read(

@@ -161,8 +161,13 @@ pub fn build(
                 "scenario-executions"
             } else if path == "sdk-docs-scenario-projections.v1.json" {
                 "scenario-projections"
-            } else if path.starts_with("sdk-docs-scenario-") || path.starts_with("snippets/") {
+            } else if path.starts_with("sdk-docs-scenario-")
+                || path.starts_with("snippets/")
+                || path.starts_with("generated/scenarios/")
+            {
                 "typescript-snippet"
+            } else if path.starts_with("generated/rustdoc/") {
+                "generated-rust-source"
             } else {
                 "docs-data"
             };

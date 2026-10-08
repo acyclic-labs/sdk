@@ -412,6 +412,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         mark_latest: args.channel == Channel::Release,
     };
     let mut data = build_data(&input).map_err(docs_error)?;
+    let mut generated_source_artifacts = input.generated_sources.clone();
     if args.channel == Channel::Release {
         validate_published_coverage(&published, &data)?;
     }
@@ -444,12 +445,25 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             mark_latest: false,
         };
         let variant_data = build_data(&variant_input).map_err(docs_error)?;
+        generated_source_artifacts.extend(variant_input.generated_sources.clone());
         merge_profile_catalog(&mut data, variant_data).map_err(docs_error)?;
     }
     let availability =
         project_into_docs(&data, &metadata, profile_items, &profiles).map_err(profile_error)?;
     fs::create_dir_all(&output).map_err(io_error)?;
     write_bundle(&data, &output, input.mark_latest).map_err(docs_error)?;
+    for source in generated_source_artifacts {
+        let bytes = fs::read(&source.physical_path).map_err(io_error)?;
+        if sha256_bytes(&bytes).trim_start_matches("sha256:")
+            != source.sha256.trim_start_matches("sha256:")
+        {
+            return Err(CliError(format!(
+                "generated source changed before bundling: {}",
+                source.physical_path.display()
+            )));
+        }
+        write_immutable(&output.join(&source.logical_path), &bytes)?;
+    }
     let profile_path = output.join("sdk-docs-profile-availability.v1.json");
     let profile_bytes = json_bytes(&availability)?;
     write_immutable(&profile_path, &profile_bytes)?;
