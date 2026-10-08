@@ -2,14 +2,14 @@
 use super::*;
 use tokio::sync::Mutex;
 #[derive(Default)]
-struct ReceiptFaultStream {
-    inner: MemoryStream,
+struct ReceiptFaultStream<P = MemoryStream> {
+    inner: P,
     fault: Mutex<Option<(&'static str, bool)>>,
     hide_next_inspection: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
-impl StreamProvider for ReceiptFaultStream {
+impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
     async fn inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,
@@ -113,7 +113,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         ("observed", false),
         ("observed", true),
     ] {
-        let stream = Arc::new(ReceiptFaultStream::default());
+        let stream = Arc::new(ReceiptFaultStream::<MemoryStream>::default());
         *stream.fault.lock().await = Some((kind, lost_reply));
         super::run_on(
             true,
@@ -137,5 +137,74 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
     println!(
         "MCP applied call with lost response, bounded cleanup and receipt-only recovery passed"
     );
+    #[cfg(feature = "filesystem-local")]
+    disk_restart().await?;
+    Ok(())
+}
+
+#[cfg(feature = "filesystem-local")]
+async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for (receipt_fault, lost_response) in [
+        (None, false),
+        (Some(("launch", false)), false),
+        (Some(("launch", true)), false),
+        (Some(("observed", false)), false),
+        (Some(("observed", true)), false),
+        (None, true),
+    ] {
+        let storage = tempfile::tempdir()?;
+        let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
+            storage.path().join("filesystem"),
+        ))
+        .await?;
+        let local = acyclic_stream::LocalStream::open(
+            storage.path().join("coordinator"),
+            Default::default(),
+        )
+        .await?;
+        let stream = Arc::new(ReceiptFaultStream {
+            inner: local,
+            fault: Mutex::new(receipt_fault),
+            hide_next_inspection: Default::default(),
+        });
+        let weak_stream = Arc::downgrade(&stream);
+        let evidence = super::prepare_on(
+            true,
+            StreamClient::new(stream.clone()),
+            filesystem,
+            receipt_fault,
+            lost_response,
+        )
+        .await?;
+        if stream.fault.lock().await.is_some() {
+            return Err("disk-backed native receipt fault was not exercised".into());
+        }
+        drop(stream);
+        if weak_stream.upgrade().is_some() || evidence.files.upgrade().is_some() {
+            return Err("old runtime or storage handles survived disk restart".into());
+        }
+        let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
+            storage.path().join("filesystem"),
+        ))
+        .await?;
+        let stream = Arc::new(
+            acyclic_stream::LocalStream::open(
+                storage.path().join("coordinator"),
+                Default::default(),
+            )
+            .await?,
+        );
+        super::recover_on(
+            StreamClient::new(stream),
+            filesystem,
+            &evidence,
+            receipt_fault,
+            lost_response,
+        )
+        .await?;
+        println!(
+            "MCP disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
+        );
+    }
     Ok(())
 }

@@ -121,7 +121,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
-| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer and receipt-fault/provider-recovery controls pass; MCP disk reopen, host death and model-tool binding gates open |
+| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults and six disk-reopen cases pass; host death, model-tool binding and final platform gates open |
 | Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Pending |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
@@ -300,3 +300,42 @@ Strict library/test/example Clippy passes. These are development receipts with
 memory-backed journals: MCP disk reopen and host death, model-tool binding,
 final-source platform/formal/installed-artifact gates, actual Chromium, owner
 review and actual-main landing remain open.
+
+### Native MCP disk restart development checkpoint
+
+The public consumer separates initial execution from receipt recovery and accepts
+ordinary filesystem/stream backends. Its memory controls and disk controls use the
+same preparation, task registration, approved process provider, authority adapters,
+stored-result validation, SDK-publication checks and physical call-log checks.
+Recovery reconstructs the existing task runtime with the retained task ID and
+lease fence and calls `NativeProcessProvider::recover`; it receives no native
+view and creates no alternative process, task registry or receipt engine.
+
+Six Windows disk cases passed with real `Fs::local` and `LocalStream` stores:
+completed response, launch rejection, lost launch acknowledgement, observation
+rejection, lost observation acknowledgement and applied call with no response.
+Every injected commit fault must be consumed. The initial function returns only
+inert restart references and a temporary-directory owner. Before opening fresh
+stores, weak references assert that the old stream and filesystem hosts have
+dropped, covering the old runtime, content/result/approval adapters and process
+provider. No local backend handle is retained by the restart caller.
+
+After reopening, complete observations retain the exact Unicode/full-width
+result; the uncommitted launch/observation cases stay indeterminate. The withheld
+response retains its confirmed-cleanup timeout capture while the MCP outcome
+stays indeterminate. SDK output is read from the reopened filesystem, independently
+of the native peer's call log. The physical output is removed before recovery;
+repeat effect invocation recreates neither that file nor a second call-log entry.
+
+The final factored consumer passes its two positive paths, five memory fault
+controls and six disk cases. Strict library/test/example Clippy passes without a
+new suppression. The public example also passes a `native-execution`-only Cargo
+check, without `filesystem-local` or `mcp-http` selected. A live foreign Cargo job
+and 100% CPU observation initially
+deferred further compiler overlap; after a fresh 19% CPU observation with about
+41 GiB free, the final rerun used one Cargo job. Its terminal result and absence
+of its Cargo/rustc processes and direct children were verified. These are local
+development restart controls, not host-death or final-source cross-platform
+qualification. Host death, model-tool binding, formal/installed-artifact gates,
+actual Chromium, owner review, full CI and
+actual-main landing remain open.
