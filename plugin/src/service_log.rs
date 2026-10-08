@@ -255,8 +255,8 @@ mod tests {
         // SAFETY: valid fixed-size limit pointer, with no retained references;
         // this helper runs only in a dedicated process that exits afterwards.
         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
-        // SAFETY: SIG_IGN is the OS-defined handler, and this process is isolated.
         assert_ne!(
+            // SAFETY: SIG_IGN is the OS-defined handler, and this process is isolated.
             unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) },
             libc::SIG_ERR
         );
