@@ -236,6 +236,7 @@ export interface WasmTurnPreparation {
     readonly selection: Readonly<{
         readonly conversation_revision: bigint;
         readonly message_ids: readonly string[];
+        readonly checkpoint?: WasmFileRefWire;
     }>;
     readonly selection_is_new: boolean;
     readonly disposition: WasmTurnDisposition;

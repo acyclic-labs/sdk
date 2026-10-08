@@ -2,7 +2,7 @@
 import { DEFAULT_LIMITS, verifyFileBytes,
   type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
-import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeSelectedModelContext } from "./native-contracts.js";
+import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeFileRef, type NativeSelectedModelContext } from "./native-contracts.js";
 import type { ContentBindings } from "./runtime.js";
 import {
   HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS,
@@ -19,6 +19,8 @@ export interface ModelContextSelection {
   readonly conversationRevision: bigint;
   /** Ordered subset of canonical message IDs. */
   readonly messageIds: readonly ConversationMessageId[];
+  /** Pinned owner-published canonical base; stage contributions are separate. */
+  readonly checkpoint?: FileRef;
 }
 
 /** A provider-proven view may contain less than the complete durable history. */
@@ -149,7 +151,9 @@ export async function selectModelContext(
   }
   const projectedMessages = conversation.messages.map(message => validated.get(message.id) ?? message);
   const nativeConversation = { agent: conversation.agent, messages: projectedMessages };
-  const nativeSelection = { conversation_revision: selection.conversationRevision, message_ids: selection.messageIds };
+  const nativeSelection = { conversation_revision: selection.conversationRevision, message_ids: selection.messageIds,
+    ...(selection.checkpoint === undefined ? {} : { checkpoint: selection.checkpoint }),
+  };
   contracts.validateModelContextSelection(nativeConversation, nativeSelection);
   const files = await captureProjectionFiles(projectedMessages,
     selection.messageIds, options, contracts, maxManifestBytes, maxAttachments, maxRenderBytes);
@@ -227,11 +231,14 @@ async function captureProjectionFiles(
   return files;
 }
 
+function publicFile(file: NativeFileRef): FileRef {
+  return { ...file,
+    descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
+  } as FileRef;
+}
+
 /** Convert Rust-admitted content without reinterpreting option/event identities. */
 export function publicModelContent(content: NativeModelContent): ModelContent {
-  const publicFile = (file: Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef => ({
-    ...file, descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
-  } as FileRef);
   const publicFilePart = (part: Extract<NativeModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
     const file = publicFile(part.file);
     if (typeof part.policy === "string") return { ...part, file, policy: part.policy };
@@ -272,6 +279,7 @@ function projectNativeContext(value: NativeSelectedModelContext): SelectedModelC
     selection: Object.freeze({
       conversationRevision: value.selection.conversation_revision,
       messageIds: Object.freeze([...value.selection.message_ids]),
+      ...(value.selection.checkpoint === undefined ? {} : { checkpoint: publicFile(value.selection.checkpoint) }),
     }),
     messages: Object.freeze(value.messages.map(message => Object.freeze({ role: message.role, content: publicModelContent(message.content) }))),
   });

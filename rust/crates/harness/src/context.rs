@@ -96,6 +96,105 @@ pub struct CompactionReference {
     pub summary: Option<ContextSummary>,
 }
 
+impl CompactionReference {
+    /// Encodes this proof with the existing Harness canonical JSON serializer.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        crate::contract::canonical_json_bytes(self)
+    }
+}
+
+/// Ref-only canonical checkpoint envelope pinned by a committed history selection.
+/// The source selection's revision is its coverage watermark; stage output is separate.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalContextCheckpoint {
+    /// Existing execution which admitted the summary and its source.
+    pub operation_id: crate::OperationId,
+    /// Exact canonical delta and previous checkpoint used by that admission.
+    pub selection: crate::conversation::ModelContextSelection,
+    /// Immutable source base before stage transformation.
+    pub source: FileRef,
+    /// Immutable compacted canonical base for later deltas.
+    pub retained: FileRef,
+    /// Exact compaction proof and admitted summary output provenance.
+    pub compaction: FileRef,
+}
+
+impl CanonicalContextCheckpoint {
+    /// Checks a bounded envelope. The owning journal must verify publication and read refs.
+    pub fn validate(&self, limits: Limits) -> Result<()> {
+        limits.validate()?;
+        if self.selection.conversation_revision == 0
+            || self.selection.message_ids.is_empty()
+            || self.selection.message_ids.len() > limits.context_messages
+        {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint coverage is invalid".into(),
+            ));
+        }
+        let unique = self
+            .selection
+            .message_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique.len() != self.selection.message_ids.len() {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint repeats source identities".into(),
+            ));
+        }
+        for reference in [&self.source, &self.retained, &self.compaction] {
+            limits.validate_file(reference)?;
+            if reference.volume() != self.source.volume()
+                || reference.descriptor().media_type() != "application/json"
+            {
+                return Err(crate::Error::Invalid(
+                    "canonical checkpoint payload scope is invalid".into(),
+                ));
+            }
+        }
+        if let Some(previous) = &self.selection.checkpoint {
+            limits.validate_file(previous)?;
+        }
+        Ok(())
+    }
+
+    /// Encodes one bounded envelope for the owning journal's normal content publisher.
+    pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
+        self.validate(limits)?;
+        let bytes = crate::contract::canonical_json_bytes(self)?;
+        if bytes.len() as u64 > limits.file_bytes || bytes.len() as u64 > limits.render_bytes {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint envelope exceeds byte bounds".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Binds resolved payloads to the canonical source and existing summary operation.
+    pub fn validate_projection(
+        &self,
+        source: &Context,
+        retained: &Context,
+        compaction: &CompactionReference,
+        limits: Limits,
+    ) -> Result<()> {
+        self.validate(limits)?;
+        validate_projected_context(source, limits)?;
+        validate_projected_context(retained, limits)?;
+        validate_compaction(compaction, source, retained)?;
+        if compaction
+            .summary
+            .as_ref()
+            .is_none_or(|summary| summary.operation_id != self.operation_id)
+        {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint summary admission differs".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Resolved view of one durable context revision. Stream retains only `content`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextRevision {
@@ -1029,6 +1128,15 @@ impl ContextPipeline {
         input.input.validate_user_input()?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
+        }
+        if input
+            .selected_context
+            .as_ref()
+            .is_some_and(|selected| selected.selection.checkpoint.is_some())
+        {
+            return Err(crate::Error::Unsupported(
+                "canonical checkpoint requires owner-resolved base context".into(),
+            ));
         }
         let base = input.selected_context.as_ref().map_or_else(
             || {

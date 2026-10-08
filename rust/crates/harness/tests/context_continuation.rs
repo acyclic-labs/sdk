@@ -513,3 +513,91 @@ async fn large_context_payload_preserves_instruction_and_typed_tool_exchange() -
     assert_eq!(prepared.request().messages, source.messages);
     Ok(())
 }
+
+#[tokio::test]
+async fn checkpoint_envelope_binds_real_published_context_and_admitted_summary() -> Result<()> {
+    let Fixture {
+        storage,
+        provider,
+        source,
+        compacted,
+        reference,
+        ..
+    } = fixture().await?;
+    let operation_id = reference
+        .summary
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("missing admitted summary".into()))?
+        .operation_id;
+    let records = provider
+        .append_compaction(
+            0,
+            source.clone(),
+            compacted.clone(),
+            reference.clone(),
+            Bytes::from_static(b"checkpoint-envelope-source"),
+        )
+        .await?;
+    let proof_bytes = reference.encode()?;
+    let proof = storage
+        .stage(
+            operation_id,
+            "checkpoint-proof.json",
+            &proof_bytes,
+            "application/json",
+            "checkpoint-proof.json",
+        )
+        .await?;
+    // The canonical selection header is caller-owned here; this test qualifies payload
+    // publication and admitted summary binding, not canonical coverage admission.
+    let checkpoint = acyclic_harness::context::CanonicalContextCheckpoint {
+        operation_id,
+        selection: acyclic_harness::conversation::ModelContextSelection {
+            conversation_revision: 3,
+            message_ids: (0..3).map(|_| uuid::Uuid::new_v4()).collect(),
+            checkpoint: None,
+        },
+        source: records[0].content.clone(),
+        retained: records[1].content.clone(),
+        compaction: proof,
+    };
+    checkpoint.validate_projection(&source, &compacted, &reference, Limits::default())?;
+    assert!(
+        checkpoint
+            .validate_projection(&source, &source, &reference, Limits::default())
+            .is_err()
+    );
+    let mut changed = checkpoint.clone();
+    changed.operation_id = OperationId::new();
+    assert!(
+        changed
+            .validate_projection(&source, &compacted, &reference, Limits::default())
+            .is_err()
+    );
+    let encoded = checkpoint.encode(Limits::default())?;
+    let pinned = storage
+        .stage(
+            operation_id,
+            "checkpoint.json",
+            &encoded,
+            "application/json",
+            "checkpoint.json",
+        )
+        .await?;
+    let reader = StoredContent(storage.clone());
+    let bytes = reader.read(&pinned).await?;
+    pinned.descriptor().verify(&bytes)?;
+    let reopened: acyclic_harness::context::CanonicalContextCheckpoint =
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(reopened, checkpoint);
+    reopened.validate_projection(
+        &records[0].context,
+        &records[1].context,
+        records[1]
+            .compaction
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing published proof".into()))?,
+        Limits::default(),
+    )?;
+    Ok(())
+}

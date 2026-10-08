@@ -291,3 +291,23 @@ test("a compacted remote view uses its authoritative revision, not its loaded me
   await expect(selectModelContext(view, { conversationRevision: view.revision - 1n,
     messageIds: [id] }, {})).rejects.toThrow("stale");
 });
+
+
+test("canonical checkpoint pointer survives native selected-context projection", async () => {
+  const content = await reference("messages/current.txt", new TextEncoder().encode("current"), "text/plain");
+  const checkpoint = await reference("context/checkpoint.json", new TextEncoder().encode("{}"), "application/json");
+  const message: ConversationMessage = {
+    id, sequence: 1n, kind: "user", content,
+    attachments: { kind: "inline", items: [] },
+    reply_to: null, tool_call_id: null, extensions: {},
+  };
+  const projected = await selectModelContext(conversationState(message), {
+    conversationRevision: 1n, messageIds: [id], checkpoint,
+  }, {});
+  expect(projected.selection.checkpoint).toEqual(checkpoint);
+  expect(typeof projected.selection.checkpoint?.descriptor.byte_length).toBe("number");
+  await expect(selectModelContext(conversationState(message), {
+    conversationRevision: 1n, messageIds: [id],
+    checkpoint: { ...checkpoint, path: "../escape" },
+  }, {})).rejects.toThrow();
+});

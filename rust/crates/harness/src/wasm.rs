@@ -69,6 +69,8 @@ struct WasmLimitsInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WasmPublicModelContextSelection {
+    #[serde(default)]
+    checkpoint: Option<FileRef>,
     conversation_revision: u64,
     message_ids: Vec<uuid::Uuid>,
 }
@@ -774,6 +776,7 @@ export interface WasmTurnPreparation {
     readonly selection: Readonly<{
         readonly conversation_revision: bigint;
         readonly message_ids: readonly string[];
+        readonly checkpoint?: WasmFileRefWire;
     }>;
     readonly selection_is_new: boolean;
     readonly disposition: WasmTurnDisposition;
@@ -2982,6 +2985,7 @@ pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Re
     let limits: Limits = from_js(limits)?;
     SelectedModelContext {
         selection: ModelContextSelection {
+            checkpoint: selected.selection.checkpoint,
             conversation_revision: selected.selection.conversation_revision,
             message_ids: selected.selection.message_ids,
         },

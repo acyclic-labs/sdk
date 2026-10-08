@@ -5162,6 +5162,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             Some(&[message.clone()][..])
         );
         let selection = ModelContextSelection {
+            checkpoint: None,
             conversation_revision: 1,
             message_ids: vec![message.id],
         };
@@ -5179,6 +5180,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 3,
                 Action::SelectModelContext {
                     selection: ModelContextSelection {
+                        checkpoint: None,
                         conversation_revision: 0,
                         message_ids: vec![message.id]
                     },

@@ -504,3 +504,41 @@ integration tests passed in `target-b-native-explicit-base-boundary.log`.
 Generated browser artifacts have not been regenerated for this refactor yet;
 these receipts qualify the Rust transformation seam, not browser adoption or
 default canonical watermark publication.
+
+
+## Pinned canonical checkpoint and indexed delta seam
+
+`CanonicalContextCheckpoint` is an immutable, ref-only envelope over a source
+selection, pre-stage source, retained base and admitted-summary proof. Its
+selection revision is the coverage watermark. Validation binds the retained
+projection to the actual compaction and summary operation; the owning journal
+must establish committed publication and canonical source authority.
+`select_turn_delta` verifies the pinned envelope descriptor and recorded source
+selection, then uses the resident sequence index to select the complete delta.
+Without a checkpoint it selects all model-visible history or rejects the bound;
+it never silently drops an older prefix. Unresolved checkpoint selections fail
+closed at pipeline base construction until the owner materializes the base.
+
+The 10,000-record fixture qualifies resident indexed selection, exact delta
+boundaries, insufficient bounds and altered-envelope rejection. It does not
+qualify cold restoration, constant memory or default checkpoint publication.
+The real storage integration publishes and reopens an envelope referencing
+actual source/retained contexts and an admitted summary proof, with altered
+retained projection and operation negatives. Its synthetic source identities do
+not establish canonical history coverage.
+
+Native library and continuation checks passed 262 plus five tests in
+`target-b-native-canonical-checkpoint-seam.log`. Strict native and WASM lint
+passed in `target-b-clippy-canonical-checkpoint-seam-final.log` and
+`target-b-clippy-canonical-checkpoint-seam-wasm.log`. Fresh isolated generation
+passed in `target-b-wasm-canonical-checkpoint-seam.log`; all four installed
+artifacts match `target/b-canonical-checkpoint-seam-artifact-hashes.json`.
+Package build and test type checking passed in
+`target-b-types-canonical-checkpoint-consumers.log`. Projection/model/type
+consumers passed 29 tests in `target-b-bun-canonical-checkpoint-consumers.log`,
+and compaction accounting passed separately in
+`target-b-bun-canonical-checkpoint-accounting.log`. Chromium passed the broader
+wire page and 54 pure compaction checks in
+`target-b-browser-canonical-checkpoint-consumers.log`. These checks also
+regenerate the prior base/transform boundary. Default continuation, cold
+restoration, fork policy and the automatic browser model path remain open.

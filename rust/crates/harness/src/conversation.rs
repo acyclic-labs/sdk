@@ -1501,6 +1501,10 @@ pub struct ModelContextSelection {
     pub conversation_revision: u64,
     /// Ordered, unique message identities; omitted history is deliberate.
     pub message_ids: Vec<Uuid>,
+    /// Immutable canonical checkpoint covering history before this selection's delta.
+    /// Its typed payload and publication must be resolved by the owning journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<FileRef>,
 }
 
 impl ModelContextSelection {
@@ -1510,6 +1514,9 @@ impl ModelContextSelection {
             return Err(Error::Conflict(
                 "model context selection has a stale conversation revision".into(),
             ));
+        }
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.validate()?;
         }
         let mut previous_sequence = 0;
         for id in &self.message_ids {
@@ -1625,6 +1632,39 @@ impl ConversationState {
         self.model_positions[end.saturating_sub(maximum)..end]
             .iter()
             .map(|position| &self.messages[*position])
+    }
+
+    /// Returns one exact model-visible delta using the existing position index.
+    /// Oversized deltas reject before iteration; no older history is silently dropped.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the position index is maintained by append/decode; partition bounds its slice"
+    )]
+    pub(crate) fn model_messages_between(
+        &self,
+        after: u64,
+        through: u64,
+        maximum: usize,
+    ) -> Result<impl Iterator<Item = &ConversationMessage>> {
+        if after > through || through > self.messages.last().map_or(0, |message| message.sequence) {
+            return Err(Error::Invalid(
+                "model history delta bounds are invalid".into(),
+            ));
+        }
+        let start = self
+            .model_positions
+            .partition_point(|position| self.messages[*position].sequence <= after);
+        let end = self
+            .model_positions
+            .partition_point(|position| self.messages[*position].sequence <= through);
+        if end - start > maximum {
+            return Err(Error::Invalid(
+                "canonical history delta exceeds context limit".into(),
+            ));
+        }
+        Ok(self.model_positions[start..end]
+            .iter()
+            .map(|position| &self.messages[*position]))
     }
 
     /// Binds an empty conversation to exactly one agent.

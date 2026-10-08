@@ -1340,6 +1340,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let selected = select_model_context(
         state,
         ModelContextSelection {
+            checkpoint: None,
             conversation_revision: 2,
             message_ids: vec![Uuid::from_bytes([0xF0; 16])],
         },

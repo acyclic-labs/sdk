@@ -76,6 +76,7 @@ export interface NativeSelectedModelContext {
   readonly selection: Readonly<{
     readonly conversation_revision: bigint;
     readonly message_ids: readonly ConversationMessageId[];
+    readonly checkpoint?: NativeFileRef;
   }>;
   readonly messages: readonly Readonly<{
     role: WasmModelRole;
