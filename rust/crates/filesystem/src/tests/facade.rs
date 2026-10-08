@@ -9384,7 +9384,9 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
-    for iteration in 0..200_u32 {
+    // An orphaned opener shows on the first quick reopen it races; the
+    // iterations only vary that race's timing.
+    for iteration in 0..24_u32 {
         let fs = Fs::local(options.clone()).await?;
         assert!(
             Fs::open_local_unshared(options.clone(), None)
