@@ -80,7 +80,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
 }
 
 /// Failure while recording or authenticating workspace lineage.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     /// The durable adapter failed.
     #[error("workspace-lineage store failed: {0}")]
@@ -163,48 +163,62 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     }
 
     /// Forks a real SDK workspace and durably records its direct parent.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.lineage.fork",
+            level = "info",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &self,
         parent: &Workspace<A, O>,
         destination: impl AsRef<str>,
         idempotency_key: IdempotencyKey,
     ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
-        let destination =
-            crate::WorkspaceName::new(destination.as_ref()).map_err(WorkspaceError::from)?;
-        let generation = parent.head().await?;
-        let child_id = parent
-            .fork_workspace_id(destination.as_str())
-            .map_err(WorkspaceError::from)?;
-        let planned = WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: false,
-            workspace_id: child_id,
-            workspace_name: destination.as_str().to_owned(),
-            parent_workspace_id: Some(parent.id()),
-            parent_workspace_name: Some(parent.name().as_str().to_owned()),
-            fork_generation: generation.id(),
-            initial_generation: generation.id(),
-        };
-        let planned = self.register(planned).await?;
-        let child = parent
-            .fork(
-                destination.as_str(),
-                ForkOptions::from_generation(generation.clone(), idempotency_key),
-            )
-            .await?;
-        let initial_generation = child.head().await?;
-        if child.id() != child_id {
-            return Err(WorkspaceLineageError::ConflictingRegistration);
-        }
-        if planned.ready && planned.initial_generation != initial_generation.id() {
-            return Err(WorkspaceLineageError::ConflictingRegistration);
-        }
-        let mut ready = planned;
-        ready.ready = true;
-        ready.initial_generation = initial_generation.id();
-        self.promote_ready(ready).await?;
-        Ok(child)
+        crate::obs::outcome(
+            async move {
+                let destination = crate::WorkspaceName::new(destination.as_ref())
+                    .map_err(WorkspaceError::from)?;
+                let generation = parent.head().await?;
+                let child_id = parent
+                    .fork_workspace_id(destination.as_str())
+                    .map_err(WorkspaceError::from)?;
+                let planned = WorkspaceLineageRecord {
+                    version: LINEAGE_VERSION,
+                    revision: 1,
+                    ready: false,
+                    workspace_id: child_id,
+                    workspace_name: destination.as_str().to_owned(),
+                    parent_workspace_id: Some(parent.id()),
+                    parent_workspace_name: Some(parent.name().as_str().to_owned()),
+                    fork_generation: generation.id(),
+                    initial_generation: generation.id(),
+                };
+                let planned = self.register(planned).await?;
+                let child = parent
+                    .fork(
+                        destination.as_str(),
+                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                    )
+                    .await?;
+                let initial_generation = child.head().await?;
+                if child.id() != child_id {
+                    return Err(WorkspaceLineageError::ConflictingRegistration);
+                }
+                if planned.ready && planned.initial_generation != initial_generation.id() {
+                    return Err(WorkspaceLineageError::ConflictingRegistration);
+                }
+                let mut ready = planned;
+                ready.ready = true;
+                ready.initial_generation = initial_generation.id();
+                self.promote_ready(ready).await?;
+                Ok(child)
+            }
+            .await,
+        )
     }
 
     /// Registers a child created by another SDK-owned fork façade.

@@ -196,7 +196,7 @@ pub enum MaterializationRecovery {
 }
 
 /// Materialization failure.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MaterializationError<S: std::error::Error + 'static, B: std::error::Error + 'static> {
     /// Durable journal access failed.
     #[error("materialization journal failed: {0}")]
@@ -474,29 +474,43 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         Ok(())
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.fs.materializer.persist",
+            level = "debug",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     async fn persist(
         &self,
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let expected = next_revision(&mut journal.revision);
-            if self
-                .store
-                .compare_and_swap(journal.plan.operation_id, expected, journal.clone())
-                .await
-                .map_err(MaterializationError::Store)?
-            {
-                return Ok(journal);
+        crate::obs::outcome(
+            async move {
+                for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+                    let expected = next_revision(&mut journal.revision);
+                    if self
+                        .store
+                        .compare_and_swap(journal.plan.operation_id, expected, journal.clone())
+                        .await
+                        .map_err(MaterializationError::Store)?
+                    {
+                        return Ok(journal);
+                    }
+                    let Some(current) = self.load(journal.plan.operation_id).await? else {
+                        return Err(MaterializationError::IncompatibleJournal);
+                    };
+                    if current.plan != journal.plan {
+                        return Err(MaterializationError::PlanConflict);
+                    }
+                    journal = current;
+                }
+                Err(MaterializationError::Contended)
             }
-            let Some(current) = self.load(journal.plan.operation_id).await? else {
-                return Err(MaterializationError::IncompatibleJournal);
-            };
-            if current.plan != journal.plan {
-                return Err(MaterializationError::PlanConflict);
-            }
-            journal = current;
-        }
-        Err(MaterializationError::Contended)
+            .await,
+        )
     }
 }
 
