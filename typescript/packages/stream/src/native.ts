@@ -1,6 +1,5 @@
 import { Buffer } from "node:buffer";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { fromBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -20,35 +19,13 @@ type NativeConnectResult = Awaited<ReturnType<NativeModule["NativeStreamClient"]
 let modulePromise: Promise<NativeModule> | undefined;
 const requireNative = createRequire(import.meta.url);
 const nativeBindingPath = fileURLToPath(new URL("../generated/native/binding.cjs", import.meta.url));
-const nativeTargetMetadataPath = fileURLToPath(new URL("../generated/native/native-targets.json", import.meta.url));
-
-type NativeTargetMetadata = { readonly selected_target?: unknown };
-
-function selectedNativeTarget(): string | undefined {
-  try {
-    const parsed = JSON.parse(readFileSync(nativeTargetMetadataPath, "utf8")) as NativeTargetMetadata;
-    return typeof parsed.selected_target === "string" ? parsed.selected_target : undefined;
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && (error as { readonly code?: unknown }).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-function targetMatchesRuntime(target: string): boolean {
-  const runtime = globalThis.process;
-  if (runtime === undefined) return false;
-  const match = /^(?:x86_64|aarch64|armv7|i686)-([^-]+)-/.exec(target);
-  if (match === null) return false;
-  const arch = target.startsWith("x86_64-") ? "x64" : target.startsWith("aarch64-") ? "arm64" : target.startsWith("i686-") ? "ia32" : "arm";
-  const platform = target.includes("windows") ? "win32" : target.includes("apple-darwin") ? "darwin" : target.includes("linux") ? "linux" : target.includes("freebsd") ? "freebsd" : undefined;
-  return platform !== undefined && runtime.platform === platform && runtime.arch === arch;
-}
 
 async function loadNativeModule(): Promise<NativeModule> {
   modulePromise ??= Promise.resolve().then(() => {
     const namespace = requireNative(nativeBindingPath) as NativeModule & { readonly default?: NativeModule };
     const binding = namespace.NativeStreamClient === undefined ? namespace.default : namespace;
-    if (binding?.NativeStreamClient === undefined || binding.NativeStreamCancellation === undefined) {
+    if (typeof binding?.NativeStreamClient !== "function" || typeof binding.NativeStreamCancellation !== "function"
+      || typeof binding.NativeStreamClient.connectResult !== "function" || typeof binding.NativeStreamClient.connectWithCaResult !== "function") {
       throw new Error("Stream native companion did not export the generated Rust N-API binding");
     }
     return binding;
@@ -72,7 +49,21 @@ function missingNativeBinding(error: unknown): boolean {
   const message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
     ? (error as { readonly message: string }).message : String(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  return /Cannot find module ['"][^'"]*[\\/]generated[\\/]native[\\/]binding\.cjs['"]/.test(firstLine);
+  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/)?.[1];
+  return requested !== undefined && isOwnNativeLoader(requested);
+}
+
+function isOwnNativeLoader(path: string): boolean {
+  return (path.startsWith("file:") ? fileURLToPath(path) : path).replace(/\\/g, "/") === nativeBindingPath.replace(/\\/g, "/");
+}
+
+function importedByNativeLoader(message: string): boolean {
+  const lines = message.split(/\r?\n/);
+  const marker = lines.findIndex(line => line.trim() === "Require stack:");
+  const frame = marker >= 0 ? lines[marker + 1]?.trim().replace(/^-\s*/, "")
+    : lines[0]?.match(/\s(?:imported )?from (?:['"]([^'"]+)['"]|(.+))$/i);
+  const importer = typeof frame === "string" ? frame : frame?.[1] ?? frame?.[2];
+  return importer !== undefined && isOwnNativeLoader(importer);
 }
 
 function expectedNativeAbsence(error: unknown): boolean {
@@ -86,9 +77,19 @@ function expectedNativeAbsence(error: unknown): boolean {
   while (cause !== null && cause !== undefined) {
     sawCause = true;
     if (typeof cause !== "object") return false;
+    const code = "code" in cause ? cause.code : undefined;
+    if (code !== undefined && code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") return false;
     const causeMessage = "message" in cause && typeof (cause as { readonly message?: unknown }).message === "string"
       ? (cause as { readonly message: string }).message : "";
     if (!/^Cannot find module ['"](?:\.\/index\.[^'"]+\.node|\.\/index\.wasi\.cjs|@acyclic-labs\/stream-[^'"]+|\.\/index\.wasm[^'"]*)['"]/.test(causeMessage.split(/\r?\n/, 1)[0] ?? causeMessage)) return false;
+    if (!importedByNativeLoader(causeMessage)) return false;
+    const companion = causeMessage.match(/^Cannot find module ['"](@acyclic-labs\/stream-[^'"]+)['"]/)?.[1];
+    if (companion !== undefined) {
+      try { requireNative.resolve(`${companion}/package.json`); return false; }
+      catch (error) {
+        if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "MODULE_NOT_FOUND") throw error;
+      }
+    }
     cause = "cause" in cause ? (cause as { readonly cause?: unknown }).cause : undefined;
   }
   return sawCause;
@@ -96,8 +97,6 @@ function expectedNativeAbsence(error: unknown): boolean {
 
 /** Whether the staged native binding is installed for this runtime. */
 export async function nativeStreamAvailable(): Promise<boolean> {
-  const target = selectedNativeTarget();
-  if (target !== undefined && !targetMatchesRuntime(target)) return false;
   try { await loadNativeModule(); return true; }
   catch (error) { if (expectedNativeAbsence(error)) return false; throw error; }
 }
