@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -23,14 +21,10 @@ const expected = services.reduce((count, service) => count + service.methods.len
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 
-function hasNativeCompanion() {
-  const native = fileURLToPath(new URL("../generated/native/", import.meta.url));
-  const name = process.platform === "win32"
-    ? (process.arch === "arm64" ? "index.win32-arm64-msvc.node" : "index.win32-x64-msvc.node")
-    : process.platform === "darwin"
-      ? (process.arch === "arm64" ? "index.darwin-arm64.node" : "index.darwin-x64.node")
-      : (process.arch === "arm64" ? "index.linux-arm64-gnu.node" : "index.linux-x64-gnu.node");
-  return existsSync(join(native, name));
+async function actorsClient(options) {
+  const configuration = { ...options, caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate };
+  const client = new ActorsClient(configuration);
+  return await client.transport === "grpc" ? client : new ActorsClient({ ...configuration, endpoint: options.actorsWasmEndpoint ?? options.endpoint });
 }
 
 function rustRoutes(packageName, example) {
@@ -90,11 +84,7 @@ if (process.argv.includes("--client")) {
   for await (const chunk of process.stdin) configText += chunk;
   const options = JSON.parse(configText);
   const objects = createObjectsV2GrpcClients(options);
-  const actors = new ActorsClient({
-    endpoint: hasNativeCompanion() ? options.endpoint : (options.actorsWasmEndpoint ?? options.endpoint),
-    token: options.token,
-    caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
-  });
+  const actors = await actorsClient(options);
   const clients = [actors, createWorkersGrpcClient(options), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
@@ -154,11 +144,7 @@ if (process.argv.includes("--client")) {
       }
     }
   }
-  const denied = new ActorsClient({
-    endpoint: hasNativeCompanion() ? options.endpoint : (options.actorsWasmEndpoint ?? options.endpoint),
-    token: "wrong",
-    caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
-  });
+  const denied = await actorsClient({ ...options, token: "wrong" });
   await assert.rejects(denied.inspectActor({ actorId: "a" }), error => error?.code === "unauthenticated");
   assert.equal(count, expected);
   console.log(`${process.versions.bun ? "Bun" : "Node"}: ${count} authenticated gRPC methods, streaming and denied authentication passed`);
@@ -268,7 +254,7 @@ try {
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".actors.") || method.includes(".workers.") ? 3 : 2, method);
   assert.equal(httpSeen.size, 15);
-  if (!hasNativeCompanion()) {
+  if (await (await actorsClient(options)).transport === "grpc-web") {
     assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
     assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));
   }
