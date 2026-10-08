@@ -13,6 +13,13 @@ const run = args => {
   if (result.status !== 0) process.exit(result.status ?? 1);
 };
 
+const actors = spawnSync(process.execPath, [join(root, "scripts/generate-actors.mjs"), "rust"], {
+  cwd: root,
+  stdio: "inherit",
+});
+if (actors.error) throw actors.error;
+if (actors.status !== 0) process.exit(actors.status ?? 1);
+
 run(["generate"]);
 for (const [source, destination] of generatedDescriptors) {
   mkdirSync(dirname(join(root, destination)), { recursive: true });

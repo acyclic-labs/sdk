@@ -1,8 +1,22 @@
 //! Emits Rust-owned Actors service metadata for TypeScript generation.
 use prost_reflect::DescriptorPool;
+use std::{env, fs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let output = std::env::args().nth(1);
+    let mut arguments = env::args().skip(1);
+    let output = arguments.next();
+    let mut proto_output = None;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--proto-out" => {
+                proto_output = Some(arguments.next().ok_or("--proto-out requires a directory")?);
+            }
+            other => return Err(format!("unknown argument {other}").into()),
+        }
+    }
+    if let Some(proto_output) = proto_output {
+        acyclic_actors::contract::render_proto_files(proto_output)?;
+    }
     let pool = DescriptorPool::decode(acyclic_actors::FILE_DESCRIPTOR_SET)?;
     let service = pool
         .get_service_by_name("acyclic.actors.v1.ActorsService")
@@ -22,8 +36,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(parent)?;
             std::fs::write(parent.join("readonly.ts"), render_readonly())?;
             std::fs::write(parent.join("nominal.ts"), render_nominal())?;
-            let public_semantic = parent.join("semantic/actors");
-            std::fs::create_dir_all(&public_semantic)?;
+            let semantic_root = parent.join("semantic");
+            if semantic_root.exists() {
+                fs::remove_dir_all(&semantic_root)?;
+            }
+            let public_semantic = semantic_root.join("actors");
+            fs::create_dir_all(&public_semantic)?;
+            acyclic_actors::domain::export_typescript(&semantic_root)?;
+            fs::write(
+                public_semantic.join("index.ts"),
+                render_semantic_index(&ts_rs::Config::default()),
+            )?;
             std::fs::write(
                 public_semantic.join("readonly.ts"),
                 render_readonly_semantic(&ts_rs::Config::default()),
@@ -227,5 +250,16 @@ import type {{ ReadonlySemantic }} from "../../readonly.js";
 
 {aliases}
 "#
+    )
+}
+
+fn render_semantic_index(config: &ts_rs::Config) -> String {
+    let exports = acyclic_actors::domain::typescript_export_names(config)
+        .iter()
+        .map(|name| format!("export * from \"./{name}.js\";"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "// Generated from the canonical Rust Actors domain declarations. Do not edit.\n{exports}\n"
     )
 }

@@ -7,6 +7,15 @@ import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normali
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const actors = spawnSync(process.execPath, [join(root, "scripts", "generate-actors.mjs"), "check"], {
+  cwd: root,
+  encoding: "utf8",
+});
+if (actors.status !== 0) {
+  process.stderr.write(actors.stdout ?? "");
+  process.stderr.write(actors.stderr ?? "");
+  throw new Error(`Actors Rust generation drift check failed with status ${actors.status ?? "unknown"}`);
+}
 const generatedFiles = directory => {
   const files = [];
   const visit = (current, prefix) => {

@@ -20,9 +20,10 @@ client results.
 `ActorsClient` selects the native Rust companion on Node/Bun when installed and
 the packaged Rust/WASM bridge in browsers (or as the Node fallback). It accepts
 `{ endpoint, token }` and exposes every operation from the maintained
-`ActorsService` descriptor. The typed facade is regenerated with
-`bun run generate:client` after the Rust contract's Protobuf output changes;
-there is no hand-maintained operation list in the client. `HttpActorsClient`
+`ActorsService` descriptor. The semantic TypeScript declarations, canonical
+Protobuf input, Buf wire bindings, and typed facade are regenerated from Rust
+with `bun run generate:client`; there is no separately authored contract or
+hand-maintained operation list in the client. `HttpActorsClient`
 remains a compatibility alias while callers move to the platform-neutral name.
 Actor invocation includes request and response headers.
 
