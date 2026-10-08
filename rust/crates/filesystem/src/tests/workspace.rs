@@ -745,6 +745,248 @@ async fn public_workspace_checkout_opens_pinned_and_live_private_views()
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one capture fixture qualifies all three receipt-bearing generation materialization boundaries"
+)]
+async fn generation_materialization_records_own_receipts_with_native_children_filtered()
+-> Result<(), Box<dyn Error>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+    use tracing::instrument::WithSubscriber as _;
+    use tracing::{Instrument as _, field::Visit};
+    use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
+
+    type Fields = HashMap<&'static str, String>;
+    type Captured = Arc<Mutex<Vec<(u64, &'static str, Fields)>>>;
+    struct Values<'a>(&'a mut Fields);
+    impl Visit for Values<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name(), value.to_owned());
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name(), format!("{value:?}"));
+        }
+    }
+    struct Capture(Captured, Arc<Mutex<Vec<Fields>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_new_span(
+            &self,
+            attributes: &tracing::span::Attributes<'_>,
+            id: &tracing::Id,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::new();
+            attributes.record(&mut Values(&mut fields));
+            self.0.lock().unwrap_or_else(PoisonError::into_inner).push((
+                id.into_u64(),
+                attributes.metadata().name(),
+                fields,
+            ));
+        }
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            record: &tracing::span::Record<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut captured = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, _, fields)) = captured
+                .iter_mut()
+                .rev()
+                .find(|(found, _, _)| *found == id.into_u64())
+            {
+                record.record(&mut Values(fields));
+            }
+        }
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::new();
+            event.record(&mut Values(&mut fields));
+            self.1
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(fields);
+        }
+    }
+
+    let fs = Fs::memory();
+    let workspace = fs
+        .create_workspace("materialization-receipt-capture")
+        .await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    let path = "/private-generation-path-sentinel";
+    let body = "private-generation-body-sentinel";
+    transaction.write_text(path, body).await?;
+    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+        return Err("materialize fixture did not commit".into());
+    };
+    let captured = Captured::default();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    // Two live dispatchers make concurrently visited callsites consult this filter.
+    let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
+    let subscriber = tracing_subscriber::registry().with(
+        Capture(Arc::clone(&captured), Arc::clone(&events)).with_filter(
+            tracing_subscriber::filter::filter_fn(|metadata| {
+                !metadata.name().starts_with("acyclic.fs.materialize")
+            }),
+        ),
+    );
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let destination = tempfile::Builder::new()
+        .prefix("private-generation-host-sentinel-")
+        .tempdir()?;
+    let parent = tracing::dispatcher::with_default(&dispatch, || {
+        tracing::info_span!(
+            "generation_materialization_caller",
+            outcome = "caller",
+            error.kind = "caller_error",
+            work.items = 73,
+        )
+    });
+    let work = async {
+        let cancellation = CancellationToken::new();
+        let mut work = Vec::new();
+        for selection in 0..3 {
+            let directory = destination.path().join(selection.to_string());
+            std::fs::create_dir(&directory)?;
+            let options = crate::MaterializeOptions::native(&directory);
+            let receipt = match selection {
+                0 => {
+                    generation
+                        .materialize(&options, WorkBudget::UNBOUNDED, &cancellation)
+                        .await?
+                }
+                1 => {
+                    generation
+                        .materialize_path(path, &options, WorkBudget::UNBOUNDED, &cancellation)
+                        .await?
+                }
+                _ => {
+                    generation
+                        .materialize_paths(
+                            &[path.to_owned()],
+                            &options,
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await?
+                }
+            };
+            assert_eq!(
+                std::fs::read(directory.join(path.trim_start_matches('/')))?,
+                body.as_bytes()
+            );
+            work.push(receipt.work);
+            // A non-empty destination fails after checkout work, whose totals
+            // this public error type does not retain and must not invent.
+            let failed = match selection {
+                0 => {
+                    generation
+                        .materialize(&options, WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                }
+                1 => {
+                    generation
+                        .materialize_path(path, &options, WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                }
+                _ => {
+                    generation
+                        .materialize_paths(
+                            &[path.to_owned()],
+                            &options,
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await
+                }
+            };
+            assert!(failed.is_err());
+        }
+        Ok::<_, Box<dyn Error>>(work)
+    }
+    .instrument(parent.clone())
+    .with_subscriber(dispatch)
+    .await?;
+    drop(parent);
+    let captured = captured.lock().map_err(|_| "capture poisoned")?;
+    for (name, work) in [
+        "acyclic.fs.generation.materialize",
+        "acyclic.fs.generation.materialize_path",
+        "acyclic.fs.generation.materialize_paths",
+    ]
+    .into_iter()
+    .zip(work)
+    {
+        let spans = captured
+            .iter()
+            .filter(|(_, found, _)| *found == name)
+            .collect::<Vec<_>>();
+        assert_eq!(spans.len(), 2, "{name}");
+        let success = &spans.first().ok_or("success span missing")?.2;
+        assert_eq!(success.get("outcome").map(String::as_str), Some("ok"));
+        assert!(!success.contains_key("error.kind"));
+        for (field, expected) in [
+            ("work.items", work.items_examined),
+            (
+                "work.bytes",
+                work.object_bytes_read
+                    .saturating_add(work.object_bytes_written)
+                    .saturating_add(work.authority_bytes_written),
+            ),
+            ("work.durability", work.durability_operations),
+        ] {
+            assert_eq!(
+                success.get(field),
+                Some(&expected.to_string()),
+                "{name}: {field}"
+            );
+        }
+        let failure = &spans.last().ok_or("failure span missing")?.2;
+        assert_eq!(failure.get("outcome").map(String::as_str), Some("err"));
+        assert!(failure.contains_key("error.kind"));
+        assert!(
+            !failure.keys().any(|field| field.starts_with("work.")),
+            "{name}: {failure:?}"
+        );
+    }
+    let caller = &captured
+        .iter()
+        .find(|(_, name, _)| *name == "generation_materialization_caller")
+        .ok_or("caller missing")?
+        .2;
+    assert_eq!(caller.get("outcome").map(String::as_str), Some("caller"));
+    assert_eq!(
+        caller.get("error.kind").map(String::as_str),
+        Some("caller_error")
+    );
+    assert_eq!(caller.get("work.items").map(String::as_str), Some("73"));
+    assert_eq!(caller.len(), 3, "caller received child fields: {caller:?}");
+    assert!(
+        !captured
+            .iter()
+            .any(|(_, name, _)| name.starts_with("acyclic.fs.materialize"))
+    );
+    let evidence = format!(
+        "{captured:?}{:?}",
+        events.lock().map_err(|_| "event capture poisoned")?
+    );
+    for sentinel in [
+        path.trim_start_matches('/'),
+        body,
+        "private-generation-host-sentinel",
+    ] {
+        assert!(!evidence.contains(sentinel), "trace leaked {sentinel}");
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

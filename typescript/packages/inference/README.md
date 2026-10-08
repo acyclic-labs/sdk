@@ -38,10 +38,12 @@ last-use fields are absent. The deadline is checked baseline plus timeout.
 
 Release is explicit. Expired or released pins require a new retain identity;
 renewal and replay cannot resurrect them. Mutation retries return committed
-receipts; inspect reports the current lifecycle. Legacy absolute-expiry fields
-remain wire compatible and cannot be combined with idle policy fields.
+receipts; inspect reports the current lifecycle. Latency retention uses an
+absolute expiry and cannot be combined with idle policy fields. Both modes use
+one v1 typed admission/renewal contract, bound to the requested identity and
+policy. Unsupported wire-kind aliases are rejected.
 
-This additive contract is available in this branch's generated source. It is
+This v1 contract is available in the generated source. It is
 not yet published or evidence of Cloud service support.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/inference/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/inference)

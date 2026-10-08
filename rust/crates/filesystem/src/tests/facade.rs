@@ -8895,6 +8895,7 @@ async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let opening = tokio::spawn(run_local_initialization(
         ownership,
+        crate::obs::span!(DEBUG, "test.local_initialization"),
         move |ownership| async move {
             let _ownership = ownership;
             let _ = started_tx.send(());
@@ -12270,5 +12271,78 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
         matches!(refused, CheckoutCommitOutcome::Conflict { .. }),
         "{refused:?}"
     );
+    Ok(())
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn local_open_records_its_owned_outcome_even_with_filtered_children()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tracing::{Instrument as _, instrument::WithSubscriber as _};
+    use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
+    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+    let directory = tempfile::tempdir()?;
+    let invalid = directory.path().join("private-root-sentinel");
+    std::fs::write(&invalid, b"private-body-sentinel")?;
+    for filtered in [false, true] {
+        let captured = spans::Captured::default();
+        let capture = spans::Capture(Arc::clone(&captured), std::sync::Mutex::default());
+        let filter = tracing_subscriber::filter::filter_fn(move |metadata| {
+            metadata.name() == "local_parent"
+                || (!filtered && metadata.name() == "acyclic.fs.local")
+        });
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::Registry::default().with(capture.with_filter(filter)),
+        );
+        async {
+            let parent = tracing::info_span!("local_parent", outcome = "unchanged");
+            async {
+                let fs = Fs::local(LocalOptions::new(directory.path().join("valid"))).await?;
+                let alias = Fs::local(LocalOptions::new(directory.path().join("valid"))).await?;
+                assert!(fs.same_deployment(&alias));
+                let failed = Fs::local(LocalOptions::new(&invalid)).await;
+                assert!(matches!(failed, Err(FsError::LocalRoot(_))));
+                Ok::<_, Box<dyn std::error::Error>>(())
+            }
+            .instrument(parent)
+            .await
+        }
+        .with_subscriber(dispatch)
+        .await?;
+        let captured = captured.lock().unwrap();
+        let parent = captured
+            .iter()
+            .find(|(name, _)| *name == "local_parent")
+            .unwrap();
+        assert_eq!(
+            parent
+                .1
+                .iter()
+                .filter(|(field, _)| *field == "outcome")
+                .count(),
+            1,
+            "{captured:?}"
+        );
+        let operations: Vec<_> = captured
+            .iter()
+            .filter(|(name, _)| *name == "acyclic.fs.local")
+            .collect();
+        assert_eq!(operations.len(), if filtered { 0 } else { 3 });
+        if !filtered {
+            assert!(operations[0].1.contains(&("outcome", "ok".into())));
+            assert!(operations[1].1.contains(&("outcome", "ok".into())));
+            assert!(operations[2].1.contains(&("outcome", "err".into())));
+            assert!(
+                operations[2]
+                    .1
+                    .contains(&("error.kind", "LocalRoot".into()))
+            );
+        }
+        assert!(
+            captured
+                .iter()
+                .all(|(_, fields)| fields.iter().all(|(_, value)| !value.contains("private-")))
+        );
+    }
     Ok(())
 }

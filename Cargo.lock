@@ -231,6 +231,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

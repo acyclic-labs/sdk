@@ -809,6 +809,16 @@ mod tests {
             stream.install_state(&wrong_magic).await,
             Err(StreamError::InvalidArgument)
         );
+        // Reject obsolete version markers explicitly, without changing live state.
+        for version in [b'0', b'2', b'4'] {
+            let mut obsolete = valid.clone();
+            obsolete[MAGIC.len() - 2] = version;
+            assert_eq!(
+                stream.install_state(&obsolete).await,
+                Err(StreamError::InvalidArgument)
+            );
+            assert_eq!(stream.encode_state().await, valid);
+        }
         for limits in [
             MemoryLimits {
                 paths: 0,

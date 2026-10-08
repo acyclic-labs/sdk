@@ -18,6 +18,7 @@ mod install;
 mod obs;
 mod roots;
 mod service;
+mod service_log;
 mod service_process;
 #[cfg(test)]
 mod tests;

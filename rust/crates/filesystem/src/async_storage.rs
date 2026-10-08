@@ -177,88 +177,79 @@ const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
 ///
 /// This is the default [`AsyncAuthorityStore::commit_workspace_fork`], for
 /// backends that commit what they can atomically and resolve the rest here.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    tracing::instrument(
-        name = "acyclic.fs.commit_workspace_fork",
-        level = "debug",
-        skip_all,
-        fields(
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-        )
-    )
-)]
 pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
     store: &S,
     fork: WorkspaceForkCommit,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> AuthorityResult<WorkspaceForkOutcome> {
-    crate::obs::measured(
-        async move {
-            let WorkspaceForkCommit {
-                lineage,
-                destination,
-                creation,
-                retention,
-                retained,
-            } = fork;
-            let retained = append_first_record(
-                store,
-                retention,
-                retained,
-                WorkCounters::default(),
-                budget,
-                cancellation,
-            )
-            .await?;
-            let mut work = retained.work;
-            if !retained.value {
-                return Ok(crate::storage::AuthorityReceipt {
-                    value: WorkspaceForkOutcome::RetentionConflict,
-                    work,
-                });
-            }
-            let remaining = remaining_authority(work, budget)?;
-            let created = match lineage {
-                Some(source) => {
-                    store
-                        .fork_generation_authority(
-                            source,
-                            destination,
-                            creation.operation_id,
-                            remaining,
-                            cancellation,
-                        )
-                        .await
-                }
-                None => {
-                    store
-                        .create_authority(destination, Epoch::GENESIS, remaining, cancellation)
-                        .await
-                }
-            }
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add_authority(work, created.work)?;
-            let created =
-                append_first_record(store, destination, creation, work, budget, cancellation)
-                    .await?;
-            Ok(crate::storage::AuthorityReceipt {
-                value: if created.value {
-                    WorkspaceForkOutcome::Committed
-                } else {
-                    WorkspaceForkOutcome::CreationRejected
-                },
-                work: created.work,
-            })
+    let span = crate::obs::span!(
+        DEBUG,
+        "acyclic.fs.commit_workspace_fork",
+        outcome = crate::obs::Empty,
+        error.kind = crate::obs::Empty,
+        work.items = crate::obs::Empty,
+        work.bytes = crate::obs::Empty,
+        work.durability = crate::obs::Empty,
+    );
+    let result = crate::obs::in_span(&span, async move {
+        let WorkspaceForkCommit {
+            lineage,
+            destination,
+            creation,
+            retention,
+            retained,
+        } = fork;
+        let retained = append_first_record(
+            store,
+            retention,
+            retained,
+            WorkCounters::default(),
+            budget,
+            cancellation,
+        )
+        .await?;
+        let mut work = retained.work;
+        if !retained.value {
+            return Ok(crate::storage::AuthorityReceipt {
+                value: WorkspaceForkOutcome::RetentionConflict,
+                work,
+            });
         }
-        .await,
-        |receipt| &receipt.work,
-    )
+        let remaining = remaining_authority(work, budget)?;
+        let created = match lineage {
+            Some(source) => {
+                store
+                    .fork_generation_authority(
+                        source,
+                        destination,
+                        creation.operation_id,
+                        remaining,
+                        cancellation,
+                    )
+                    .await
+            }
+            None => {
+                store
+                    .create_authority(destination, Epoch::GENESIS, remaining, cancellation)
+                    .await
+            }
+        }
+        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add_authority(work, created.work)?;
+        let created =
+            append_first_record(store, destination, creation, work, budget, cancellation).await?;
+        Ok(crate::storage::AuthorityReceipt {
+            value: if created.value {
+                WorkspaceForkOutcome::Committed
+            } else {
+                WorkspaceForkOutcome::CreationRejected
+            },
+            work: created.work,
+        })
+    })
+    .await;
+    crate::obs::measured_on(&span, result, |receipt| &receipt.work)
 }
 
 /// Makes `commit` the first record of `authority`, creating the authority

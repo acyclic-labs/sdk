@@ -2053,6 +2053,26 @@ mod tests {
                 assert_eq!(std::fs::read(&journal_path)?, header);
             }
         }
+        // Keep the checksum valid so rejection must enforce the snapshot version.
+        let header = encode_header(limits, 0)?;
+        std::fs::write(&journal_path, &header)?;
+        let state = MemoryStream::new(limits.memory).encode_state().await;
+        for version in [b'0', b'2', b'4'] {
+            let mut obsolete = encode_snapshot(limits, 1, &state)?;
+            obsolete[SNAPSHOT_MAGIC.len() - 2] = version;
+            let checksum_at = obsolete.len() - 32;
+            let checksum = snapshot_checksum(&obsolete[..checksum_at]);
+            obsolete[checksum_at..].copy_from_slice(&checksum);
+            std::fs::write(&snapshot_path, &obsolete)?;
+            for _ in 0..2 {
+                assert!(matches!(
+                    LocalStream::open(directory.path(), limits).await,
+                    Err(LocalStreamError::Corrupt)
+                ));
+                assert_eq!(std::fs::read(&journal_path)?, header);
+                assert_eq!(std::fs::read(&snapshot_path)?, obsolete);
+            }
+        }
         // A checksummed snapshot with invalid semantic state must not authorize
         // discarding an earlier epoch's complete journal.
         let header = encode_header(limits, 0)?;

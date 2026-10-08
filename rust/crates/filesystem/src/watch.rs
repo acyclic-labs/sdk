@@ -392,21 +392,18 @@ impl NativeWatch {
     ///
     /// Rejects invalid bounds, an unavailable/non-directory root, allocation
     /// conversion, poisoned synchronization, or native watcher startup failure.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.watch.open",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn open_with_profile(
         root: impl AsRef<Path>,
         profile: FilesystemProfile,
         options: NativeWatchOptions,
     ) -> Result<Self, NativeWatchError> {
-        crate::obs::outcome_of(|| {
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.watch.open",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let result = crate::obs::scope(&span, || {
             let options = options.validate()?;
             let requested_root = root.as_ref();
             let admission = requested_root
@@ -503,7 +500,8 @@ impl NativeWatch {
                 root_identity,
                 complete,
             })
-        })
+        });
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Whether the root's file system reports every change, or that it lost
@@ -819,17 +817,14 @@ impl NativeWatch {
     /// # Errors
     ///
     /// Rejects completion without a matching scan or poisoned state.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.watch.finish_rescan",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn finish_rescan(&mut self) -> Result<WatchBatch, NativeWatchError> {
-        crate::obs::outcome_of(|| {
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.watch.finish_rescan",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let result = crate::obs::scope(&span, || {
             if !self.rescan_in_progress {
                 return Err(NativeWatchError::NoRescanInProgress);
             }
@@ -859,7 +854,8 @@ impl NativeWatch {
                     reason,
                 },
             ))
-        })
+        });
+        crate::obs::outcome_on(&span, result)
     }
 
     /// Aborts an in-progress baseline and returns the watcher to an explicitly
@@ -932,17 +928,14 @@ impl NativeWatch {
     /// # Errors
     ///
     /// Returns only poisoned synchronization.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.watch.fence",
-            level = "debug",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
-        crate::obs::outcome_of(|| {
+        let span = crate::obs::span!(
+            DEBUG,
+            "acyclic.fs.watch.fence",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+        );
+        let result = crate::obs::scope(&span, || {
             let delivered = self.fence_cookie().is_ok_and(|cookie| {
                 self.await_cookie(&cookie, timeout)
                     .is_ok_and(|delivered| delivered)
@@ -956,7 +949,8 @@ impl NativeWatch {
                 state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
             }
             Ok(())
-        })
+        });
+        crate::obs::outcome_on(&span, result)
     }
 
     fn fence_cookie(&mut self) -> Result<PathBuf, NativeWatchError> {

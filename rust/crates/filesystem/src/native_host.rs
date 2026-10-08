@@ -1659,10 +1659,11 @@ impl HostRoot {
         let name = name.to_os_string();
         let source = source.to_path_buf();
         let (sender, receiver) = tokio::sync::oneshot::channel();
+        let context = crate::obs::caller_context();
         // The detached owner drains admitted kernel I/O before it closes the
         // staged file, even when its awaiting caller is cancelled.
         tokio::spawn(async move {
-            let result = async {
+            let result = crate::obs::in_span(&context, async {
                 let staged = std::sync::Arc::new(
                     acyclic_native_runtime::run_blocking_io(move || {
                         StagedWindowsFile::create(parent)
@@ -1679,7 +1680,7 @@ impl HostRoot {
                     result
                 })
                 .await?
-            }
+            })
             .await;
             let _ = sender.send(result);
         });

@@ -923,26 +923,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Returns an authority or authentication failure when the current head
     /// cannot be resolved exactly.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.workspace.sync",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                workspace_id = crate::obs::hex(&self.id.0),
-            )
-        )
-    )]
     pub async fn sync(&self) -> Result<WorkspaceSync<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.workspace.sync",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            workspace_id = crate::obs::hex(&self.id.0),
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 Ok(WorkspaceSync {
                     generation: self.head().await?,
                 })
-            }
+            })
             .await,
         )
     }
@@ -954,26 +949,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects invalid destination names, foreign generations, incompatible
     /// existing destinations, or storage/publication failures.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.workspace.fork",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                workspace_id = crate::obs::hex(&self.id.0),
-            )
-        )
-    )]
     pub async fn fork(
         &self,
         destination: impl AsRef<str>,
         options: ForkOptions<A, O>,
     ) -> Result<Self, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.workspace.fork",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            workspace_id = crate::obs::hex(&self.id.0),
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 if options.generation.workspace.id != self.id {
                     return Err(WorkspaceError::ForeignGeneration);
                 }
@@ -985,7 +975,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 )
                 .await
                 .map(|receipt| receipt.value)
-            }
+            })
             .await,
         )
     }
@@ -1020,28 +1010,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// # Errors
     ///
     /// Returns an authentication, authority, storage, or workspace-state failure.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.workspace.begin_transaction",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                workspace_id = crate::obs::hex(&self.id.0),
-            )
-        )
-    )]
     pub async fn begin_transaction(
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Transaction<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            self.begin_transaction_measured(
-                idempotency_key,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.workspace.begin_transaction",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            workspace_id = crate::obs::hex(&self.id.0),
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(
+                &span,
+                self.begin_transaction_measured(
+                    idempotency_key,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
             )
             .await
             .map(|receipt| receipt.value),
@@ -1167,25 +1155,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects invalid labels, generation authentication failures, or an
     /// existing label bound to different state.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.workspace.checkpoint",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                workspace_id = crate::obs::hex(&self.id.0),
-            )
-        )
-    )]
     pub async fn checkpoint(
         &self,
         label: impl AsRef<str>,
     ) -> Result<Checkpoint<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.workspace.checkpoint",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            workspace_id = crate::obs::hex(&self.id.0),
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let label = WorkspaceName::new(label)?;
                 let generation = self.head().await?;
                 self.volume
@@ -1198,7 +1181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     )
                     .await?;
                 Ok(Checkpoint { label, generation })
-            }
+            })
             .await,
         )
     }
@@ -1242,27 +1225,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects foreign endpoints, zero bounds, malformed state, or a truncated
     /// authenticated diff frontier.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.workspace.diff",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                workspace_id = crate::obs::hex(&self.id.0),
-            )
-        )
-    )]
     pub async fn diff(
         &self,
         from: &Generation<A, O>,
         to: &Generation<A, O>,
         maximum_changes: u32,
     ) -> Result<ChangeSet<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.workspace.diff",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            workspace_id = crate::obs::hex(&self.id.0),
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 if from.workspace.id != self.id || to.workspace.id != self.id {
                     return Err(WorkspaceError::ForeignGeneration);
                 }
@@ -1286,7 +1264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     changes: receipt.value,
                     work: receipt.work,
                 })
-            }
+            })
             .await,
         )
     }
@@ -1317,19 +1295,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Rejects a workspace that is not a fork, incompatible source semantics,
     /// exhausted lineage/conflict bounds, malformed state, or backend failure.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.workspace.live_rebase",
-            level = "info",
-            skip_all,
-            fields(
-                outcome = crate::obs::Empty,
-                error.kind = crate::obs::Empty,
-                workspace_id = crate::obs::hex(&self.id.0),
-            )
-        )
-    )]
     pub async fn live_rebase(
         &self,
         idempotency_key: IdempotencyKey,
@@ -1337,8 +1302,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         maximum_changes: u32,
         maximum_conflicts: u32,
     ) -> Result<WorkspaceRebase<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.workspace.live_rebase",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            workspace_id = crate::obs::hex(&self.id.0),
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let outcome = self
                     .volume
                     .fs
@@ -1382,7 +1355,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                         WorkspaceRebase::IdempotencyConflict
                     }
                 })
-            }
+            })
             .await,
         )
     }
@@ -2813,29 +2786,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 
     /// Publishes this transaction only while an SDK operation-window permit
     /// is still active at the authority linearization point.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.transaction.commit",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn commit_with_permit(
         &mut self,
         permit: crate::PublicationPermit,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            in_heap(move || async move {
-                self.commit_with_permit_measured(
-                    permit,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-            })
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.transaction.commit",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(
+                &span,
+                in_heap(move || async move {
+                    self.commit_with_permit_measured(
+                        permit,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                }),
+            )
             .await,
         )
     }
@@ -2951,21 +2925,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Returns bounded dependency-probe, authentication, storage, or replay
     /// failures. Semantic overlap is returned as a typed conflict and leaves
     /// the transaction unchanged.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.transaction.rebase",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn rebase(
         &mut self,
         maximum_conflicts: u32,
     ) -> Result<TransactionRebase<A, O>, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.transaction.rebase",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let decision = self
                     .checkout
                     .rebase_head(
@@ -2995,7 +2967,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         truncated,
                     },
                 })
-            }
+            })
             .await,
         )
     }
@@ -4104,15 +4076,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Runs merge drivers and publishes only while the supplied writer permit remains valid.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.join.apply",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn apply_with_drivers_and_permit<C: MergeResolutionCache>(
         &self,
         options: ApplyOptions,
@@ -4121,8 +4084,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         replanning: bool,
         permit: crate::PublicationPermit,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.join.apply",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let initial = self.apply_with_permit(options, permit).await?;
                 let JoinOutcome::Conflicted {
                     conflicts,
@@ -4135,7 +4105,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
                 self.apply_candidate_with_permit(options, &candidate, permit)
                     .await
-            }
+            })
             .await,
         )
     }
@@ -4920,27 +4890,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// and Linux birth time are host-generated view-local facts; their exact
     /// canonical values remain in this generation, not in the host inode.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.generation.materialize",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn materialize(
         &self,
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        crate::obs::outcome(
-            self.materialize_with_mode(
-                options,
-                budget,
-                cancellation,
-                crate::native_mount::MaterializeMode::DurableOutput,
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.generation.materialize",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty
+        );
+        crate::obs::receipt_on(
+            &span,
+            crate::obs::in_span(
+                &span,
+                self.materialize_with_mode(
+                    options,
+                    budget,
+                    cancellation,
+                    crate::native_mount::MaterializeMode::DurableOutput,
+                ),
             )
             .await,
         )
@@ -4983,15 +4957,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// host directory. The same relative path is reproduced below the
     /// destination, allowing callers to stage and atomically exchange it.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.generation.materialize_path",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn materialize_path(
         &self,
         path: &str,
@@ -4999,13 +4964,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        crate::obs::outcome(
-            self.materialize_path_with_mode(
-                path,
-                options,
-                budget,
-                cancellation,
-                crate::native_mount::MaterializeMode::DurableOutput,
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.generation.materialize_path",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty
+        );
+        crate::obs::receipt_on(
+            &span,
+            crate::obs::in_span(
+                &span,
+                self.materialize_path_with_mode(
+                    path,
+                    options,
+                    budget,
+                    cancellation,
+                    crate::native_mount::MaterializeMode::DurableOutput,
+                ),
             )
             .await,
         )
@@ -5050,15 +5028,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// Materializes multiple paths with one pinned checkout and shared
     /// file-identity table, preserving hard links across selected paths.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.generation.materialize_paths",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn materialize_paths(
         &self,
         paths: &[String],
@@ -5066,8 +5035,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.generation.materialize_paths",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty,
+            work.items = crate::obs::Empty,
+            work.bytes = crate::obs::Empty,
+            work.durability = crate::obs::Empty
+        );
+        crate::obs::receipt_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let checkout = self
                     .workspace
                     .engine_checkout_measured(
@@ -5095,7 +5074,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 .await
                 .map_err(|failure| WorkspaceError::engine(failure.error))?;
                 merge_workspace_work(checkout.work, receipt, budget)
-            }
+            })
             .await,
         )
     }

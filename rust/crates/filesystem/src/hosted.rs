@@ -1117,23 +1117,21 @@ impl HostedGeneration {
     }
 
     /// Forks this exact generation without copying its immutable closure.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.hosted.fork",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn fork(
         &self,
         destination_name: impl Into<String>,
         idempotency_key: IdempotencyKey,
         paths: Option<Vec<String>>,
     ) -> Result<HostedWorkspace, HostedFsError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.hosted.fork",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 let mut client = self.workspace.filesystem.client.clone();
                 let response =
                     client
@@ -1148,7 +1146,7 @@ impl HostedGeneration {
                         .await?
                         .into_inner();
                 self.workspace.filesystem.workspace(response.workspace)
-            }
+            })
             .await,
         )
     }
@@ -1379,21 +1377,19 @@ impl HostedTransaction {
     }
 
     /// Publishes every accumulated mutation atomically.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.fs.hosted.commit",
-            level = "info",
-            skip_all,
-            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn commit(
         self,
         maximum_conflicts: u32,
     ) -> Result<wire::MutationResponse, HostedFsError> {
-        crate::obs::outcome(
-            async move {
+        let span = crate::obs::span!(
+            INFO,
+            "acyclic.fs.hosted.commit",
+            outcome = crate::obs::Empty,
+            error.kind = crate::obs::Empty
+        );
+        crate::obs::outcome_on(
+            &span,
+            crate::obs::in_span(&span, async move {
                 self.workspace
                     .filesystem
                     .require_transaction_bound(self.mutations.len())?;
@@ -1412,7 +1408,7 @@ impl HostedTransaction {
                     ))
                     .await?
                     .into_inner())
-            }
+            })
             .await,
         )
     }
