@@ -221,3 +221,17 @@ run 37727021067 passed; its skipped Windows lane is not platform evidence.
 The final documentation audit updates the replaced timer/mail scan descriptions
 in the existing runtime contracts. Full matrix and landed-tree verification
 remain required; no readiness or merge is claimed by these scoped receipts.
+
+A subsequent admission audit found that generic JavaScript JSON strings and
+object/Map keys used lossy UTF-16 conversion. The native JSON decoder rejects
+unpaired surrogates, while this boundary replaced them with U+FFFD. The original
+artifact fails the real Chromium correspondence regression after valid Unicode
+controls pass (target-i-browser-json-unicode-negative-3.log). The repair reuses
+the existing checked_js_string at the three conversion sites, preserving valid
+replacement characters, surrogate pairs and NUL. Strict production/browser-test
+WASM Clippy and the WASM build pass. Both focused Chromium pages pass
+(target-i-browser-json-unicode-positive-1.log), including an invalid-Unicode tool
+receipt followed by malformed reconciliation, two reopens, and exactly one
+effect and projection. Installed-package correspondence and the final full
+matrix remain required for this repair; earlier source receipts do not qualify
+the changed WASM boundary.

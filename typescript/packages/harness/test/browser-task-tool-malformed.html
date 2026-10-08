@@ -22,7 +22,7 @@ try {
     executions++;
     assert(localStorage.getItem(effectKey) === null, "malformed receipt caused effect redispatch");
     localStorage.setItem(effectKey, JSON.stringify(invocation));
-    return "malformed execution receipt";
+    return { value: "\ud800" };
   }, invocation => {
     reconciliations++;
     assert(localStorage.getItem(effectKey) === JSON.stringify(invocation), "recovery substituted the exact invocation");
