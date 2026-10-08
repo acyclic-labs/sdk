@@ -728,3 +728,18 @@ Actors proof-source checkpoint b863afa231bc9ec705d4016403c5d04be333e3d1 is signe
 Docs safe_version implementation block still matches mathematical proof SHA256 3e886ab69bbf0d26693c4f6572286d402be57a41c7d2d8ab459971c37cd83219. Its accepted-domain injectivity proof does not establish deployment or whole-program behavior. Filesystem's two accurately scoped numeric/admission proof receipts remain historical. Transport, serialization, cancellation and platform guarantees still require actual conformance evidence.
 
 Frozen57 Mac preparation remains ready and unchanged; new source preparations are separate. A fresh read-only Mac snapshot showed no Cargo/Rust/doc process names and no local ivar owner file, but no handoff was inferred. No SDK heavy job, registry publication, deployment, website merge or auto-merge was launched during these source corrections. All pending proof/platform/docs/language gates remain outstanding; the full goal remains active.
+
+## 2026-10-08: Exact docs57 local qualification and restored Mac access
+
+Frozen docs57ceb3bcf83346ae4a64487b92cd16609fb3eb74 completed actual Mac qualification: 58 docs tests and 19 generation tests passed (one ignored in each suite), both focused fixtures passed, both all-target strict Clippy checks passed, and one release build passed. All seven stages exited zero. Source inventory and both locks were byte-identical before and after. Driver ran14:00:56 through14:01:28 UTC; owned descendants drained and lease released14:02:46 UTC. Results apply only to57.
+
+Immutable remote evidence asset622003615 is8,249,113 bytes, SHA256 d06fd3fdaba47efb3c9fe6b96d554f56b598e1aeaf0a3038b9cad161e4ff09f4. Root independently downloaded and checked47 retained payload hashes, actual1357-file source map against pre/post inventories, locks, zero exits, raw test/Clippy/release logs and optimized binary bytes. Binary5,634,464 bytes, SHA2565da83acc2c57cadfc3d3c26d76661377d3293401319e13655c6824dc3662251f. Root audit script/report are remotely retained. Broad historical matrix and newer-source qualification remain outstanding.
+
+Latest docs560e41edc7ed4aef5257ec314cc9b11a57439d9a adds explicit retained-versus-source-adjacent Cargo lock selection across generation, metadata, rustdoc and example commands. Remotely saved and independently source-reviewed; compilation/qualification pending. Twenty archived owners across six cohorts remain outstanding, including original checksum/yanked-dependency gaps. Originals remain immutable.
+
+Workers fixture checkpoint2af23d09041b9fa85938d2b128cfadb2662a82d4 is signed remotely. Bounded request draining and timeout/abort/join cleanup improve lossless-error fixtures; production files remain identical to500e3373e8d79040fd8a9b9657666d55d23a85cb. New fixtures are uncompiled.
+
+Actual maintained Buf2.15.0 probes preserve valid bigint u64 through MAX and reject negative/overflow; i32/u32 ranges and fractional/NaN cases reject. Already-rounded JavaScript numbers remain a checked-factory typing question, not a bigint wrapping defect. Actual34-case receipt is retained in shared visualization storage.
+
+After human sign-in, authorized SSH BatchMode uname returned Darwin. Coordinator notified for next finite qualification slot; no heavy launch or idle lease inferred. Three available child agents are working source-only readiness/correctness investigations. No new merge, auto-merge, publication or deployment occurred.
+
