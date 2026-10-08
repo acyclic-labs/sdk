@@ -1,7 +1,8 @@
 //! Historical planning uses released archives and Cargo-owned sources, not legacy docs JSON.
 use cargo_metadata::{Metadata, TargetKind};
 use sdk_docs::historical::{
-    ArchiveSource, CapturedSource, PublisherVcs, ReleasedPackage, ResolutionLock,
+    ArchiveSource, CapturedSource, OriginalLock, ProducerResolution, PublisherVcs, ReleasedPackage,
+    ResolutionLock,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -344,14 +345,28 @@ pub fn verify_imported_archive(
         files.insert(path, super::sha256_bytes(bytes));
     }
     let lock_path = format!("{directory}/Cargo.lock");
-    let lock_digest = super::sha256_file(&root.join(&lock_path)).map_err(|e| e.to_string())?;
+    let lock_digest = members
+        .get("Cargo.lock")
+        .map(|bytes| super::sha256_bytes(bytes));
     match &identity.resolution_lock {
-        ResolutionLock::Published { sha256 }
-            if members.contains_key("Cargo.lock") && *sha256 == lock_digest => {}
+        ResolutionLock::Published { sha256 } if lock_digest.as_ref() == Some(sha256) => {}
         ResolutionLock::DocsProducer { sha256 }
-            if !members.contains_key("Cargo.lock") && *sha256 == lock_digest =>
+            if lock_digest.is_none()
+                && super::sha256_file(&root.join(&lock_path)).map_err(|e| e.to_string())?
+                    == *sha256 =>
         {
-            files.insert(lock_path, lock_digest);
+            files.insert(lock_path, sha256.clone());
+        }
+        ResolutionLock::SeparateDocsProducer {
+            original_lock,
+            producer,
+        } => {
+            match (original_lock, lock_digest.as_ref()) {
+                (OriginalLock::Published { sha256 }, Some(actual)) if sha256 == actual => {}
+                (OriginalLock::Absent, None) if !root.join(&lock_path).exists() => {}
+                _ => return Err("original published lock facts differ from archive".into()),
+            }
+            files.extend(verify_producer_resolution(&root, &directory, producer)?);
         }
         _ => {
             return Err(
@@ -376,6 +391,55 @@ pub fn verify_imported_archive(
         },
         files,
     ))
+}
+
+/// Reconstruct the separately retained resolution without interpreting arbitrary
+/// Cargo overrides. This cut supports an external lock only, never path patches.
+fn verify_producer_resolution(
+    root: &Path,
+    directory: &str,
+    producer: &ProducerResolution,
+) -> Result<BTreeMap<String, String>, String> {
+    let prefix = format!(".docs-producer/{directory}/");
+    if producer.lock_path != format!("{prefix}Cargo.lock")
+        || producer.config_path != format!("{prefix}config.toml")
+    {
+        return Err("producer resolution paths differ from archive owner".into());
+    }
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let directory_path = root.join(format!(".docs-producer/{directory}"));
+    validate_archive_inventory(
+        &directory_path,
+        &BTreeSet::from(["Cargo.lock".into(), "config.toml".into()]),
+    )?;
+    let mut files = BTreeMap::new();
+    for (logical, expected) in [
+        (&producer.lock_path, &producer.lock_sha256),
+        (&producer.config_path, &producer.config_sha256),
+    ] {
+        let path = root.join(logical);
+        // Equality with the canonical root-relative path rejects linked ancestors,
+        // including links that resolve to another location within the aggregate.
+        if path.canonicalize().map_err(|e| e.to_string())? != path {
+            return Err("producer input contains a linked or redirected path".into());
+        }
+        let digest = super::sha256_file(&path).map_err(|e| e.to_string())?;
+        if &digest != expected {
+            return Err(format!("retained producer input differs: {logical}"));
+        }
+        files.insert(logical.clone(), digest);
+    }
+    let lock = root.join(&producer.lock_path);
+    let expected_config = format!(
+        "[resolver]\nlockfile-path = {}\n",
+        serde_json::to_string(&lock.to_string_lossy()).map_err(|e| e.to_string())?
+    );
+    if fs::read(root.join(&producer.config_path)).map_err(|e| e.to_string())?
+        != expected_config.as_bytes()
+    {
+        return Err("producer config must select only the captured external lock".into());
+    }
+    Ok(files)
 }
 
 pub fn imported_metadata(
@@ -1077,6 +1141,121 @@ mod tests {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("cargo"))
     }
+    #[test]
+    fn separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift() {
+        let fixture = Fixture::new();
+        let original = fs::read(fixture.0.join("Cargo.lock")).unwrap();
+        let directory = "historical-fixture-0.1.0";
+        let prefix = format!(".docs-producer/{directory}/");
+        let producer_dir = fixture.0.join(&prefix);
+        fs::create_dir_all(&producer_dir).unwrap();
+        let external_lock = producer_dir.join("Cargo.lock");
+        let external_lock = external_lock
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("Cargo.lock");
+        let config = format!(
+            "[resolver]\nlockfile-path = {}\n",
+            serde_json::to_string(&external_lock.to_string_lossy()).unwrap()
+        );
+        fs::write(producer_dir.join("config.toml"), &config).unwrap();
+        command_output(
+            Command::new(cargo())
+                .args(["generate-lockfile", "--offline", "--manifest-path"])
+                .arg(fixture.0.join("Cargo.toml"))
+                .arg("--config")
+                .arg(producer_dir.join("config.toml")),
+        )
+        .unwrap();
+        assert_eq!(fs::read(fixture.0.join("Cargo.lock")).unwrap(), original);
+        assert!(external_lock.is_file());
+        let mut producer = ProducerResolution {
+            lock_path: format!("{prefix}Cargo.lock"),
+            lock_sha256: super::super::sha256_file(&external_lock).unwrap(),
+            config_path: format!("{prefix}config.toml"),
+            config_sha256: super::super::sha256_file(&producer_dir.join("config.toml")).unwrap(),
+        };
+        assert_eq!(
+            verify_producer_resolution(&fixture.0, directory, &producer)
+                .unwrap()
+                .len(),
+            2
+        );
+        let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
+        let imported_lock = fixture.0.join(directory).join("Cargo.lock");
+        fs::write(&imported_lock, &original).unwrap();
+        command_output(
+            Command::new("tar")
+                .arg("-cf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&fixture.0)
+                .arg(directory),
+        )
+        .unwrap();
+        release.checksum = super::super::sha256_file(&archive)
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .into();
+        let mut identity = ArchiveSource {
+            package: release.package.clone(),
+            version: release.num.clone(),
+            registry_checksum: release.checksum.clone(),
+            publisher_vcs: Some(PublisherVcs {
+                revision: "a".repeat(40),
+                dirty: false,
+                path_in_vcs: String::new(),
+            }),
+            resolution_lock: ResolutionLock::SeparateDocsProducer {
+                original_lock: OriginalLock::Published {
+                    sha256: super::super::sha256_bytes(&original),
+                },
+                producer: producer.clone(),
+            },
+        };
+        let (_, inputs) =
+            verify_imported_archive(&fixture.0, &release, &archive, &identity).unwrap();
+        assert_eq!(inputs.get(&producer.lock_path), Some(&producer.lock_sha256));
+        fs::write(&imported_lock, "changed original lock").unwrap();
+        assert!(verify_imported_archive(&fixture.0, &release, &archive, &identity).is_err());
+        fs::write(&imported_lock, &original).unwrap();
+        let ResolutionLock::SeparateDocsProducer { original_lock, .. } =
+            &mut identity.resolution_lock
+        else {
+            unreachable!()
+        };
+        *original_lock = OriginalLock::Absent;
+        assert!(verify_imported_archive(&fixture.0, &release, &archive, &identity).is_err());
+        fs::write(producer_dir.join("extra.json"), "{}").unwrap();
+        assert!(verify_producer_resolution(&fixture.0, directory, &producer).is_err());
+        fs::remove_file(producer_dir.join("extra.json")).unwrap();
+        fs::write(&external_lock, "changed producer lock").unwrap();
+        assert!(verify_producer_resolution(&fixture.0, directory, &producer).is_err());
+        fs::write(&external_lock, &original).unwrap();
+        producer.lock_sha256 = super::super::sha256_file(&external_lock).unwrap();
+        fs::write(
+            producer_dir.join("config.toml"),
+            format!("{config}[net]\noffline=true\n"),
+        )
+        .unwrap();
+        producer.config_sha256 =
+            super::super::sha256_file(&producer_dir.join("config.toml")).unwrap();
+        assert!(verify_producer_resolution(&fixture.0, directory, &producer)
+            .unwrap_err()
+            .contains("only the captured"));
+        fs::write(producer_dir.join("config.toml"), &config).unwrap();
+        producer.config_sha256 =
+            super::super::sha256_file(&producer_dir.join("config.toml")).unwrap();
+        producer.lock_path = "../Cargo.lock".into();
+        assert!(verify_producer_resolution(&fixture.0, directory, &producer).is_err());
+        assert_eq!(fs::read(fixture.0.join("Cargo.lock")).unwrap(), original);
+        producer.lock_path = format!("{prefix}Cargo.lock");
+        fs::remove_file(producer_dir.join("config.toml")).unwrap();
+        assert!(verify_producer_resolution(&fixture.0, directory, &producer).is_err());
+    }
+
     #[test]
     fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
         let fixture = Fixture::new();

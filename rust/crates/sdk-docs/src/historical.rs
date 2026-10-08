@@ -38,8 +38,35 @@ pub struct ArchiveSource {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ResolutionLock {
+    Published {
+        sha256: String,
+    },
+    DocsProducer {
+        sha256: String,
+    },
+    SeparateDocsProducer {
+        original_lock: OriginalLock,
+        producer: ProducerResolution,
+    },
+}
+
+/// Facts about the original archive, never the lock selected by a later producer.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum OriginalLock {
     Published { sha256: String },
-    DocsProducer { sha256: String },
+    Absent,
+}
+
+/// An external maintained-Cargo resolution. Paths are relative to the captured
+/// aggregate; the retained config is limited to selecting this exact lock.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProducerResolution {
+    pub lock_path: String,
+    pub lock_sha256: String,
+    pub config_path: String,
+    pub config_sha256: String,
 }
 
 /// Authority of the captured source; archive identities never impersonate Git.
@@ -73,6 +100,25 @@ impl CapturedSource {
                     let sha256 = match &archive.resolution_lock {
                         ResolutionLock::Published { sha256 }
                         | ResolutionLock::DocsProducer { sha256 } => sha256,
+                        ResolutionLock::SeparateDocsProducer {
+                            original_lock,
+                            producer,
+                        } => {
+                            if let OriginalLock::Published { sha256 } = original_lock {
+                                validate_source_digest(sha256)?;
+                            }
+                            validate_source_digest(&producer.config_sha256)?;
+                            let prefix =
+                                format!(".docs-producer/{}-{}/", archive.package, archive.version);
+                            if producer.lock_path != format!("{prefix}Cargo.lock")
+                                || producer.config_path != format!("{prefix}config.toml")
+                            {
+                                return Err(Error::Invalid(
+                                    "producer resolution paths differ from owner".into(),
+                                ));
+                            }
+                            &producer.lock_sha256
+                        }
                     };
                     validate_source_digest(sha256)?;
                     if let Some(vcs) = &archive.publisher_vcs {
@@ -453,6 +499,58 @@ mod tests {
         let mut wrong_identity = scope;
         wrong_identity.released_packages[0].source_revision = "d".repeat(40);
         assert!(build(&input, &wrong_identity).is_err());
+    }
+
+    #[test]
+    fn separate_resolution_identity_distinguishes_original_and_producer_locks() {
+        let prefix = ".docs-producer/demo-cli-0.1.0/";
+        let archive = ArchiveSource {
+            package: "demo-cli".into(),
+            version: "0.1.0".into(),
+            registry_checksum: "c".repeat(64),
+            publisher_vcs: None,
+            resolution_lock: ResolutionLock::SeparateDocsProducer {
+                original_lock: OriginalLock::Published {
+                    sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                producer: ProducerResolution {
+                    lock_path: format!("{prefix}Cargo.lock"),
+                    lock_sha256: format!("sha256:{}", "b".repeat(64)),
+                    config_path: format!("{prefix}config.toml"),
+                    config_sha256: format!("sha256:{}", "d".repeat(64)),
+                },
+            },
+        };
+        let captured = CapturedSource::RegistryArchives {
+            archives: vec![archive],
+        };
+        let revision = captured.revision().unwrap();
+        let mut changed = captured.clone();
+        let CapturedSource::RegistryArchives { archives } = &mut changed else {
+            unreachable!()
+        };
+        let ResolutionLock::SeparateDocsProducer { original_lock, .. } =
+            &mut archives[0].resolution_lock
+        else {
+            unreachable!()
+        };
+        *original_lock = OriginalLock::Absent;
+        assert_ne!(changed.revision().unwrap(), revision);
+        let CapturedSource::RegistryArchives { archives } = &mut changed else {
+            unreachable!()
+        };
+        let ResolutionLock::SeparateDocsProducer { producer, .. } =
+            &mut archives[0].resolution_lock
+        else {
+            unreachable!()
+        };
+        producer.lock_path = "../Cargo.lock".into();
+        assert!(changed.revision().is_err());
+        let bytes = serde_json::to_vec(&captured).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<CapturedSource>(&bytes).unwrap(),
+            captured
+        );
     }
 
     #[test]

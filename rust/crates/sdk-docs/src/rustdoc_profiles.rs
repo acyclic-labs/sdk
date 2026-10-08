@@ -459,7 +459,9 @@ pub fn execute_target_profile_with_cargo(
         }
     }
     for feature in &profile.features {
-        if !package.features.contains_key(feature) {
+        // Cargo owns qualified dependency/workspace feature syntax and resolution.
+        // Keep the cheap early rejection for unknown owner-local names only.
+        if !feature.contains('/') && !package.features.contains_key(feature) {
             return Err(ProfileError::InvalidFeature {
                 package: profile.package.clone(),
                 feature: feature.clone(),
@@ -852,7 +854,7 @@ pub struct ProfileAvailabilityProfile {
     pub target: String,
     /// Whether Cargo defaults were enabled.
     pub default_features: bool,
-    /// Local Cargo features enabled for this receipt.
+    /// Requested Cargo feature expressions enabled for this receipt.
     pub features: Vec<String>,
     /// Rust-derived binding and platform capabilities.
     pub capabilities: Vec<String>,
@@ -1223,6 +1225,90 @@ mod tests {
                 feature: "missing".into(),
             }
         );
+    }
+
+    #[test]
+    fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("helper/src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='profile-owner'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[dependencies]\nhelper-alias={package='profile-helper',path='helper',default-features=false}\n").unwrap();
+        fs::write(root.join("src/lib.rs"), "pub use helper_alias::Witness;\n").unwrap();
+        fs::write(root.join("helper/Cargo.toml"), "[package]\nname='profile-helper'\nversion='0.1.0'\nedition='2021'\n[features]\nnative=[]\n").unwrap();
+        fs::write(
+            root.join("helper/src/lib.rs"),
+            "#[cfg(feature=\"native\")] pub struct Witness;\n",
+        )
+        .unwrap();
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let cargo = PathBuf::from(cargo);
+        assert!(Command::new(&cargo)
+            .args(["generate-lockfile", "--offline", "--manifest-path"])
+            .arg(root.join("Cargo.toml"))
+            .status()
+            .unwrap()
+            .success());
+        let metadata = load_metadata_with_cargo(root.join("Cargo.toml"), Some(&cargo)).unwrap();
+        let rustc = cargo
+            .parent()
+            .unwrap()
+            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+        let output = Command::new(rustc).arg("-vV").output().unwrap();
+        assert!(output.status.success());
+        let target = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .unwrap()
+            .to_owned();
+        let available = BTreeSet::from([target.clone()]);
+        let profile = ProfileSpec {
+            package: "profile-owner".into(),
+            target,
+            default_features: true,
+            features: BTreeSet::from(["helper-alias/native".into()]),
+        };
+        let receipt = root.join("receipt.json");
+        execute_profile_with_cargo(
+            root.join("Cargo.toml"),
+            &metadata,
+            &profile,
+            &available,
+            root.join("target"),
+            &receipt,
+            Some(&cargo),
+        )
+        .unwrap();
+        assert!(local_item_names(&receipt).unwrap().contains("Witness"));
+        let plain = ProfileSpec {
+            features: BTreeSet::new(),
+            ..profile.clone()
+        };
+        assert_ne!(plain.id(), profile.id());
+        for invalid in [
+            "wrong-alias/native",
+            "helper-alias/absent",
+            "helper-alias/native/extra",
+        ] {
+            let invalid_profile = ProfileSpec {
+                features: BTreeSet::from([invalid.into()]),
+                ..profile.clone()
+            };
+            let rejected = root.join(format!("rejected-{}.json", invalid.replace('/', "-")));
+            let error = execute_profile_with_cargo(
+                root.join("Cargo.toml"),
+                &metadata,
+                &invalid_profile,
+                &available,
+                root.join("target"),
+                &rejected,
+                Some(&cargo),
+            )
+            .unwrap_err();
+            assert!(matches!(error, ProfileError::InvalidRustdoc(_)));
+            assert!(!rejected.exists());
+        }
     }
 
     #[test]
