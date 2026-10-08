@@ -39,7 +39,7 @@ class Reader {
   }
   string() {
     const part = this.take(this.u32());
-    return new TextDecoder("utf-8", { fatal: true }).decode(
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
       this.bytes.subarray(part.position, part.end),
     );
   }

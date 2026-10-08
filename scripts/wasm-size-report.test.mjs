@@ -50,6 +50,21 @@ test("imported function indices, aliases, names and overlapping matches are exac
   assert.equal(report.code.sectionBytes, 6);
 });
 
+test("leading BOMs remain part of function, export and custom section names", () => {
+  const name = "\uFEFFfuture::poll";
+  const exports = section(7, [1, ...string(name), 0, 0]);
+  const report = reportWasm(moduleBytes(type, declarations, exports, code,
+    nameSection([[0, name]])), ["^future", "^\uFEFFfuture"]);
+  assert.equal(report.functions[0].name, name);
+  assert.deepEqual(report.functions[0].exports, [name]);
+  assert.deepEqual(report.matches.map(match => match.functions), [0, 1]);
+  // An unknown custom section can contain arbitrary bytes, even invalid name metadata.
+  const unknown = reportWasm(moduleBytes(type, declarations, code,
+    section(0, [...string("\uFEFFname"), 1, 0xff])));
+  assert.equal(unknown.sections.at(-1).name, "\uFEFFname");
+  assert.equal(unknown.nameCoverage, "unavailable");
+});
+
 test("multi-byte size prefixes and padded valid LEB encodings conserve actual bytes", () => {
   // 130 byte body: empty locals, 128 nops and end; padded function count.
   const body = [0, ...Array(128).fill(1), 0x0b];
