@@ -261,7 +261,7 @@ test("native qualification rejects build input identity mutations", () => {
     DYLD_LIBRARY_PATH: "/rust/sysroot/lib",
     SDKROOT: "/Applications/Xcode.app/SDKs/MacOSX.sdk",
   });
-  assert.equal(darwinLinker.configured.target, "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld");
+  assert.equal(darwinLinker.configured.target, "/rust/sysroot/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld64.lld");
   assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
   assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
 });
