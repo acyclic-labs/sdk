@@ -493,6 +493,39 @@ test("native qualification records explicit and implicit rustc linkers through a
   }
 });
 
+test("native capture invokes the exact rustc executable when no nested wrapper is configured", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "stream-native-direct-rustc-test-"));
+  const node = process.execPath.replaceAll("\\", "/");
+  const rustcSource = resolve(directory, "rustc.mjs");
+  const windows = process.platform === "win32";
+  const rustcCommand = resolve(directory, windows ? "rustc.cmd" : "rustc");
+  const priorWrapper = process.env.RUSTC_WORKSPACE_WRAPPER;
+  const invoke = (wrapper, args) => windows
+    ? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "call", wrapper, ...args], { stdio: "inherit" })
+    : execFileSync(wrapper, args, { stdio: "inherit" });
+  try {
+    await writeFile(rustcSource, "process.exit(0);\n");
+    if (windows) await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
+    else {
+      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
+      await chmod(rustcCommand, 0o700);
+    }
+    delete process.env.RUSTC_WORKSPACE_WRAPPER;
+    const capture = await createRustcInvocationCapture();
+    try {
+      invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link"]);
+      const receipt = await capture.read("x86_64-unknown-linux-gnu");
+      assert.equal(receipt.rustc, rustcCommand);
+    } finally {
+      await capture.close();
+    }
+  } finally {
+    if (priorWrapper === undefined) delete process.env.RUSTC_WORKSPACE_WRAPPER;
+    else process.env.RUSTC_WORKSPACE_WRAPPER = priorWrapper;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("native capture restores nested wrappers and PATH and receipts retain the invoked workspace wrapper", async () => {
   const prior = {
     RUSTC_WRAPPER: process.env.RUSTC_WRAPPER,

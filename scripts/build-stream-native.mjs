@@ -873,10 +873,6 @@ async function build(options) {
     };
     let rustcCapture = await createRustcInvocationCapture();
     try {
-      // Record the stable workspace-wrapper identity that Cargo actually
-      // invokes. buildInputs() runs before capture setup and only sees the
-      // ambient process environment.
-      attestedInputs.environment.RUSTC_WORKSPACE_WRAPPER = process.env.RUSTC_WORKSPACE_WRAPPER ?? null;
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
       await rm(resolve(buildOutput, generationManifestName), { force: true });
