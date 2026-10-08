@@ -90,22 +90,57 @@ fn package_by_name<'a>(metadata: &'a Metadata, name: &str) -> Option<&'a Package
         .find(|package| package.name.as_ref() == name)
 }
 
+/// The exact lock authority for an archived Cargo owner.
+#[derive(Clone, Copy)]
+pub enum LockSelection<'a> {
+    RetainedConfig(&'a Path),
+    SourceAdjacent(&'a Path),
+}
+
 /// One producer identity shared by metadata and compilation. Current Git
-/// callers use no config; archived sources may select a retained external lock.
+/// callers keep existing config semantics; archives explicitly select their lock.
 #[derive(Clone, Copy, Default)]
 pub struct CargoExecutionContext<'a> {
     pub cargo_path: Option<&'a Path>,
-    pub config_path: Option<&'a Path>,
+    pub lock_selection: Option<LockSelection<'a>>,
 }
 
 impl CargoExecutionContext<'_> {
-    pub fn configure(self, command: &mut Command) {
-        // A published or captured producer lock is authoritative even when
-        // there is no external config. Ambient overrides cannot select another.
+    fn config_options(self) -> Result<Vec<String>, ProfileError> {
+        let Some(selection) = self.lock_selection else {
+            return Ok(Vec::new());
+        };
+        let value = match selection {
+            LockSelection::RetainedConfig(path) => path
+                .to_str()
+                .ok_or_else(|| {
+                    ProfileError::InvalidRustdoc("producer config path is not UTF-8".into())
+                })?
+                .to_owned(),
+            LockSelection::SourceAdjacent(path) => {
+                if !path.is_absolute() {
+                    return Err(ProfileError::InvalidRustdoc(
+                        "selected owner lock must be absolute".into(),
+                    ));
+                }
+                let path = path.to_str().ok_or_else(|| {
+                    ProfileError::InvalidRustdoc("selected owner lock path is not UTF-8".into())
+                })?;
+                // JSON string escaping is valid TOML basic-string escaping.
+                // This physical command argument is never captured source data.
+                format!(
+                    "resolver.lockfile-path={}",
+                    serde_json::to_string(path)
+                        .map_err(|e| { ProfileError::InvalidRustdoc(e.to_string()) })?
+                )
+            }
+        };
+        Ok(vec!["--config".into(), value])
+    }
+    pub fn configure(self, command: &mut Command) -> Result<(), ProfileError> {
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-        if let Some(config) = self.config_path {
-            command.arg("--config").arg(config);
-        }
+        command.args(self.config_options()?);
+        Ok(())
     }
 }
 
@@ -127,7 +162,7 @@ pub fn load_metadata_with_cargo(
         manifest,
         CargoExecutionContext {
             cargo_path,
-            config_path: None,
+            lock_selection: None,
         },
     )
 }
@@ -142,17 +177,7 @@ pub fn load_metadata_with_context(
         command.cargo_path(cargo_path);
     }
     let mut options = vec!["--locked".to_owned()];
-    if let Some(config) = context.config_path {
-        options.push("--config".into());
-        options.push(
-            config
-                .to_str()
-                .ok_or_else(|| {
-                    ProfileError::InvalidRustdoc("producer config path is not UTF-8".into())
-                })?
-                .to_owned(),
-        );
-    }
+    options.extend(context.config_options()?);
     command.other_options(options);
     command
         .no_deps()
@@ -499,7 +524,7 @@ pub fn execute_target_profile_with_cargo(
         output_json,
         CargoExecutionContext {
             cargo_path,
-            config_path: None,
+            lock_selection: None,
         },
         rustdoc_target,
     )
@@ -606,7 +631,7 @@ pub fn execute_target_profile_with_context(
                 .join(","),
         );
     }
-    context.configure(&mut command);
+    context.configure(&mut command)?;
     command.args(["--", "-Z", "unstable-options", "--output-format", "json"]);
     let output = command.output().map_err(|error| {
         ProfileError::InvalidRustdoc(format!(

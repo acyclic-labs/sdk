@@ -1348,6 +1348,16 @@ fn run_historical_generate_mode_with_env(
     mode: Option<&str>,
     override_lock: Option<&Path>,
 ) -> std::process::Output {
+    run_historical_generate_mode_with_authority(fixture, support, mode, override_lock, None)
+}
+
+fn run_historical_generate_mode_with_authority(
+    fixture: &Fixture,
+    support: &Path,
+    mode: Option<&str>,
+    override_lock: Option<&Path>,
+    automatic_config: Option<(&Path, bool)>,
+) -> std::process::Output {
     let path = std::env::join_paths(
         std::iter::once(support.to_owned())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -1374,6 +1384,13 @@ fn run_historical_generate_mode_with_env(
     }
     if let Some(lock) = override_lock {
         command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
+    }
+    if let Some((directory, cargo_home)) = automatic_config {
+        if cargo_home {
+            command.env("CARGO_HOME", directory);
+        } else {
+            command.current_dir(directory);
+        }
     }
     command.output().unwrap()
 }
@@ -1515,6 +1532,95 @@ fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
         );
         let _ = fs::remove_dir_all(fixture.root);
         let _ = fs::remove_dir_all(fixture.output);
+    }
+}
+
+#[test]
+fn archive_locks_override_foreign_automatic_cargo_configuration() {
+    for published in [true, false] {
+        for cargo_home in [true, false] {
+            let (fixture, support) = registry_archive_fixture(false, published, None, true);
+            let directory = support.join("automatic-config");
+            let config_directory = if cargo_home {
+                directory.clone()
+            } else {
+                directory.join(".cargo")
+            };
+            fs::create_dir_all(&config_directory).unwrap();
+            let foreign = support.join("foreign-automatic/Cargo.lock");
+            fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+            let foreign = foreign
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join("Cargo.lock");
+            let foreign_bytes = b"invalid foreign automatic lock must not be selected\n";
+            fs::write(&foreign, foreign_bytes).unwrap();
+            let config = format!(
+                "[resolver]\nlockfile-path = {}\n",
+                serde_json::to_string(foreign.to_str().unwrap()).unwrap()
+            );
+            fs::write(config_directory.join("config.toml"), &config).unwrap();
+            // Negative control: maintained Cargo really discovers this automatic config.
+            let mut control = Command::new("cargo");
+            control
+                .args([
+                    "metadata",
+                    "--locked",
+                    "--no-deps",
+                    "--format-version",
+                    "1",
+                    "--manifest-path",
+                ])
+                .arg(support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml"))
+                .env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+            if cargo_home {
+                control.env("CARGO_HOME", &directory);
+            } else {
+                control.current_dir(&directory);
+            }
+            let rejected = control.output().unwrap();
+            assert!(
+                !rejected.status.success(),
+                "automatic config negative control did not select foreign lock"
+            );
+            assert!(
+                output_message(&rejected).contains("lock"),
+                "{}",
+                output_message(&rejected)
+            );
+            let archive = support.join("registry/demo-1.0.0.crate");
+            let original_archive = fs::read(&archive).unwrap();
+            let result = run_historical_generate_mode_with_authority(
+                &fixture,
+                &support,
+                Some("registry-archives"),
+                None,
+                Some((&directory, cargo_home)),
+            );
+            assert!(result.status.success(), "{}", output_message(&result));
+            assert_eq!(fs::read(&foreign).unwrap(), foreign_bytes);
+            assert_eq!(fs::read(&archive).unwrap(), original_archive);
+            assert_eq!(
+                fs::read_to_string(config_directory.join("config.toml")).unwrap(),
+                config
+            );
+            let data: Value = serde_json::from_slice(
+                &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v2.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                data["source"]["capturedSource"]["archives"][0]["resolutionLock"]["kind"],
+                if published {
+                    "published"
+                } else {
+                    "docsProducer"
+                }
+            );
+            let _ = fs::remove_dir_all(fixture.root);
+            let _ = fs::remove_dir_all(fixture.output);
+        }
     }
 }
 

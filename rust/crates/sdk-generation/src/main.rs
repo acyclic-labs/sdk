@@ -1358,12 +1358,14 @@ fn execute_historical_profiles(
                     release.package.as_str(),
                 )
                 .map_err(CliError)?;
+                let manifest = if plan.captured_source.is_some() {
+                    package.manifest_path.clone().into_std_path_buf()
+                } else {
+                    root.join("Cargo.toml")
+                };
+                let lock = manifest.with_file_name("Cargo.lock");
                 execute_target_profile_with_context(
-                    if plan.captured_source.is_some() {
-                        package.manifest_path.clone().into_std_path_buf()
-                    } else {
-                        root.join("Cargo.toml")
-                    },
+                    &manifest,
                     execution_metadata,
                     &spec,
                     &available,
@@ -1371,7 +1373,11 @@ fn execute_historical_profiles(
                     &receipt,
                     CargoExecutionContext {
                         cargo_path: Some(cargo),
-                        config_path: config.as_deref(),
+                        lock_selection: historical::producer_lock_selection(
+                            config.as_deref(),
+                            &lock,
+                            plan.captured_source.as_ref(),
+                        ),
                     },
                     &rustdoc_target,
                 )

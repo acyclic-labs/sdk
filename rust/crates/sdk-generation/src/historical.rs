@@ -198,9 +198,12 @@ pub fn archive_plan(
                     .arg(&manifest);
                 sdk_docs::rustdoc_profiles::CargoExecutionContext {
                     cargo_path: Some(cargo),
-                    config_path: Some(&config),
+                    lock_selection: Some(
+                        sdk_docs::rustdoc_profiles::LockSelection::RetainedConfig(&config),
+                    ),
                 }
-                .configure(&mut command);
+                .configure(&mut command)
+                .map_err(|e| e.to_string())?;
                 command_output(&mut command)?;
             }
             let producer = ProducerResolution {
@@ -232,9 +235,12 @@ pub fn archive_plan(
                     .arg(&manifest);
                 sdk_docs::rustdoc_profiles::CargoExecutionContext {
                     cargo_path: Some(cargo),
-                    config_path: None,
+                    lock_selection: Some(
+                        sdk_docs::rustdoc_profiles::LockSelection::SourceAdjacent(&lock),
+                    ),
                 }
-                .configure(&mut command);
+                .configure(&mut command)
+                .map_err(|e| e.to_string())?;
                 command_output(&mut command)?;
             }
             let digest = super::sha256_file(&lock).map_err(|e| e.to_string())?;
@@ -246,11 +252,16 @@ pub fn archive_plan(
             &manifest,
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(cargo),
-                config_path: matches!(
-                    &resolution_lock,
-                    ResolutionLock::SeparateDocsProducer { .. }
-                )
-                .then_some(config.as_path()),
+                lock_selection: Some(
+                    if matches!(
+                        &resolution_lock,
+                        ResolutionLock::SeparateDocsProducer { .. }
+                    ) {
+                        sdk_docs::rustdoc_profiles::LockSelection::RetainedConfig(&config)
+                    } else {
+                        sdk_docs::rustdoc_profiles::LockSelection::SourceAdjacent(&lock)
+                    },
+                ),
             },
         )
         .map_err(|e| e.to_string())?;
@@ -544,6 +555,18 @@ pub fn producer_config(
     Ok(Some(root.join(&producer.config_path)))
 }
 
+pub fn producer_lock_selection<'a>(
+    config: Option<&'a Path>,
+    lock: &'a Path,
+    captured: Option<&CapturedSource>,
+) -> Option<sdk_docs::rustdoc_profiles::LockSelection<'a>> {
+    use sdk_docs::rustdoc_profiles::LockSelection;
+    config.map(LockSelection::RetainedConfig).or_else(|| {
+        matches!(captured, Some(CapturedSource::RegistryArchives { .. }))
+            .then_some(LockSelection::SourceAdjacent(lock))
+    })
+}
+
 pub fn imported_metadata(
     root: &Path,
     captured: &CapturedSource,
@@ -558,11 +581,12 @@ pub fn imported_metadata(
             .join(format!("{}-{}", archive.package, archive.version))
             .join("Cargo.toml");
         let config = producer_config(root, Some(captured), &archive.package)?;
+        let lock = manifest.with_file_name("Cargo.lock");
         let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
             &manifest,
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(cargo),
-                config_path: config.as_deref(),
+                lock_selection: producer_lock_selection(config.as_deref(), &lock, Some(captured)),
             },
         )
         .map_err(|e| e.to_string())?;
@@ -1086,11 +1110,13 @@ pub fn execute_examples_with_context(
             .arg("--target-dir")
             .arg(target_dir);
         let config = producer_config(&root, captured, &example.package)?;
+        let lock = manifest.with_file_name("Cargo.lock");
         sdk_docs::rustdoc_profiles::CargoExecutionContext {
             cargo_path: Some(cargo),
-            config_path: config.as_deref(),
+            lock_selection: producer_lock_selection(config.as_deref(), &lock, captured),
         }
-        .configure(&mut command);
+        .configure(&mut command)
+        .map_err(|e| e.to_string())?;
         if !example.required_features.is_empty() {
             command
                 .arg("--features")
@@ -1293,13 +1319,15 @@ mod tests {
         let config_path = producer_dir.join("config.toml");
         let context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
             cargo_path: Some(&cargo),
-            config_path: Some(&config_path),
+            lock_selection: Some(sdk_docs::rustdoc_profiles::LockSelection::RetainedConfig(
+                &config_path,
+            )),
         };
         let mut generate = Command::new(&cargo);
         generate
             .args(["generate-lockfile", "--offline", "--manifest-path"])
             .arg(fixture.0.join("Cargo.toml"));
-        context.configure(&mut generate);
+        context.configure(&mut generate).unwrap();
         command_output(&mut generate).unwrap();
         assert_eq!(fs::read(fixture.0.join("Cargo.lock")).unwrap(), original);
         assert!(external_lock.is_file());
@@ -1328,7 +1356,9 @@ mod tests {
         let relocated_config = relocated_producer.join("config.toml");
         let relocated_context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
             cargo_path: Some(&cargo),
-            config_path: Some(&relocated_config),
+            lock_selection: Some(sdk_docs::rustdoc_profiles::LockSelection::RetainedConfig(
+                &relocated_config,
+            )),
         };
         let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
             relocated.0.join("Cargo.toml"),
