@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Durable browser mail acknowledgment</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+const result = document.querySelector("#result");
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+let fixture;
+let runtime;
+try {
+  fixture = await taskFixture(crypto.randomUUID());
+  runtime = await fixture.open();
+  await runtime.initializeVolume();
+  const stage = (operation, key, value) => runtime.stage(operation, key, new TextEncoder().encode(JSON.stringify(value)));
+  const worker = { id: "mail-worker", available: {}, labels: {} };
+  const timer = crypto.randomUUID();
+  const timerFile = await stage(timer, "timer", { deadline_unix_ms: Date.now() + 600000 });
+  const receiver = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file: timerFile, operation: timer });
+  assert(receiver.kind === "accepted", describe(receiver));
+  const suspended = await runtime.workerTick(worker, null, 128, 2);
+  assert(suspended.work?.kind === "suspended", "recipient did not release its execution reservation");
+  const command = crypto.randomUUID();
+  const payload = await stage(command, "message", "exact message");
+  const mail = await stage(command, "mail", { recipient: receiver.task_id, payload });
+  const sender = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file: mail, operation: command, kind: "acyclic.mail.send.v1",
+    followup: { operation: crypto.randomUUID(), file: timerFile } });
+  assert(sender.kind === "accepted", describe(sender));
+  result.dataset.waiting = "publish mail before sender consumes receipt";
+  const initial = await runtime.workerTick(worker, null, 128, 1);
+  assert(initial.work?.kind === "yielded", `sender did not retain initial lease: ${describe(initial)}`);
+  const literal = initial.work.lease.operation.entrypoint.result_schema.default;
+  assert(literal.sha256 === "literal" && literal.byte_length === 7n, "lease projection rewrote generic schema literals");
+  const sent = { work: await runtime.resume(initial.work.lease, 1) };
+  assert(sent.work.kind === "yielded", `sender did not yield after mail publication: ${describe(sent)}`);
+  const inbox = await runtime.inbox(receiver.task_id, 0n, 4);
+  assert(inbox.length === 1 && inbox[0].sequence === 1n, `delivery not durably acknowledged: ${describe(inbox)}`);
+  assert(typeof inbox[0].payload.descriptor.byte_length === "number", "inbox FileRef differs from generated Number contract");
+  assert(await runtime.outcome(receiver.task_id) === null, "delivery fabricated recipient consumption");
+  runtime.free();
+  runtime = await fixture.open();
+  result.dataset.waiting = "redeliver exact intent after lost acknowledgment and reopen";
+  await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, payload);
+  assert((await runtime.inbox(receiver.task_id, 0n, 4)).length === 1, "exact redelivery duplicated receiver bytes");
+  const changed = await stage(command, "changed", "different message");
+  let rejected = false;
+  try { await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, changed); }
+  catch { rejected = true; }
+  assert(rejected, "same identity accepted different payload");
+  rejected = false;
+  try { await runtime.send(sent.work.lease, sender.task_id, inbox[0].message_id, payload); }
+  catch { rejected = true; }
+  assert(rejected, "same identity accepted different recipient");
+  assert((await runtime.resume(sent.work.lease, 2)).kind === "suspended", "sender did not release its lease for the next retained wait");
+  rejected = false;
+  try { await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, payload); }
+  catch { rejected = true; }
+  assert(rejected, "released lease retained publication authority");
+  assert((await runtime.inbox(receiver.task_id, 0n, 4)).length === 1, "rejected publication changed inbox");
+  result.dataset.status = "passed";
+  result.textContent = "durable mail, exact redelivery, conflicting identity, recipient non-consumption and stale lease rejection passed";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  runtime?.free();
+  fixture?.free();
+}
+</script>

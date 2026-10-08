@@ -2729,6 +2729,75 @@ mod tests {
         }
     }
 
+    // Finite identity model over the production MailEvent and canonical codec:
+    // two choices for each of six identity fields, 64 retained intents. It
+    // checks byte binding, not unbounded delivery/liveness or hash injectivity.
+    #[tokio::test]
+    async fn bounded_mail_identity_binding_and_field_removal_controls() -> Result<()> {
+        let payloads = MemoryPayloads::new()?;
+        let operation = OperationId::from_bytes([8; 16]);
+        let [first, second] = [
+            payloads.stage(operation, "first", b"7").await?,
+            payloads.stage(operation, "second", b"8").await?,
+        ];
+        let mut cases = Vec::new();
+        let mut identities = BTreeSet::new();
+        for mask in 0..64u8 {
+            let event = MailEvent {
+                sender: TaskId::from_bytes([1 + (mask & 1); 16]),
+                recipient: TaskId::from_bytes([3 + ((mask >> 1) & 1); 16]),
+                message_id: OperationId::from_bytes([5 + ((mask >> 2) & 1); 16]),
+                schema_revision: 1 + u32::from((mask >> 3) & 1),
+                route_revision: 1 + u32::from((mask >> 4) & 1),
+                payload: if mask & 32 == 0 {
+                    first.clone()
+                } else {
+                    second.clone()
+                },
+            };
+            let bytes = crate::contract::canonical_json_bytes(&event)?;
+            assert!(
+                identities.insert(bytes.clone()),
+                "different retained intents aliased"
+            );
+            // Exact decode/redelivery preserves the retained bytes. The sender
+            // compares these bytes before receiver publication; version 2 here
+            // is an identity-domain probe, not a supported inbox revision.
+            let restored: MailEvent = crate::contract::json_from_slice(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(crate::contract::canonical_json_bytes(&restored)?, bytes);
+            cases.push(event);
+        }
+        assert_eq!(identities.len(), 64);
+        for omitted in [
+            "sender",
+            "recipient",
+            "message_id",
+            "schema_revision",
+            "route_revision",
+            "payload",
+        ] {
+            let mut broken_identities = BTreeSet::new();
+            for event in &cases {
+                let Value::Object(mut fields) = serde_json::to_value(event)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                else {
+                    return Err(Error::Invalid("mail event model is not an object".into()));
+                };
+                assert!(fields.remove(omitted).is_some());
+                broken_identities.insert(crate::contract::canonical_json_bytes(&Value::Object(
+                    fields,
+                ))?);
+            }
+            assert_eq!(
+                broken_identities.len(),
+                32,
+                "field-removal control did not expose aliasing: {omitted}"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn mail_identity_binds_both_agents_and_exact_authorized_payload() -> Result<()> {
         let stream = StreamClient::new(Arc::new(MemoryStream::default()));

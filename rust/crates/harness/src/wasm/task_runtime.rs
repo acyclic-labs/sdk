@@ -30,8 +30,8 @@ use acyclic_fs::{
 };
 use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
 use js_sys::{Function, Promise};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
@@ -50,6 +50,89 @@ fn to_js<T: serde::Serialize>(value: &T) -> std::result::Result<JsValue, JsValue
                 .serialize_missing_as_null(true),
         )
         .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+// Project only the admitted state FileRef. Entrypoint schemas and generic
+// machine/model values must retain every literal, including descriptor-shaped
+// user objects, rather than undergoing a recursive structural rewrite.
+fn normalize_work_file(js: &JsValue, work: &WasmBrowserWork) -> std::result::Result<(), JsValue> {
+    let (WasmBrowserWork::Unresolved { lease, .. }
+    | WasmBrowserWork::Yielded { lease }
+    | WasmBrowserWork::Reconciling { lease }) = work
+    else {
+        return Ok(());
+    };
+    let field = |value: &JsValue, key| js_sys::Reflect::get(value, &JsValue::from_str(key));
+    let js_lease = field(js, "lease")?;
+    let operation = field(&js_lease, "operation")?;
+    let state = field(&operation, "state")?;
+    let descriptor = field(&state, "descriptor")?;
+    super::set_js_field(
+        &descriptor,
+        "byte_length",
+        &super::exact_js_number(lease.operation.state.descriptor().byte_length())?,
+    )
+}
+
+fn work_to_js(work: &WasmBrowserWork) -> std::result::Result<JsValue, JsValue> {
+    let js = to_js(work)?;
+    normalize_work_file(&js, work)?;
+    Ok(js)
+}
+
+#[derive(Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WasmBrowserAdmission {
+    Accepted { task_id: String },
+    Rejected { reason: String },
+    Indeterminate { operation_id: String },
+}
+
+#[derive(Serialize, Tsify)]
+struct WasmBrowserWorkError {
+    code: i32,
+    message: String,
+}
+
+#[derive(Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[tsify(large_number_types_as_bigints)]
+enum WasmBrowserWork {
+    Unresolved {
+        lease: WorkLease,
+        error: WasmBrowserWorkError,
+    },
+    Suspended {
+        task_id: String,
+        revision: u64,
+    },
+    Completed {
+        task_id: String,
+    },
+    Yielded {
+        lease: WorkLease,
+    },
+    Reconciling {
+        lease: WorkLease,
+    },
+}
+
+#[derive(Serialize, Tsify)]
+#[tsify(large_number_types_as_bigints)]
+struct WasmBrowserWake {
+    #[tsify(type = "TaskWakeCursor | null")]
+    cursor: Option<TaskWakeCursor>,
+    through_revision: u64,
+    events_read: u32,
+    tasks_polled: u32,
+    woken: Vec<String>,
+}
+
+#[derive(Serialize, Tsify)]
+struct WasmBrowserTick {
+    wake: WasmBrowserWake,
+    #[tsify(type = "WasmBrowserWork | null")]
+    work: Option<WasmBrowserWork>,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -579,6 +662,7 @@ impl WasmTaskRuntime {
         super::to_js_admitted(&file)
     }
 
+    #[wasm_bindgen(unchecked_return_type = "WasmBrowserAdmission")]
     pub async fn admit(
         &self,
         operation: String,
@@ -604,22 +688,24 @@ impl WasmTaskRuntime {
             .await
             .map_err(js_error)?;
         let admission = match admission {
-            Admission::Accepted(task) => json!({"kind":"accepted","task_id":task.identity()}),
-            Admission::Rejected { reason } => json!({"kind":"rejected","reason":reason}),
-            Admission::Indeterminate { operation_id } => {
-                json!({"kind":"indeterminate","operation_id":operation_id})
-            }
+            Admission::Accepted(task) => WasmBrowserAdmission::Accepted {
+                task_id: task.identity(),
+            },
+            Admission::Rejected { reason } => WasmBrowserAdmission::Rejected { reason },
+            Admission::Indeterminate { operation_id } => WasmBrowserAdmission::Indeterminate {
+                operation_id: operation_id.to_string(),
+            },
         };
         to_js(&admission)
     }
 
     /// Executes one caller-bounded tick using the production command resolver.
     /// Missing tool/model routes stay unavailable; no fabricated default swarm.
-    #[wasm_bindgen(js_name = workerTick)]
+    #[wasm_bindgen(js_name = workerTick, unchecked_return_type = "WasmBrowserTick")]
     pub async fn worker_tick(
         &self,
-        worker: JsValue,
-        cursor: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Worker")] worker: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "TaskWakeCursor | null")] cursor: JsValue,
         maximum_events: u32,
         maximum_transitions: u32,
     ) -> std::result::Result<JsValue, JsValue> {
@@ -636,21 +722,38 @@ impl WasmTaskRuntime {
             )
             .await
             .map_err(js_error)?;
-        let work = tick.work.map(work_value);
-        to_js(
-            &json!({"wake":{"cursor":tick.wake.cursor,"through_revision":tick.wake.through_revision,
-            "events_read":tick.wake.events_read,"tasks_polled":tick.wake.tasks_polled,"woken":tick.wake.woken},"work":work}),
-        )
+        let value = WasmBrowserTick {
+            wake: WasmBrowserWake {
+                cursor: tick.wake.cursor,
+                through_revision: tick.wake.through_revision,
+                events_read: tick.wake.events_read,
+                tasks_polled: tick.wake.tasks_polled,
+                woken: tick
+                    .wake
+                    .woken
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect(),
+            },
+            work: tick.work.map(work_value),
+        };
+        let js = to_js(&value)?;
+        if let Some(work) = &value.work {
+            let js_work = js_sys::Reflect::get(&js, &JsValue::from_str("work"))?;
+            normalize_work_file(&js_work, work)?;
+        }
+        Ok(js)
     }
 
     /// Resumes only the exact retained lease; another tick never substitutes it.
+    #[wasm_bindgen(unchecked_return_type = "WasmBrowserWork")]
     pub async fn resume(
         &self,
-        lease: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WorkLease")] lease: JsValue,
         maximum_transitions: u32,
     ) -> std::result::Result<JsValue, JsValue> {
         let lease: WorkLease = from_js(lease)?;
-        to_js(&work_value(
+        work_to_js(&work_value(
             self.runtime
                 .resume_task(lease, &self.commands(), maximum_transitions)
                 .await,
@@ -658,6 +761,7 @@ impl WasmTaskRuntime {
     }
 
     /// Observes only; absence does not dispatch or replay an uncertain effect.
+    #[wasm_bindgen(unchecked_return_type = "Outcome<WasmToolJsonValue> | null")]
     pub async fn outcome(&self, task: String) -> std::result::Result<JsValue, JsValue> {
         let task = TaskId::parse(&task).map_err(js_error)?;
         to_js(
@@ -680,7 +784,7 @@ impl WasmTaskRuntime {
             .map_err(js_error)
     }
 
-    #[wasm_bindgen(js_name = reconcileAdmission)]
+    #[wasm_bindgen(js_name = reconcileAdmission, unchecked_return_type = "[string, ComponentIdentity] | null")]
     pub async fn reconcile_admission(
         &self,
         operation: String,
@@ -700,10 +804,10 @@ impl WasmTaskRuntime {
     /// acknowledgment permits exact redelivery; it grants no effect retry.
     pub async fn send(
         &self,
-        lease: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WorkLease")] lease: JsValue,
         recipient: String,
         message: String,
-        payload: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WasmFileRefWire")] payload: JsValue,
     ) -> std::result::Result<(), JsValue> {
         let lease: WorkLease = from_js(lease)?;
         let sender = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -723,6 +827,7 @@ impl WasmTaskRuntime {
     }
 
     /// A page observation is not a retained model-consumption acknowledgment.
+    #[wasm_bindgen(unchecked_return_type = "InboxItem[]")]
     pub async fn inbox(
         &self,
         task: String,
@@ -730,7 +835,7 @@ impl WasmTaskRuntime {
         maximum: u32,
     ) -> std::result::Result<JsValue, JsValue> {
         let task = TaskId::parse(&task).map_err(js_error)?;
-        to_js(
+        super::to_js_admitted(
             &self
                 .runtime
                 .task_host()
@@ -760,18 +865,25 @@ impl WasmTaskRuntime {
     }
 }
 
-fn work_value(work: TaskWorkerAttempt) -> Value {
+fn work_value(work: TaskWorkerAttempt) -> WasmBrowserWork {
     match work {
-        TaskWorkerAttempt::Unresolved { lease, error } => {
-            json!({"kind":"unresolved","lease":lease,"error":{"code":error.code() as i32,"message":error.to_string()}})
-        }
+        TaskWorkerAttempt::Unresolved { lease, error } => WasmBrowserWork::Unresolved {
+            lease,
+            error: WasmBrowserWorkError {
+                code: error.code() as i32,
+                message: error.to_string(),
+            },
+        },
         TaskWorkerAttempt::Progress(progress) => match progress {
-            TaskWorkerOutcome::Suspended { task, revision } => {
-                json!({"kind":"suspended","task_id":task,"revision":revision})
-            }
-            TaskWorkerOutcome::Completed { task } => json!({"kind":"completed","task_id":task}),
-            TaskWorkerOutcome::Yielded { lease } => json!({"kind":"yielded","lease":lease}),
-            TaskWorkerOutcome::Reconciling { lease } => json!({"kind":"reconciling","lease":lease}),
+            TaskWorkerOutcome::Suspended { task, revision } => WasmBrowserWork::Suspended {
+                task_id: task.to_string(),
+                revision,
+            },
+            TaskWorkerOutcome::Completed { task } => WasmBrowserWork::Completed {
+                task_id: task.to_string(),
+            },
+            TaskWorkerOutcome::Yielded { lease } => WasmBrowserWork::Yielded { lease },
+            TaskWorkerOutcome::Reconciling { lease } => WasmBrowserWork::Reconciling { lease },
         },
     }
 }

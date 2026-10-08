@@ -2,7 +2,8 @@
 
 Initial inspected main: `4e3ed22bdc2137a93cccdd66a3cbb815acf897cc`, tree
 `845c26a40bce308aed750ef71e4369069e622e4c`; rebased onto main
-`8b547b48ca` after the Filesystem boundary landings. Work is unqualified until
+`8b547b48ca` after the Filesystem boundary landings, then `5d2336e299` after
+shared durability/tracing and qualification updates. Work is unqualified until
 final-source execution and landing evidence replaces the pending entries below.
 
 | Invariant | Production mechanism | Assumptions | Verification | Evidence |
@@ -88,3 +89,55 @@ retained intent still own semantic deduplication. The failure is retained in
 Native test dependencies are target-gated so they do not enable Mio on WASM.
 Memory-only unit fixtures are feature-gated with `memory`; their assertions remain
 unchanged and the default native suite must pass before final qualification.
+
+`target-i-filesystem-native-tests-1.log` passed the pre-rebase default native
+Filesystem suite: 1,150 passed, zero failed, 36 ignored host-dependent tests.
+The two process-crash/power-loss core-store tests and million-path admission test
+ran to completion; their long-running notices were not treated as failures or
+grounds to restart. This receipt preserves native fixture coverage but needs
+replacement after the shared main Filesystem changes.
+
+On the rebased runtime, `target-i-browser-build-6.log` regenerated shipped WASM
+and declarations. `target-i-browser-rebased-1.log` passed ordinary timer reload
+and concurrent-tab/worker recovery, but failed the new tool fixture's incorrect
+assertion that uncertain work must have no outcome. `Outcome::Indeterminate` is
+the existing nonterminal reconciliation state. The corrected fixture passed in
+`target-i-browser-tool-2.log`: a localStorage-backed tool effect executed once,
+lost acknowledgment, reopened the real providers, reconciled the exact original
+invocation once, and remained unchanged on duplicate wake.
+`target-i-browser-model-1.log` passed canonical model request binding, retained
+observed prefix, AbortSignal/iterator cleanup, provider reopen and reconciliation
+without a second generation call. These are concrete bounded fault tests; final
+Rust-derived worker/lease/result contracts and installed consumers are still
+being qualified.
+
+`target-i-native-rebased-2.log` passed 236 Harness unit tests and 20 durable
+worker integration tests on the `5d2336e299` base. Browser artifacts built in
+`target-i-browser-build-8.log` and `-10.log` add Rust-derived worker, retained
+lease, admission, tick, outcome and inbox types. Only admitted FileRef lengths
+use the existing exact Number projection; lease schemas and model literals are
+not structurally rewritten. `target-i-browser-contracts-2.log` passed mail,
+tool and model recovery, including a descriptor-shaped schema literal and the
+typed inbox FileRef. Map declarations use Tsify's object representation to match
+the existing browser serializer.
+
+An isolated tarball consumer imported `@acyclic-labs/harness/browser` and ran
+an ordinary registered task in `target-i-installed-browser-run-1.log`; strict
+TypeScript checking, including generated declarations, passed in
+`target-i-installed-browser-types-2.log`. Fake IndexedDB there qualifies package
+resolution/composition, not browser storage durability; Chromium receipts above
+cover the actual platform provider. These receipts precede the final outcome
+and inbox declaration additions and the later main policy-boundary landing.
+
+The bounded identity check uses the production `MailEvent` and canonical codec,
+with two choices for sender, recipient, message ID, schema revision, route
+revision and payload: 64 distinct canonical intents. Removing any one field is
+a negative control that aliases the domain to 32 identities. It checks exact
+byte binding and decode/redelivery within that finite domain. Revision 2 probes
+binding only and is not a supported inbox revision. It makes no claim about
+unbounded traces, hash injectivity, transport liveness or storage atomicity;
+provider and restart tests supply separate implementation evidence. The initial
+compile failure in `target-i-mail-bounded-model-1.log` is retained; the repaired
+check passed in `target-i-mail-bounded-model-2.log` (one bounded-domain test,
+236 other tests filtered). The repaired browser lint still requires a passing
+receipt after main reconciliation.

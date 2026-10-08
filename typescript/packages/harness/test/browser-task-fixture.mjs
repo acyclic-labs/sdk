@@ -16,11 +16,16 @@ export async function taskFixture(id) {
   const registry = new WasmTaskRegistry();
   let transitions = 0;
   registry.registerMachine({ name: "test.browser", version: "1", digest: new Array(32).fill(41),
-    state_schema: { type: "object" }, input_schema: { type: "object" }, output_schema: { type: "integer" }, requirements: [] },
+    state_schema: { type: "object" }, input_schema: { type: "object" },
+    // A schema literal that resembles a descriptor is generic data. Lease
+    // projection must convert only the admitted state FileRef's length.
+    output_schema: { type: "integer", default: { sha256: "literal", byte_length: 7, media_type: "literal" } }, requirements: [] },
     input => input, (state, input) => {
       transitions++;
       return input === null
         ? { state, commands: [{ operation_id: state.operation, kind: state.kind ?? "acyclic.timer.v1", payload: state.file }], status: { kind: "suspended" } }
+        : state.followup && !state.followup_started
+          ? { state: { ...state, followup_started: true }, commands: [{ operation_id: state.followup.operation, kind: "acyclic.timer.v1", payload: state.followup.file }], status: { kind: "suspended" } }
         : { state, commands: [], status: { kind: "completed", value: 7 } };
     });
   const options = {

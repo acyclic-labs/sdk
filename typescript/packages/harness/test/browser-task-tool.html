@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Durable browser tool reconciliation</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+const result = document.querySelector("#result");
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const id = crypto.randomUUID();
+const effectKey = `harness-tool-effect-${id}`;
+let fixture;
+let runtime;
+try {
+  fixture = await taskFixture(id);
+  let executions = 0;
+  let reconciliations = 0;
+  let projections = 0;
+  const definition = { name: "test.effect", revision: "1", description: "Retained browser effect",
+    input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+    output_schema: { type: "string" } };
+  fixture.registry.registerTool(definition, invocation => {
+    executions++;
+    assert(localStorage.getItem(effectKey) === null, "uncertain effect was redispatched");
+    localStorage.setItem(effectKey, JSON.stringify({ operation_id: invocation.operation_id, arguments: invocation.arguments }));
+    throw new Error("acknowledgment lost after durable effect");
+  }, invocation => {
+    reconciliations++;
+    const effect = JSON.parse(localStorage.getItem(effectKey));
+    assert(effect.operation_id === invocation.operation_id, "reconciliation substituted invocation identity");
+    assert(effect.arguments.value === invocation.arguments.value, "reconciliation substituted arguments");
+    return { value: effect.arguments.value };
+  }, (_, canonical) => {
+    projections++;
+    return { observed: canonical.value };
+  });
+  let rejected = false;
+  try { fixture.registry.registerTool({ ...definition, description: "changed" }, () => {}, () => {}, () => {}); }
+  catch { rejected = true; }
+  assert(rejected, "same tool revision accepted a replacement definition");
+  runtime = await fixture.open();
+  await runtime.initializeVolume();
+  const command = crypto.randomUUID();
+  const file = await runtime.stage(command, "tool", new TextEncoder().encode(JSON.stringify({ name: "test.effect", revision: "1", arguments: { value: "committed" } })));
+  assert(typeof file.descriptor.byte_length === "number", "FileRef length differs from generated Number contract");
+  const admission = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file, operation: command, kind: "acyclic.tool.v1" });
+  assert(admission.kind === "accepted", describe(admission));
+  const worker = { id: "tool-worker", available: {}, labels: {} };
+  result.dataset.waiting = "dispatch and retain uncertain effect";
+  const first = await runtime.workerTick(worker, null, 128, 4);
+  assert(first.work?.lease != null, `uncertain work lost original lease: ${describe(first)}`);
+  assert(executions === 1, "tool did not execute exactly once");
+  const uncertain = await runtime.outcome(admission.task_id);
+  assert(uncertain === null || uncertain.Indeterminate != null, `uncertain effect claimed terminal completion: ${describe(uncertain)}`);
+  runtime.free();
+  runtime = await fixture.open();
+  result.dataset.waiting = "reconcile original lease after reopen";
+  const recovered = await runtime.resume(first.work.lease, 4);
+  assert(recovered.kind === "completed", `recovery did not complete: ${describe(recovered)}`);
+  assert(executions === 1 && reconciliations === 1 && projections === 1, "recovery redispatched or duplicated result projection");
+  assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "durable terminal result differs");
+  const duplicate = await runtime.workerTick(worker, null, 128, 4);
+  assert(duplicate.work === null && executions === 1 && reconciliations === 1, "duplicate wake repeated effect recovery");
+  result.dataset.status = "passed";
+  result.textContent = "pinned tool, lost acknowledgment, reopen, exact reconciliation and duplicate wake passed";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  runtime?.free();
+  fixture?.free();
+  localStorage.removeItem(effectKey);
+}
+</script>

@@ -114,6 +114,11 @@ pub struct ChildOperationPageRequest<'a> {
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(large_number_types_as_bigints, hashmap_as_object)
+)]
 pub struct Worker {
     /// Stable worker identity.
     pub id: String,
@@ -126,12 +131,18 @@ pub struct Worker {
 
 /// Work atomically claimed from the coordinator.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct WorkLease {
     /// Complete immutable operation declaration.
     pub operation: OperationSpec,
     /// Pinned execution allocation.
     pub reservation: Reservation,
     /// Latest durable resumable checkpoint, if any.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "(WasmResourceRefWire & { kind: 'checkpoint' }) | null")
+    )]
     pub checkpoint: Option<crate::resources::CheckpointRef>,
     /// Operation revision after this lease was admitted.
     pub operation_revision: u64,

@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Durable browser model reconciliation</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+const result = document.querySelector("#result");
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+let fixture;
+let runtime;
+try {
+  fixture = await taskFixture(crypto.randomUUID());
+  let requests = 0;
+  let reconciliations = 0;
+  let returns = 0;
+  let signal;
+  const model = { provider: "browser-test", name: "pinned", revision: "1", options: {} };
+  const prefix = { kind: "content", delta: "committed" };
+  const bind = runtime => runtime.configureModel(model, (bytes, abortSignal) => {
+    requests++;
+    assert(requests === 1, "uncertain model request was redispatched");
+    const request = JSON.parse(new TextDecoder().decode(bytes));
+    assert(request.model.revision === "1" && request.model.name === "pinned", "request substituted the selected model");
+    signal = abortSignal;
+    let next = 0;
+    return { async next() {
+      if (next++ === 0) return { done: false, value: prefix };
+      throw new Error("transport lost after model prefix");
+    }, return() { returns++; return { done: true }; } };
+  }, attempt => {
+    reconciliations++;
+    assert(attempt.observed.length === 1 && attempt.observed[0].delta === prefix.delta, "reconciliation lost exact observed prefix");
+    assert(attempt.request_digest.length === 32, "reconciliation lost canonical request identity");
+    return [prefix, { kind: "completed", metadata: {} }];
+  });
+  runtime = await fixture.open();
+  bind(runtime);
+  await runtime.initializeVolume();
+  const command = crypto.randomUUID();
+  const file = await runtime.stage(command, "model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
+  const admission = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file, operation: command, kind: "acyclic.model.v1" });
+  assert(admission.kind === "accepted", describe(admission));
+  const worker = { id: "model-worker", available: {}, labels: {} };
+  result.dataset.waiting = "retain interrupted model prefix";
+  const first = await runtime.workerTick(worker, null, 128, 4);
+  assert(first.work?.lease != null, `interrupted request lost original lease: ${describe(first)}`);
+  assert(requests === 1 && signal.aborted && returns === 1, "dropping interrupted iterator did not abort and close transport");
+  const uncertain = await runtime.outcome(admission.task_id);
+  assert(uncertain === null || uncertain.Indeterminate != null, "uncertain model claimed terminal completion");
+  runtime.free();
+  runtime = await fixture.open();
+  bind(runtime);
+  result.dataset.waiting = "reconcile original model attempt after reopen";
+  const recovered = await runtime.resume(first.work.lease, 4);
+  assert(recovered.kind === "completed", `model recovery did not complete: ${describe(recovered)}`);
+  assert(requests === 1 && reconciliations === 1, "recovery repeated model generation or reconciliation");
+  assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "durable model workflow result differs");
+  const duplicate = await runtime.workerTick(worker, null, 128, 4);
+  assert(duplicate.work === null && requests === 1 && reconciliations === 1, "duplicate wake repeated model dispatch");
+  result.dataset.status = "passed";
+  result.textContent = "canonical request, observed prefix, abort, reopen and exact model reconciliation passed";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  runtime?.free();
+  fixture?.free();
+}
+</script>

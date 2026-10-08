@@ -304,6 +304,16 @@ export interface ContextAttribute {
 }
 
 /**
+ * Available logical resources advertised to admission policy.
+ */
+export type ResourceSnapshot = Record<string, bigint>;
+
+/**
+ * Durable orchestration behavior represented as data.
+ */
+export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
+
+/**
  * Explicit bounded selection from a pinned source.
  */
 export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
@@ -329,6 +339,11 @@ export interface ContextDiscoveryLimits {
      */
     instruction_bytes: number;
 }
+
+/**
+ * Explicit lifetime owner for durable work.
+ */
+export type DurableOwner = { kind: "attached"; authority: Authority } | { kind: "detached"; authority: Authority };
 
 /**
  * Frontmatter only; the body is not fetched or injected by discovery.
@@ -371,6 +386,24 @@ export interface ContextSelection {
 }
 
 /**
+ * Immutable component implementation identity.
+ */
+export interface ComponentIdentity {
+    /**
+     * Stable local or namespaced logical name.
+     */
+    name: string;
+    /**
+     * Semantic implementation version.
+     */
+    version: string;
+    /**
+     * Implementation/schema digest.
+     */
+    digest: number[];
+}
+
+/**
  * Immutable discovery revision. Serialize this value through the existing admitted
  * caller journal for restart; it contains no credentials or mutable provider handles.
  */
@@ -383,6 +416,48 @@ export interface DiscoveredContext {
      * Skills in declared root and lexical directory order; duplicate names reject discovery.
      */
     skills: SkillMetadata[];
+}
+
+/**
+ * Immutable durable operation declaration.
+ */
+export interface OperationSpec {
+    /**
+     * Stable operation identity.
+     */
+    operation_id: string;
+    /**
+     * Optional structured parent.
+     */
+    parent: ParentLink | null;
+    /**
+     * Explicit durable owner.
+     */
+    owner: DurableOwner;
+    /**
+     * Restartable implementation identity.
+     */
+    entrypoint: EntrypointRef;
+    /**
+     * Dependencies that must succeed before admission.
+     */
+    dependencies: string[];
+    /**
+     * Logical capacity requirements.
+     */
+    resources: ResourceRequest;
+    /**
+     * Small provider-neutral placement labels, not process or file content.
+     */
+    placement: Record<string, string>;
+    /**
+     * Orchestration behavior.
+     */
+    orchestration: Orchestration;
+    /**
+     * Immutable, provider-owned initial state bytes.
+     */
+    state: WasmFileRefWire;
 }
 
 /**
@@ -402,6 +477,16 @@ export interface PinnedContextPath {
      */
     path: string;
 }
+
+/**
+ * Kind of independently ordered durable aggregate.
+ */
+export type AggregateKind = "agent" | "conversation" | "session" | "turn" | "task";
+
+/**
+ * Logical resource quantities; providers decide how they map to capacity.
+ */
+export type ResourceRequest = Record<string, bigint>;
 
 /**
  * Mutable context assembled for one model step.
@@ -432,6 +517,28 @@ export interface PrivateDirectoryEntry {
 }
 
 /**
+ * One ref-only durable inbox item with a gapless per-task sequence.
+ */
+export interface InboxItem {
+    /**
+     * Owning task.
+     */
+    task_id: string;
+    /**
+     * Gapless one-based sequence.
+     */
+    sequence: bigint;
+    /**
+     * Sender-defined idempotency identity.
+     */
+    message_id: string;
+    /**
+     * Immutable payload bytes staged before Stream publication.
+     */
+    payload: WasmFileRefWire;
+}
+
+/**
  * Ordered authority-resolution level from the runtime root to one invocation.
  */
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
@@ -456,6 +563,24 @@ export interface ContextDiscovery {
      * Explicit work and byte limits.
      */
     limits: ContextDiscoveryLimits;
+}
+
+/**
+ * Pinned resource allocation.
+ */
+export interface Reservation {
+    /**
+     * Provider-owned stable lease identity.
+     */
+    id: string;
+    /**
+     * Selected worker/placement identity.
+     */
+    placement: string;
+    /**
+     * Resources actually admitted; partial admission remains observable.
+     */
+    admitted: ResourceRequest;
 }
 
 /**
@@ -484,6 +609,24 @@ export interface WasmWorkflowAdmissionWire {
 export interface WasmModelMessageInput {
     role: WasmModelRole;
     content: WasmModelContentInput;
+}
+
+/**
+ * Pull worker capacity and placement identity.
+ */
+export interface Worker {
+    /**
+     * Stable worker identity.
+     */
+    id: string;
+    /**
+     * Currently available logical capacity.
+     */
+    available: ResourceSnapshot;
+    /**
+     * Labels available for exact-match operation placement.
+     */
+    labels?: Record<string, string>;
 }
 
 /**
@@ -525,6 +668,49 @@ export interface InstructionScope {
 }
 
 /**
+ * Resume hint for one finite coordinator discovery sweep. It conveys no
+ * execution authority and can be serialized by the caller across restarts.
+ */
+export interface TaskWakeCursor {
+    /**
+     * Last inspected coordinator revision.
+     */
+    after_revision: bigint;
+    /**
+     * Fixed inclusive revision at which this sweep ends.
+     */
+    through_revision: bigint;
+}
+
+/**
+ * Stable identity of one independently ordered history.
+ */
+export interface Authority {
+    /**
+     * Aggregate kind.
+     */
+    kind: AggregateKind;
+    /**
+     * Provider-independent identity.
+     */
+    id: string;
+}
+
+/**
+ * Stable parent link and child slot.
+ */
+export interface ParentLink {
+    /**
+     * Parent operation.
+     */
+    operation_id: string;
+    /**
+     * Stable logical slot, independent of observation order.
+     */
+    slot: string;
+}
+
+/**
  * Stable wire identity used during compatibility handshakes.
  */
 export interface ProtocolIdentity {
@@ -539,6 +725,11 @@ export interface ProtocolIdentity {
 }
 
 /**
+ * Terminal outcome of admitted work.
+ */
+export type Outcome<T> = { Succeeded: T } | { Failed: { message: string } } | "Cancelled" | { Indeterminate: { operation_id: string } };
+
+/**
  * Tsify declarations for the provider-neutral model values.  These wrappers
  * deliberately mirror the serde model DTOs instead of maintaining a second
  * TypeScript-owned wire union.
@@ -548,6 +739,50 @@ export interface WasmModelWire {
     name: string;
     revision: string;
     options: WasmModelJsonValue;
+}
+
+/**
+ * Versioned resumable entrypoint for durable work.
+ */
+export interface EntrypointRef {
+    /**
+     * Stable namespaced entrypoint name.
+     */
+    name: string;
+    /**
+     * Semantic implementation version.
+     */
+    version: string;
+    /**
+     * Digest of the state/input schema and implementation contract.
+     */
+    digest: number[];
+    /**
+     * JSON Schema for the durable result value.
+     */
+    result_schema: WasmToolJsonSchema;
+}
+
+/**
+ * Work atomically claimed from the coordinator.
+ */
+export interface WorkLease {
+    /**
+     * Complete immutable operation declaration.
+     */
+    operation: OperationSpec;
+    /**
+     * Pinned execution allocation.
+     */
+    reservation: Reservation;
+    /**
+     * Latest durable resumable checkpoint, if any.
+     */
+    checkpoint: (WasmResourceRefWire & { kind: 'checkpoint' }) | null;
+    /**
+     * Operation revision after this lease was admitted.
+     */
+    operation_revision: bigint;
 }
 
 export interface ContextDirectoryQuery {
@@ -618,6 +853,24 @@ export interface WasmBrowserTaskOptions {
     session_limits: WasmBrowserSessionLimits;
     concurrency: number;
     maximum_payload_bytes: bigint;
+}
+
+export interface WasmBrowserTick {
+    wake: WasmBrowserWake;
+    work: WasmBrowserWork | null;
+}
+
+export interface WasmBrowserWake {
+    cursor: TaskWakeCursor | null;
+    through_revision: bigint;
+    events_read: number;
+    tasks_polled: number;
+    woken: string[];
+}
+
+export interface WasmBrowserWorkError {
+    code: number;
+    message: string;
 }
 
 export interface WasmExtensionDependencyDefinition {
@@ -752,6 +1005,10 @@ export interface WasmToolDependencyDefinition {
 }
 
 export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
+
+export type WasmBrowserAdmission = { kind: "accepted"; task_id: string } | { kind: "rejected"; reason: string } | { kind: "indeterminate"; operation_id: string };
+
+export type WasmBrowserWork = { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError } | { kind: "suspended"; task_id: string; revision: bigint } | { kind: "completed"; task_id: string } | { kind: "yielded"; lease: WorkLease } | { kind: "reconciling"; lease: WorkLease };
 
 export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
 
@@ -1023,21 +1280,21 @@ export class WasmTaskRuntime {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    admit(operation: string, name: string, version: string, input: any, parent?: string | null): Promise<any>;
+    admit(operation: string, name: string, version: string, input: any, parent?: string | null): Promise<WasmBrowserAdmission>;
     /**
      * Publishes durable cancellation without claiming terminal completion.
      */
     cancel(task: string): Promise<void>;
     /**
      * Composes an explicit provider with the stock model command executor.
-     * Generate receives canonical request bytes and an AbortSignal, and returns an async iterator;
+     * Generate receives canonical request bytes and an `AbortSignal`, and returns an async iterator;
      * reconcile receives the exact retained attempt and never redispatches it.
      */
-    configureModel(model: any, generate: Function, reconcile: Function): void;
+    configureModel(model: WasmModelWire, generate: Function, reconcile: Function): void;
     /**
      * A page observation is not a retained model-consumption acknowledgment.
      */
-    inbox(task: string, after: bigint, maximum: number): Promise<any>;
+    inbox(task: string, after: bigint, maximum: number): Promise<InboxItem[]>;
     /**
      * Creates only the explicitly authorized private journal volume.
      */
@@ -1050,26 +1307,26 @@ export class WasmTaskRuntime {
     /**
      * Observes only; absence does not dispatch or replay an uncertain effect.
      */
-    outcome(task: string): Promise<any>;
-    reconcileAdmission(operation: string): Promise<any>;
+    outcome(task: string): Promise<Outcome<WasmToolJsonValue> | null>;
+    reconcileAdmission(operation: string): Promise<[string, ComponentIdentity] | null>;
     /**
      * Resumes only the exact retained lease; another tick never substitutes it.
      */
-    resume(lease: any, maximum_transitions: number): Promise<any>;
+    resume(lease: WorkLease, maximum_transitions: number): Promise<WasmBrowserWork>;
     /**
      * Returns only after receiver-owned durable bytes are verified. A lost
      * acknowledgment permits exact redelivery; it grants no effect retry.
      */
-    send(lease: any, recipient: string, message: string, payload: any): Promise<void>;
+    send(lease: WorkLease, recipient: string, message: string, payload: WasmFileRefWire): Promise<void>;
     /**
      * Stages an exact immutable command/input artifact through the ordinary store.
      */
-    stage(operation: string, key: string, bytes: Uint8Array): Promise<any>;
+    stage(operation: string, key: string, bytes: Uint8Array): Promise<WasmFileRefWire>;
     /**
      * Executes one caller-bounded tick using the production command resolver.
      * Missing tool/model routes stay unavailable; no fabricated default swarm.
      */
-    workerTick(worker: any, cursor: any, maximum_events: number, maximum_transitions: number): Promise<any>;
+    workerTick(worker: Worker, cursor: TaskWakeCursor | null, maximum_events: number, maximum_transitions: number): Promise<WasmBrowserTick>;
 }
 
 /**
