@@ -825,12 +825,6 @@ impl MemoryHarnessStorage {
             .reducer()
             .context_selection_for_operation(operation_id)
             .cloned();
-        let legacy_user_id = Uuid::from_bytes(user_operation.into_bytes());
-        let user_id_override = state
-            .messages
-            .iter()
-            .any(|message| message.id == legacy_user_id)
-            .then_some(legacy_user_id);
         let preparation = crate::turn::prepare_turn_with_user_id(
             state,
             operation_id,
@@ -840,7 +834,7 @@ impl MemoryHarnessStorage {
             existing_selection,
             false,
             true,
-            user_id_override,
+            None,
         )?;
         let user_id = preparation.user_id;
         if let Some(message) = preparation.user_message.clone() {

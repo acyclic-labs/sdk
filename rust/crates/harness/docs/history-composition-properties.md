@@ -542,3 +542,32 @@ wire page and 54 pure compaction checks in
 `target-b-browser-canonical-checkpoint-consumers.log`. These checks also
 regenerate the prior base/transform boundary. Default continuation, cold
 restoration, fork policy and the automatic browser model path remain open.
+
+
+## Default preparation rejects uncovered history overflow
+
+Default `prepare_turn` now calls `select_turn_delta` without a checkpoint, so it
+preserves all model-visible history or rejects an insufficient context bound.
+The native memory caller always derives the canonical user identity; it no
+longer detects an older alternate identity from history. The explicit custom
+identity planner remains available to hosts that choose it deliberately.
+Native and generated-WASM fixtures pin a complete two-message prior exchange:
+a bound of two rejects the next user, while three includes the entire exchange
+and current input without mutating history. This closes silent suffix selection
+in default preparation, not automatic checkpoint publication/materialization.
+
+The no-feature run passed 242 library tests but correctly ran no feature-gated
+integration tests. The final all-feature run in
+`target-b-native-default-complete-history-all-features.log` passed the library,
+five continuation tests and both recursive-fork integration tests. Strict
+native lint passed in `target-b-clippy-default-complete-history-native.log`.
+The first WASM lint command incorrectly included native-only test dependencies;
+the corrected library-only command passed in
+`target-b-clippy-default-complete-history-wasm-final.log`. Fresh generation
+passed in `target-b-wasm-default-complete-history.log`; four artifact hashes are
+pinned in `target/b-default-complete-history-artifact-hashes.json`. Package and
+test type checks passed. Generated consumers passed 25 tests/195 expectations in
+`target-b-bun-default-complete-history.log`; Chromium passed both pages in
+`target-b-browser-default-complete-history.log`. The new main commit
+`0db1466cd0f2aef5327d3a81c0bae7cdad22a6bd` was fetched after these source pins;
+these receipts do not qualify that upcoming merge.

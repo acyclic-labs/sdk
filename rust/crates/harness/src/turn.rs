@@ -6,7 +6,7 @@ use crate::{
         Attachment, ConversationMessage, ConversationState, FileRef, Limits, MessageKind,
         ModelContextSelection, ReferencedAttachments,
     },
-    projection::{select_turn_suffix, validate_model_context_selection_at_revision},
+    projection::{select_turn_delta, validate_model_context_selection_at_revision},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -102,8 +102,8 @@ pub fn prepare_turn(
 }
 
 /// Plans a turn while preserving a host's established message identity
-/// namespace. New WASM/TS callers use the canonical identity above; native
-/// durable callers may supply a legacy ID for existing histories.
+/// namespace. Callers may explicitly select another identity; default callers
+/// always derive the canonical identity and do not detect legacy histories.
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -220,12 +220,7 @@ pub fn prepare_turn_with_user_id(
             }
             selection
         }
-        None => select_turn_suffix(
-            conversation,
-            &user_message,
-            append_user,
-            limits.context_messages,
-        )?,
+        None => select_turn_delta(conversation, &user_message, append_user, None, limits)?,
     };
     let disposition = if has_completed_output {
         TurnDisposition::Completed
@@ -508,6 +503,67 @@ mod tests {
             return Err(Error::Invalid("stale selection was admitted".into()));
         };
         assert!(error.to_string().contains("stale conversation revision"));
+        Ok(())
+    }
+    #[test]
+    fn default_turn_rejects_history_overflow_instead_of_selecting_a_suffix() -> Result<()> {
+        let mut state = conversation()?;
+        let historical_user = Uuid::new_v4();
+        state.append(ConversationMessage {
+            id: historical_user,
+            sequence: 1,
+            kind: MessageKind::User,
+            content: file("historical-user.txt")?,
+            attachments: inline_attachments(Vec::new()),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: Default::default(),
+        })?;
+        state.append(ConversationMessage {
+            id: Uuid::new_v4(),
+            sequence: 2,
+            kind: MessageKind::Assistant,
+            content: file("historical-assistant.txt")?,
+            attachments: inline_attachments(Vec::new()),
+            reply_to: Some(historical_user),
+            tool_call_id: None,
+            extensions: Default::default(),
+        })?;
+        let operation = OperationId::new();
+        let mut bounded = limits();
+        bounded.context_messages = 2;
+        assert!(
+            prepare_turn(
+                &state,
+                operation,
+                file("current.txt")?,
+                inline_attachments(Vec::new()),
+                bounded,
+                None,
+                false,
+                true,
+            )
+            .is_err()
+        );
+        bounded.context_messages = 3;
+        let prepared = prepare_turn(
+            &state,
+            operation,
+            file("current.txt")?,
+            inline_attachments(Vec::new()),
+            bounded,
+            None,
+            false,
+            true,
+        )?;
+        assert_eq!(prepared.selection.message_ids.len(), 3);
+        assert_eq!(prepared.selection.message_ids[0], historical_user);
+        assert_eq!(
+            prepared.selection.message_ids[2],
+            canonical_user_message_id(operation)
+        );
+        assert!(prepared.selection.checkpoint.is_none());
+        assert_eq!(state.messages().len(), 2);
         Ok(())
     }
 }
