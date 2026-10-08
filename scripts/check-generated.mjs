@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { snapshotCommittedWasm } from "./generated-wasm-baseline.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,12 +53,68 @@ const runtimeFingerprint = value => {
   }
   return value;
 };
+// Frozen smoke vectors from the current Rust route and protobuf contracts.
+const expectedMachinesRoutes = {
+  "IMAGES_QUALIFY": "images/qualify",
+  "MACHINES_CREATE": "machines/create",
+  "MACHINES_INSPECT": "machines/inspect",
+  "MACHINES_LIST": "machines/list",
+  "CHECKPOINTS_INSPECT": "checkpoints/inspect",
+  "MACHINES_CHECKPOINT": "machines/checkpoint",
+  "MACHINES_FORK": "machines/fork",
+  "CHECKPOINTS_FORK": "checkpoints/fork",
+  "MACHINES_SUSPEND": "machines/suspend",
+  "MACHINES_WAKE": "machines/wake",
+  "MACHINES_SUSPENSION_POLICY": "machines/suspension-policy",
+  "MACHINES_DESTROY": "machines/destroy",
+  "CHECKPOINTS_DESTROY": "checkpoints/destroy",
+  "MACHINES_EVENTS": "machines/events",
+  "MACHINES_USAGE": "machines/usage",
+  "OPERATIONS_RECOVER": "operations/recover",
+  "OPERATIONS_RECOVER_ID": "operations/recover-id",
+  "OPERATIONS_INSPECT": "operations/inspect",
+  "OPERATIONS_CANCEL": "operations/cancel",
+  "OPERATIONS_WATCH": "operations/watch"
+};
+/** @param {() => unknown} invoke @param {string} label */
+const requireRejected = (invoke, label) => {
+  let rejected = false;
+  try { invoke(); } catch { rejected = true; }
+  if (!rejected) throw new Error(label + " accepted an invalid contract vector");
+};
 const wasmSmoke = {
   filesystem: module => typeof module.openMemoryFs === "function",
   harness: module => module.decodeAggregateKind(1),
-  inference: module => typeof module.validate_customer_wire === "function",
-  machines: module => module.httpRoutes(),
-  objects: module => module.objects_v1_http_type("objects/get", false),
+  inference: module => {
+    const empty = new Uint8Array();
+    // MutationReceipt: nonzero 32-byte revision/digest and publication sequence 1.
+    const receipt = new Uint8Array([10, 32, ...new Array(32).fill(1), 18, 32, ...new Array(32).fill(2), 24, 1]);
+    if (module.validate_customer_wire("mutation_receipt", receipt, empty, empty) !== undefined) {
+      throw new Error("Inference validator returned a malformed success result");
+    }
+    for (const invalid of [empty, new Uint8Array([255]), receipt.slice(0, -2)]) {
+      requireRejected(() => module.validate_customer_wire("mutation_receipt", invalid, empty, empty), "Inference receipt");
+    }
+    requireRejected(() => module.validate_customer_wire("unknown", receipt, empty, empty), "Inference kind");
+    return true;
+  },
+  machines: module => {
+    const routes = module.httpRoutes();
+    if (routes === null || typeof routes !== "object" || Array.isArray(routes)
+      || JSON.stringify(runtimeFingerprint(routes)) !== JSON.stringify(runtimeFingerprint(expectedMachinesRoutes))) {
+      throw new Error("Machines HTTP route contract differs");
+    }
+    return routes;
+  },
+  objects: module => {
+    const input = module.objects_v1_http_type("objects/get", false);
+    const output = module.objects_v1_http_type("objects/get", true);
+    if (input !== "GetObjectRequest" || output !== "GetObjectResponse") {
+      throw new Error("Objects v1 get route contract differs");
+    }
+    requireRejected(() => module.objects_v1_http_type("retired", false), "Objects v1 route");
+    return [input, output];
+  },
   stream: module => {
     if (module.is_stream_error_code("retired")) {
       throw new Error("Stream WASM still accepts a retired-path error");
@@ -85,9 +142,11 @@ const checkWasmPackage = async ([packageName, basename]) => {
     process.stderr.write(built.stderr ?? "");
     throw new Error(`${packageName} WASM rebuild failed with status ${built.status ?? "unknown"}`);
   }
-  const packageRoot = join(root, `typescript/packages/${packageName}/generated/wasm`);
+  const packageRoot = join(baseline.directory, packageName);
+  const tracked = baseline.extensions[packageName];
   for (const extension of [".js", ".d.ts", "_bg.wasm.d.ts"]) {
     const fresh = readFileSync(join(output, `${basename}${extension}`), "utf8");
+    if (!tracked.includes(extension)) continue;
     const committed = readFileSync(join(packageRoot, `${basename}${extension}`), "utf8");
     const normalizedFresh = extension === ".js" ? canonicalGeneratedJs(fresh) : declarationBlocks(fresh).join("\n");
     const normalizedCommitted = extension === ".js" ? canonicalGeneratedJs(committed) : declarationBlocks(committed).join("\n");
@@ -96,8 +155,9 @@ const checkWasmPackage = async ([packageName, basename]) => {
     }
   }
   const freshWasm = readFileSync(join(output, `${basename}_bg.wasm`));
-  const committedWasm = readFileSync(join(packageRoot, `${basename}_bg.wasm`));
-  if (!WebAssembly.validate(freshWasm) || !WebAssembly.validate(committedWasm)) {
+  const committedWasm = tracked.includes("_bg.wasm")
+    ? readFileSync(join(packageRoot, `${basename}_bg.wasm`)) : null;
+  if (!WebAssembly.validate(freshWasm) || (committedWasm && !WebAssembly.validate(committedWasm))) {
     throw new Error(`packaged ${packageName} WASM failed validation`);
   }
   const load = async (directory, wasm) => {
@@ -109,6 +169,13 @@ const checkWasmPackage = async ([packageName, basename]) => {
     return { module, initialized };
   };
   const freshRuntime = await load(output, freshWasm);
+  const smoke = wasmSmoke[packageName];
+  const freshSmoke = smoke ? runtimeFingerprint(await smoke(freshRuntime.module)) : undefined;
+  if (freshSmoke === false) throw new Error(`packaged ${packageName} WASM smoke failed`);
+  if (!committedWasm) {
+    console.log(`${packageName}: fresh WASM runtime validated; ${tracked.length} tracked declarations compared with HEAD ${baseline.source}`);
+    return;
+  }
   const committedRuntime = await load(packageRoot, committedWasm);
   const freshExports = Object.keys(freshRuntime.module).sort();
   const committedExports = Object.keys(committedRuntime.module).sort();
@@ -120,9 +187,7 @@ const checkWasmPackage = async ([packageName, basename]) => {
       throw new Error(`packaged ${packageName} WASM export kind drift: ${name}`);
     }
   }
-  const smoke = wasmSmoke[packageName];
   if (smoke) {
-    const freshSmoke = runtimeFingerprint(await smoke(freshRuntime.module));
     const committedSmoke = runtimeFingerprint(await smoke(committedRuntime.module));
     if (JSON.stringify(freshSmoke) !== JSON.stringify(committedSmoke)) {
       throw new Error(`packaged ${packageName} WASM runtime semantics drift`);
@@ -132,7 +197,11 @@ const checkWasmPackage = async ([packageName, basename]) => {
 
 
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
+/** @type {ReturnType<typeof snapshotCommittedWasm>} */
+let baseline;
 try {
+  // Read every tracked WASM baseline even if an earlier build rewrote the worktree.
+  baseline = snapshotCommittedWasm(root, join(temporary, "committed-wasm"), wasmPackages);
   for (const [source, packaged] of packagedSourceCopies) {
     if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
       throw new Error(`packaged source drift: ${packaged}`);

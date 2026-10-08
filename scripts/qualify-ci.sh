@@ -309,7 +309,8 @@ case "$lane" in
     # locations keep the host's path separators and private wasm-bindgen
     # closure names carry host-derived crate hashes. Verify the fresh WASM
     # against the committed package API and runtime, then stage the committed
-    # release bytes.
+    # release bytes. The checker reads HEAD for tracked WASM surfaces and
+    # validates fresh runtimes; this restore controls release staging.
     git restore --worktree -- \
       typescript/packages/filesystem/generated/wasm \
       typescript/packages/stream/generated/wasm
@@ -361,7 +362,7 @@ case "$lane" in
     if [[ "$full_qualification" != true ]]; then
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
-      node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
+      node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs scripts/test-generated-wasm-baseline.mjs
       cargo fmt --all -- --check
       exit 0
     fi
@@ -379,7 +380,7 @@ case "$lane" in
     node --test scripts/test-publish-npm-packages.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs
-    node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
+    node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs scripts/test-generated-wasm-baseline.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -432,14 +433,13 @@ case "$lane" in
   typescript)
     # Pull requests and main pushes only; full runs cover this in the linux
     # lane. As there, check:generated runs after `bun run test` has built the
-    # uncommitted packages, against the restored committed filesystem and
-    # stream WASM whose host-specific bytes that build rewrites.
+    # uncommitted packages. It compares tracked surfaces with immutable HEAD
+    # blobs and validates freshly generated runtimes for all six packages.
     source scripts/ensure-bun.sh
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     bun run test
-    git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm       typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts       typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts
     bun run check:generated
     ;;
   linux-arm64)
