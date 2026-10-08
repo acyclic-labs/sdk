@@ -833,8 +833,8 @@ fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), C
             CliError(format!("Rustdoc generated source has invalid filename {filename}"))
         })?;
         let bytes = fs::read(&source).map_err(io_error)?;
-        let digest = sha256_bytes(&bytes).trim_start_matches("sha256:");
-        let retained = retained_root.join(format!("{digest}-{basename}"));
+        let digest = sha256_bytes(&bytes);
+        let retained = retained_root.join(format!("{}-{basename}", digest.trim_start_matches("sha256:")));
         if let Some(parent) = retained.parent() {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
