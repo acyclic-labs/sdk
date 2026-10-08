@@ -14,6 +14,8 @@ use tonic::{
 };
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 fn put_frame(chunk: Result<Bytes, Error>) -> wire::PutObjectRequest {
     wire::PutObjectRequest {
@@ -46,8 +48,26 @@ pub enum ConnectError {
 pub struct GrpcObjects {
     channel: Channel,
     authorization: MetadataValue<Ascii>,
+    transfer_timeout: std::time::Duration,
 }
 impl GrpcObjects {
+    /// Sets the finite deadline for streamed PUT, multipart parts and complete GET bodies.
+    /// Metadata operations retain their 30-second deadline. The default transfer
+    /// deadline is 30 seconds; large-body callers may select up to 30 minutes.
+    /// Authentication, message bounds, validation and retry behavior are unchanged.
+    ///
+    /// # Errors
+    /// Rejects zero or a duration above 30 minutes.
+    pub fn with_transfer_timeout(
+        mut self,
+        timeout: std::time::Duration,
+    ) -> Result<Self, ConnectError> {
+        if timeout.is_zero() || timeout > MAX_TRANSFER_TIMEOUT {
+            return Err(ConnectError::InvalidConfiguration);
+        }
+        self.transfer_timeout = timeout;
+        Ok(self)
+    }
     /// Publishes a caller-owned stream; a source failure cancels the RPC before valid EOF.
     pub fn put_stream(
         &self,
@@ -86,7 +106,7 @@ impl GrpcObjects {
                 let complete = wire::PutObjectRequest {
                     frame: Some(wire::put_object_request::Frame::Complete(true)),
                 };
-                let input = owner.authenticated(
+                let input = owner.authenticated_transfer(
                     stream::iter([header])
                         .chain(frames)
                         .chain(stream::iter([complete]))
@@ -136,7 +156,7 @@ impl GrpcObjects {
                 let complete = wire::UploadPartRequest {
                     frame: Some(wire::upload_part_request::Frame::Complete(true)),
                 };
-                let input = owner.authenticated(
+                let input = owner.authenticated_transfer(
                     stream::iter([header])
                         .chain(frames)
                         .chain(stream::iter([complete]))
@@ -239,16 +259,26 @@ impl GrpcObjects {
         let channel = endpoint
             .tls_config(tls)?
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(30))
+            // Requests carry their own deadlines. This ceiling must permit
+            // caller-selected streaming budgets to reach the transport.
+            .timeout(MAX_TRANSFER_TIMEOUT)
             .connect()
             .await?;
         Ok(Self {
             channel,
             authorization,
+            transfer_timeout: REQUEST_TIMEOUT,
         })
     }
     fn authenticated<T>(&self, value: T) -> Request<T> {
+        self.authenticated_with_timeout(value, REQUEST_TIMEOUT)
+    }
+    fn authenticated_transfer<T>(&self, value: T) -> Request<T> {
+        self.authenticated_with_timeout(value, self.transfer_timeout)
+    }
+    fn authenticated_with_timeout<T>(&self, value: T, timeout: std::time::Duration) -> Request<T> {
         let mut request = Request::new(value);
+        request.set_timeout(timeout);
         request
             .metadata_mut()
             .insert("authorization", self.authorization.clone());
@@ -281,15 +311,16 @@ impl GrpcObjects {
             async {
                 request::validate_binary("objects/get", &query.encode_to_vec(), 0)?;
                 let range = query.range;
+                let deadline = tokio::time::Instant::now() + self.transfer_timeout;
                 let mut frames = self
                     .objects()
-                    .get_object(self.authenticated(query))
+                    .get_object(self.authenticated_transfer(query))
                     .await
                     .map(ok)
                     .map_err(|status| error_from_status(&status))?;
-                let first = frames
-                    .message()
+                let first = tokio::time::timeout_at(deadline, frames.message())
                     .await
+                    .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
                     .map_err(|status| error_from_status(&status))?
                     .ok_or_else(protocol)?;
                 let header = match first.frame {
@@ -300,11 +331,12 @@ impl GrpcObjects {
                     _ => return Err(protocol()),
                 };
                 let remaining = response::get_header(&header, &range, maximum_bytes)?;
-                let body =
-                    stream::try_unfold((frames, remaining), |(mut frames, remaining)| async move {
-                        let Some(frame) = frames
-                            .message()
+                let body = stream::try_unfold(
+                    (frames, remaining),
+                    move |(mut frames, remaining)| async move {
+                        let Some(frame) = tokio::time::timeout_at(deadline, frames.message())
                             .await
+                            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
                             .map_err(|status| error_from_status(&status))?
                         else {
                             return if remaining == 0 {
@@ -324,8 +356,9 @@ impl GrpcObjects {
                             }
                             _ => Err(protocol()),
                         }
-                    })
-                    .boxed();
+                    },
+                )
+                .boxed();
                 Ok(Download { header, body })
             },
         )

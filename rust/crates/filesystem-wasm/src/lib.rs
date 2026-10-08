@@ -317,38 +317,88 @@ mod bindings {
     }
 
     #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "kebab-case")]
+    enum BrowserWorkspaceCommitStatus {
+        Committed,
+        AlreadyCommitted,
+        Conflict,
+        Fenced,
+        IdempotencyConflict,
+    }
+
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "kebab-case")]
+    enum BrowserTransactionRebaseStatus {
+        Rebased,
+        Conflicted,
+    }
+
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "kebab-case")]
+    enum BrowserTransactionConflictRegion {
+        FileRecord,
+        Metadata,
+        FileLength,
+        ContentRange,
+        SparseSeek,
+        DirectoryName,
+        DirectoryRange,
+    }
+
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "kebab-case")]
+    enum BrowserTransactionDependencyUse {
+        Observation,
+        Mutation,
+        ObservationAndMutation,
+    }
+
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "kebab-case")]
+    enum BrowserTransactionSparseSeek {
+        Data,
+        Hole,
+    }
+
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     pub struct BrowserWorkspaceCommit {
-        #[tsify(
-            type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
-        )]
-        status: &'static str,
+        status: BrowserWorkspaceCommitStatus,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
     }
 
-    #[derive(Serialize)]
+    /// Exact result of advancing a retained transaction to the current head.
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserTransactionRebase {
-        status: &'static str,
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserTransactionRebase {
+        status: BrowserTransactionRebaseStatus,
+        #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<BrowserTransactionConflict>,
         truncated: bool,
     }
 
-    #[derive(Serialize)]
+    /// One observation or mutation dependency that prevents a safe rebase.
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserTransactionConflict {
-        region: &'static str,
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserTransactionConflict {
+        region: BrowserTransactionConflictRegion,
+        #[tsify(type = "Uint8Array | undefined")]
         file_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
         directory_id: Option<serde_bytes::ByteBuf>,
         offset: Option<u64>,
         length: Option<u64>,
-        sparse_target: Option<&'static str>,
+        sparse_target: Option<BrowserTransactionSparseSeek>,
         name: Option<BrowserWorkspaceName>,
         maximum_entries: Option<u32>,
-        usage: &'static str,
+        usage: BrowserTransactionDependencyUse,
+        #[tsify(type = "Uint8Array | undefined")]
         expected: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
         actual: Option<serde_bytes::ByteBuf>,
     }
 
@@ -1885,7 +1935,7 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "BrowserOperationWindowLease | undefined")] lease: Option<
                 JsValue,
             >,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<Ts<BrowserWorkspaceCommit>, JsValue> {
             let permit = browser_publication_permit(lease)?;
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
@@ -1905,7 +1955,7 @@ mod bindings {
                 }
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
+            ts(outcome)
         }
 
         /// Safely advances this retained candidate and sparsely replays its work.
@@ -1913,7 +1963,7 @@ mod bindings {
         pub async fn rebase(
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<Ts<BrowserTransactionRebase>, JsValue> {
             let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => value
@@ -1930,30 +1980,30 @@ mod bindings {
                     .map(browser_transaction_rebase),
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
+            ts(outcome)
         }
     }
 
     fn browser_workspace_commit<A, O>(outcome: TransactionCommit<A, O>) -> BrowserWorkspaceCommit {
         match outcome {
             TransactionCommit::Committed(value) => BrowserWorkspaceCommit {
-                status: "committed",
+                status: BrowserWorkspaceCommitStatus::Committed,
                 generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
             },
             TransactionCommit::AlreadyCommitted(value) => BrowserWorkspaceCommit {
-                status: "already-committed",
+                status: BrowserWorkspaceCommitStatus::AlreadyCommitted,
                 generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
             },
             TransactionCommit::Conflict { actual } => BrowserWorkspaceCommit {
-                status: "conflict",
+                status: BrowserWorkspaceCommitStatus::Conflict,
                 generation_id: Some(actual.id().digest().into_bytes().to_vec().into()),
             },
             TransactionCommit::Fenced => BrowserWorkspaceCommit {
-                status: "fenced",
+                status: BrowserWorkspaceCommitStatus::Fenced,
                 generation_id: None,
             },
             TransactionCommit::IdempotencyConflict => BrowserWorkspaceCommit {
-                status: "idempotency-conflict",
+                status: BrowserWorkspaceCommitStatus::IdempotencyConflict,
                 generation_id: None,
             },
         }
@@ -1964,7 +2014,7 @@ mod bindings {
     ) -> BrowserTransactionRebase {
         match outcome {
             TransactionRebase::Rebased(generation) => BrowserTransactionRebase {
-                status: "rebased",
+                status: BrowserTransactionRebaseStatus::Rebased,
                 generation_id: Some(generation.id().digest().into_bytes().to_vec().into()),
                 conflicts: Vec::new(),
                 truncated: false,
@@ -1973,7 +2023,7 @@ mod bindings {
                 conflicts,
                 truncated,
             } => BrowserTransactionRebase {
-                status: "conflicted",
+                status: BrowserTransactionRebaseStatus::Conflicted,
                 generation_id: None,
                 conflicts: conflicts
                     .into_iter()
@@ -1986,7 +2036,7 @@ mod bindings {
 
     fn browser_transaction_conflict(value: TransactionConflict) -> BrowserTransactionConflict {
         let mut result = BrowserTransactionConflict {
-            region: "",
+            region: BrowserTransactionConflictRegion::FileRecord,
             file_id: None,
             directory_id: None,
             offset: None,
@@ -1995,9 +2045,13 @@ mod bindings {
             name: None,
             maximum_entries: None,
             usage: match value.usage {
-                TransactionDependencyUse::Observation => "observation",
-                TransactionDependencyUse::Mutation => "mutation",
-                TransactionDependencyUse::ObservationAndMutation => "observation-and-mutation",
+                TransactionDependencyUse::Observation => {
+                    BrowserTransactionDependencyUse::Observation
+                }
+                TransactionDependencyUse::Mutation => BrowserTransactionDependencyUse::Mutation,
+                TransactionDependencyUse::ObservationAndMutation => {
+                    BrowserTransactionDependencyUse::ObservationAndMutation
+                }
             },
             expected: value
                 .expected
@@ -2008,15 +2062,15 @@ mod bindings {
         };
         match value.region {
             TransactionConflictRegion::FileRecord(file_id) => {
-                result.region = "file-record";
+                result.region = BrowserTransactionConflictRegion::FileRecord;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
             TransactionConflictRegion::Metadata(file_id) => {
-                result.region = "metadata";
+                result.region = BrowserTransactionConflictRegion::Metadata;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
             TransactionConflictRegion::FileLength(file_id) => {
-                result.region = "file-length";
+                result.region = BrowserTransactionConflictRegion::FileLength;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
             TransactionConflictRegion::ContentRange {
@@ -2024,7 +2078,7 @@ mod bindings {
                 offset,
                 length,
             } => {
-                result.region = "content-range";
+                result.region = BrowserTransactionConflictRegion::ContentRange;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
                 result.offset = Some(offset);
                 result.length = Some(length);
@@ -2034,16 +2088,16 @@ mod bindings {
                 offset,
                 target,
             } => {
-                result.region = "sparse-seek";
+                result.region = BrowserTransactionConflictRegion::SparseSeek;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
                 result.offset = Some(offset);
                 result.sparse_target = Some(match target {
-                    TransactionSparseSeek::Data => "data",
-                    TransactionSparseSeek::Hole => "hole",
+                    TransactionSparseSeek::Data => BrowserTransactionSparseSeek::Data,
+                    TransactionSparseSeek::Hole => BrowserTransactionSparseSeek::Hole,
                 });
             }
             TransactionConflictRegion::DirectoryName { directory_id, name } => {
-                result.region = "directory-name";
+                result.region = BrowserTransactionConflictRegion::DirectoryName;
                 result.directory_id = Some(directory_id.into_bytes().to_vec().into());
                 result.name = Some(browser_workspace_name_value(name));
             }
@@ -2052,13 +2106,33 @@ mod bindings {
                 after,
                 maximum_entries,
             } => {
-                result.region = "directory-range";
+                result.region = BrowserTransactionConflictRegion::DirectoryRange;
                 result.directory_id = Some(directory_id.into_bytes().to_vec().into());
                 result.name = after.map(browser_workspace_name_value);
                 result.maximum_entries = Some(maximum_entries);
             }
         }
         result
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_transaction_rebase_js(offset: u64) -> Result<JsValue, JsValue> {
+        ts(BrowserTransactionRebase {
+            status: BrowserTransactionRebaseStatus::Conflicted,
+            generation_id: None,
+            conflicts: vec![browser_transaction_conflict(TransactionConflict {
+                region: TransactionConflictRegion::ContentRange {
+                    file_id: FileId::from_bytes([7; 16]),
+                    offset,
+                    length: u64::MAX,
+                },
+                usage: TransactionDependencyUse::ObservationAndMutation,
+                expected: None,
+                actual: None,
+            })],
+            truncated: false,
+        })
+        .map(Into::into)
     }
 
     #[allow(
@@ -7847,6 +7921,48 @@ mod bindings {
             Box::pin(verify_transaction_tree_fork(&workspace, &payload)).await
         }
 
+        #[wasm_bindgen_test(async)]
+        async fn transaction_results_preserve_commits_and_conflicting_rebases()
+        -> Result<(), JsValue> {
+            let fs = test_browser_fs()?;
+            let workspace = fs.create_workspace("transactions".to_owned()).await?;
+            workspace.write("/file".to_owned(), vec![1]).await?;
+            let mut winner = workspace.begin_transaction(Some(vec![31; 16])).await?;
+            let mut loser = workspace.begin_transaction(Some(vec![32; 16])).await?;
+            winner.write("/file".to_owned(), vec![2]).await?;
+            loser.write("/file".to_owned(), vec![3]).await?;
+            let committed: JsValue = winner.commit(None).await?.into();
+            assert_eq!(
+                js_sys::Reflect::get(&committed, &"status".into())?
+                    .as_string()
+                    .as_deref(),
+                Some("committed")
+            );
+            let generation = js_sys::Reflect::get(&committed, &"generationId".into())?
+                .dyn_into::<js_sys::Uint8Array>()?;
+            assert_eq!(generation.length(), 32);
+            let conflict: JsValue = loser.commit(None).await?.into();
+            assert_eq!(
+                js_sys::Reflect::get(&conflict, &"status".into())?
+                    .as_string()
+                    .as_deref(),
+                Some("conflict")
+            );
+            let rebased: JsValue = loser.rebase(JsValue::from(16)).await?.into();
+            assert_eq!(
+                js_sys::Reflect::get(&rebased, &"status".into())?
+                    .as_string()
+                    .as_deref(),
+                Some("conflicted")
+            );
+            assert!(js_sys::Reflect::get(&rebased, &"generationId".into())?.is_undefined());
+            let conflicts =
+                js_sys::Reflect::get(&rebased, &"conflicts".into())?.dyn_into::<js_sys::Array>()?;
+            assert!(conflicts.length() > 0);
+            assert_eq!(workspace.read("/file".to_owned(), 1).await?, vec![2]);
+            Ok(())
+        }
+
         async fn prepare_workspace(
             workspace: &BrowserWorkspace,
             payload: &[u8],
@@ -7995,11 +8111,52 @@ mod wasm_abi_tests {
         test_checkout_commit_result_js, test_checkout_export_manifest_result_js,
         test_checkout_metadata_result_js, test_checkout_mutation_result_js,
         test_oversized_transaction_array_rejected, test_speculation_results_js,
-        test_transfer_and_residency_results_js, test_workspace_extent_plan_js,
+        test_transaction_rebase_js, test_transfer_and_residency_results_js,
+        test_workspace_extent_plan_js,
     };
     use js_sys::{Array, BigInt, Reflect};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn transaction_conflicts_preserve_full_width_integers_bytes_and_undefined()
+    -> Result<(), JsValue> {
+        for offset in [3, 9_007_199_254_740_993, u64::MAX] {
+            let result = test_transaction_rebase_js(offset)?;
+            assert!(Reflect::get(&result, &"generationId".into())?.is_undefined());
+            let conflicts = Reflect::get(&result, &"conflicts".into())?.dyn_into::<Array>()?;
+            let conflict = conflicts.get(0);
+            let actual_offset = Reflect::get(&conflict, &"offset".into())?.dyn_into::<BigInt>()?;
+            assert_eq!(
+                actual_offset.to_string(10)?.as_string(),
+                Some(offset.to_string())
+            );
+            let length = Reflect::get(&conflict, &"length".into())?.dyn_into::<BigInt>()?;
+            assert_eq!(
+                length.to_string(10)?.as_string(),
+                Some(u64::MAX.to_string())
+            );
+            let file =
+                Reflect::get(&conflict, &"fileId".into())?.dyn_into::<js_sys::Uint8Array>()?;
+            assert_eq!(file.to_vec(), vec![7; 16]);
+            assert!(Reflect::get(&conflict, &"directoryId".into())?.is_undefined());
+            assert!(Reflect::get(&conflict, &"expected".into())?.is_undefined());
+            assert!(Reflect::get(&conflict, &"actual".into())?.is_undefined());
+            assert_eq!(
+                Reflect::get(&conflict, &"region".into())?
+                    .as_string()
+                    .as_deref(),
+                Some("content-range")
+            );
+            assert_eq!(
+                Reflect::get(&conflict, &"usage".into())?
+                    .as_string()
+                    .as_deref(),
+                Some("observation-and-mutation")
+            );
+        }
+        Ok(())
+    }
 
     #[wasm_bindgen_test]
     fn workspace_extent_plan_preserves_u64_as_bigint() -> Result<(), JsValue> {
