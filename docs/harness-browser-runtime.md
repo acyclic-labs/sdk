@@ -1,9 +1,9 @@
 # Slice I: portable ordinary-task execution
 
-Base main: `08a5b8ea796a3b85aeee3e56a79d0439ae68247f`. Draft PR:
+Original base main: `08a5b8ea796a3b85aeee3e56a79d0439ae68247f`. Draft PR:
 https://github.com/acyclic-labs/sdk/pull/274. This is a qualification record,
 not a readiness or landing claim. Receipts below identify their source scope;
-the latest source still requires final native/installed checks and macOS execution.
+the latest source still requires final qualification after main integration.
 
 ## Production mechanisms and boundaries
 
@@ -124,10 +124,35 @@ has no compatibility fallback. Strict native all-target lint and the focused
 measurement passed in target-i-timer-bounds-clippy-2.log and
 target-i-timer-bounds-2.log (one read, maximum one record for all three retained
 counts). The initial fixture type-inference failure is retained in the first
-lint receipt. Full affected-source qualification of this correction is pending.
+lint receipt. Signed source 0542ee06c4 then passed Windows and Linux strict
+native lint, 238 unit tests and 20 durable-worker tests, and strict Harness WASM
+lint (target-i-native-timer-final-1.log,
+target-i-linux-timer-final-1.log, target-i-browser-timer-final-clippy-1.log).
+All eight actual Chromium pages passed in target-i-browser-timer-final-1.log.
+The installed closure passed 292 Rust and 47 TypeScript tests with seven
+verified artifact hashes and SOURCE_COMMIT 0542ee06c4 in
+target/i-harness-package-0542ee06c4 (target-i-installed-timer-final-1.log).
 
-Affected final-source native, WASM/browser, generated and installed receipts,
-successful required CI, macOS and landed-tree verification remain open.
-The latest macOS host ivar inspection has about 667 MiB free; no slice I build was
-dispatched and no other owner's files were removed. No unrestricted proof,
-native mount, confinement or cross-provider atomicity claim is made.
+macOS capacity subsequently became available. The exact 0542ee06c4 archive,
+SHA256 a8c895fd68afc08de4901d4813efd38a0fe22159429e912e656791f4eb15a8c8,
+passed strict native lint, 238 unit tests and 20 durable-worker tests through
+ssh ivar in the isolated /tmp/sdk-slice-i-0542ee06c4 directory.
+target-i-macos-0542ee06c4-1.log and
+target/i-macos-0542ee06c4-receipts retain the raw lint/test logs and source
+hashes. The slot was released to PR5 after this build completed.
+
+Automatic PR run 37715110202 succeeded on 0542ee06c4. The older forced matrix
+37714072774 exposed a filesystem-WASM private parser borrow lint and a Linux
+native declaration failure. Fresh Windows and Linux declarations, including
+CI's Bun 1.4.2, matched the committed file. A negative control reproduced
+missing FileKind/FilePayloadKind declarations when the cached filesystem
+dependency lacked its external macro output
+(target-i-linux-napi-missing-dependency-1.log). Declaration generation now
+checks both crates' output, rebuilds missing output, and bypasses compiler
+wrappers for this macro-emission build; the filesystem build tracks its
+declaration environment. Windows generation matches the committed declaration
+(target-i-windows-napi-repair-1.log); strict all-feature filesystem lint passed
+(target-i-filesystem-build-script-clippy-1.log). Linux recovery qualification
+is still running. Qualification of these repairs, successful complete
+CI and landed-tree verification remain open. No unrestricted proof, native
+mount, confinement or cross-provider atomicity claim is made.

@@ -844,7 +844,7 @@ mod bindings {
             length: u64,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_spans: JsValue,
         ) -> Result<Ts<BrowserWorkspaceExtentPlan>, JsValue> {
-            let maximum_spans = wasm_u32(maximum_spans)?;
+            let maximum_spans = wasm_u32(&maximum_spans)?;
 
             let value = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
@@ -1070,9 +1070,9 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<Ts<BrowserWorkspaceRebaseResult>, JsValue> {
-            let maximum_generations = wasm_u32(maximum_generations)?;
-            let maximum_changes = wasm_u32(maximum_changes)?;
-            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
+            let maximum_generations = wasm_u32(&maximum_generations)?;
+            let maximum_changes = wasm_u32(&maximum_changes)?;
+            let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
 
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
@@ -1119,7 +1119,7 @@ mod bindings {
             to: &BrowserGeneration,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
         ) -> Result<BrowserChangeSet, JsValue> {
-            let maximum_changes = wasm_u32(maximum_changes)?;
+            let maximum_changes = wasm_u32(&maximum_changes)?;
 
             let engine = match (&self.engine, &from.engine, &to.engine) {
                 (
@@ -1318,7 +1318,7 @@ mod bindings {
             next: &BrowserChangeSet,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
         ) -> Result<BrowserChangeSet, JsValue> {
-            let maximum_changes = wasm_u32(maximum_changes)?;
+            let maximum_changes = wasm_u32(&maximum_changes)?;
 
             let engine = match (&self.engine, &next.engine) {
                 (
@@ -1507,7 +1507,7 @@ mod bindings {
             after: Option<JsValue>,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_entries: JsValue,
         ) -> Result<Ts<BrowserWorkspaceDirectoryPage>, JsValue> {
-            let maximum_entries = wasm_u32(maximum_entries)?;
+            let maximum_entries = wasm_u32(&maximum_entries)?;
 
             let after = after.map(browser_workspace_name).transpose()?;
             let value = match &self.engine {
@@ -1552,7 +1552,7 @@ mod bindings {
             length: u64,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_spans: JsValue,
         ) -> Result<Ts<BrowserWorkspaceExtentPlan>, JsValue> {
-            let maximum_spans = wasm_u32(maximum_spans)?;
+            let maximum_spans = wasm_u32(&maximum_spans)?;
 
             let value = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => {
@@ -1914,7 +1914,7 @@ mod bindings {
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<JsValue, JsValue> {
-            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
+            let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => value
                     .rebase(maximum_conflicts)
@@ -3217,7 +3217,7 @@ mod bindings {
             child_context_id: Vec<u8>,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum: JsValue,
         ) -> Result<Vec<u8>, JsValue> {
-            let maximum = wasm_u32(maximum)?;
+            let maximum = wasm_u32(&maximum)?;
 
             let discarded = self
                 .inner
@@ -3710,7 +3710,7 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_objects: JsValue,
             maximum_object_bytes: u64,
         ) -> Result<Ts<GenerationTransferBatchResult>, JsValue> {
-            let maximum_objects = wasm_u32(maximum_objects)?;
+            let maximum_objects = wasm_u32(&maximum_objects)?;
 
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
@@ -3778,7 +3778,7 @@ mod bindings {
             objects: JsValue,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_objects: JsValue,
         ) -> Result<Ts<GenerationTransferCursorResult>, JsValue> {
-            let maximum_objects = wasm_u32(maximum_objects)?;
+            let maximum_objects = wasm_u32(&maximum_objects)?;
 
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
@@ -4150,7 +4150,7 @@ mod bindings {
             after: Vec<u8>,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
         ) -> Result<Ts<BrowserGenerationDiffResult>, JsValue> {
-            let maximum_changes = wasm_u32(maximum_changes)?;
+            let maximum_changes = wasm_u32(&maximum_changes)?;
 
             let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &before,
@@ -4528,8 +4528,8 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
-            let maximum_changes = wasm_u32(maximum_changes)?;
-            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
+            let maximum_changes = wasm_u32(&maximum_changes)?;
+            let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
 
             let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &theirs,
@@ -4933,7 +4933,7 @@ mod bindings {
             after_name: Option<Vec<u8>>,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_entries: JsValue,
         ) -> Result<Ts<BrowserNamedAttributePageResult>, JsValue> {
-            let maximum_entries = wasm_u32(maximum_entries)?;
+            let maximum_entries = wasm_u32(&maximum_entries)?;
 
             let path = browser_path(&path, self.profile, self.limits)?;
             let after = match (after_class, after_name) {
@@ -5226,7 +5226,7 @@ mod bindings {
             length: u64,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_spans: JsValue,
         ) -> Result<Ts<BrowserExtentPlanResult>, JsValue> {
-            let maximum_spans = wasm_u32(maximum_spans)?;
+            let maximum_spans = wasm_u32(&maximum_spans)?;
 
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
@@ -5273,7 +5273,7 @@ mod bindings {
             length: u64,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_spans: JsValue,
         ) -> Result<Ts<BrowserExtentPlanResult>, JsValue> {
-            let maximum_spans = wasm_u32(maximum_spans)?;
+            let maximum_spans = wasm_u32(&maximum_spans)?;
 
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
@@ -5439,7 +5439,7 @@ mod bindings {
             after: Option<String>,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_entries: JsValue,
         ) -> Result<Ts<BrowserDirectoryPageResult>, JsValue> {
-            let maximum_entries = wasm_u32(maximum_entries)?;
+            let maximum_entries = wasm_u32(&maximum_entries)?;
 
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
             let path =
@@ -5512,7 +5512,7 @@ mod bindings {
             after: Option<String>,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_entries: JsValue,
         ) -> Result<Ts<BrowserDirectoryRecordPageResult>, JsValue> {
-            let maximum_entries = wasm_u32(maximum_entries)?;
+            let maximum_entries = wasm_u32(&maximum_entries)?;
 
             let path = browser_path(&path, self.profile, self.limits)?;
             let after = after
@@ -5701,8 +5701,8 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] major: JsValue,
             #[wasm_bindgen(unchecked_param_type = "number")] minor: JsValue,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let major = wasm_u32(major)?;
-            let minor = wasm_u32(minor)?;
+            let major = wasm_u32(&major)?;
+            let minor = wasm_u32(&minor)?;
 
             let path = browser_path(&path, self.profile, self.limits)?;
             let kind = device_kind(&kind)?;
@@ -6295,8 +6295,8 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_attempts: JsValue,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<Ts<BrowserLiveTransactionResult>, JsValue> {
-            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
-            let maximum_attempts = wasm_u32(maximum_attempts)?;
+            let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+            let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
@@ -6330,8 +6330,8 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_attempts: JsValue,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<Ts<BrowserLiveMutationResult>, JsValue> {
-            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
-            let maximum_attempts = wasm_u32(maximum_attempts)?;
+            let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+            let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
@@ -6381,7 +6381,7 @@ mod bindings {
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<Ts<BrowserRebaseResult>, JsValue> {
-            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
+            let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
 
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -7010,7 +7010,7 @@ mod bindings {
             .map_err(|_| js_error("identity must be exactly 16 bytes"))
     }
 
-    fn wasm_u32(value: JsValue) -> Result<u32, JsValue> {
+    fn wasm_u32(value: &JsValue) -> Result<u32, JsValue> {
         let number = value
             .as_f64()
             .ok_or_else(|| js_error("expected a JavaScript number"))?;
