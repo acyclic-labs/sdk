@@ -1300,15 +1300,16 @@ fn checked_js_string(value: JsValue, field: &str) -> Result<String, JsValue> {
     let length = js_value.length();
     let mut index = 0;
     while index < length {
-        let code_unit = js_value.char_code_at(index) as u32;
-        if (0xd800..=0xdbff).contains(&code_unit) {
+        let code_unit = js_value.char_code_at(index);
+        if (f64::from(0xd800)..=f64::from(0xdbff)).contains(&code_unit) {
             let next = index + 1;
-            if next >= length || !(0xdc00..=0xdfff).contains(&(js_value.char_code_at(next) as u32))
+            if next >= length
+                || !(f64::from(0xdc00)..=f64::from(0xdfff)).contains(&js_value.char_code_at(next))
             {
                 return Err(JsValue::from_str(&format!("{field} is invalid")));
             }
             index += 2;
-        } else if (0xdc00..=0xdfff).contains(&code_unit) {
+        } else if (f64::from(0xdc00)..=f64::from(0xdfff)).contains(&code_unit) {
             return Err(JsValue::from_str(&format!("{field} is invalid")));
         } else {
             index += 1;
