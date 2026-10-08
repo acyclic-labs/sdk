@@ -29,3 +29,37 @@ missing("missing package gRPC export", WorkersService, "InvokeVersion", "typescr
 missing("missing entire HTTP transport", WorkersService, "InvokeVersion", "rust/crates/workers/src/http.rs", () => "", "rustHttp");
 missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
 missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v2.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
+
+test("missing generated Actors operation removes both TypeScript capability flags", () => {
+  const method = ActorsService.methods[0];
+  const path = "typescript/packages/actors/src/generated/actors-service.ts";
+  const original = read(path);
+  const changed = original.replace(`readonly ${method.localName}:`, "readonly removedOperation:");
+  assert.notEqual(changed, original);
+  const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
+  const result = inspect(ActorsService, method);
+  assert.equal(result.typescriptGrpcNodeBun, false);
+  assert.equal(result.typescriptHttp, false);
+});
+
+test("missing Actors native bridge removes the Node/Bun capability", () => {
+  const method = ActorsService.methods[0];
+  const path = "typescript/packages/actors/src/client.ts";
+  const original = read(path);
+  const changed = original.replaceAll("nativeBinding()", "removedNativeBinding()");
+  assert.notEqual(changed, original);
+  const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
+  assert.equal(inspect(ActorsService, method).typescriptGrpcNodeBun, false);
+});
+
+test("missing Actors client export removes the package capability", () => {
+  const method = ActorsService.methods[0];
+  const path = "typescript/packages/actors/package.json";
+  const original = read(path);
+  const manifest = JSON.parse(original);
+  delete manifest.exports["./client"];
+  const changed = JSON.stringify(manifest);
+  assert.notEqual(changed, original);
+  const inspect = createSourceInspector(root, candidate => candidate === path ? changed : read(candidate));
+  assert.equal(inspect(ActorsService, method).typescriptPackageExported, false);
+});
