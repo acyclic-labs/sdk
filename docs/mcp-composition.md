@@ -61,6 +61,12 @@ An approved MCP stdio exchange needs a small extension of that existing admitted
 process path; it must reuse its launch/observation receipts, exact approval,
 lease checks and process-tree drain. This extension is not implemented yet.
 No raw process launch or replacement process journal is an acceptable fallback.
+The existing `ProcessTree` capture loop now has a bounded input branch with
+nonblocking partial writes, ordered callback writes and explicit protocol
+completion. It keeps the same intent, output, deadline and cleanup owner;
+completion closes stdin and terminates containment before bounded output drain.
+No writer thread or separate process loop was introduced. The admitted process
+request/provider still needs the exact MCP exchange descriptor and receipt path.
 `McpStdioExchange` wraps `rmcp`'s bounded newline codec for that extension.
 It validates initialization before emitting the initialized notification and
 one request, pins distinct IDs, and fails permanently after malformed output.
@@ -85,6 +91,7 @@ Native process integration and final-source qualification remain open.
 | Shared `rmcp` JSON-RPC boundary | HTTP and stdio enforce the same response identity and notification contracts |
 | Bounded stdio exchange codec | Negotiation precedes the one admitted request; malformed output cannot restart it |
 | Raw JSON ingress validation and scan offset | Keep private malformed stdout out of library logs, preserve the admitted depth policy, and avoid rescanning incomplete prefixes |
+| Bounded input branch in the existing process capture loop | Backpressure must not prevent intent/deadline checks or owned cleanup; the ordered queue is bounded by the complete admitted input allowance |
 | Reconciliation distinct from HTTP POST | Uncertainty cannot cause an unapproved remote replay |
 | Optional native dependency | Portable/browser construction must not require native network/process providers |
 
@@ -197,3 +204,22 @@ and all test targets passed without suppressions. WASM rebuilt successfully and
 all six Node catalog/browser bridge tests passed, with no generated declaration
 changes. These remain development checks, not native-process, actual Chromium
 or final-source platform qualification.
+
+### Native process input development checkpoint
+
+`ProcessTree` nonblocking stdin and its shared capture loop pass real Windows
+controls for a stalled reader, a 4 MiB non-UTF-8 byte pattern with partial writes
+and explicit EOF, a two-step handshake followed by a stalled server, input
+overflow, parser failure and timeout with bounded output prefixes and confirmed
+cleanup. A counterexample found zero progress on oversized Windows writes despite
+capacity for a smaller prefix; bounded logarithmic prefix probing fixes that
+without an arbitrary input-size ceiling. The queue counts already-written bytes
+against the complete input allowance, so callback writes cannot reset the budget.
+
+Native runtime library tests: 61 passed, zero failed, one existing ignored local
+backend comparison. Strict native runtime library/test Clippy passed without new
+suppressions. Harness library tests with `filesystem-local,native-execution,mcp-http`:
+272 passed, zero failed/ignored. These tests exercise process primitives and the
+existing approved consumer. Strict Harness library/test Clippy with that feature
+selection passed. They do not yet prove admitted MCP process effects,
+crash/reopen receipts or final-source OS gates.
