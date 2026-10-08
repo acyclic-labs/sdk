@@ -49,7 +49,10 @@ bun_wasm_bindgen_bin="$(bash "$root/scripts/ensure-wasm-bindgen.sh")"
 bun scripts/check-metadata.mjs
 mkdir -p "$wasm_output"
 bun scripts/build-wasm.mjs harness "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
-bun x tsc -p typescript/packages/harness/tsconfig.json
+# Harness's optional Objects adapter is typechecked through its existing project
+# reference, whose public transports also require their generated WASM types.
+bun scripts/build-wasm.mjs objects "" "$cargo_bin" "$bun_wasm_bindgen_bin"
+bun x tsc -b typescript/packages/harness/tsconfig.json
 for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
   acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
   [[ -s "$wasm_output/$generated" ]] || { echo "missing generated Harness artifact: $generated" >&2; exit 1; }
@@ -139,6 +142,8 @@ done
 cd "$work/crates"
 "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   -- --test-threads=1 2>&1 | tee "$work/rust-package-test.log"
+"$cargo_bin" run --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
+  --example approved-native-process 2>&1 | tee "$work/rust-native-consumer.log"
 
 mkdir -p "$output"
 install -m 0644 "$archive" "$output/"
@@ -146,6 +151,7 @@ for name in "${dependency_names[@]}"; do
   install -m 0644 "$package_target/package/$name-$harness_version.crate" "$output/"
 done
 install -m 0644 "$harness_crate" "$output/"
+install -m 0644 "$work/rust-native-consumer.log" "$output/NATIVE-CONSUMER.log"
 cmp --silent "$archive" "$output/acyclic-harness.tgz"
 for name in "${dependency_names[@]}"; do
   cmp --silent "$package_target/package/$name-$harness_version.crate" "$output/$name-$harness_version.crate"
@@ -178,5 +184,5 @@ repeat_evidence_arg="$repeat_evidence"
 bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence_arg" "${evidence_artifacts[@]}"
 cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"
 cd "$output"
-sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json > SHA256SUMS
+sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json NATIVE-CONSUMER.log > SHA256SUMS
 printf '%s\n' "$source_sha" > SOURCE_COMMIT

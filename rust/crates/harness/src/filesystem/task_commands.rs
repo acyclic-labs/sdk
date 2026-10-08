@@ -25,6 +25,8 @@ use std::sync::Arc;
 pub const MODEL_TASK_COMMAND_KIND: &str = "acyclic.model.v1";
 /// Versioned pinned-tool command contract.
 pub const TOOL_TASK_COMMAND_KIND: &str = "acyclic.tool.v1";
+/// Versioned command over the existing conversation effect registry/lifecycle.
+pub const EFFECT_TASK_COMMAND_KIND: &str = "acyclic.effect.v1";
 /// Versioned nonblocking durable timer command contract.
 pub const TIMER_TASK_COMMAND_KIND: &str = "acyclic.timer.v1";
 
@@ -124,6 +126,7 @@ struct ModelBinding {
 pub struct FilesystemTaskCommands<'a, P, A, O> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
     model: Option<ModelBinding>,
+    effects: Option<Arc<crate::effect_host::ConversationEffectHost<P>>>,
 }
 
 impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
@@ -131,6 +134,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         Self {
             runtime,
             model: None,
+            effects: None,
         }
     }
 
@@ -148,6 +152,17 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             provider,
             context,
         });
+        self
+    }
+
+    /// Explicitly selects effect providers assembled by the embedding host.
+    /// Native providers remain optional and enforce their own exact approval.
+    #[must_use]
+    pub fn with_effects(
+        mut self,
+        effects: Arc<crate::effect_host::ConversationEffectHost<P>>,
+    ) -> Self {
+        self.effects = Some(effects);
         self
     }
 }
@@ -194,6 +209,10 @@ where
                 }
                 TOOL_TASK_COMMAND_KIND => {
                     self.tool_command(task, context, fence.clone(), command.operation_id, payload)
+                        .await
+                }
+                EFFECT_TASK_COMMAND_KIND => {
+                    self.effect_command(task, fence.clone(), command.operation_id, payload)
                         .await
                 }
                 TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
@@ -245,6 +264,30 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    async fn effect_command(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        command: OperationId,
+        payload: Value,
+    ) -> Result<TaskCommandProgress> {
+        let plan: crate::effect_host::TaskEffectPlan = serde_json::from_value(payload)
+            .map_err(|error| Error::Invalid(format!("invalid effect command: {error}")))?;
+        let effects = self.effects.as_ref().ok_or_else(|| {
+            Error::Unsupported("effect command provider registry is not selected".into())
+        })?;
+        let owner = self.runtime.task_host().journal_owner(task, fence).await?;
+        match effects.run_task_effect(&owner, command, plan).await? {
+            crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result)),
+            crate::core::EffectStatus::Failed { message } => {
+                ready(Outcome::<Value>::Failed { message })
+            }
+            crate::core::EffectStatus::Planned
+            | crate::core::EffectStatus::Dispatched
+            | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
+        }
+    }
+
     /// Checks only a retained passive wait. Never dispatches or reconciles a
     /// provider while the task has no execution reservation.
     pub(super) async fn wait_ready(

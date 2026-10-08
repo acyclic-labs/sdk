@@ -35,19 +35,26 @@ pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 /// A native view may have host-generated timestamps that are not SDK metadata.
 /// The held root identity binds this policy to the prepared view without a
 /// second full-tree scan after materialization.
-#[cfg(unix)]
 pub(crate) struct NativeViewBaseline {
     root_identity: NativeRootIdentity,
+    read_only: bool,
 }
 
-#[cfg(windows)]
-pub(crate) struct NativeViewBaseline;
-
-#[cfg(unix)]
 impl NativeViewBaseline {
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(feature = "native-mount", all(test, unix)))]
     pub(crate) fn new(root_identity: NativeRootIdentity) -> Self {
-        Self { root_identity }
+        Self {
+            root_identity,
+            read_only: false,
+        }
+    }
+
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn read_only(root_identity: NativeRootIdentity) -> Self {
+        Self {
+            root_identity,
+            read_only: true,
+        }
     }
 
     fn restore_canonical_stamps(
@@ -61,7 +68,37 @@ impl NativeViewBaseline {
         if self.root_identity != root_identity {
             return;
         }
-        observed.changed_ns = prior.changed_ns;
+        // Fields absent from the selected SDK generation were not restored by
+        // materialization. Host-created defaults cannot become an apparent
+        // source edit merely because the view was created or read.
+        macro_rules! retain_unavailable {
+            ($($field:ident),+ $(,)?) => {$(
+                if matches!(prior.$field, MetadataField::Unavailable) {
+                    observed.$field = MetadataField::Unavailable;
+                }
+            )+};
+        }
+        retain_unavailable!(
+            posix_mode,
+            posix_uid,
+            posix_gid,
+            posix_flags,
+            windows_attributes,
+            created_ns,
+            modified_ns,
+            accessed_ns,
+            changed_ns,
+            named_attributes,
+            acl,
+            security_descriptor
+        );
+        if self.read_only {
+            observed.accessed_ns = prior.accessed_ns;
+        }
+        #[cfg(unix)]
+        {
+            observed.changed_ns = prior.changed_ns;
+        }
         #[cfg(target_os = "linux")]
         {
             observed.created_ns = prior.created_ns;
@@ -3018,7 +3055,6 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 receipt.work = add_work(receipt.work, prior.work)?;
                 prior_metadata = Some(prior.value);
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior.value);
-                #[cfg(unix)]
                 if let Some(baseline) = baseline {
                     baseline.restore_canonical_stamps(
                         source_root.identity(),

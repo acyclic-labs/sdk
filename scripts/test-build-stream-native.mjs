@@ -622,10 +622,10 @@ test("native qualification restores Darwin Apple linker environment", () => {
   let restore;
   try {
     const priorPath = process.env.PATH;
-    restore = configureDarwinAppleLd("aarch64-apple-darwin", { sdkRoot: "/Apple/SDK", driver: "/usr/bin/clang", linkerExists: () => true });
+    restore = configureDarwinAppleLd("aarch64-apple-darwin", { sdkRoot: "/Apple/SDK", driver: "/usr/bin/clang", rustSysroot: "/Rust/sysroot", linkerExists: () => true });
     assert.equal(process.env[linkerEnvironment], "/usr/bin/clang");
     assert.equal(process.env.PATH, priorPath);
-    assert.equal(process.env.DYLD_LIBRARY_PATH, "ambient-loader");
+    assert.equal(process.env.DYLD_LIBRARY_PATH, resolve("/Rust/sysroot", "lib"));
     restore();
     restore = undefined;
     assert.equal(process.env[linkerEnvironment], "ambient-linker");
@@ -647,6 +647,7 @@ test("native qualification selects the supplied Darwin SDK for clang", () => {
   const restore = configureDarwinAppleLd("aarch64-apple-darwin", {
     sdkRoot: "/Applications/Custom SDK.sdk",
     driver: "/Applications/Custom SDK.sdk/usr/bin/clang",
+    rustSysroot: "/Rust/sysroot",
     linkerExists: () => true,
   });
   assert.equal(process.env.SDKROOT, "/Applications/Custom SDK.sdk");

@@ -1234,6 +1234,10 @@ mod tests {
     use crate::DESCRIPTOR;
     use prost::Message;
 
+    // Every connect fixture takes this lock before subscriber setup or connecting.
+    // Concurrent first registration can overwrite a subscriber's rebuilt interest.
+    static CONNECT_TRACE_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn evaluation_spec() -> wire::EvaluationSpec {
         wire::EvaluationSpec {
             candidates: vec![wire::EvaluationArtifact {
@@ -1593,6 +1597,7 @@ mod tests {
 
     #[tokio::test]
     async fn calls_emit_spans_with_status_codes_and_no_content() -> Result<(), Error> {
+        let _connect_trace = CONNECT_TRACE_TEST.lock().await;
         use std::sync::Mutex;
         use tracing::field::{Field, Visit};
         use tracing_subscriber::layer::{Context, SubscriberExt as _};
@@ -1626,10 +1631,6 @@ mod tests {
             }
         }
 
-        // With one live dispatcher, a callsite that a concurrent test reaches
-        // first caches only that thread's (absent) interest; a second one
-        // makes every callsite consult this test's subscriber too.
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
@@ -1688,6 +1689,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_rejects_insecure_or_unbounded_trust_configuration() {
+        let _connect_trace = CONNECT_TRACE_TEST.lock().await;
         assert!(matches!(
             Inference::connect("http://localhost", "secret", b"certificate").await,
             Err(Error::Invalid("HTTPS is required"))

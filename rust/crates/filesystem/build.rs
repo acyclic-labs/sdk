@@ -16,6 +16,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated/acyclic-filesystem-v2.bin");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
+    if std::env::var_os("CARGO_FEATURE_NAPI_TYPES").is_some() {
+        // napi-derive emits the shared enums into this external directory.
+        // A native build without declaration output must not leave Cargo's
+        // cached dependency usable when a declaration build requests it.
+        println!("cargo:rerun-if-env-changed=NAPI_TYPE_DEF_TMP_FOLDER");
+        println!("cargo:rerun-if-env-changed=NAPI_FORCE_BUILD_ACYCLIC_FS");
+    }
 
     // A build script runs on the host, so the target comes from Cargo.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")

@@ -1208,6 +1208,25 @@ pub fn digest_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
         .to_vec())
 }
 
+/// Binds the exact native request without rounding its filesystem work counters
+/// through JavaScript numbers. This performs no native dispatch or path lookup.
+#[cfg(feature = "filesystem")]
+#[wasm_bindgen(js_name = nativeProcessApprovalDigest)]
+pub fn native_process_approval_digest(
+    task: &str,
+    command: &str,
+    request_json: &str,
+) -> Result<Vec<u8>, JsValue> {
+    let task = crate::TaskId::parse(task).map_err(js_error)?;
+    let command = crate::OperationId::parse(command).map_err(js_error)?;
+    let request: crate::filesystem::NativeProcessRequest = serde_json::from_str(request_json)
+        .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))?;
+    request
+        .approval_digest(task, command)
+        .map(|digest| digest.to_vec())
+        .map_err(js_error)
+}
+
 /// Returns the one Rust UUID spelling accepted for a conversation identity.
 #[wasm_bindgen(js_name = validateConversationMessageId)]
 pub fn validate_conversation_message_id(value: &str) -> Result<String, JsValue> {
@@ -1340,8 +1359,11 @@ fn snapshot_js_json(
     if let Some(boolean) = value.as_bool() {
         return Ok(serde_json::Value::Bool(boolean));
     }
-    if let Some(string) = value.as_string() {
-        return Ok(serde_json::Value::String(string));
+    if value.is_string() {
+        return Ok(serde_json::Value::String(checked_js_string(
+            value.clone(),
+            "JSON string",
+        )?));
     }
     if !value.is_object() {
         return Err(JsValue::from_str("value is not canonical JSON"));
@@ -1387,9 +1409,12 @@ fn snapshot_js_json(
                 if failure.is_some() {
                     return;
                 }
-                let Some(key) = key.as_string() else {
-                    failure = Some(JsValue::from_str("JSON object keys must be strings"));
-                    return;
+                let key = match checked_js_string(key, "JSON object key") {
+                    Ok(key) => key,
+                    Err(error) => {
+                        failure = Some(error);
+                        return;
+                    }
                 };
                 match snapshot_js_json(&child, ancestors) {
                     Ok(admitted) => {
@@ -1406,9 +1431,7 @@ fn snapshot_js_json(
         let object: &js_sys::Object = value.unchecked_ref();
         let mut snapshot = serde_json::Map::new();
         for key in js_sys::Object::keys(object).iter() {
-            let key_text = key
-                .as_string()
-                .ok_or_else(|| JsValue::from_str("JSON object key is invalid"))?;
+            let key_text = checked_js_string(key.clone(), "JSON object key")?;
             let child = js_sys::Reflect::get(value, &key)?;
             let admitted = snapshot_js_json(&child, ancestors)?;
             if snapshot.insert(key_text, admitted).is_some() {

@@ -44,6 +44,9 @@ use std::{
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
+mod content_publisher;
+pub use content_publisher::FilesystemContentPublisher;
+
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
@@ -56,14 +59,29 @@ mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 mod memory;
 pub use memory::{LocalHarness, MemoryHarnessStorage};
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+mod native_execution;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+mod native_process;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider};
+mod native_capture_bounds;
+mod native_contract;
+pub use native_contract::{
+    NATIVE_PROCESS_EFFECT_KIND, NativeNamespaceKind, NativeProcessRequest, NativeProcessResult,
+    NativeProcessStop, NativeProcessStopKind, NativeViewManifest, NativeViewOptions,
+    NativeVolumeMapping,
+};
 mod task_commands;
 mod task_runtime;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_execution::{NativeVolumeBinding, NativeVolumeView};
 pub use task_commands::{
-    FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND,
-    MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
-    TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND,
-    TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskObserveCommand, TimerTaskCommand,
-    ToolTaskCommand,
+    EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,
+    MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand,
+    MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
+    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskObserveCommand,
+    TimerTaskCommand, ToolTaskCommand,
 };
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,

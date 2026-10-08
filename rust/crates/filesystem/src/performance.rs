@@ -149,6 +149,17 @@ macro_rules! additive_counters {
 }
 
 impl WorkCounters {
+    /// Whether every allowance is finite, for bounded operation admission.
+    #[must_use]
+    pub const fn has_finite_allowances(&self) -> bool {
+        macro_rules! finite {
+            ($($field:ident),* $(,)?) => {
+                $(self.$field != u64::MAX &&)* self.peak_allocation_bytes != u64::MAX
+            };
+        }
+        additive_counters!(finite)
+    }
+
     /// No work at all, as a constant: [`WorkCounters::default`] usable in
     /// `const` charges such as one page read.
     pub(crate) const UNCHARGED: Self = Self {

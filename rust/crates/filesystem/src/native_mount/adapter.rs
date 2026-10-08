@@ -865,6 +865,7 @@ impl<A, O> SharedCheckoutState<A, O> {
         &mut self,
         permit: crate::PublicationPermit,
         force: bool,
+        budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
     where
@@ -877,7 +878,7 @@ impl<A, O> SharedCheckoutState<A, O> {
                 &mut self.checkout,
                 operation_id,
                 permit,
-                boundary_budget(),
+                budget,
                 cancellation,
             )
             .await
@@ -886,7 +887,7 @@ impl<A, O> SharedCheckoutState<A, O> {
                 &mut self.checkout,
                 operation_id,
                 permit,
-                boundary_budget(),
+                budget,
                 cancellation,
             )
             .await
@@ -2478,10 +2479,23 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        self.sync_async_with_permit_budgeted(permit, boundary_budget())
+            .await
+    }
+
+    pub(super) async fn sync_async_with_permit_budgeted(
+        &self,
+        permit: crate::PublicationPermit,
+        budget: WorkBudget,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
         crate::obs::outcome({
             let mut checkout = self.checkout.lock().await;
             checkout
-                .seal_with_permit(permit, false, &self.cancellation)
+                .seal_with_permit(permit, false, budget, &self.cancellation)
                 .await
         })
     }
@@ -2496,7 +2510,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout
-            .seal_with_permit(permit, true, &self.cancellation)
+            .seal_with_permit(permit, true, boundary_budget(), &self.cancellation)
             .await
     }
 
@@ -4357,10 +4371,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"child")?;
         let identity = capture_root_identity(directory.path())?;
-        #[cfg(unix)]
         let baseline = Arc::new(NativeViewBaseline::new(identity));
-        #[cfg(windows)]
-        let baseline = Arc::new(NativeViewBaseline);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

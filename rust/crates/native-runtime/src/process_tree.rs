@@ -18,6 +18,47 @@ pub struct ProcessTree {
     output_taken: bool,
 }
 
+/// A stopped capture, retaining its bounded output and observed cleanup state.
+/// Effects may have occurred regardless of whether cleanup completed.
+#[derive(Debug)]
+pub struct ProcessCaptureFailure {
+    /// Capture error, or the cleanup error when cleanup could not be confirmed.
+    pub error: io::Error,
+    /// Direct-child exit status if it was observed before capture stopped.
+    pub status: Option<ExitStatus>,
+    /// Bounded stdout prefix collected before capture stopped.
+    pub stdout: Vec<u8>,
+    /// Bounded stderr prefix collected before capture stopped.
+    pub stderr: Vec<u8>,
+    /// Whether containment cleanup succeeded and the direct child was reaped.
+    /// Unix confirms group signal delivery, not reaping of every descendant.
+    pub cleanup_completed: bool,
+}
+
+impl ProcessCaptureFailure {
+    fn before_capture(error: io::Error) -> Self {
+        Self {
+            error,
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            cleanup_completed: false,
+        }
+    }
+}
+
+impl std::fmt::Display for ProcessCaptureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ProcessCaptureFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 impl ProcessTree {
     #[tracing::instrument(
         name = "acyclic.runtime.spawn",
@@ -126,33 +167,57 @@ impl ProcessTree {
         fields(bytes = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
     )]
     pub fn wait_with_output(&mut self, timeout: Duration, max_bytes: usize) -> io::Result<Output> {
-        obs::finish(self.wait_with_output_unobserved(timeout, max_bytes))
+        obs::finish(self.wait_with_output_checked(timeout, max_bytes, || Ok(())))
     }
 
-    fn wait_with_output_unobserved(
+    /// Checks host intent before each bounded drain using the same cleanup owner.
+    /// A check error stops capture; cleanup failure takes precedence. The check
+    /// must return promptly. Cancellation does not establish effect rollback.
+    pub fn wait_with_output_checked(
         &mut self,
         timeout: Duration,
         max_bytes: usize,
+        check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<Output> {
+        self.wait_with_output_observed(timeout, max_bytes, check)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Uses the same bounded capture and cleanup loop, preserving collected
+    /// output on timeout, output overflow, intent failure or unresolved cleanup.
+    /// A stopped capture's output is a prefix, not a complete process transcript.
+    pub fn wait_with_output_observed(
+        &mut self,
+        timeout: Duration,
+        max_bytes: usize,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> Result<Output, ProcessCaptureFailure> {
         if self.output_taken {
-            return Err(io::Error::other("process output was already collected"));
+            return Err(ProcessCaptureFailure::before_capture(io::Error::other(
+                "process output was already collected",
+            )));
         }
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+            ProcessCaptureFailure::before_capture(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "process deadline overflow",
+            ))
         })?;
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| io::Error::other("process output was already collected"))?;
+        let child = self.child.as_mut().ok_or_else(|| {
+            ProcessCaptureFailure::before_capture(io::Error::other(
+                "process output was already collected",
+            ))
+        })?;
         self.output_taken = true;
         drop(child.stdin.take());
         let mut stdout = child.stdout.take();
         let mut stderr = child.stderr.take();
         let mut output = [Vec::new(), Vec::new()];
         let mut remaining = max_bytes;
+        let mut status = None;
         let result = (|| {
-            let mut status = None;
             loop {
+                check()?;
                 let progressed = drain_pipe(&mut stdout, &mut output[0], &mut remaining)?
                     | drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
                 if status.is_none() {
@@ -161,16 +226,8 @@ impl ProcessTree {
                         self.terminate_descendants()?;
                     }
                 }
-                if let Some(status) = status
-                    && stdout.is_none()
-                    && stderr.is_none()
-                {
-                    let [stdout, stderr] = output;
-                    return Ok(Output {
-                        status,
-                        stdout,
-                        stderr,
-                    });
+                if status.is_some() && stdout.is_none() && stderr.is_none() {
+                    return Ok(());
                 }
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
@@ -186,8 +243,31 @@ impl ProcessTree {
         tracing::Span::current().record("bytes", max_bytes - remaining);
         // Cleanup errors take precedence: a capture timeout alone does not
         // describe an unresolved termination. Keep Child ownership on error.
-        self.terminate()?;
-        result
+        let cleanup = self.terminate();
+        let [stdout, stderr] = output;
+        match cleanup.and(result) {
+            Ok(()) => match status {
+                Some(status) => Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                }),
+                None => Err(ProcessCaptureFailure {
+                    error: io::Error::other("capture completed without an exit status"),
+                    status,
+                    stdout,
+                    stderr,
+                    cleanup_completed: self.is_reaped(),
+                }),
+            },
+            Err(error) => Err(ProcessCaptureFailure {
+                error,
+                status,
+                stdout,
+                stderr,
+                cleanup_completed: self.is_reaped(),
+            }),
+        }
     }
 
     /// Terminates containment and reaps the direct child. Windows confirms the
@@ -218,6 +298,14 @@ impl ProcessTree {
             self.child.take();
         }
         Ok(())
+    }
+
+    /// Whether containment cleanup succeeded and the direct child was reaped.
+    /// Unix confirms group signal delivery, not reaping of every descendant;
+    /// descendants that deliberately leave containment remain outside this claim.
+    #[must_use]
+    pub const fn is_reaped(&self) -> bool {
+        self.child.is_none()
     }
 
     /// Requests graceful Unix group termination, then performs mandatory tree
@@ -277,17 +365,23 @@ fn drain_pipe<T: Read + platform::Pipe>(
         }
         Some(read) => {
             tracing::trace!(name: "acyclic.runtime.output_chunk", bytes = read);
-            *remaining = remaining.checked_sub(read).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::FileTooLarge,
-                    "process output limit exceeded; effects may have occurred",
-                )
-            })?;
             let bytes = buffer
                 .get(..read)
                 .ok_or_else(|| io::Error::other("pipe returned an invalid length"))?;
-            output.try_reserve(read).map_err(io::Error::other)?;
-            output.extend_from_slice(bytes);
+            let admitted = read.min(*remaining);
+            output.try_reserve(admitted).map_err(io::Error::other)?;
+            output.extend_from_slice(
+                bytes
+                    .get(..admitted)
+                    .ok_or_else(|| io::Error::other("invalid admitted pipe prefix"))?,
+            );
+            *remaining -= admitted;
+            if admitted != read {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "process output limit exceeded; effects may have occurred",
+                ));
+            }
         }
         None => return Ok(false),
     }
@@ -595,6 +689,18 @@ mod tests {
                     .write_all(&[b'e'; 8192])
                     .expect("stderr flood");
             },
+            "partial" => {
+                std::io::stdout()
+                    .write_all(b"stdout-before-stop")
+                    .expect("partial stdout");
+                std::io::stderr()
+                    .write_all(b"stderr-before-stop")
+                    .expect("partial stderr");
+                std::io::stdout().flush().expect("flush partial stdout");
+                std::io::stderr().flush().expect("flush partial stderr");
+                fs::write(root.join("partial-ready"), b"ready").expect("partial ready");
+                thread::sleep(Duration::from_secs(30));
+            }
             "output" => {
                 // The host cleared the environment. Generic containment must
                 // neither restore ambient credentials nor discard explicit input.
@@ -655,6 +761,32 @@ mod tests {
             drop(tree);
             assert_no_escape(temporary.path());
         }
+    }
+
+    #[test]
+    fn capture_check_failure_cleans_up_the_owned_tree() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut tree =
+            ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
+        let mut checks = 0;
+        let error = tree
+            .wait_with_output_checked(Duration::from_secs(5), 4096, || {
+                checks += 1;
+                if temporary.path().join("tree-ready").exists() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "cancelled",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("cancellation must stop capture");
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(checks > 0);
+        assert!(tree.child.is_none(), "explicit cleanup reaps the child");
+        thread::sleep(Duration::from_secs(1));
+        assert!(!temporary.path().join("escaped").exists());
     }
 
     #[test]
@@ -911,6 +1043,23 @@ mod tests {
     }
 
     #[test]
+    fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
+            .expect("spawn partial output");
+        ready(temporary.path(), "partial-ready", || tree_exited(&mut tree));
+        let failure = tree
+            .wait_with_output_observed(Duration::from_millis(20), 4096, || Ok(()))
+            .expect_err("partial process times out");
+        assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(failure.stdout.ends_with(b"stdout-before-stop"));
+        assert_eq!(failure.stderr, b"stderr-before-stop");
+        assert!(failure.cleanup_completed);
+        assert!(failure.status.is_none());
+        assert!(tree.is_reaped());
+    }
+
+    #[test]
     fn capture_timeout_and_output_overflow_reap_owned_tree() {
         for (mode, timeout, limit, kind) in [
             (
@@ -939,10 +1088,15 @@ mod tests {
             }
             let started = Instant::now();
             let error = tree
-                .wait_with_output(timeout, limit)
+                .wait_with_output_observed(timeout, limit, || Ok(()))
                 .expect_err("capture must fail");
-            assert_eq!(error.kind(), kind);
+            assert_eq!(error.error.kind(), kind);
             assert!(error.to_string().contains("effects may have occurred"));
+            assert!(error.cleanup_completed);
+            assert!(error.stdout.len() + error.stderr.len() <= limit);
+            if mode == "flood" {
+                assert_eq!(error.stdout.len() + error.stderr.len(), limit);
+            }
             assert!(started.elapsed() < Duration::from_secs(7));
             assert!(tree.child.is_none());
             tree.terminate().expect("repeat cleanup");

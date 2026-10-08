@@ -15,6 +15,14 @@ build = "build.rs"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[[example]]
+name = "native-process-approval"
+required-features = ["filesystem"]
+
+[[example]]
+name = "approved-native-process"
+required-features = ["native-execution"]
+
 [[bench]]
 name = "harness"
 harness = false
@@ -24,6 +32,8 @@ wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen",
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
+# Explicit native host composition; portable defaults never select it.
+native-execution = ["filesystem", "acyclic-fs/native-mount", "dep:acyclic-native-runtime"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
@@ -68,6 +78,7 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

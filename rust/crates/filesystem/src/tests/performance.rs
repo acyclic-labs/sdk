@@ -1,5 +1,26 @@
 use super::*;
 
+#[test]
+fn finite_admission_checks_every_declared_work_allowance() -> Result<(), serde_json::Error> {
+    assert!(WorkBudget::default().has_finite_allowances());
+    assert!(!WorkBudget::UNBOUNDED.has_finite_allowances());
+    let finite = serde_json::to_value(WorkBudget::default())?;
+    let fields = finite
+        .as_object()
+        .ok_or_else(|| serde::de::Error::custom("work counters must be an object"))?;
+    assert_eq!(fields.len(), 24);
+    for field in fields.keys() {
+        let mut changed = finite.clone();
+        changed[field] = serde_json::json!(u64::MAX);
+        let budget: WorkBudget = serde_json::from_value(changed)?;
+        assert!(
+            !budget.has_finite_allowances(),
+            "unbounded {field} was admitted"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error, PartialEq)]
 enum OuterError {
     #[error("inner")]
