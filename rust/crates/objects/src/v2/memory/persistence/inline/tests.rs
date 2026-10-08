@@ -44,6 +44,51 @@ async fn small_bodies_use_one_journal_append_and_survive_compaction()
 }
 
 #[tokio::test]
+async fn journal_body_reads_share_one_handle_until_compaction_replaces_the_journal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    let opens = || -> Result<u64, &str> {
+        Ok(core
+            .journal
+            .as_ref()
+            .ok_or("missing journal")?
+            .root
+            .journal_opens
+            .load(Ordering::Relaxed))
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            core.get(get("retained"), 6).await?.body,
+            Bytes::from_static(b"before")
+        );
+    }
+    assert_eq!(opens()?, 1);
+    // The cached handle must not keep the journal from being replaced, nor
+    // outlive it: bodies appended to the replacement are read from it.
+    core.collect_local_garbage(10)?;
+    core.put(put("after"), Bytes::from_static(b"after")).await?;
+    for _ in 0..3 {
+        assert_eq!(
+            core.get(get("after"), 5).await?.body,
+            Bytes::from_static(b"after")
+        );
+    }
+    assert_eq!(
+        core.get(get("retained"), 6).await?.body,
+        Bytes::from_static(b"before")
+    );
+    assert_eq!(opens()?, 2);
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(
+        core.get(get("after"), 5).await?.body,
+        Bytes::from_static(b"after")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_incomplete_inline_frame_boundary_recovers_the_previous_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let template = tempfile::tempdir()?;
@@ -149,13 +194,31 @@ async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_rec
         .lock()
         .map_err(|_| "tail poisoned")?
         .operations;
-    assert_eq!(after, before + 2);
+    assert_eq!(after, before + 1);
+    // Puts whose bounded bytes exceed one record split across records.
+    let results = core
+        .put_batch(
+            (0..40)
+                .map(|number| (put(&format!("split-{number}")), Bytes::from(vec![7; LIMIT])))
+                .collect(),
+        )
+        .await;
+    assert!(results.iter().all(Result::is_ok));
+    let journal = core.journal.as_ref().ok_or("missing journal")?;
+    assert_eq!(
+        journal.tail.lock().map_err(|_| "tail poisoned")?.operations,
+        after + 2
+    );
     assert_eq!(fs::read_dir(root.path().join("segments"))?.count(), 0);
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
         core.get(get("batch-8"), LIMIT as u64).await?.body,
         Bytes::from(vec![42; LIMIT])
+    );
+    assert_eq!(
+        core.get(get("split-39"), LIMIT as u64).await?.body,
+        Bytes::from(vec![7; LIMIT])
     );
     assert_eq!(
         core.get(get("overwritten"), 4).await?.body,

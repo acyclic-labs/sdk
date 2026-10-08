@@ -2,12 +2,16 @@
 
 use crate::wire;
 use prost::Message;
+use std::task::{Context, Poll};
 use tonic::{
     Request, Status,
+    body::Body,
+    codegen::{BoxFuture, Service, http},
     metadata::{Ascii, MetadataValue},
     service::Interceptor,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
+use tracing::field::Empty;
 
 /// Bearer metadata applied to every generated RPC.
 #[derive(Clone)]
@@ -23,8 +27,59 @@ impl Interceptor for BearerAuth {
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::workers_service_client::WorkersServiceClient<
-    tonic::service::interceptor::InterceptedService<Channel, BearerAuth>,
+    tonic::service::interceptor::InterceptedService<TracedChannel, BearerAuth>,
 >;
+
+/// Channel that opens one `acyclic.workers.grpc.call` span per RPC.
+#[derive(Clone, Debug)]
+pub struct TracedChannel(pub(crate) Channel);
+
+impl Service<http::Request<Body>> for TracedChannel {
+    type Response = http::Response<Body>;
+    type Error = tonic::transport::Error;
+    type Future = BoxFuture<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let span = tracing::info_span!(
+            "acyclic.workers.grpc.call",
+            rpc = request.uri().path().rsplit('/').next(),
+            rpc.code = Empty,
+            outcome = Empty,
+            error.kind = Empty,
+        );
+        let response = self.0.call(request);
+        Box::pin(tracing::Instrument::instrument(
+            async move {
+                let result = response.await;
+                // A status sent only in trailers (rare for unary errors) reads as OK here.
+                let code = result.as_ref().map(|response| {
+                    response
+                        .headers()
+                        .get("grpc-status")
+                        .and_then(|code| code.to_str().ok()?.parse::<u64>().ok())
+                        .unwrap_or(0)
+                });
+                let span = tracing::Span::current();
+                match code {
+                    Ok(0) => span.record("rpc.code", 0).record("outcome", "ok"),
+                    Ok(code) => span
+                        .record("rpc.code", code)
+                        .record("outcome", "err")
+                        .record("error.kind", "status"),
+                    Err(_) => span
+                        .record("outcome", "err")
+                        .record("error.kind", "transport"),
+                };
+                result
+            },
+            span,
+        ))
+    }
+}
 
 /// Client configuration error.
 #[derive(Debug, thiserror::Error)]
@@ -90,7 +145,7 @@ pub async fn connect_with_ca_certificate(
         .await?;
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_interceptor(
-            channel,
+            TracedChannel(channel),
             BearerAuth(authorization),
         )
         .max_decoding_message_size(16 * 1024 * 1024)

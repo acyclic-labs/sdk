@@ -254,6 +254,84 @@ async fn a_turn_returns_the_last_message_with_codex_metadata() {
 }
 
 #[tokio::test]
+async fn a_turn_emits_spans_without_prompt_or_output_fields() {
+    use std::sync::Mutex;
+    use tracing_subscriber::layer::{Context, SubscriberExt as _};
+
+    type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+    struct Capture(Seen);
+    struct Fields<'a>(&'static str, &'a Seen);
+    impl tracing::field::Visit for Fields<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            let value = format!("{value:?}").trim_matches('"').to_owned();
+            self.1.lock().unwrap().push((self.0, field.name(), value));
+        }
+    }
+    impl<S> tracing_subscriber::Layer<S> for Capture
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _: &tracing::span::Id,
+            _: Context<'_, S>,
+        ) {
+            attrs.record(&mut Fields(attrs.metadata().name(), &self.0));
+        }
+        fn on_record(
+            &self,
+            id: &tracing::span::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: Context<'_, S>,
+        ) {
+            values.record(&mut Fields(ctx.span(id).unwrap().name(), &self.0));
+        }
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            event.record(&mut Fields("event", &self.0));
+        }
+    }
+    // A second live dispatcher keeps callsites consulting this test's subscriber.
+    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+    let seen = Seen::default();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+    );
+    let turn = Turn::new().await;
+    let fake = FakeCodex {
+        fixture: "ok",
+        ..FakeCodex::default()
+    };
+    turn.executor(&fake, None)
+        .execute(
+            input(OperationId::new(), "secret task"),
+            &Journal::default(),
+        )
+        .await
+        .expect("turn succeeds");
+
+    let seen = seen.lock().unwrap();
+    for span in ["run", "launch", "conclude", "append"] {
+        let span = format!("acyclic.harness.codex.{span}");
+        assert!(
+            seen.iter()
+                .any(|(s, f, v)| *s == span && *f == "outcome" && v == "ok"),
+            "{span} not in {seen:?}"
+        );
+    }
+    for (span, field, value) in seen.iter() {
+        assert!(
+            !["path", "line", "token", "content", "body"].contains(field),
+            "{span}.{field}"
+        );
+        assert!(
+            !value.contains("secret") && !value.contains("hi from fake"),
+            "{value}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_journal_records_the_turn_like_the_stock_loop() {
     let turn = Turn::new().await;
     let fake = FakeCodex {

@@ -3,6 +3,7 @@
     reason = "process containment uses platform process-group and Job Object calls"
 )]
 
+use crate::obs;
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
@@ -18,13 +19,23 @@ pub struct ProcessTree {
 }
 
 impl ProcessTree {
+    #[tracing::instrument(
+        name = "acyclic.runtime.spawn",
+        skip_all,
+        fields(program = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
+    )]
     pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
-        let (child, guard) = platform::spawn(command)?;
-        Ok(Self {
+        let span = tracing::Span::current();
+        if !span.is_disabled() {
+            // The program's file name only: arguments and directories may be private.
+            let program = std::path::Path::new(command.get_program()).file_name();
+            span.record("program", program.and_then(|name| name.to_str()));
+        }
+        obs::finish(platform::spawn(command).map(|(child, guard)| Self {
             child: Some(child),
             guard,
             output_taken: false,
-        })
+        }))
     }
 
     /// Transfers the input pipe to a host-owned streaming protocol.
@@ -71,7 +82,16 @@ impl ProcessTree {
 
     /// Observes direct-child exit within `timeout`, retaining descendant ownership.
     /// On Unix the exited leader remains unreaped until containment cleanup.
+    #[tracing::instrument(
+        name = "acyclic.runtime.wait",
+        skip_all,
+        fields(outcome = obs::Empty, error.kind = obs::Empty)
+    )]
     pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
+        obs::finish(self.wait_unobserved(timeout))
+    }
+
+    fn wait_unobserved(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
         })?;
@@ -100,7 +120,20 @@ impl ProcessTree {
     /// Cleanup has its own five-second observation window per platform phase;
     /// OS calls and scheduling are assumed to progress. Cleanup errors take
     /// precedence over capture errors. No rollback of child effects is implied.
+    #[tracing::instrument(
+        name = "acyclic.runtime.wait_with_output",
+        skip_all,
+        fields(bytes = obs::Empty, outcome = obs::Empty, error.kind = obs::Empty)
+    )]
     pub fn wait_with_output(&mut self, timeout: Duration, max_bytes: usize) -> io::Result<Output> {
+        obs::finish(self.wait_with_output_unobserved(timeout, max_bytes))
+    }
+
+    fn wait_with_output_unobserved(
+        &mut self,
+        timeout: Duration,
+        max_bytes: usize,
+    ) -> io::Result<Output> {
         if self.output_taken {
             return Err(io::Error::other("process output was already collected"));
         }
@@ -150,6 +183,7 @@ impl ProcessTree {
                 }
             }
         })();
+        tracing::Span::current().record("bytes", max_bytes - remaining);
         // Cleanup errors take precedence: a capture timeout alone does not
         // describe an unresolved termination. Keep Child ownership on error.
         self.terminate()?;
@@ -159,7 +193,16 @@ impl ProcessTree {
     /// Terminates containment and reaps the direct child. Windows confirms the
     /// Job is empty; Unix confirms signal delivery, not descendant reaping.
     /// Repeated successful cleanup is a no-op. An error retains ownership.
+    #[tracing::instrument(
+        name = "acyclic.runtime.terminate",
+        skip_all,
+        fields(outcome = obs::Empty, error.kind = obs::Empty)
+    )]
     pub fn terminate(&mut self) -> io::Result<()> {
+        obs::finish(self.terminate_unobserved())
+    }
+
+    fn terminate_unobserved(&mut self) -> io::Result<()> {
         self.terminate_descendants()?;
         if self.child.is_some() {
             self.wait(Duration::from_secs(5))?;
@@ -180,7 +223,16 @@ impl ProcessTree {
     /// Requests graceful Unix group termination, then performs mandatory tree
     /// cleanup after direct-child exit or `grace`. Windows has no group-wide
     /// graceful signal and uses Job termination immediately.
+    #[tracing::instrument(
+        name = "acyclic.runtime.terminate_after",
+        skip_all,
+        fields(outcome = obs::Empty, error.kind = obs::Empty)
+    )]
     pub fn terminate_after(&mut self, grace: Duration) -> io::Result<ExitStatus> {
+        obs::finish(self.terminate_after_unobserved(grace))
+    }
+
+    fn terminate_after_unobserved(&mut self, grace: Duration) -> io::Result<ExitStatus> {
         #[cfg(unix)]
         self.guard.request_termination()?;
         #[cfg(windows)]
@@ -224,6 +276,7 @@ fn drain_pipe<T: Read + platform::Pipe>(
             pipe.take();
         }
         Some(read) => {
+            tracing::trace!(name: "acyclic.runtime.output_chunk", bytes = read);
             *remaining = remaining.checked_sub(read).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::FileTooLarge,
@@ -623,6 +676,98 @@ mod tests {
             assert!(tree.child.is_none());
             thread::sleep(Duration::from_secs(1));
             assert!(!temporary.path().join("escaped").exists());
+        }
+    }
+
+    #[test]
+    fn collection_emits_spans_with_byte_counts_and_no_paths() {
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+
+        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
+        struct Capture(Seen);
+        struct Fields<'a>(
+            &'static str,
+            &'a mut Vec<(&'static str, &'static str, String)>,
+        );
+        impl Visit for Fields<'_> {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.1.push((self.0, field.name(), value.to_owned()));
+            }
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.1.push((self.0, field.name(), format!("{value:?}")));
+            }
+        }
+        impl<S> tracing_subscriber::Layer<S> for Capture
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_new_span(
+                &self,
+                attributes: &tracing::span::Attributes<'_>,
+                _: &tracing::span::Id,
+                _: Context<'_, S>,
+            ) {
+                let name = attributes.metadata().name();
+                attributes.record(&mut Fields(name, &mut self.0.lock().unwrap()));
+            }
+            fn on_record(
+                &self,
+                id: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                context: Context<'_, S>,
+            ) {
+                let name = context.span(id).unwrap().name();
+                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
+            }
+        }
+
+        // With one live dispatcher, a callsite that a concurrent test reaches
+        // first caches only that thread's (absent) interest; a second one
+        // makes every callsite consult this test's subscriber too.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let seen = Seen::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+        );
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("output", temporary.path());
+        command.env("EXPLICIT_PROCESS_INPUT", "allowed");
+        let output = ProcessTree::spawn(&mut command)
+            .expect("spawn tree")
+            .wait_with_output(Duration::from_secs(5), 4096)
+            .expect("collect output");
+        let seen = seen.lock().unwrap();
+        let has = |span: &str, field: &str, value: &str| {
+            seen.iter()
+                .any(|(s, f, v)| *s == span && *f == field && v == value)
+        };
+        let bytes = (output.stdout.len() + output.stderr.len()).to_string();
+        assert!(
+            has("acyclic.runtime.wait_with_output", "bytes", &bytes),
+            "{seen:?}"
+        );
+        assert!(has("acyclic.runtime.wait_with_output", "outcome", "ok"));
+        assert!(has("acyclic.runtime.terminate", "outcome", "ok"));
+        assert!(has("acyclic.runtime.spawn", "outcome", "ok"));
+        let program = std::env::current_exe().expect("test executable");
+        let program = program.file_name().and_then(|name| name.to_str());
+        assert!(has(
+            "acyclic.runtime.spawn",
+            "program",
+            program.expect("name")
+        ));
+        let root = temporary.path().to_string_lossy();
+        for (span, field, value) in seen.iter() {
+            assert!(
+                !["path", "token", "content", "body", "authorization"].contains(field),
+                "{span} records {field}"
+            );
+            assert!(
+                !value.contains(&*root) && !value.contains("allowed"),
+                "{value}"
+            );
         }
     }
 

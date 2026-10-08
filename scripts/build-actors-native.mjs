@@ -34,6 +34,17 @@ const sourceRoots = [
   "scripts/build-actors-native.mjs",
   "scripts/assemble-actors-native-package.mjs",
   "scripts/build-wasm.mjs",
+  // The packaged semantic bindings and Proto contract are rendered from Rust.
+  // Attest their production entrypoint and Buf inputs as well as the crate.
+  "scripts/generate-actors.mjs",
+  "scripts/generate.mjs",
+  "scripts/sync-generated.mjs",
+  "scripts/generated-bindings.mjs",
+  "rust/crates/proto-codegen",
+  "proto/actors/v1/actors.proto",
+  "buf.yaml",
+  "buf.lock",
+  "buf.gen.yaml",
 ];
 
 function usage() {

@@ -1,11 +1,8 @@
 //! Private immutable body storage for the logical Objects recovery engine.
 use futures::future::BoxFuture;
-use std::sync::Arc;
 #[cfg(feature = "local")]
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub(crate) enum BodyError {
@@ -23,7 +20,7 @@ pub(crate) enum StoredBody {
     },
     #[cfg(feature = "local")]
     Local {
-        root: Arc<PathBuf>,
+        root: Arc<crate::physical::LocalRoot>,
         digest: [u8; 32],
         length: usize,
         location: LocalBodyLocation,

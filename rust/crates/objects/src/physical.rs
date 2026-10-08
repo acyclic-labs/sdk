@@ -6,7 +6,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 const JOURNAL_FILE: &str = "mutations.log";
 const MAXIMUM_INLINE_BODY_BYTES: usize = 64 * 1_024;
@@ -16,6 +19,79 @@ const SEGMENT_RECORD_BYTES: usize = 32 + 8;
 pub(crate) const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
 pub(crate) const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// One store's directory and a shared read handle on its journal, so a read of a
+/// journal-resident body does not reopen the journal (a costly open on Windows).
+/// The handle is separate from the append handle: positional reads through a
+/// shared Windows file object would move the append cursor.
+pub(crate) struct LocalRoot {
+    pub(crate) path: PathBuf,
+    journal: RwLock<Option<File>>,
+    #[cfg(test)]
+    pub(crate) journal_opens: AtomicU64,
+}
+
+/// Roots are equal when they name the same directory; the handle is a cache.
+impl PartialEq for LocalRoot {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl LocalRoot {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            journal: RwLock::new(None),
+            #[cfg(test)]
+            journal_opens: AtomicU64::new(0),
+        }
+    }
+
+    /// Runs `replace` with the journal read handle closed and no reader able to
+    /// reopen it, so Windows may replace the file and no reader keeps a handle
+    /// on the replaced one. The next read opens the new journal.
+    pub(crate) fn replace_journal(
+        &self,
+        replace: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let mut journal = self
+            .journal
+            .write()
+            .map_err(|_| std::io::Error::other("journal reader poisoned"))?;
+        *journal = None;
+        replace()
+    }
+
+    fn read_journal_body(
+        &self,
+        offset: u64,
+        expected_digest: &[u8; 32],
+        expected_length: usize,
+    ) -> Result<bytes::Bytes, BodyError> {
+        if let Some(journal) = self
+            .journal
+            .read()
+            .map_err(|_| BodyError::Unavailable)?
+            .as_ref()
+        {
+            return read_journal_body(journal, offset, expected_digest, expected_length);
+        }
+        let mut journal = self.journal.write().map_err(|_| BodyError::Unavailable)?;
+        if journal.is_none() {
+            #[cfg(test)]
+            self.journal_opens.fetch_add(1, Ordering::Relaxed);
+            *journal =
+                Some(File::open(self.path.join(JOURNAL_FILE)).map_err(|_| BodyError::Unavailable)?);
+        }
+        read_journal_body(
+            journal.as_ref().ok_or(BodyError::Unavailable)?,
+            offset,
+            expected_digest,
+            expected_length,
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PhysicalError {
     #[error("invalid private Objects storage: {0}")]
@@ -421,7 +497,7 @@ fn hex_nibble(byte: u8) -> Result<u8, PhysicalError> {
 }
 
 pub(crate) async fn read_body_at_async(
-    root: &Path,
+    root: &Arc<LocalRoot>,
     expected_digest: &[u8; 32],
     expected_length: usize,
     location: &LocalBodyLocation,
@@ -434,17 +510,16 @@ pub(crate) async fn read_body_at_async(
     let (id, offset) = match location {
         LocalBodyLocation::Segment { id, offset } => (id, offset),
         LocalBodyLocation::Journal { offset } => {
-            let (journal, offset, digest) = (root.join(JOURNAL_FILE), *offset, *expected_digest);
+            let (root, offset, digest) = (Arc::clone(root), *offset, *expected_digest);
             let body = acyclic_native_runtime::run_blocking_io(move || {
-                let journal = File::open(journal).map_err(|_| BodyError::Unavailable)?;
-                read_journal_body(&journal, offset, &digest, expected_length)
+                root.read_journal_body(offset, &digest, expected_length)
             })
             .await
             .map_err(|_| BodyError::Unavailable)??;
             return Ok(body.slice(start..end));
         }
     };
-    let segment = segment_path(root, id);
+    let segment = segment_path(&root.path, id);
     let (file, file_length) = acyclic_native_runtime::run_blocking_io(move || {
         let file = File::open(segment)?;
         let length = file.metadata()?.len();

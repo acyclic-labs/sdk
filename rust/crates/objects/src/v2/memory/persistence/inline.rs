@@ -20,7 +20,7 @@ impl Journal {
                     .ok_or(Error::from(QuotaExceeded))?;
                 bytes.extend_from_slice(value);
                 Ok(StoredBody::Local {
-                    root: Arc::new(self.root.clone()),
+                    root: Arc::clone(&self.root),
                     digest: *blake3::hash(value).as_bytes(),
                     length: value.len(),
                     location: LocalBodyLocation::Journal { offset },
@@ -60,7 +60,7 @@ impl Journal {
         if carried.is_empty() {
             return Ok(());
         }
-        let journal = File::open(self.root.join("mutations.log"))?;
+        let journal = File::open(self.root.path.join("mutations.log"))?;
         let mut moves = LocalBodyRelocations::new();
         let mut batch = Materialized::default();
         let mut entries = carried.into_iter().peekable();
@@ -80,7 +80,7 @@ impl Journal {
                 self.write_materialized(&mut batch, &mut moves)?;
             }
         }
-        crate::physical::sync_segment_directory(&self.root, self.limits.durability)
+        crate::physical::sync_segment_directory(&self.root.path, self.limits.durability)
             .map_err(|_| LocalOpenError::Unavailable)?;
         for bucket in state.buckets.values_mut() {
             let relocated = bucket
@@ -117,7 +117,7 @@ impl Journal {
         moves: &mut LocalBodyRelocations,
     ) -> Result<(), LocalOpenError> {
         let (id, offsets) =
-            crate::physical::write_segment(&self.root, &batch.bodies, self.limits.durability)
+            crate::physical::write_segment(&self.root.path, &batch.bodies, self.limits.durability)
                 .map_err(|_| LocalOpenError::Unavailable)?;
         for (offset, digest) in batch.carried.drain(..) {
             let index = *batch.index.get(&digest).ok_or(LocalOpenError::Corrupt)?;

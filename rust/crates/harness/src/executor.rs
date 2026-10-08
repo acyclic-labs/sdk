@@ -1,6 +1,7 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
 use crate::contract::capability;
+use crate::obs::{obs_span, traced};
 use crate::{
     Error, InteractionId, OperationId, Result, TaskId,
     context::{ContextInput, ContextPipeline},
@@ -671,6 +672,27 @@ impl StockExecutor {
             .await
     }
 
+    async fn run_model_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<Vec<ModelEvent>> {
+        let span = obs_span!(
+            "acyclic.harness.executor.model_step",
+            step = step,
+            model = self.model.name.as_str(),
+            phase = crate::obs::Empty,
+            items = crate::obs::Empty,
+        );
+        traced(
+            span,
+            self.dispatch_model_step(journal, input, step, prior_messages),
+        )
+        .await
+    }
+
     /// Resolves one model step's events, replaying an already completed or started attempt
     /// from the durable journal exactly once instead of re-invoking the provider.
     #[allow(
@@ -680,7 +702,7 @@ impl StockExecutor {
                   interleaved with journal appends); splitting the branches further would \
                   fragment one atomic step across more functions without clarifying it"
     )]
-    async fn run_model_step(
+    async fn dispatch_model_step(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
@@ -748,6 +770,13 @@ impl StockExecutor {
         }
         let request_digest = request.manifest().request_digest;
         let replay_completed = admission.completed;
+        crate::obs::obs_record!(
+            "phase" = match (replay_completed, started) {
+                (true, _) => "replay",
+                (false, true) => "reconcile",
+                (false, false) => "dispatch",
+            }
+        );
         let model_events = if replay_completed {
             replayed_model
         } else if started {
@@ -857,6 +886,7 @@ impl StockExecutor {
             }
             observed
         };
+        crate::obs::obs_record!("items" = model_events.len());
         Ok(model_events)
     }
 
@@ -956,6 +986,19 @@ impl StockExecutor {
         }
     }
 
+    async fn resolve_tool_call(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        invocation: ToolInvocation,
+        prior_messages: &mut Vec<ModelMessage>,
+    ) -> Result<ToolCallProgress> {
+        let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
+        let call = self.settle_tool_call(journal, operation_id, step, invocation, prior_messages);
+        traced(span, call).await
+    }
+
     /// Resolves one tool invocation against the durable journal, replaying an already
     /// completed or started attempt exactly once, and appends the resulting message.
     #[allow(
@@ -965,7 +1008,7 @@ impl StockExecutor {
                   interleaved with journal appends); splitting the branches further would \
                   fragment one atomic invocation across more functions without clarifying it"
     )]
-    async fn resolve_tool_call(
+    async fn settle_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
@@ -1377,7 +1420,8 @@ impl StockExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<StockTurnProgress>> {
-        Box::pin(async move {
+        let span = obs_span!(INFO, "acyclic.harness.executor.execute");
+        traced(span, async move {
             if let Some((host, task_id, fence)) = &self.task {
                 host.verify_execution_owner(*task_id, fence.clone()).await?;
             }
@@ -2837,6 +2881,64 @@ mod tests {
                 .collect::<Vec<_>>()),
             Some(vec!["user", "assistant", "tool"])
         );
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
+        use crate::obs::capture;
+        let (seen, _guard) = capture::install();
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "object"}),
+            },
+            executor: Arc::new(FakeTool(AtomicUsize::new(0))),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([1; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        executor.execute(input.clone(), &journal).await?;
+        executor.execute(input, &journal).await?;
+
+        let has = |span, field, value| capture::has(&seen, span, field, value);
+        assert!(has("acyclic.harness.executor.execute", "outcome", "ok"));
+        let step = "acyclic.harness.executor.model_step";
+        assert!(has(step, "model", "model"));
+        assert!(has(step, "step", "1"));
+        assert!(has(step, "phase", "dispatch"));
+        assert!(has(step, "phase", "replay"));
+        assert!(has(step, "items", "2"));
+        assert!(has(step, "outcome", "ok"));
+        assert!(has("acyclic.harness.executor.tool_call", "step", "0"));
+        assert!(has("acyclic.harness.executor.tool_call", "outcome", "ok"));
+        capture::assert_clean(&seen, &["hello", "done", "example.echo"]);
         Ok(())
     }
 

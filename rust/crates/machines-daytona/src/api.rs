@@ -15,6 +15,7 @@ use acyclic_machines::ProviderError;
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tracing::field::Empty;
 
 use crate::DaytonaConfig;
 
@@ -281,36 +282,64 @@ impl DaytonaApi {
         self.authorized(self.http.request(method, format!("{}{path}", self.base)))
     }
 
-    async fn send(&self, builder: RequestBuilder) -> Result<String, ProviderError> {
-        let response = builder
-            .send()
-            .await
-            .map_err(|error| transport_error(&error))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| transport_error(&error))?;
-        if status.is_success() {
-            Ok(body)
-        } else {
-            Err(status_error(status, &body))
+    /// Sends one Daytona call, `op` naming it in its `acyclic.machines.daytona.call` span.
+    #[tracing::instrument(
+        name = "acyclic.machines.daytona.call",
+        level = "info",
+        skip_all,
+        fields(op = op, http.status = Empty, outcome = Empty, error.kind = Empty)
+    )]
+    async fn send(
+        &self,
+        op: &'static str,
+        builder: RequestBuilder,
+    ) -> Result<Vec<u8>, ProviderError> {
+        let result = async {
+            let response = builder
+                .send()
+                .await
+                .map_err(|error| transport_error(&error))?;
+            let status = response.status();
+            tracing::Span::current().record("http.status", status.as_u16());
+            let body = response
+                .bytes()
+                .await
+                .map_err(|error| transport_error(&error))?;
+            if status.is_success() {
+                Ok(body.into())
+            } else {
+                Err(status_error(status, &String::from_utf8_lossy(&body)))
+            }
         }
+        .await;
+        let span = tracing::Span::current();
+        match &result {
+            Ok(_) => span.record("outcome", "ok"),
+            Err(error) => span
+                .record("outcome", "err")
+                .record("error.kind", error.kind()),
+        };
+        result
     }
 
     async fn json<T: for<'de> Deserialize<'de>>(
         &self,
+        op: &'static str,
         builder: RequestBuilder,
     ) -> Result<T, ProviderError> {
-        let body = self.send(builder).await?;
-        serde_json::from_str(&body).map_err(|error| {
-            tracing::warn!(%error, body_len = body.len(), "Daytona response did not match the expected shape");
+        let body = self.send(op, builder).await?;
+        serde_json::from_slice(&body).map_err(|error| {
+            tracing::warn!(
+                op,
+                body_len = body.len(),
+                "Daytona response did not match the expected shape"
+            );
             ProviderError::Rejected(format!("Daytona response shape: {error}"))
         })
     }
 
-    async fn empty(&self, builder: RequestBuilder) -> Result<(), ProviderError> {
-        self.send(builder).await.map(|_| ())
+    async fn empty(&self, op: &'static str, builder: RequestBuilder) -> Result<(), ProviderError> {
+        self.send(op, builder).await.map(|_| ())
     }
 
     /// Creates a sandbox: `POST /sandbox` with a [`CreateSandboxRequest`]. Live-verified.
@@ -318,8 +347,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn create(&self, request: &CreateSandboxRequest) -> Result<Sandbox, ProviderError> {
-        self.json(self.request(Method::POST, "/sandbox").json(request))
-            .await
+        self.json(
+            "create",
+            self.request(Method::POST, "/sandbox").json(request),
+        )
+        .await
     }
 
     /// Reads one sandbox by id or name: `GET /sandbox/{idOrName}`. Live-verified.
@@ -328,8 +360,11 @@ impl DaytonaApi {
     /// Maps transport failures and non-2xx statuses to [`ProviderError`]; 404 is
     /// [`ProviderError::NotFound`].
     pub async fn get(&self, id_or_name: &str) -> Result<Sandbox, ProviderError> {
-        self.json(self.request(Method::GET, &format!("/sandbox/{id_or_name}")))
-            .await
+        self.json(
+            "get",
+            self.request(Method::GET, &format!("/sandbox/{id_or_name}")),
+        )
+        .await
     }
 
     /// Lists sandboxes matching every given label: `GET /sandbox?labels={json}&limit=200`,
@@ -357,7 +392,7 @@ impl DaytonaApi {
                 query.push(("cursor", cursor));
             }
             let page: SandboxPage = self
-                .json(self.request(Method::GET, "/sandbox").query(&query))
+                .json("list", self.request(Method::GET, "/sandbox").query(&query))
                 .await?;
             sandboxes.extend(page.items);
             match page.next_cursor.filter(|value| !value.is_empty()) {
@@ -376,8 +411,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn start(&self, id: &str) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::POST, &format!("/sandbox/{id}/start")))
-            .await
+        self.empty(
+            "start",
+            self.request(Method::POST, &format!("/sandbox/{id}/start")),
+        )
+        .await
     }
 
     /// Stops a sandbox (filesystem kept, memory discarded): `POST /sandbox/{id}/stop`.
@@ -385,8 +423,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn stop(&self, id: &str) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::POST, &format!("/sandbox/{id}/stop")))
-            .await
+        self.empty(
+            "stop",
+            self.request(Method::POST, &format!("/sandbox/{id}/stop")),
+        )
+        .await
     }
 
     /// Pauses a started VM sandbox, retaining memory: `POST /sandbox/{id}/pause`. Container
@@ -395,8 +436,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn pause(&self, id: &str) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::POST, &format!("/sandbox/{id}/pause")))
-            .await
+        self.empty(
+            "pause",
+            self.request(Method::POST, &format!("/sandbox/{id}/pause")),
+        )
+        .await
     }
 
     /// Starts a snapshot of a sandbox: `POST /sandbox/{id}/snapshot` with a
@@ -412,6 +456,7 @@ impl DaytonaApi {
         request: &CreateSnapshotRequest,
     ) -> Result<Sandbox, ProviderError> {
         self.json(
+            "snapshot",
             self.request(Method::POST, &format!("/sandbox/{id}/snapshot"))
                 .json(request),
         )
@@ -424,8 +469,11 @@ impl DaytonaApi {
     /// Maps transport failures and non-2xx statuses to [`ProviderError`]; 404 is
     /// [`ProviderError::NotFound`].
     pub async fn get_snapshot(&self, id_or_name: &str) -> Result<Snapshot, ProviderError> {
-        self.json(self.request(Method::GET, &format!("/snapshots/{id_or_name}")))
-            .await
+        self.json(
+            "get_snapshot",
+            self.request(Method::GET, &format!("/snapshots/{id_or_name}")),
+        )
+        .await
     }
 
     /// Deletes one snapshot by id: `DELETE /snapshots/{id}`.
@@ -433,8 +481,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn delete_snapshot(&self, id: &str) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::DELETE, &format!("/snapshots/{id}")))
-            .await
+        self.empty(
+            "delete_snapshot",
+            self.request(Method::DELETE, &format!("/snapshots/{id}")),
+        )
+        .await
     }
 
     /// Forks a started VM sandbox, memory and disk, into one new sandbox:
@@ -446,6 +497,7 @@ impl DaytonaApi {
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn fork(&self, id: &str, request: &ForkRequest) -> Result<Sandbox, ProviderError> {
         self.json(
+            "fork",
             self.request(Method::POST, &format!("/sandbox/{id}/fork"))
                 .json(request),
         )
@@ -457,8 +509,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn forks(&self, id: &str) -> Result<Vec<Sandbox>, ProviderError> {
-        self.json(self.request(Method::GET, &format!("/sandbox/{id}/forks")))
-            .await
+        self.json(
+            "forks",
+            self.request(Method::GET, &format!("/sandbox/{id}/forks")),
+        )
+        .await
     }
 
     /// Replaces a sandbox's labels: `PUT /sandbox/{idOrName}/labels`. Live-verified.
@@ -471,6 +526,7 @@ impl DaytonaApi {
         labels: BTreeMap<String, String>,
     ) -> Result<(), ProviderError> {
         self.empty(
+            "replace_labels",
             self.request(Method::PUT, &format!("/sandbox/{id}/labels"))
                 .json(&LabelsBody { labels }),
         )
@@ -482,8 +538,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn delete(&self, id: &str) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::DELETE, &format!("/sandbox/{id}")))
-            .await
+        self.empty(
+            "delete",
+            self.request(Method::DELETE, &format!("/sandbox/{id}")),
+        )
+        .await
     }
 
     /// Sets the idle auto-stop interval in minutes, zero disabling it:
@@ -492,8 +551,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn set_autostop(&self, id: &str, minutes: u32) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::POST, &format!("/sandbox/{id}/autostop/{minutes}")))
-            .await
+        self.empty(
+            "set_autostop",
+            self.request(Method::POST, &format!("/sandbox/{id}/autostop/{minutes}")),
+        )
+        .await
     }
 
     /// Sets the idle auto-pause interval in minutes, zero disabling it (VM classes only):
@@ -502,8 +564,11 @@ impl DaytonaApi {
     /// # Errors
     /// Maps transport failures and non-2xx statuses to [`ProviderError`].
     pub async fn set_autopause(&self, id: &str, minutes: u32) -> Result<(), ProviderError> {
-        self.empty(self.request(Method::POST, &format!("/sandbox/{id}/autopause/{minutes}")))
-            .await
+        self.empty(
+            "set_autopause",
+            self.request(Method::POST, &format!("/sandbox/{id}/autopause/{minutes}")),
+        )
+        .await
     }
 
     /// Runs one command through a sandbox's toolbox proxy:
@@ -523,8 +588,11 @@ impl DaytonaApi {
         request: &ExecuteRequest,
     ) -> Result<ExecuteResponse, ProviderError> {
         let url = self.toolbox_url(sandbox_id, "process/execute").await?;
-        self.json(self.authorized(self.http.post(url)).json(request))
-            .await
+        self.json(
+            "execute",
+            self.authorized(self.http.post(url)).json(request),
+        )
+        .await
     }
 
     /// URL of one toolbox route of `sandbox_id`, from the sandbox record this client reads
@@ -555,21 +623,8 @@ impl DaytonaApi {
         path: &str,
     ) -> Result<Vec<u8>, ProviderError> {
         let url = self.toolbox_url(sandbox_id, "files/download").await?;
-        let response = self
-            .authorized(self.http.get(url).query(&[("path", path)]))
-            .send()
-            .await
-            .map_err(|error| transport_error(&error))?;
-        let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| transport_error(&error))?;
-        if status.is_success() {
-            Ok(body.to_vec())
-        } else {
-            Err(status_error(status, &String::from_utf8_lossy(&body)))
-        }
+        let request = self.authorized(self.http.get(url).query(&[("path", path)]));
+        self.send("download_file", request).await
     }
 
     /// Writes one file through a sandbox's toolbox proxy:
@@ -589,6 +644,7 @@ impl DaytonaApi {
         let url = self.toolbox_url(sandbox_id, "files/upload").await?;
         let (content_type, body) = multipart_file(contents);
         self.empty(
+            "upload_file",
             self.authorized(self.http.post(url).query(&[("path", path)]))
                 .header(reqwest::header::CONTENT_TYPE, content_type)
                 .body(body),
@@ -661,7 +717,11 @@ fn multipart_file(contents: &[u8]) -> (String, Vec<u8>) {
 }
 
 fn transport_error(error: &reqwest::Error) -> ProviderError {
-    tracing::warn!(%error, "Daytona request failed at the transport level");
+    tracing::warn!(
+        timeout = error.is_timeout(),
+        connect = error.is_connect(),
+        "Daytona request failed at the transport level"
+    );
     ProviderError::Unavailable
 }
 
