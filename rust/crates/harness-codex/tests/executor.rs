@@ -260,6 +260,18 @@ async fn a_turn_emits_spans_without_prompt_or_output_fields() {
 
     type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
     struct Capture(Seen);
+    struct Observer;
+    impl acyclic_harness_codex::CodexObserver for Observer {
+        fn event(&self, _: &acyclic_harness_codex::CodexEvent) {
+            assert_eq!(
+                tracing::Span::current()
+                    .metadata()
+                    .expect("observer has an active hook span")
+                    .name(),
+                "acyclic.harness.codex.hook"
+            );
+        }
+    }
     struct Fields<'a>(&'static str, &'a Seen);
     impl tracing::field::Visit for Fields<'_> {
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -303,6 +315,7 @@ async fn a_turn_emits_spans_without_prompt_or_output_fields() {
         ..FakeCodex::default()
     };
     turn.executor(&fake, None)
+        .with_observer(Arc::new(Observer))
         .execute(
             input(OperationId::new(), "secret task"),
             &Journal::default(),
@@ -311,6 +324,21 @@ async fn a_turn_emits_spans_without_prompt_or_output_fields() {
         .expect("turn succeeds");
 
     let seen = seen.lock().unwrap();
+    let kinds: Vec<_> = seen
+        .iter()
+        .filter(|(span, field, _)| *span == "acyclic.harness.codex.hook" && *field == "event.kind")
+        .map(|(_, _, kind)| kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "thread.started",
+            "item.completed",
+            "turn.started",
+            "item.completed",
+            "turn.completed"
+        ]
+    );
     for span in ["run", "launch", "conclude", "append"] {
         let span = format!("acyclic.harness.codex.{span}");
         assert!(
