@@ -645,7 +645,7 @@ fn write_bundle_inner(
         return Err(Error::Invalid("only a release can be marked latest".into()));
     }
     validate_source_info(&data.source, &data.channel)?;
-    validate_navigation(&data)?;
+    validate_navigation(data)?;
     reject_reparse_ancestors(output_dir)?;
     fs::create_dir_all(output_dir)?;
     let _publication_lock = lock_publication(output_dir)?;
@@ -764,6 +764,7 @@ fn lock_publication(output_dir: &Path) -> Result<File, Error> {
     reject_reparse_ancestors(&lock_path)?;
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)?;
@@ -1276,7 +1277,7 @@ fn build_family(
         // `impl From<&ActorId> for String`. Keep that local implementation
         // occurrence instead of treating the receiver path as an external
         // definition.
-        if path.first() != Some(&crate_name) && !is_local_impl_member(&krate, public_item) {
+        if path.first() != Some(&crate_name) && !is_local_impl_member(krate, public_item) {
             return Err(Error::Invalid(format!(
                 "{} public-api item {} ({}) does not resolve to the crate root: {}",
                 json_path.display(),
@@ -1979,7 +1980,7 @@ fn source_span_at_root(
     };
     let path = if let Some(generated) = generated_sources.get(&source_path) {
         normalize_path(&generated.logical_path)
-    } else if let Ok(relative) = source_path.strip_prefix(&repository_root) {
+    } else if let Ok(relative) = source_path.strip_prefix(repository_root) {
         normalize_path(relative)
     } else {
         return Err(Error::Invalid(format!(
@@ -2183,7 +2184,7 @@ fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return metadata.file_attributes() & 0x400 != 0;
+        metadata.file_attributes() & 0x400 != 0
     }
     #[cfg(not(windows))]
     {
@@ -3017,7 +3018,7 @@ mod tests {
             let occurrence = public_api::PublicItemSignature {
                 id: Id(id),
                 parent_id: Some(Id(7)),
-                display: format!("{name}"),
+                display: name.to_string(),
                 path: vec![
                     "alloc".into(),
                     "string".into(),

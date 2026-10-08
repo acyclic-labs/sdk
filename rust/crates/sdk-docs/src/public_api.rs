@@ -21,7 +21,7 @@ pub struct PublicItemSignature {
 }
 
 pub fn extract(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
-    let value: Value = serde_json::from_slice(&raw)?;
+    let value: Value = serde_json::from_slice(raw)?;
     let krate: Crate = serde_json::from_value(value.clone())?;
     if krate.format_version != FORMAT_VERSION {
         return Err(Error::Invalid(format!(

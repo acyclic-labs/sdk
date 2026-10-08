@@ -11,6 +11,16 @@ use std::path::{Path, PathBuf};
 pub const SCHEMA: &str = "sdk-generation-release-manifest.v1";
 pub const FILE_NAME: &str = "sdk-generation-release-manifest.v1.json";
 
+/// The same source identity is used to produce and validate a manifest.
+pub struct SourceIdentity<'a> {
+    pub version: &'a str,
+    pub channel: &'a Channel,
+    pub revision: &'a str,
+    pub source_state: &'a str,
+    pub source_sha256: &'a str,
+    pub source_files: &'a BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
@@ -63,17 +73,20 @@ pub fn output_path(output: &Path, channel: &Channel, version: &str) -> Result<Pa
 pub fn build(
     root: &Path,
     output: &Path,
-    version: &str,
-    channel: Channel,
-    revision: &str,
-    source_state: &str,
-    source_sha256: &str,
-    source_files: &BTreeMap<String, String>,
+    identity: SourceIdentity<'_>,
     metadata: &Metadata,
     scenarios: Option<&[ScenarioSource]>,
     artifact_hashes: &BTreeMap<String, String>,
     scenario_artifacts: &[PathBuf],
 ) -> Result<Manifest, String> {
+    let SourceIdentity {
+        version,
+        channel,
+        revision,
+        source_state,
+        source_sha256,
+        source_files,
+    } = identity;
     let mut records = Vec::new();
     if let Some(scenarios) = scenarios {
         for source in scenarios {
@@ -184,7 +197,7 @@ pub fn build(
     Ok(Manifest {
         schema: SCHEMA.into(),
         version: version.to_owned(),
-        channel,
+        channel: channel.clone(),
         revision: revision.to_owned(),
         source_state: source_state.to_owned(),
         source_sha256: source_sha256.to_owned(),
@@ -198,14 +211,17 @@ pub fn validate(
     source_root: &Path,
     output: &Path,
     path: &Path,
-    expected_version: &str,
-    expected_channel: &Channel,
-    expected_revision: &str,
-    expected_source_state: &str,
-    expected_source_sha256: &str,
-    expected_source_files: &BTreeMap<String, String>,
+    identity: SourceIdentity<'_>,
     expected_artifacts: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    let SourceIdentity {
+        version: expected_version,
+        channel: expected_channel,
+        revision: expected_revision,
+        source_state: expected_source_state,
+        source_sha256: expected_source_sha256,
+        source_files: expected_source_files,
+    } = identity;
     let bytes =
         fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let manifest: Manifest = serde_json::from_slice(&bytes)
@@ -344,12 +360,14 @@ mod tests {
             &root,
             &output,
             &release,
-            "v1",
-            &Channel::Preview,
-            &"a".repeat(40),
-            "working-tree",
-            "sha256:source",
-            &BTreeMap::new(),
+            SourceIdentity {
+                version: "v1",
+                channel: &Channel::Preview,
+                revision: &"a".repeat(40),
+                source_state: "working-tree",
+                source_sha256: "sha256:source",
+                source_files: &BTreeMap::new(),
+            },
             &expected,
         )
         .expect_err("an unlisted generated artifact must fail closed");

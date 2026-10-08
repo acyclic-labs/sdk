@@ -387,7 +387,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     let mut receipt_specs = BTreeMap::<String, ProfileSpec>::new();
     for receipt in &receipts {
         let observation =
-            observe_profile_receipt(&receipt, &executed_profiles).map_err(profile_error)?;
+            observe_profile_receipt(receipt, &executed_profiles).map_err(profile_error)?;
         let source_attestation = receipt_source_attestation(receipt)?;
         if source_attestation.as_deref() != Some(source_sha256.as_str()) {
             return Err(CliError(format!(
@@ -398,14 +398,14 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         }
         let package = package_for_profile(
             &metadata,
-            &receipt,
+            receipt,
             &observation.crate_name,
             &executed_profiles,
         )?;
-        validate_rustdoc_version(&metadata, &package.name.to_string(), &observation)
+        validate_rustdoc_version(&metadata, package.name.as_ref(), &observation)
             .map_err(profile_error)?;
         let owner =
-            api_owner_for_package(&metadata, &package.name.to_string()).map_err(profile_error)?;
+            api_owner_for_package(&metadata, package.name.as_ref()).map_err(profile_error)?;
         let profile_spec = executed_profiles
             .iter()
             .find(|executed| executed.receipt == *receipt)
@@ -457,8 +457,8 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     {
         let receipt = &executed.receipt;
         let observation =
-            observe_profile_receipt(&receipt, &executed_profiles).map_err(profile_error)?;
-        if receipt_source_attestation(&receipt)?.as_deref() != Some(source_sha256.as_str()) {
+            observe_profile_receipt(receipt, &executed_profiles).map_err(profile_error)?;
+        if receipt_source_attestation(receipt)?.as_deref() != Some(source_sha256.as_str()) {
             return Err(CliError(format!(
                 "WASM Rustdoc receipt {} has no matching source attestation",
                 receipt.display()
@@ -466,19 +466,19 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         }
         let package = package_for_profile(
             &metadata,
-            &receipt,
+            receipt,
             &observation.crate_name,
             &executed_profiles,
         )?;
-        validate_rustdoc_version(&metadata, &package.name.to_string(), &observation)
+        validate_rustdoc_version(&metadata, package.name.as_ref(), &observation)
             .map_err(profile_error)?;
         let owner =
-            api_owner_for_package(&metadata, &package.name.to_string()).map_err(profile_error)?;
+            api_owner_for_package(&metadata, package.name.as_ref()).map_err(profile_error)?;
         let profile = executed.spec.clone();
         let profile_id = profile.id();
         profile_items.extend(
             extract_owned_api_for_crate(
-                &receipt,
+                receipt,
                 &owner,
                 profile_id.clone(),
                 &observation.crate_name,
@@ -487,10 +487,10 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         );
         profiles.insert(profile_id, profile);
         receipt_specs.insert(path_string(receipt), executed.spec.clone());
-        let receipt_key = rustdoc_key(&rustdoc_dir, &receipt)?;
+        let receipt_key = rustdoc_key(&rustdoc_dir, receipt)?;
         receipt_manifest.insert(
             receipt_key,
-            rustdoc_digest(&receipt, &root).map_err(|error| CliError(error.to_string()))?,
+            rustdoc_digest(receipt, &root).map_err(|error| CliError(error.to_string()))?,
         );
     }
 
@@ -558,10 +558,10 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     {
         let receipt = &executed.receipt;
         let observation =
-            observe_profile_receipt(&receipt, &executed_profiles).map_err(profile_error)?;
+            observe_profile_receipt(receipt, &executed_profiles).map_err(profile_error)?;
         let package = package_for_profile(
             &metadata,
-            &receipt,
+            receipt,
             &observation.crate_name,
             &executed_profiles,
         )?;
@@ -641,7 +641,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             &executed_profiles,
         )?;
         let owner =
-            api_owner_for_package(&metadata, &package.name.to_string()).map_err(profile_error)?;
+            api_owner_for_package(&metadata, package.name.as_ref()).map_err(profile_error)?;
         let spec = receipt_specs
             .get(&path_string(&receipt))
             .cloned()
@@ -715,7 +715,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         let projections_path = output.join("sdk-docs-scenario-projections.v1.json");
         write_immutable(&projections_path, &json_bytes(&projections)?)?;
         for snippet in snippets {
-            let path = output.join(&snippet.path);
+            let path = output.join(snippet.path);
             write_immutable(&path, snippet.source.as_bytes())?;
             scenario_artifacts.push(path);
         }
@@ -731,12 +731,14 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     let release_manifest = release_manifest::build(
         &root,
         &output,
-        &args.version,
-        args.channel.clone(),
-        &revision,
-        source_state,
-        &source_sha256,
-        &source_files,
+        release_manifest::SourceIdentity {
+            version: &args.version,
+            channel: &args.channel,
+            revision: &revision,
+            source_state,
+            source_sha256: &source_sha256,
+            source_files: &source_files,
+        },
         &metadata,
         scenario_sources.as_deref(),
         &pre_manifest_artifacts,
@@ -942,12 +944,14 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
             &root,
             &output,
             &output.join(&manifest.release_manifest),
-            &manifest.version,
-            &manifest.channel,
-            &manifest.revision,
-            &manifest.source_state,
-            &manifest.source_sha256,
-            &manifest.source_files,
+            release_manifest::SourceIdentity {
+                version: &manifest.version,
+                channel: &manifest.channel,
+                revision: &manifest.revision,
+                source_state: &manifest.source_state,
+                source_sha256: &manifest.source_sha256,
+                source_files: &manifest.source_files,
+            },
             &actual,
         )
         .map_err(|error| CliError(format!("release manifest drift: {error}")))?;
@@ -1251,48 +1255,46 @@ fn execute_default_profiles(
                 });
             }
         }
-        if installed_targets.contains(wasm_target) {
-            if wasm_binding {
-                let wasm_targets = BTreeSet::from([wasm_target.to_owned()]);
-                let wasm_profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
+        if installed_targets.contains(wasm_target) && wasm_binding {
+            let wasm_targets = BTreeSet::from([wasm_target.to_owned()]);
+            let wasm_profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
+                metadata,
+                package.name.as_str(),
+                wasm_target,
+                &wasm_targets,
+            )
+            .map_err(profile_error)?;
+            for wasm_profile in wasm_profiles {
+                let wasm_receipt =
+                    if wasm_profile.default_features && wasm_profile.features.is_empty() {
+                        rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")))
+                    } else {
+                        rustdoc_dir.join("profiles").join(format!(
+                            "wasm-{}.json",
+                            wasm_profile.id().0.replace(';', "_")
+                        ))
+                    };
+                if let Some(parent) = wasm_receipt.parent() {
+                    fs::create_dir_all(parent).map_err(io_error)?;
+                }
+                execute_profile_with_cargo(
+                    root.join("Cargo.toml"),
                     metadata,
-                    package.name.as_str(),
-                    wasm_target,
+                    &wasm_profile,
                     &wasm_targets,
+                    &target_dir,
+                    &wasm_receipt,
+                    Some(cargo_path),
                 )
                 .map_err(profile_error)?;
-                for wasm_profile in wasm_profiles {
-                    let wasm_receipt =
-                        if wasm_profile.default_features && wasm_profile.features.is_empty() {
-                            rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")))
-                        } else {
-                            rustdoc_dir.join("profiles").join(format!(
-                                "wasm-{}.json",
-                                wasm_profile.id().0.replace(';', "_")
-                            ))
-                        };
-                    if let Some(parent) = wasm_receipt.parent() {
-                        fs::create_dir_all(parent).map_err(io_error)?;
-                    }
-                    execute_profile_with_cargo(
-                        root.join("Cargo.toml"),
-                        metadata,
-                        &wasm_profile,
-                        &wasm_targets,
-                        &target_dir,
-                        &wasm_receipt,
-                        Some(cargo_path),
-                    )
-                    .map_err(profile_error)?;
-                    retain_profile_generated_sources(root, &wasm_receipt)?;
-                    fs::write(wasm_receipt.with_extension("source.sha256"), source_sha256)
-                        .map_err(io_error)?;
-                    executed.push(ExecutedProfile {
-                        target: sdk_docs::rustdoc_profiles::RustdocTarget::Library,
-                        receipt: wasm_receipt,
-                        spec: wasm_profile,
-                    });
-                }
+                retain_profile_generated_sources(root, &wasm_receipt)?;
+                fs::write(wasm_receipt.with_extension("source.sha256"), source_sha256)
+                    .map_err(io_error)?;
+                executed.push(ExecutedProfile {
+                    target: sdk_docs::rustdoc_profiles::RustdocTarget::Library,
+                    receipt: wasm_receipt,
+                    spec: wasm_profile,
+                });
             }
         }
     }
