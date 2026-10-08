@@ -1233,24 +1233,6 @@ fn materialize_generated_sources(
     Ok(result.into_values().collect())
 }
 
-fn stage_generated_source(root: &Path, source: &Path, identity: &str) -> Result<PathBuf, CliError> {
-    let stage_root = root.join("target/sdk-generation-generated-sources");
-    let basename = source.file_name().and_then(OsStr::to_str).ok_or_else(|| {
-        CliError(format!(
-            "Rustdoc generated source has invalid filename {identity}"
-        ))
-    })?;
-    let key = sha256_bytes(identity.as_bytes())
-        .trim_start_matches("sha256:")
-        .to_owned();
-    let staged = stage_root.join(key).join(basename);
-    if let Some(parent) = staged.parent() {
-        fs::create_dir_all(parent).map_err(io_error)?;
-    }
-    fs::copy(source, &staged).map_err(io_error)?;
-    Ok(staged)
-}
-
 fn collect_span_filenames(value: &serde_json::Value, output: &mut BTreeSet<String>) {
     match value {
         serde_json::Value::Object(map) => {
