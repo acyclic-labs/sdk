@@ -102,7 +102,7 @@ mod tests {
             } else {
                 entries.push((
                     path.strip_prefix(root)
-                        .expect("generated path must be below its root")
+                        .map_err(io::Error::other)?
                         .to_owned(),
                     fs::read(path)?,
                 ));

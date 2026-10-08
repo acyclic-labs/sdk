@@ -17,6 +17,13 @@
 //! It is filtered only at the `FileDescriptorProto` level and only when the
 //! complete encoded unknown field matches that known value.
 
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test fixtures use fatal assertions for invalid descriptor setup"
+)]
+
 use acyclic_actors::FILE_DESCRIPTOR_SET;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, UnknownField, Value};
@@ -125,7 +132,7 @@ fn filter_legacy_buf_build_metadata(descriptor_set: &mut DynamicMessage) {
     }
 }
 
-fn first_file<'a>(descriptor_set: &'a mut DynamicMessage) -> &'a mut DynamicMessage {
+fn first_file(descriptor_set: &mut DynamicMessage) -> &mut DynamicMessage {
     let files = descriptor_set
         .get_field_by_name_mut("file")
         .expect("FileDescriptorSet.file must exist");

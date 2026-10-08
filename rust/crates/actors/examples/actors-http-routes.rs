@@ -10,12 +10,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let methods = service
         .methods()
         .map(|method| {
-            let operation = lower_camel(method.name());
+            let operation = lower_camel(method.name())?;
             let input = method.input().name().to_owned();
             let output = method.output().name().to_owned();
-            (operation, input, output)
+            Ok((operation, input, output))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, &'static str>>()?;
     if let Some(output) = output {
         let source = render_typescript(&methods);
         if let Some(parent) = std::path::Path::new(&output).parent() {
@@ -41,13 +41,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn lower_camel(value: &str) -> String {
+fn lower_camel(value: &str) -> Result<String, &'static str> {
     let mut characters = value.chars();
     let first = characters
         .next()
-        .expect("descriptor method names must not be empty")
+        .ok_or("descriptor method names must not be empty")?
         .to_ascii_lowercase();
-    format!("{first}{}", characters.collect::<String>())
+    Ok(format!("{first}{}", characters.collect::<String>()))
 }
 
 fn render_typescript(methods: &[(String, String, String)]) -> String {
