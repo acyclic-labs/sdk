@@ -1047,7 +1047,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
             .expect("spawn partial output");
-        ready(temporary.path(), "partial-ready");
+        ready(temporary.path(), "partial-ready", || tree_exited(&mut tree));
         let failure = tree
             .wait_with_output_observed(Duration::from_millis(20), 4096, || Ok(()))
             .expect_err("partial process times out");
