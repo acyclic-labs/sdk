@@ -92,7 +92,7 @@ test("removed wire kinds reject valid idle and latency responses", async () => {
     if (!idle) { response.idleKv = undefined; response.latencyProfile = bytes(6); }
     await validateRuntimeShape(WarmViewSchema, response);
     for (const kind of ["legacy_warm_context", "legacy_warm_commitment", "idle_warm_context", "idle_warm_commitment"]) {
-      await expect(validateContract(kind, WarmViewSchema, response, bytes(4))).rejects.toThrow("unknown inference message kind");
+      await expect(validateContract(kind, WarmViewSchema, response, kind.endsWith("context") ? bytes(4) : bytes(3))).rejects.toThrow("unknown inference message kind");
     }
   }
 });
@@ -160,4 +160,16 @@ test("warm validation keeps caller authority through concurrent request aliases"
   } as never);
   await expect(client.retainWarm(retain)).rejects.toThrow("shape differs");
   await expect(client.renewWarm(renew)).rejects.toThrow("shape differs");
+});
+
+
+test("invalid authority width rejects before snapshot copies or transport", async () => {
+  class CopyTrap extends Uint8Array {
+    override slice(): Uint8Array { throw new Error("unexpected authority copy"); }
+  }
+  const client = new InferenceClient({} as never);
+  const retain = create(RetainWarmRequestSchema, { identity, context: new CopyTrap(33), idleKv: policy });
+  const renew = create(RenewWarmRequestSchema, { identity, commitment: new CopyTrap(33), idleTimeoutMs: 20n });
+  await expect(client.retainWarm(retain)).rejects.toThrow("context revision must be exactly");
+  await expect(client.renewWarm(renew)).rejects.toThrow("warm commitment must be exactly");
 });

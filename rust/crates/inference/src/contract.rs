@@ -811,8 +811,13 @@ mod tests {
                 "",
                 "Warm_commitment",
             ] {
+                let expected = if kind.ends_with("context") {
+                    [2; 32]
+                } else {
+                    [1; 32]
+                };
                 assert_eq!(
-                    validate_customer_wire(kind, &view.encode_to_vec(), &[2; 32], &[]),
+                    validate_customer_wire(kind, &view.encode_to_vec(), &expected, &[]),
                     Err("unknown inference message kind")
                 );
             }

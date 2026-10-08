@@ -145,6 +145,7 @@ export class InferenceClient {
     return receipt;
   }
   async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
+    requireFixed(request.context, INFERENCE_FIXED_WIDTHS.contextRevision, "context revision");
     request = clone(RetainWarmRequestSchema, request);
     const expected = request.context.slice();
     const related = toBinary(RetainWarmRequestSchema, request);
@@ -160,10 +161,10 @@ export class InferenceClient {
     return view;
   }
   async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
+    requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
     request = clone(RenewWarmRequestSchema, request);
     const expected = request.commitment.slice();
     const related = toBinary(RenewWarmRequestSchema, request);
-    requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
     await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
     const view = await this.transport.renewWarm(request);
     await validateContract("warm_commitment", WarmViewSchema, view, expected, related);
