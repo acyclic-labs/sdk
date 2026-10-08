@@ -223,8 +223,8 @@ export function deterministicRustflags(sourceRoot, targetDir, target, /** @type 
     : plain !== null && typeof plain === "string" ? splitRustflags(plain) : [];
   const flags = [
     ...prior,
-    `--remap-path-prefix=${resolve(sourceRoot).replaceAll("\\", "/")}=/__acyclic_stream_source`,
-    `--remap-path-prefix=${resolve(targetDir).replaceAll("\\", "/")}=/__acyclic_stream_target`,
+    `--remap-path-prefix=${portableResolve(sourceRoot)}=/__acyclic_stream_source`,
+    `--remap-path-prefix=${portableResolve(targetDir)}=/__acyclic_stream_target`,
   ];
   if (typeof target === "string" && target.endsWith("-pc-windows-msvc")) flags.push("-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro");
   if (typeof target === "string" && target.endsWith("-apple-darwin")) {
@@ -511,6 +511,11 @@ function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: strin
   return value;
 }
 
+function portableResolve(value) {
+  if (typeof value === "string" && /^[A-Za-z]:[\\/]/u.test(value)) return value.replaceAll("\\", "/");
+  return resolve(value);
+}
+
 function normalizeBuildInputPaths(value, context) {
   if (typeof value === "string") return normalizedPath(value, context);
   if (Array.isArray(value)) return value.map(item => normalizeBuildInputPaths(item, context));
@@ -553,7 +558,7 @@ function isDiagnosticOnlyRustcArgument(value) {
 }
 
 export function normalizeBuildInputs(value, { targetDir, outputDir }) {
-  const context = { targetDir: resolve(targetDir), outputDir: resolve(outputDir) };
+  const context = { targetDir: portableResolve(targetDir), outputDir: portableResolve(outputDir) };
   const normalized = normalizeBuildInputPaths(value, context);
   normalized.target_dir = "<target-dir>";
   normalized.runtime.node_path = "<runtime>";
