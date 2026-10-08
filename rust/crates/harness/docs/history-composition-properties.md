@@ -1061,3 +1061,22 @@ history clones are detectable. Formatting and whitespace checks pass; native,
 fresh generated declarations, Bun and actual Chromium gates are pending a
 coordinated build grant. Conversation hydration, retained-event/index growth and
 compact cold restoration remain unfinished.
+
+### Recovered bounded event suffix (unqualified source)
+
+The restored owner checkout now bounds StreamAggregate's event and retry-position
+cache to 1024 events by default, configurable with with_resident_event_limit.
+VecDeque eviction and absolute revision locations avoid shifting/rebuilding the
+remaining retry index. The existing atomic Stream operation index resolves old
+identities before planning, and publication still compares identity absence with
+the canonical event append. Synchronous planning after archival refuses unknown
+identities; synchronous events_after refuses cursors before the resident floor.
+HistoryReader remains the authoritative archival reader.
+
+Snapshot format 4 authenticates the retained contiguous event suffix and preserves
+the latest extension activation revision separately from that cache. Formats 2/3
+remain unsupported accelerators; recovery can replay canonical Stream history.
+Conversation, effects, fork, merge, interaction and context-selection projections
+are still not bounded cold state. No overall retention/performance claim follows.
+The new old-retry/conflict/suffix-recovery fixture has not yet run, and all final
+source/native/generated/browser/installed/fault/formal gates remain required.

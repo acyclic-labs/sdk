@@ -595,6 +595,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         } else {
             Reducer::new(authority, authority_verifier, schemas)
         };
+        reducer.set_resident_event_limit(1024)?;
         let start = reducer.revision();
         let mut replay = stream.replay(start);
         while let Some(page) = replay.next_page().await? {
@@ -627,6 +628,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
             extension_migrations: None,
             limits: Limits::default(),
         })
+    }
+
+    /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
+    /// The default is 1024 events. Older identities are resolved through the atomic operation index.
+    pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
+        self.reducer.set_resident_event_limit(maximum)?;
+        Ok(self)
     }
 
     /// Installs the provider boundary that verifies every message file before admission.
@@ -980,7 +988,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
-            return self.reducer.plan(command);
+            return self.reducer.plan_indexed(command, false);
         }
         if let Action::MigrateExtensionState {
             name,
@@ -999,7 +1007,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )?;
         }
         self.validate_admission_content(&command.action).await?;
-        self.reducer.plan_verified_migration(command)
+        self.reducer.plan_indexed(command, true)
     }
 
     #[cfg_attr(
@@ -1664,6 +1672,80 @@ mod tests {
         let page = reader.read_page(&current, limits).await?;
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.cursor.after_revision, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
+                .await?
+                .with_resident_event_limit(2)?,
+        );
+        let original = command(1)?;
+        let first = writer.execute(original.clone()).await?;
+        for identity in 2..=5 {
+            let mut next = command(identity)?;
+            next.expected_revision = writer.reducer().revision();
+            writer.execute(next).await?;
+        }
+        assert_eq!(writer.reducer().archived_through_revision(), 3);
+        assert!(matches!(
+            writer.reducer().events_after(0, 10),
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(writer.reducer().events_after(3, 10)?.len(), 2);
+        let snapshot = writer.reducer().snapshot()?;
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(writer.read_event_at(1).await?.revision, 1);
+        let mut reused = original.clone();
+        reused.expected_revision = writer.reducer().revision();
+        assert!(matches!(
+            writer.reducer().plan(&reused),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            writer.execute(original.clone()).await?,
+            ApplyResult::Replayed { .. }
+        ));
+        let mut conflicting = original.clone();
+        conflicting.causal_parent = Some(EventReference {
+            authority: authority(),
+            revision: 1,
+        });
+        assert!(matches!(
+            writer.execute(conflicting).await,
+            Err(Error::Conflict(_))
+        ));
+        let mut restored = with_content(
+            StreamAggregate::open_from_snapshot(
+                &client,
+                authority(),
+                issuer().verifier(),
+                schemas(),
+                snapshot,
+            )
+            .await?
+            .with_resident_event_limit(2)?,
+        );
+        assert_eq!(restored.reducer().archived_through_revision(), 3);
+        let ApplyResult::Replayed { event } = restored.execute(original).await? else {
+            return Err(Error::Invalid("cold retry was not replayed".into()));
+        };
+        let ApplyResult::Applied {
+            event: original_event,
+        } = first
+        else {
+            return Err(Error::Invalid("fixture first event was not applied".into()));
+        };
+        assert_eq!(event, original_event);
+        assert_eq!(restored.reducer().revision(), 5);
+        let mut next = command(6)?;
+        next.expected_revision = 5;
+        restored.execute(next).await?;
+        assert_eq!(restored.reducer().archived_through_revision(), 4);
+        assert_eq!(restored.reducer().snapshot()?.events.len(), 2);
         Ok(())
     }
 

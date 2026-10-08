@@ -16,7 +16,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 mod snapshot;
 pub use snapshot::Snapshot;
@@ -1464,8 +1464,10 @@ pub struct Reducer {
     extension_states: BTreeMap<String, (EventReference, ExtensionRecord)>,
     configured_extensions: BTreeMap<ExtensionDependency, ExtensionConfiguration>,
     active_configurations: Vec<ExtensionConfiguration>,
-    events: Vec<Event>,
-    operation_positions: BTreeMap<OperationId, usize>,
+    events: VecDeque<Event>,
+    operation_positions: BTreeMap<OperationId, u64>,
+    resident_event_limit: usize,
+    active_extension_revision: Option<u64>,
     effects: BTreeMap<EffectId, EffectState>,
     forks: BTreeMap<Authority, ForkSeed>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
@@ -1493,8 +1495,10 @@ impl Reducer {
             extension_states: BTreeMap::new(),
             configured_extensions: BTreeMap::new(),
             active_configurations: Vec::new(),
-            events: Vec::new(),
+            events: VecDeque::new(),
             operation_positions: BTreeMap::new(),
+            resident_event_limit: usize::MAX,
+            active_extension_revision: None,
             effects: BTreeMap::new(),
             forks: BTreeMap::new(),
             published_merges: BTreeSet::new(),
@@ -1635,18 +1639,13 @@ impl Reducer {
                 "extension admission requires an agent aggregate".into(),
             ));
         }
-        let Some(event) = self
-            .events
-            .iter()
-            .rev()
-            .find(|event| matches!(&event.payload, EventPayload::ExtensionsSelected { .. }))
-        else {
+        let Some(revision) = self.active_extension_revision else {
             return Ok(None);
         };
         let admission = ExtensionAdmission {
             source: EventReference {
                 authority: self.authority.clone(),
-                revision: event.revision,
+                revision,
             },
             selected: self.active_extensions.clone(),
             configurations: self.active_configurations.clone(),
@@ -1744,7 +1743,11 @@ impl Reducer {
     fn event_for_operation(&self, operation_id: OperationId) -> Option<&Event> {
         self.operation_positions
             .get(&operation_id)
-            .and_then(|position| self.events.get(*position))
+            .and_then(|revision| {
+                let first = self.events.front()?.revision;
+                let position = usize::try_from(revision.checked_sub(first)?).ok()?;
+                self.events.get(position)
+            })
     }
 
     /// Returns the exact admitted request and its optional terminal resolution.
@@ -1794,18 +1797,73 @@ impl Reducer {
         )
     )]
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
-        crate::obs::outcome(self.plan_with_migration_boundary(command, Migration::Unverified))
+        crate::obs::outcome(self.plan_with_migration_boundary(
+            command,
+            Migration::Unverified,
+            false,
+        ))
     }
 
     /// Provider admission has verified residency and independently executed
     /// the exact pinned migration before requesting a publishable event.
+    #[cfg(test)]
     pub(crate) fn plan_verified_migration(&self, command: &Command) -> Result<ApplyResult> {
         if !matches!(&command.action, Action::MigrateExtensionState { .. }) {
             return Err(Error::Invalid(
                 "verified migration planner requires a migration action".into(),
             ));
         }
-        self.plan_with_migration_boundary(command, Migration::Verified)
+        self.plan_with_migration_boundary(command, Migration::Verified, false)
+    }
+
+    /// Only the owning Stream adapter calls this after its authoritative identity lookup.
+    /// Atomic publication still compares absence of that identity with the event append.
+    pub(crate) fn plan_indexed(
+        &self,
+        command: &Command,
+        migration_verified: bool,
+    ) -> Result<ApplyResult> {
+        if migration_verified && !matches!(&command.action, Action::MigrateExtensionState { .. }) {
+            return Err(Error::Invalid(
+                "verified migration planner requires a migration action".into(),
+            ));
+        }
+        self.plan_with_migration_boundary(
+            command,
+            if migration_verified {
+                Migration::Verified
+            } else {
+                Migration::Unverified
+            },
+            true,
+        )
+    }
+
+    pub(crate) fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
+        if maximum == 0 {
+            return Err(Error::Invalid(
+                "resident event allowance must be positive".into(),
+            ));
+        }
+        self.resident_event_limit = maximum;
+        self.trim_resident_events();
+        Ok(())
+    }
+
+    fn trim_resident_events(&mut self) {
+        while self.events.len() > self.resident_event_limit {
+            if let Some(event) = self.events.pop_front() {
+                self.operation_positions.remove(&event.operation_id);
+            }
+        }
+    }
+
+    /// Last revision no longer available through the synchronous resident event reader.
+    #[must_use]
+    pub fn archived_through_revision(&self) -> u64 {
+        self.events
+            .front()
+            .map_or(self.revision, |event| event.revision - 1)
     }
 
     #[allow(
@@ -1816,6 +1874,7 @@ impl Reducer {
         &self,
         command: &Command,
         migration: Migration,
+        identity_checked: bool,
     ) -> Result<ApplyResult> {
         self.verify_command_scope(command)?;
         let intent = canonical_intent(command)?;
@@ -1827,6 +1886,11 @@ impl Reducer {
             }
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
+            ));
+        }
+        if !identity_checked && self.archived_through_revision() != 0 {
+            return Err(Error::Unsupported(
+                "operation identity requires authoritative archive lookup".into(),
             ));
         }
         if command.expected_revision != self.revision {
@@ -2003,8 +2067,9 @@ impl Reducer {
         self.apply_payload(&event.payload, event.revision)?;
         self.revision = event.revision;
         self.operation_positions
-            .insert(event.operation_id, self.events.len());
-        self.events.push(event.clone());
+            .insert(event.operation_id, event.revision);
+        self.events.push_back(event.clone());
+        self.trim_resident_events();
         Ok(ApplyResult::Applied { event })
     }
 
@@ -2013,13 +2078,15 @@ impl Reducer {
         if revision > self.revision {
             return Err(Error::Invalid("cursor is beyond the aggregate head".into()));
         }
-        let start = self
-            .events
-            .partition_point(|event| event.revision <= revision);
+        if revision < self.archived_through_revision() {
+            return Err(Error::Unsupported(
+                "cursor requires authoritative archive reader".into(),
+            ));
+        }
         Ok(self
             .events
             .iter()
-            .skip(start)
+            .filter(|event| event.revision > revision)
             .take(limit)
             .cloned()
             .collect())
@@ -2695,6 +2762,7 @@ impl Reducer {
                         "extension activation does not match pinned agent state".into(),
                     ));
                 }
+                self.active_extension_revision = Some(revision);
                 self.active_extensions = selected.clone();
                 self.active_configurations = configurations.clone();
             }
@@ -3553,6 +3621,9 @@ resolve_interaction interaction_resolved interaction:resolve";
                 content: second,
             },
         })?;
+        reducer.set_resident_event_limit(1)?;
+        assert_eq!(reducer.snapshot()?.events.len(), 1);
+        assert_eq!(reducer.archived_through_revision(), 2);
         assert_eq!(reducer.active_configurations()[0].content, first);
         assert_eq!(reducer.extension_admission()?, Some(admitted));
         let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;

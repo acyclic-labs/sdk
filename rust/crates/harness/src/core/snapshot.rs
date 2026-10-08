@@ -39,6 +39,7 @@ pub struct Snapshot {
 struct Projection {
     lifecycle: LifecycleState,
     active_extensions: Vec<ExtensionDependency>,
+    active_extension_revision: Option<u64>,
     extension_states: BTreeMap<String, (EventReference, ExtensionRecord)>,
     configured_extensions: Vec<(ExtensionDependency, ExtensionConfiguration)>,
     active_configurations: Vec<ExtensionConfiguration>,
@@ -56,11 +57,12 @@ struct Projection {
 
 impl Reducer {
     /// Captures issuer-authenticated state for direct projection restoration.
-    /// The retained event and conversation caches are not yet compacted here.
+    /// The event cache is a suffix; conversation and terminal projections still need cold retention.
     pub fn snapshot(&self) -> Result<Snapshot> {
         let projection = Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions.clone(),
+            active_extension_revision: self.active_extension_revision,
             extension_states: self.extension_states.clone(),
             configured_extensions: self.configured_extensions.clone().into_iter().collect(),
             active_configurations: self.active_configurations.clone(),
@@ -74,10 +76,10 @@ impl Reducer {
             bindings: registry_bindings(&self.schemas)?,
         };
         let mut snapshot = Snapshot {
-            format_version: 3,
+            format_version: 4,
             authority: self.authority.clone(),
             revision: self.revision,
-            events: self.events.clone(),
+            events: self.events.iter().cloned().collect(),
             projection,
             state_digest: [0; 32],
             attestation: [0; 32],
@@ -99,8 +101,7 @@ impl Reducer {
         let operation_positions = snapshot
             .events
             .iter()
-            .enumerate()
-            .map(|(position, event)| (event.operation_id, position))
+            .map(|event| (event.operation_id, event.revision))
             .collect();
         let projection = snapshot.projection;
         Ok(Self {
@@ -110,10 +111,12 @@ impl Reducer {
             revision: snapshot.revision,
             lifecycle: projection.lifecycle,
             active_extensions: projection.active_extensions,
+            active_extension_revision: projection.active_extension_revision,
             extension_states: projection.extension_states,
             configured_extensions: projection.configured_extensions.into_iter().collect(),
             active_configurations: projection.active_configurations,
-            events: snapshot.events,
+            events: snapshot.events.into(),
+            resident_event_limit: usize::MAX,
             operation_positions,
             effects: projection.effects,
             forks: projection.forks.into_iter().collect(),
@@ -138,7 +141,7 @@ impl Snapshot {
     }
 
     fn verify(&self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry) -> Result<()> {
-        if self.format_version != 3 {
+        if self.format_version != 4 {
             return Err(Error::Unsupported(format!(
                 "snapshot format {}",
                 self.format_version
@@ -151,6 +154,34 @@ impl Snapshot {
         if verifier.attest_snapshot(self)? != self.attestation {
             return Err(Error::Unauthorized(
                 "snapshot admission attestation is invalid".into(),
+            ));
+        }
+        let mut identities = BTreeSet::new();
+        let mut previous = None;
+        for event in &self.events {
+            verifier.verify_event(event)?;
+            if event.revision == 0
+                || event.revision > self.revision
+                || previous
+                    .is_some_and(|revision: u64| revision.checked_add(1) != Some(event.revision))
+                || !identities.insert(event.operation_id)
+            {
+                return Err(Error::Invalid("snapshot event suffix is invalid".into()));
+            }
+            previous = Some(event.revision);
+        }
+        if previous.unwrap_or(0) != self.revision {
+            return Err(Error::Invalid(
+                "snapshot event suffix does not reach its head".into(),
+            ));
+        }
+        if self
+            .projection
+            .active_extension_revision
+            .is_some_and(|revision| revision == 0 || revision > self.revision)
+        {
+            return Err(Error::Invalid(
+                "snapshot extension activation revision is invalid".into(),
             ));
         }
         for (extension, expected) in &self.projection.bindings {
@@ -173,7 +204,7 @@ impl AuthorityVerifier {
             snapshot.state_digest,
         ))?;
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v3/reducer-checkpoint\0");
+        hasher.update(b"harness/v4/reducer-checkpoint\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
         Ok(*hasher.finalize().as_bytes())

@@ -3,6 +3,8 @@ import type { Attachment, FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { MachineIdentityWire } from "./native-contracts.js";
 import type {
+  ModelContextCapacity as ModelContextCapacityWire,
+  ModelTokenCount as ModelTokenCountWire,
   WasmModelContentPart,
   WasmModelDataPart,
   WasmToolResultContent,
@@ -107,7 +109,25 @@ export type ModelAttempt<Event extends ModelEvent = ModelEvent> =
     requestDigest: Uint8Array;
     observed: readonly Event[];
   }>;
-export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> { generate(request: Request & { readonly serializedInput: Uint8Array }): AsyncIterable<Event>; reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined> }
+/** Provider capacity for the exact immutable model, derived from the Rust proof. */
+export type ModelContextCapacity = Readonly<Omit<ModelContextCapacityWire, "context_tokens" | "output_tokens"> & {
+  contextTokens: ModelContextCapacityWire["context_tokens"];
+  outputTokens: ModelContextCapacityWire["output_tokens"];
+}>;
+/** Additive upper bounds bound to the exact prepared bytes and ordered messages. */
+export type ModelTokenCount = Readonly<Omit<ModelTokenCountWire, "request_digest" | "fixed_tokens" | "message_tokens"> & {
+  requestDigest: Uint8Array;
+  fixedTokens: ModelTokenCountWire["fixed_tokens"];
+  messageTokens: readonly ModelTokenCountWire["message_tokens"][number][];
+}>;
+export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> {
+  /** Synchronous, without dispatch effects; unsupported models must reject explicitly. */
+  contextCapacity(model: Request["model"]): ModelContextCapacity;
+  /** Synchronous; serializedInput is a defensive copy of the exact canonical request. */
+  countTokens(request: Request & { readonly serializedInput: Uint8Array }): ModelTokenCount;
+  generate(request: Request & { readonly serializedInput: Uint8Array }): AsyncIterable<Event>;
+  reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined>;
+}
 
 export interface ToolInvocation<Input = unknown> {
   /** Runtime-owned reconciliation identity; provider call IDs can recur across turns. */
