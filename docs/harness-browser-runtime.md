@@ -3,7 +3,9 @@
 Initial inspected main: `4e3ed22bdc2137a93cccdd66a3cbb815acf897cc`, tree
 `845c26a40bce308aed750ef71e4369069e622e4c`; rebased onto main
 `8b547b48ca` after the Filesystem boundary landings, then `5d2336e299` after
-shared durability/tracing and qualification updates. Work is unqualified until
+shared durability/tracing and qualification updates, and `08a5b8ea79` after
+Rust-owned policy initialization and Objects/Stream codec-frame changes.
+Work is unqualified until
 final-source execution and landing evidence replaces the pending entries below.
 
 | Invariant | Production mechanism | Assumptions | Verification | Evidence |
@@ -141,3 +143,25 @@ compile failure in `target-i-mail-bounded-model-1.log` is retained; the repaired
 check passed in `target-i-mail-bounded-model-2.log` (one bounded-domain test,
 236 other tests filtered). The repaired browser lint still requires a passing
 receipt after main reconciliation.
+
+The current-main refresh passed strict browser library lint in
+`target-i-browser-clippy-5.log`. Main's UTF-16 validation now compares the
+browser's numeric code units directly against surrogate ranges, without lossy
+integer casts. The browser integration additionally tests a real scoped task
+deadline and destruction of its pending future; its execution receipt remains
+pending. The combined browser driver includes main's initialization-failure and
+retry page.
+
+`target-i-typescript-main273-2.log` passed all 241 Harness TypeScript tests after
+rebuilding the changed Objects WASM/TypeScript dependency. The prior 240-pass,
+one-failure receipt is retained in `target-i-typescript-main273-1.log`; the
+failed Objects consumer used stale bindings missing the new body decoder.
+Browser outcome declarations now reuse `WasmModelJsonValue`, which admits the
+existing bigint integer representation. An installed-consumer assignment of
+`Succeeded: 7n` checks that declaration rather than relying only on runtime
+equality.
+
+The inspected macOS test host has 372 MiB free. No slice I build was dispatched
+there, and no other owner's files were removed. macOS execution, the independent
+B model-dispatch seam, installed full-package gates and final landing remain
+open; intermediate passes do not establish readiness.

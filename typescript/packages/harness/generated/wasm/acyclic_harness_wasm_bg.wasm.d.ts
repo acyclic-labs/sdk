@@ -121,6 +121,7 @@ export const __streamErrorCodeContract: (a: any) => any;
 export const __wbg_wasmfollow_free: (a: number, b: number) => void;
 export const __wbg_wasmstream_free: (a: number, b: number) => void;
 export const decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const decodeReadResponse: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
 export const encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const is_stream_error_code: (a: number, b: number) => number;
 export const normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];

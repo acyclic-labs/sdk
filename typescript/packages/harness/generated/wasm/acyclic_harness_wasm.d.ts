@@ -1280,7 +1280,7 @@ export class WasmTaskRuntime {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    admit(operation: string, name: string, version: string, input: any, parent?: string | null): Promise<WasmBrowserAdmission>;
+    admit(operation: string, name: string, version: string, input: WasmModelJsonValue, parent?: string | null): Promise<WasmBrowserAdmission>;
     /**
      * Publishes durable cancellation without claiming terminal completion.
      */
@@ -1307,7 +1307,7 @@ export class WasmTaskRuntime {
     /**
      * Observes only; absence does not dispatch or replay an uncertain effect.
      */
-    outcome(task: string): Promise<Outcome<WasmToolJsonValue> | null>;
+    outcome(task: string): Promise<Outcome<WasmModelJsonValue> | null>;
     reconcileAdmission(operation: string): Promise<[string, ComponentIdentity] | null>;
     /**
      * Resumes only the exact retained lease; another tick never substitutes it.
@@ -1425,6 +1425,14 @@ export function decodeHttpResponse(route: string, response_json: string): unknow
  * range policy before presenting model-authored values to an executor.
  */
 export function decodeJson(bytes: Uint8Array): any;
+
+/**
+ * Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
+ *
+ * The shared Rust decoder bounds the declared length before decompressing and
+ * requires the decoded length to match it exactly.
+ */
+export function decodeReadResponse(codec: number, data: Uint8Array, decoded_length: bigint): Uint8Array;
 
 /**
  * Derives a stable child operation/message identity from one admitted operation
@@ -1563,6 +1571,14 @@ export function taskIdentityDigest(name: string, version: string, input_schema: 
 export function uuidFromDigestHalf(digest: Uint8Array, second: boolean): string;
 
 /**
+ * Validate canonical protobuf bytes for one append request.
+ *
+ * The empty string means that the request passed the same domain validators as
+ * the in-memory provider. Otherwise this returns one stable error code.
+ */
+export function validateAppendRequest(input: Uint8Array): string;
+
+/**
  * Validates one aggregate identity with the same path-segment policy used by
  * every Rust stream access. The returned spelling is unchanged so hosts can
  * retain their branded string facade without reimplementing the policy.
@@ -1574,14 +1590,6 @@ export function validateAuthorityPathSegment(value: string): string;
  * policy. The field-specific error text remains a thin TypeScript concern.
  */
 export function validateComponentLabel(value: string): string;
-
-/**
- * Validate canonical protobuf bytes for one append request.
- *
- * The empty string means that the request passed the same domain validators as
- * the in-memory provider. Otherwise this returns one stable error code.
- */
-export function validateAppendRequest(input: Uint8Array): string;
 
 /**
  * Validates a host-approved pinned selection without granting read authority.
@@ -1888,6 +1896,7 @@ export interface InitOutput {
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
     readonly __wbg_wasmstream_free: (a: number, b: number) => void;
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly decodeReadResponse: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];

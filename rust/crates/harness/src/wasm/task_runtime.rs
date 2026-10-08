@@ -668,7 +668,7 @@ impl WasmTaskRuntime {
         operation: String,
         name: String,
         version: String,
-        input: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WasmModelJsonValue")] input: JsValue,
         parent: Option<String>,
     ) -> std::result::Result<JsValue, JsValue> {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
@@ -761,7 +761,7 @@ impl WasmTaskRuntime {
     }
 
     /// Observes only; absence does not dispatch or replay an uncertain effect.
-    #[wasm_bindgen(unchecked_return_type = "Outcome<WasmToolJsonValue> | null")]
+    #[wasm_bindgen(unchecked_return_type = "Outcome<WasmModelJsonValue> | null")]
     pub async fn outcome(&self, task: String) -> std::result::Result<JsValue, JsValue> {
         let task = TaskId::parse(&task).map_err(js_error)?;
         to_js(

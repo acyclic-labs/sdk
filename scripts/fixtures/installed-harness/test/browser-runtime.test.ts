@@ -41,7 +41,8 @@ test("installed browser entry executes the ordinary registered runtime", async (
     if (admission.kind !== "accepted") throw new Error(`admission ${admission.kind}`);
     const tick = await runtime.workerTick({ id: "installed-worker", available: {}, labels: {} }, null, 8, 2);
     expect(tick.work?.kind).toBe("completed");
-    expect(await runtime.outcome(admission.task_id)).toEqual({ Succeeded: 7n });
+    const expected: Awaited<ReturnType<BrowserTaskRuntime["outcome"]>> = { Succeeded: 7n };
+    expect(await runtime.outcome(admission.task_id)).toEqual(expected);
   } finally {
     runtime?.free();
     registry.free();

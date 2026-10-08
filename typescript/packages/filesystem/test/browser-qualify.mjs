@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html", "../harness/test/browser-task.html", "../harness/test/browser-task-multitab.html", "../harness/test/browser-task-tool.html", "../harness/test/browser-task-model.html", "../harness/test/browser-task-mail.html"];
+const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html", "../harness/test/browser-wasm-init-failure.html", "../harness/test/browser-task.html", "../harness/test/browser-task-multitab.html", "../harness/test/browser-task-tool.html", "../harness/test/browser-task-model.html", "../harness/test/browser-task-mail.html"];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
 const PAGE_DEADLINE_MS = 600_000;
