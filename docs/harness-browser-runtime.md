@@ -204,3 +204,20 @@ exact invocation recovery, one effect, one projection, model steps [0,1]
 and a durable successful outcome (target-i-browser-malformed-positive-4.log).
 This assumes an explicitly registered trusted provider with reconciliation;
 it does not establish exactly-once effects for arbitrary external services.
+
+Signed source 5f47717d22919a601589b5c72193f2e5a794b6da includes only the
+shared installed-package build fixes from PR5 d809b02cf6 and daa3765d59:
+generate Objects WASM declarations and follow the existing TypeScript project
+reference. Its installed closure passed 294 Rust and 47 TypeScript tests with
+the exact SOURCE_COMMIT and all seven artifact hashes independently verified
+(target-i-installed-5f47717d22-1.log; target/i-harness-package-5f47717d22).
+All fourteen Chromium pages passed with exit code zero against freshly built
+Filesystem, Objects, Stream and Harness providers
+(target-i-browser-full-5f47717d22-2.log). The first run's missing Stream
+TypeScript output remains a failed receipt; the existing project build supplied
+it before the complete rerun. Native inputs are unchanged from qualified
+881bbef3bf, as recorded in target/i-native-scope-5f47717d22.json. Automatic PR
+run 37727021067 passed; its skipped Windows lane is not platform evidence.
+The final documentation audit updates the replaced timer/mail scan descriptions
+in the existing runtime contracts. Full matrix and landed-tree verification
+remain required; no readiness or merge is claimed by these scoped receipts.
