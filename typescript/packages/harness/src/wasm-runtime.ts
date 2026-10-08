@@ -12,6 +12,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateToolDefinition", "validateToolInvocation", "validateToolResult", "validateToolProjection", "jsonToolProjectionSchema", "modelContentInventory",
   "validateMcpCatalog", "searchMcpCatalog", "mcpModelDefinitions", "validateMcpStdioRequest",
   "validateModelContent", "prepareModelRequest", "encodeModelPrefix", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
+  "defaultCompactionPolicy", "validateThresholdCompaction", "validateModelTokenCount", "decodeExecutionEventJson",
   "validateModelContextSelection", "validateSelectedModelContext",
   "validateContextSelection", "applyContextProjection", "parseSkillMetadata", "projectDiscoveredContext",
   "captureDiscoveredContext", "contextForRequest", "readPinnedContextPath",

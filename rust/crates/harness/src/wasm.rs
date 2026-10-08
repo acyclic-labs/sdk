@@ -1211,6 +1211,14 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     to_js(&parse_json_bytes(bytes)?)
 }
 
+/// Admits one canonical ref-only execution journal observation through Rust.
+#[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
+pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let event: crate::executor::ExecutionEvent =
+        crate::executor::decode_json(bytes).map_err(js_error)?;
+    to_js_admitted(&event)
+}
+
 fn parse_json_bytes(bytes: &[u8]) -> Result<serde_json::Value, JsValue> {
     reject_out_of_range_integer_tokens(bytes)?;
     crate::contract::json_from_slice(bytes).map_err(|error| JsValue::from_str(&error.to_string()))

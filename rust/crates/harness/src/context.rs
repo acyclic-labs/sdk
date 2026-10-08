@@ -719,7 +719,7 @@ fn retain_compacted_messages(
     })
 }
 
-fn validate_compaction(
+pub(crate) fn validate_compaction(
     reference: &CompactionReference,
     source: &Context,
     compacted: &Context,

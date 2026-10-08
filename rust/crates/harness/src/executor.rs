@@ -97,6 +97,7 @@ pub struct ExecutionRecord {
 /// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelPurpose {
     /// The caller's ordinary response/tool loop.
     Response,
@@ -131,7 +132,8 @@ impl ModelPurpose {
 
 /// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[allow(
     clippy::large_enum_variant,
     reason = "journal observations preserve direct typed ref fields"
@@ -147,9 +149,25 @@ pub enum ExecutionEvent {
         /// Zero-based response step.
         step: u32,
         /// Exact context; model/tools/options are pinned by the Started composition.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         projection: FileRef,
         /// Provider-owned capacities and exact request token bounds, when enabled.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire | null"))]
         accounting: Option<FileRef>,
+    },
+    /// Pins a verified compacted projection before response admission.
+    ContextCompacted {
+        /// Zero-based response step.
+        step: u32,
+        /// Exact retained context, including its current input marker.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        projection: FileRef,
+        /// Proof binding this projection to the prepared source and admitted summary.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        compaction: FileRef,
+        /// Final provider-owned request accounting.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        accounting: FileRef,
     },
     /// A model request identity committed before provider dispatch.
     ModelStarted {
@@ -160,6 +178,7 @@ pub enum ExecutionEvent {
         /// Digest of the exact model request.
         request_digest: [u8; 32],
         /// Pinned private artifact containing the exact provider-neutral request bytes.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         request: FileRef,
     },
     /// One model stream item was observed.
@@ -169,6 +188,7 @@ pub enum ExecutionEvent {
         /// Must match the corresponding admitted request.
         purpose: ModelPurpose,
         /// Pinned, private JSON file containing one observed model event.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
     },
     /// Tool dispatch is about to begin.
@@ -178,6 +198,7 @@ pub enum ExecutionEvent {
         /// Stable provider/model-owned call identity.
         call_id: String,
         /// Pinned, private JSON file containing the admitted invocation.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         invocation: FileRef,
     },
     /// Tool execution and projection completed.
@@ -187,8 +208,10 @@ pub enum ExecutionEvent {
         /// Stable provider/model-owned call identity.
         call_id: String,
         /// Pinned private JSON file containing the validated result.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         result: FileRef,
         /// Pinned private JSON file containing the model-visible projection.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         projection: FileRef,
     },
     /// A terminal tool failure recorded without exception bodies or secrets.
@@ -205,6 +228,7 @@ pub enum ExecutionEvent {
 /// Stable, non-secret terminal tool failure classes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolFailureKind {
     /// Executor rejected the already admitted call.
     ExecutorRejected,
@@ -1292,6 +1316,12 @@ impl StockExecutor {
                     ));
                 }
                 let input_tokens = accounting.count.validate(&prepared)?;
+                if let Some(retained) = self
+                    .retained_compacted_response(journal, input, step, &projection, &records)
+                    .await?
+                {
+                    return Ok(retained);
+                }
                 if !policy.needs_compaction(accounting.capacity, input_tokens)? {
                     return Ok(prepared);
                 }
@@ -1302,6 +1332,70 @@ impl StockExecutor {
                 "captured accounting differs from compaction policy".into(),
             )),
         }
+    }
+
+    async fn retained_compacted_response(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        projection: &crate::context::Context,
+        records: &[ExecutionRecord],
+    ) -> Result<Option<crate::model::PreparedModelRequest>> {
+        let compacted = records
+            .iter()
+            .filter_map(|record| match &record.event {
+                ExecutionEvent::ContextCompacted {
+                    step: recorded,
+                    projection,
+                    compaction,
+                    accounting,
+                } if *recorded == step => Some((projection, compaction, accounting)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if let [(retained, proof, final_accounting)] = compacted.as_slice() {
+            let retained = load_json::<crate::context::Context>(journal, retained).await?;
+            let proof = load_json::<crate::context::CompactionReference>(journal, proof).await?;
+            let final_accounting =
+                load_json::<ContextAccounting>(journal, final_accounting).await?;
+            crate::context::validate_projected_context(&retained, self.limits)?;
+            crate::context::validate_compaction(&proof, projection, &retained)?;
+            let crate::context::CompactionPolicy::Threshold(policy) = &self.compaction else {
+                return Err(Error::Storage(
+                    "compacted context requires threshold policy".into(),
+                ));
+            };
+            if self.model_capacity()? != Some(final_accounting.capacity)
+                || proof.retention != policy.retention
+                || proof.summary.as_ref().is_none_or(|summary| {
+                    summary.operation_id != input.operation_id || summary.step != step
+                })
+            {
+                return Err(Error::Storage(
+                    "compacted context differs from its admission".into(),
+                ));
+            }
+            let request = crate::model::PreparedModelRequest::prepare(
+                self.request_from_context(&retained)?,
+                self.limits,
+            )?;
+            if policy.needs_compaction(
+                final_accounting.capacity,
+                final_accounting.count.validate(&request)?,
+            )? {
+                return Err(Error::Storage(
+                    "retained compacted context exceeds selected capacity".into(),
+                ));
+            }
+            return Ok(Some(request));
+        }
+        if !compacted.is_empty() {
+            return Err(Error::Storage(
+                "response context was compacted more than once".into(),
+            ));
+        }
+        Ok(None)
     }
 
     async fn compact_response(
@@ -1355,7 +1449,7 @@ impl StockExecutor {
             Some(summary),
             policy.retention.clone(),
         )?;
-        stage_json(
+        let compaction = stage_json(
             journal,
             input.operation_id,
             &format!("context:{step}:compaction"),
@@ -1366,13 +1460,72 @@ impl StockExecutor {
             self.request_from_context(&compacted)?,
             self.limits,
         )?;
-        let final_count = self.provider.count_tokens(&request)?.validate(&request)?;
+        let count = self.provider.count_tokens(&request)?;
+        let final_count = count.validate(&request)?;
         if policy.needs_compaction(accounting.capacity, final_count)? {
             return Err(Error::Invalid(
                 "compacted mandatory content exceeds selected model capacity".into(),
             ));
         }
+        self.publish_compacted_context(
+            journal,
+            input,
+            step,
+            &compacted,
+            compaction,
+            &ContextAccounting {
+                capacity: accounting.capacity,
+                count,
+            },
+        )
+        .await?;
         Ok(request)
+    }
+
+    async fn publish_compacted_context(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        compacted: &crate::context::Context,
+        compaction: FileRef,
+        accounting: &ContextAccounting,
+    ) -> Result<()> {
+        let projection = stage_json(
+            journal,
+            input.operation_id,
+            &format!("context:{step}:compacted"),
+            compacted,
+        )
+        .await?;
+        let accounting = stage_json(
+            journal,
+            input.operation_id,
+            &format!("context:{step}:compacted-accounting"),
+            accounting,
+        )
+        .await?;
+        let (tail, _) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+            .await?;
+        self.verify_execution_owner().await?;
+        if !journal
+            .append_if_tail(
+                input.operation_id,
+                tail,
+                format!("context:{step}:compacted"),
+                ExecutionEvent::ContextCompacted {
+                    step,
+                    projection,
+                    compaction,
+                    accounting,
+                },
+            )
+            .await?
+        {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        Ok(())
     }
 
     /// Resolves one model step's events, replaying an already completed or started attempt
@@ -1564,7 +1717,7 @@ impl StockExecutor {
             .limits
             .model_events_per_step
             .saturating_add(self.limits.tool_calls_per_step.saturating_mul(3))
-            .saturating_add(3);
+            .saturating_add(4);
         let (_, records) = replay_execution(journal, operation_id, maximum, |event| match event {
             ExecutionEvent::Started { .. } => true,
             ExecutionEvent::ModelStarted {
@@ -1580,7 +1733,8 @@ impl StockExecutor {
             | ExecutionEvent::ToolStarted { step: recorded, .. }
             | ExecutionEvent::ToolCompleted { step: recorded, .. }
             | ExecutionEvent::ToolFailed { step: recorded, .. }
-            | ExecutionEvent::ContextPrepared { step: recorded, .. } => *recorded == step,
+            | ExecutionEvent::ContextPrepared { step: recorded, .. }
+            | ExecutionEvent::ContextCompacted { step: recorded, .. } => *recorded == step,
             ExecutionEvent::ModelStarted { .. } | ExecutionEvent::Model { .. } => false,
         })
         .await?;
@@ -1597,13 +1751,14 @@ impl StockExecutor {
         replay_execution(
             journal,
             operation_id,
-            self.limits.model_events_per_step.saturating_add(2),
+            self.limits.model_events_per_step.saturating_add(3),
             |event| {
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::Model { step: event_step, purpose: event_purpose, .. }
                 if *event_step == step && *event_purpose == purpose)
                     || matches!(event, ExecutionEvent::ContextPrepared { step: event_step, .. }
+                    | ExecutionEvent::ContextCompacted { step: event_step, .. }
                     if *event_step == step && purpose == ModelPurpose::Response)
             },
         )
@@ -2644,6 +2799,7 @@ mod tests {
         reconciliations: AtomicUsize,
         dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
         accounting_fault: Option<AccountingFault>,
+        accounting_calls: AtomicUsize,
     }
 
     #[derive(Clone, Copy)]
@@ -2666,6 +2822,7 @@ mod tests {
             &self,
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
+            self.accounting_calls.fetch_add(1, Ordering::SeqCst);
             // This synthetic provider defines a token as one UTF-8 byte plus framing.
             let message_tokens = request
                 .request()
@@ -2843,6 +3000,71 @@ mod tests {
             requests[1].messages.last().map(|message| &message.content),
             Some(&ModelContent::Text("c".repeat(5_000)))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn compacted_projection_recovers_before_response_admission() -> Result<()> {
+        let journal = Journal::default();
+        let provider = Arc::new(CountedModel {
+            capacity: 65_536,
+            ..CountedModel::default()
+        });
+        let source = crate::context::Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("o".repeat(27_000)),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("a".repeat(27_000)),
+                },
+            ],
+            ..crate::context::Context::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(source),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::new(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor.ensure_started(&journal, &input).await?;
+        let original = executor.prepared_response(&journal, &input, 0, &[]).await?;
+        let counted = provider.accounting_calls.load(Ordering::SeqCst);
+        let recovered = executor
+            .clone()
+            .prepared_response(&journal, &input, 0, &[])
+            .await?;
+        assert_eq!(original.bytes(), recovered.bytes());
+        assert_eq!(provider.accounting_calls.load(Ordering::SeqCst), counted);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        let records = journal.0.lock().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+                .count(),
+            1
+        );
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Response,
+                ..
+            }
+        )));
         Ok(())
     }
 

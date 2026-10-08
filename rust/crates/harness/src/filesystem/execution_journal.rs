@@ -40,6 +40,7 @@ struct ExecutionSummary {
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
     prepared_contexts: HashSet<u32>,
+    compacted_contexts: HashSet<u32>,
     // None is a completed dispatch. Its event/call bodies are no longer needed.
     models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
@@ -54,6 +55,18 @@ impl ExecutionSummary {
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
                     && !self.prepared_contexts.contains(step)
+                    && !self
+                        .models
+                        .contains_key(&(*step, crate::executor::ModelPurpose::Response))
+            }
+            ExecutionEvent::ContextCompacted { step, .. } => {
+                self.prepared_contexts.contains(step)
+                    && !self.compacted_contexts.contains(step)
+                    && matches!(
+                        self.models
+                            .get(&(*step, crate::executor::ModelPurpose::Summary)),
+                        Some(None)
+                    )
                     && !self
                         .models
                         .contains_key(&(*step, crate::executor::ModelPurpose::Response))
@@ -135,6 +148,9 @@ impl ExecutionSummary {
         match &record.event {
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.prepared_contexts.insert(*step);
+            }
+            ExecutionEvent::ContextCompacted { step, .. } => {
+                self.compacted_contexts.insert(*step);
             }
             ExecutionEvent::ModelStarted { step, purpose, .. } => {
                 self.models
@@ -801,6 +817,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 references.extend(accounting.iter());
                 references
             }
+            ExecutionEvent::ContextCompacted {
+                projection,
+                compaction,
+                accounting,
+                ..
+            } => {
+                vec![projection, compaction, accounting]
+            }
             ExecutionEvent::ModelStarted { request, .. } => vec![request],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
@@ -1304,6 +1328,108 @@ mod tests {
         executor::ModelPurpose,
         resources::ProviderRef,
     };
+
+    #[test]
+    fn compaction_publication_requires_settled_summary_before_response() -> Result<()> {
+        let operation = OperationId::new();
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "memory", "1")?,
+            "journal",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::new()),
+        )?;
+        let file = FileRef::new(
+            volume,
+            "context.json",
+            "1",
+            FileDescriptor::from_bytes(b"null", "application/json")?,
+            "context.json",
+        )?;
+        let compacted = ExecutionEvent::ContextCompacted {
+            step: 0,
+            projection: file.clone(),
+            compaction: file.clone(),
+            accounting: file.clone(),
+        };
+        let mut state = ExecutionSummary::default();
+        let observations = [
+            ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            ExecutionEvent::ContextPrepared {
+                step: 0,
+                projection: file.clone(),
+                accounting: None,
+            },
+            ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                request_digest: [2; 32],
+                request: file.clone(),
+            },
+            ExecutionEvent::Model {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                event: file.clone(),
+            },
+        ];
+        let completed = ModelEvent::Completed {
+            metadata: serde_json::Value::Null,
+        };
+        for (index, event) in observations.into_iter().enumerate() {
+            assert!(state.require_next(&compacted).is_err());
+            let model = matches!(event, ExecutionEvent::Model { .. }).then_some(&completed);
+            state.accept(
+                &ExecutionRecord {
+                    operation_id: operation,
+                    sequence: state.tail + 1,
+                    idempotency_key: format!("admit:{index}"),
+                    event,
+                },
+                model,
+                Limits::default(),
+            )?;
+        }
+        state.require_next(&compacted)?;
+        state.accept(
+            &ExecutionRecord {
+                operation_id: operation,
+                sequence: state.tail + 1,
+                idempotency_key: "compacted".into(),
+                event: compacted.clone(),
+            },
+            None,
+            Limits::default(),
+        )?;
+        assert!(state.require_next(&compacted).is_err());
+        let wrong_step = ExecutionEvent::ContextCompacted {
+            step: 1,
+            projection: file.clone(),
+            compaction: file.clone(),
+            accounting: file.clone(),
+        };
+        assert!(state.require_next(&wrong_step).is_err());
+        let response = ExecutionEvent::ModelStarted {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            request_digest: [3; 32],
+            request: file,
+        };
+        state.accept(
+            &ExecutionRecord {
+                operation_id: operation,
+                sequence: state.tail + 1,
+                idempotency_key: "response".into(),
+                event: response,
+            },
+            None,
+            Limits::default(),
+        )?;
+        // Even a fresh summary checkpoint identity cannot publish after response dispatch.
+        state.compacted_contexts.clear();
+        assert!(state.require_next(&compacted).is_err());
+        Ok(())
+    }
 
     #[test]
     fn summary_and_response_share_quiescence_without_aliasing_admissions() -> Result<()> {

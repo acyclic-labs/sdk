@@ -1,3 +1,5 @@
+import type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
@@ -497,6 +499,11 @@ export class NativeContracts {
   /** Untrusted provider JSON may not silently round integers into JS Number. */
   decodeModelJson(bytes: Uint8Array): ToolJsonValue {
     return normalizeNativeValue(this.native.decodeJson(bytes), true) as ToolJsonValue;
+  }
+
+  /** Admits the Rust-generated ref-only executor observation and freezes its exact wire fields. */
+  decodeExecutionEventJson(bytes: Uint8Array): ExecutionEvent {
+    return freezeNative(normalizeNativeValue(this.native.decodeExecutionEventJson(bytes))) as ExecutionEvent;
   }
 
   conversationPage(core: WasmReducer, afterSequence: bigint, limit: number): ConversationPage {

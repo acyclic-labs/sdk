@@ -401,3 +401,75 @@ strict WASM library lint passed in
 `target-b-clippy-context-payloads-wasm-final.log`. Earlier format-4 receipts remain
 scoped to that previous source. Automatic canonical continuation, cold history
 checkpoints, default fork policies and final runtime/platform gates remain open.
+
+The shared JSON snapshot repair from signed peer commit
+`d8453a5a1701d5d6009b8aabd639709d49bd3189` is adopted only at its three string
+conversion sites. String values, object keys and Map keys reuse the existing
+checked UTF-16 converter; no new serializer or model/provider algorithm is
+installed. B's actual accounting consumer proves that an invalid surrogate
+request cannot be admitted using counts bound to its lossy U+FFFD replacement,
+while a request containing the valid replacement character is accepted.
+Replacement characters, paired astral characters and NUL remain unchanged.
+
+Fresh strict WASM lint passed in `target-b-clippy-peer-json-unicode.log` and
+regeneration in `target-b-wasm-peer-json-unicode.log`. Package build/type checks
+passed in `target-b-types-peer-json-unicode.log` and
+`target-b-types-peer-json-consumer.log`. Actual affected WASM consumers passed
+27 tests and 252 expectations in `target-b-wasm-peer-json-consumers-final.log`.
+Real Chromium passed all 42 pure JSON/accounting/compaction checks and the
+existing broader wire/discovery page in
+`target-b-browser-peer-json-and-discovery-final.log`. The discovery fixture now
+awaits the existing asynchronous builder; its earlier missing-await failure is
+retained in `target-b-browser-peer-json-consumers-built.log`. Its missing local
+Filesystem browser build was supplied through the package's existing TypeScript
+compiler, not a replacement runtime. Four installed JS/WASM/declaration hashes
+match the generated directory in `target/b-peer-json-artifact-hashes.json`;
+four source hashes are retained in `target/b-peer-json-source-hashes.json`.
+These pages verify their exercised contract/discovery paths, not the broader
+automatic Rust browser model runtime or default conversation checkpoint policy.
+
+
+## Committed compacted projections
+
+`ContextCompacted` records the exact compacted context, source/summary proof and
+final provider accounting as three immutable FileRefs in the existing execution
+journal. The stock executor publishes it after successful summary settlement and
+capacity validation, before response admission. Journal admission rejects an
+unprepared source, pending summary, duplicate checkpoint, wrong step or already
+started response. Recovery reconstructs the proof against the frozen prepared
+source and validates retained accounting against the exact reconstructed request;
+it does not invoke the token counter or summary provider again.
+
+The WASM decoder consumes the native Rust event enum directly. Tsify derives its
+union and component enums; FileRef fields use the existing generated wire
+contract and existing descriptor-number normalization. This decoder validates
+canonical representation and typed references, not the journal's temporal
+admission rules. Those remain the owning journal's responsibility.
+
+Strict WASM lint passed in `target-b-clippy-compacted-context-wire-wasm.log`.
+The frozen source hashes are in
+`target/b-compacted-context-wire-source-hashes.json`. The first native run
+passed 259 tests but failed the new recovery fixture: one oversized whole recent
+message left no older source eligible for summarization. The fixture now has two
+complete older messages. The final native rerun passed all 260 tests in
+`target-b-native-compacted-context-wire-final.log`. Strict native all-target lint
+passed in `target-b-clippy-compacted-context-wire-native.log`. Isolated generation
+passed in `target-b-wasm-compacted-context-wire.log`; all four installed artifacts
+match their generated counterparts in
+`target/b-compacted-context-wire-artifact-hashes.json`. Package build passed in
+`target-b-types-compacted-context-wire.log`, and final test type checking in
+`target-b-types-compacted-context-consumer-final.log`. Final generated consumers
+passed 28 tests and 265 expectations in
+`target-b-wasm-compacted-context-consumers-final.log`. Real Chromium passed the
+broader wire/discovery page and 54 pure checkpoint/accounting checks in
+`target-b-browser-compacted-context-wire.log`. The earlier fixture literal-widening
+type error is retained in `target-b-types-compacted-context-consumer.log`; it is
+not final-source evidence. These checks qualify their described seams, not the
+unimplemented default continuation or full browser automatic model path.
+
+Default canonical continuation remains open. A post-pipeline checkpoint already
+contains instruction/retrieval contributions, so replaying the pipeline blindly
+would duplicate them, while skipping it would lose input-dependent stages and
+explicit reloads. The canonical watermark and declared stage contribution
+boundary must be integrated without inferring provenance from message equality.
+Cold bounded restoration and configurable default fork policies also remain open.
