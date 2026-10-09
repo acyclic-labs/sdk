@@ -507,6 +507,7 @@ impl StockExecutor {
         step: u32,
         call_id: &str,
     ) -> Result<crate::model::PreparedModelRequest> {
+        self.verify_task_context_binding(input.operation_id)?;
         let records = self
             .prefix_records(journal, input.operation_id, step)
             .await?;
@@ -2120,14 +2121,27 @@ mod tests {
             ..Default::default()
         })?;
         let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
+        let reads = journal.3.load(Ordering::SeqCst);
         assert!(matches!(
             retargeted.execute(input.clone(), &journal).await,
             Err(Error::Unauthorized(_))
         ));
+        assert!(matches!(
+            retargeted
+                .completed_tool_prefix(&journal, &input, 0, "call-1")
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         assert_eq!(journal.0.lock().unwrap().len(), retained);
+        assert_eq!(journal.3.load(Ordering::SeqCst), reads);
         assert_eq!(model.calls.load(Ordering::SeqCst), 1);
         let result = executor.execute(input.clone(), &journal).await?;
         assert_eq!(result.text, "done");
+        let reads = journal.3.load(Ordering::SeqCst);
+        executor
+            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .await?;
+        assert!(journal.3.load(Ordering::SeqCst) > reads);
         assert_eq!(executor.execute(input, &journal).await?, result);
         assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
         assert_eq!(tool.reconciles.load(Ordering::SeqCst), 1);
@@ -2269,6 +2283,7 @@ mod tests {
         Mutex<Vec<ExecutionRecord>>,
         Mutex<HashMap<String, (FileRef, Vec<u8>)>>,
         Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
+        AtomicUsize,
     );
 
     #[tokio::test]
@@ -2296,6 +2311,7 @@ mod tests {
             maximum: u32,
         ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
             async move {
+                self.3.fetch_add(1, Ordering::SeqCst);
                 validate_execution_page(after, maximum)?;
                 self.0
                     .lock()
@@ -2985,6 +3001,7 @@ mod tests {
                     .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
+            AtomicUsize::new(0),
         );
         assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
         let incomplete = Journal(
@@ -3014,6 +3031,7 @@ mod tests {
                     .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
+            AtomicUsize::new(0),
         );
         assert!(matches!(
             executor
@@ -3046,6 +3064,7 @@ mod tests {
                     .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
+            AtomicUsize::new(0),
         );
         assert!(matches!(
             executor

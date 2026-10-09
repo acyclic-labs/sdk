@@ -137,7 +137,8 @@ pub struct WorkLease {
     pub reservation: Reservation,
     /// Latest durable resumable checkpoint, if any.
     pub checkpoint: Option<crate::resources::CheckpointRef>,
-    /// Operation revision after this lease was admitted.
+    /// Coordinator-observed revision associated with this reservation. Recovery
+    /// may observe progress since the reservation's initial admission.
     pub operation_revision: u64,
 }
 
@@ -3967,7 +3968,7 @@ mod tests {
             let reservation = Reservation {
                 id: "original-partial".into(),
                 placement: "partial-worker".into(),
-                admitted: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+                admitted: crate::scheduler::ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
             };
             coordinator
                 .apply(
