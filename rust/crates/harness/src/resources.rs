@@ -4,7 +4,8 @@ use crate::{Error, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Stable identity of a replaceable resource provider.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ProviderRef {
     /// Globally unique namespace, such as `acyclic` or a reverse DNS name.
     namespace: String,

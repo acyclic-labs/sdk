@@ -55,6 +55,37 @@ Bounded search, read options and patch editing remain open. Optional execution
 consumes the landed PR5 provider and its existing approval, selected multi-volume
 view, publication and recovery path; no second execution journal is justified.
 
+## Generated native file-tool contracts
+
+`ReadFileInput`, `WriteFileInput`, `EditFileInput`, `PatchFileInput` and
+`FileResult` now declare the portable argument and canonical result types.
+File executors decode those types; publication serializes `FileResult`; the
+selected JSON projector serializes a typed full envelope from the same result.
+Read's canonical successful result is `String`. Neither producer changes the
+retained canonical result into its model projection.
+
+`tool::schema::{input, output, json_projection}` generates complete root schemas
+with explicit draft-2020-12 deserialize/serialize settings. The projection
+schema comes from the complete actual typed JSON envelope serializer so its
+nested `$defs` and `$ref` values resolve from the right root. Public validated
+file/volume/provider types supply generated nested structure; existing custom
+Deserialize validators and signed read/write grants remain authoritative.
+Only the Agent owner field uses its existing UUID string serialization shape;
+no core identity trait propagation or authority change is introduced.
+
+The proposed Harness dependency pins Schemars exactly at 1.2.2 because generated
+schemas participate in immutable admission digests. Read/write/exact-edit become
+`portable-3` and the optional patch variant becomes `portable-patch-2`; no old
+schema alias is silently selected. The original runtime validators still reject
+invalid public paths, malformed references and unauthorized effects.
+
+Source fixtures compile generated roots with the production schema validator,
+exercise actual file values and complete projection envelopes, and reject nested
+wrong types, missing/extra fields, invalid digest lengths/bytes and imprecise
+file byte lengths. They are parsed/formatted only and have not been compiled or
+executed. Lock resolution, dependency closure, generated WASM/TS consumers,
+bounded read/search adapters and full/reference projections remain open.
+
 ## Explicit patch editing
 
 `tool::patch::apply_update` transforms a bounded immutable UTF-8 source using
@@ -188,3 +219,43 @@ durable tool execution must also validate the projection before publication
 and on retained replay. Shared runtime readers and generated bindings require
 the agreed source join. No PR, completed feature, full platform qualification or
 merge is claimed.
+
+### Explicit bounded text variants
+
+`tool::text_files::read_file_range(ReadOptions, maximum_result_bytes, ProjectionMode)`
+selects an exact UTF-8 byte interval from one authorized immutable `FileRef`.
+`search_file(SearchOptions, maximum_result_bytes, ProjectionMode)` performs a
+case-sensitive literal search over one such source, including overlaps. Consumers
+compose multiple sources using the existing task primitives. These factories do
+not change the default reader, install shell tools or infer a provider policy.
+
+Both adapters require the original admitted tool context and authenticated task
+reader. Before source I/O, they validate source descriptors, input/result byte
+ceilings, range/query limits, public paths and the original read grant. Search
+also bounds retained-position storage before scanning. Actual source bytes are
+verified by the existing reader; UTF-8 boundaries and actual comparison work are
+checked by the pure text helpers. Work exhaustion is an error, never a partial
+search reported as complete. The typed canonical result retains the complete
+source reference, exact selection or query, and explicit omission accounting.
+Canonical JSON is counted against the smaller configured/original-task file
+ceiling before allocating the JSON value. Result bounds can reject an otherwise
+valid read/search rather than silently changing its requested semantics.
+
+`ProjectionMode::Full` emits the existing JSON envelope with the complete typed
+result. `Reference` emits the existing parts envelope with a summary and the
+original file reference under reference policy. The summary explicitly identifies
+text/query/positions omitted from that model projection and distinguishes these
+from source bytes or positions omitted from the canonical result. It grants no
+additional authority to dereference the file. `ReadProjection` and
+`SearchProjection` are independently replaceable implementations with complete
+generated schemas. Both modes leave the canonical result unchanged. Full results
+still have to fit the stock executor's original model-render allowance.
+
+All options, the result ceiling and the selected projection mode are recorded in
+the input schema annotation, hence the admitted definition digest. Changing them
+requires a new admitted definition. Native types produce the argument, canonical
+result and complete projection schemas; reference-mode source fixtures decode the
+actual output through `ToolResultContent` and `ModelDataPart`. Compilation,
+execution, generated consumers and actual browser/WASM qualification remain open
+until these source fixtures and public tools run through the shared validation
+lane. The preflight unit fixture is not proof of real task admission or recovery.

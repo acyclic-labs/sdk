@@ -3,7 +3,7 @@
 use super::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
 use crate::{Error, Result, conversation::FileRef, runtime::ToolContext};
 use acyclic_stream::BoxProviderFuture;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -52,56 +52,59 @@ enum FileTool {
 }
 
 fn assemble(adapter: FileTool) -> Result<Tool> {
-    let (name, description, input_schema, output_schema) = match adapter {
+    let (name, description, mut input_schema, output_schema, projection_schema) = match adapter {
         FileTool::Read => (
             "acyclic.read_file",
             "Read exact bounded UTF-8 from an authorized immutable file",
-            json!({"type":"object","properties":{"file":{"type":"object"}},
-                "required":["file"],"additionalProperties":false}),
-            json!({"type":"string"}),
+            super::schema::input::<ReadFileInput>()?,
+            super::schema::output::<String>()?,
+            super::schema::json_projection::<String>()?,
         ),
         FileTool::Write => (
             "acyclic.write_file",
             "Write bounded UTF-8 through the original owner-bound content publisher",
-            json!({"type":"object","properties":{"path":{"type":"string"},
-                "text":{"type":"string"},"media_type":{"type":"string"},
-                "display_name":{"type":"string"}},
-                "required":["path","text","media_type","display_name"],
-                "additionalProperties":false}),
-            json!({"type":"object","properties":{"file":{"type":"object"}},
-                "required":["file"],"additionalProperties":false}),
-        ),
-        FileTool::Patch {
-            maximum_work,
-            maximum_hunks,
-        } => (
-            "acyclic.patch_file",
-            "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
-            json!({"type":"object","properties":{"file":{"type":"object"},"diff":{"type":"string","minLength":1}},
-                "required":["file","diff"],"additionalProperties":false,
-                "x-harness-patch-limits":{"maximum_work":maximum_work,"maximum_hunks":maximum_hunks}}),
-            json!({"type":"object","properties":{"file":{"type":"object"}},"required":["file"],"additionalProperties":false}),
+            super::schema::input::<WriteFileInput>()?,
+            super::schema::output::<FileResult>()?,
+            super::schema::json_projection::<FileResult>()?,
         ),
         FileTool::Edit => (
             "acyclic.edit_file",
             "Replace one exact UTF-8 match at an authorized pinned source generation",
-            json!({"type":"object","properties":{"file":{"type":"object"},
-                "old_text":{"type":"string","minLength":1},"new_text":{"type":"string"}},
-                "required":["file","old_text","new_text"],"additionalProperties":false}),
-            json!({"type":"object","properties":{"file":{"type":"object"}},
-                "required":["file"],"additionalProperties":false}),
+            super::schema::input::<EditFileInput>()?,
+            super::schema::output::<FileResult>()?,
+            super::schema::json_projection::<FileResult>()?,
+        ),
+        FileTool::Patch { .. } => (
+            "acyclic.patch_file",
+            "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
+            super::schema::input::<PatchFileInput>()?,
+            super::schema::output::<FileResult>()?,
+            super::schema::json_projection::<FileResult>()?,
         ),
     };
+    if let FileTool::Patch {
+        maximum_work,
+        maximum_hunks,
+    } = adapter
+    {
+        input_schema
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("generated patch schema is not an object".into()))?
+            .insert(
+                "x-harness-patch-limits".into(),
+                json!({"maximum_work":maximum_work,"maximum_hunks":maximum_hunks}),
+            );
+    }
     let definition = ToolDefinition {
         name: name.into(),
         revision: match adapter {
-            FileTool::Patch { .. } => "portable-patch-1",
-            _ => "portable-2",
+            FileTool::Patch { .. } => "portable-patch-2",
+            _ => "portable-3",
         }
         .into(),
         description: description.into(),
         input_schema,
-        projection_schema: crate::tool::json_projection_schema(output_schema.clone()),
+        projection_schema,
         output_schema,
     };
     definition.validate()?;
@@ -113,34 +116,58 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
     })
 }
 
-#[derive(Deserialize)]
+/// Exact immutable UTF-8 file read arguments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ReadInput {
-    file: FileRef,
+pub struct ReadFileInput {
+    /// Owner-authorized immutable source.
+    pub file: FileRef,
 }
 
-#[derive(Deserialize)]
+/// Single-operation UTF-8 publication arguments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct WriteInput {
-    path: String,
-    text: String,
-    media_type: String,
-    display_name: String,
+pub struct WriteFileInput {
+    /// Valid public destination path.
+    pub path: String,
+    /// Exact content bytes encoded as UTF-8.
+    pub text: String,
+    /// Stored MIME type.
+    pub media_type: String,
+    /// Human-readable file name.
+    pub display_name: String,
 }
 
-#[derive(Deserialize)]
+/// Exact replacement against one pinned file generation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct EditInput {
-    file: FileRef,
-    old_text: String,
-    new_text: String,
+pub struct EditFileInput {
+    /// Owner-authorized immutable source.
+    pub file: FileRef,
+    /// One exact nonempty unambiguous needle.
+    #[schemars(length(min = 1))]
+    pub old_text: String,
+    /// Exact replacement, including an empty deletion.
+    pub new_text: String,
 }
 
-#[derive(Deserialize)]
+/// Explicit single-file V4A update arguments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct PatchInput {
-    file: FileRef,
-    diff: String,
+pub struct PatchFileInput {
+    /// Owner-authorized immutable source generation.
+    pub file: FileRef,
+    /// Nonempty exact V4A update diff fragment.
+    #[schemars(length(min = 1))]
+    pub diff: String,
+}
+
+/// Canonical successful write/edit result, independent of model projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileResult {
+    /// Exact retained publication result with workspace and content identity.
+    pub file: FileRef,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(arguments: Value) -> Result<T> {
@@ -172,7 +199,7 @@ impl FileTool {
         let task = context.task();
         let value = match self {
             Self::Read => {
-                let input: ReadInput = decode(invocation.arguments)?;
+                let input: ReadFileInput = decode(invocation.arguments)?;
                 public_path(input.file.path())?;
                 let maximum = task
                     .scope()
@@ -189,7 +216,7 @@ impl FileTool {
                 Value::String(text)
             }
             Self::Write => {
-                let input: WriteInput = decode(invocation.arguments)?;
+                let input: WriteFileInput = decode(invocation.arguments)?;
                 public_path(&input.path)?;
                 let file = task
                     .stage_file_once(
@@ -200,13 +227,14 @@ impl FileTool {
                         &input.display_name,
                     )
                     .await?;
-                json!({"file":file})
+                serde_json::to_value(FileResult { file })
+                    .map_err(|error| Error::Invalid(error.to_string()))?
             }
             Self::Patch {
                 maximum_work,
                 maximum_hunks,
             } => {
-                let input: PatchInput = decode(invocation.arguments)?;
+                let input: PatchFileInput = decode(invocation.arguments)?;
                 public_path(input.file.path())?;
                 let limits = super::patch::PatchLimits {
                     maximum_bytes: task.scope().limits().file_bytes,
@@ -228,10 +256,11 @@ impl FileTool {
                 let file = task
                     .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
-                json!({"file":file})
+                serde_json::to_value(FileResult { file })
+                    .map_err(|error| Error::Invalid(error.to_string()))?
             }
             Self::Edit => {
-                let input: EditInput = decode(invocation.arguments)?;
+                let input: EditFileInput = decode(invocation.arguments)?;
                 public_path(input.file.path())?;
                 let maximum = task.scope().limits().file_bytes;
                 super::edit::validate_edit_bound(maximum)?;
@@ -243,7 +272,8 @@ impl FileTool {
                 let file = task
                     .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
-                json!({"file":file})
+                serde_json::to_value(FileResult { file })
+                    .map_err(|error| Error::Invalid(error.to_string()))?
             }
         };
         Ok(ToolResult { value })
@@ -291,6 +321,11 @@ impl ToolExecutor for FileTool {
 
 impl ToolProjection for FileTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
+        match self {
+            Self::Read => super::schema::project_json(decode::<String>(result.value.clone())?),
+            Self::Write | Self::Edit | Self::Patch { .. } => {
+                super::schema::project_json(decode::<FileResult>(result.value.clone())?)
+            }
+        }
     }
 }

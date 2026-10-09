@@ -176,7 +176,7 @@ impl Limits {
 }
 
 /// The three independently governed file namespaces.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeClass {
     /// Consumer's project role. Lineage and merge semantics belong to Filesystem.
@@ -188,19 +188,20 @@ pub enum VolumeClass {
 }
 
 /// Logical owner used for routing; access still requires an authenticated grant.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum VolumeOwner {
     /// Project workspace owner.
     Project(String),
     /// Agent private-volume owner.
-    Agent(AgentId),
+    Agent(#[schemars(with = "String")] AgentId),
     /// Shared session-volume owner.
     Session(String),
 }
 
 /// Globally addressable volume identity with no embedded capability or endpoint.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct VolumeRef {
     provider: ProviderRef,
     id: String,
@@ -562,9 +563,11 @@ fn path_below(path: &str, prefix: &str) -> bool {
 }
 
 /// Immutable byte descriptor checked before a file is admitted.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct FileDescriptor {
     sha256: [u8; 32],
+    #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
     byte_length: u64,
     media_type: String,
 }
@@ -657,7 +660,8 @@ impl FileDescriptor {
 }
 
 /// An immutable version of a file within a scoped volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct FileRef {
     volume: VolumeRef,
     path: String,
