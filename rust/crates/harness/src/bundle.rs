@@ -993,6 +993,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             _: crate::model::PreparedModelRequest,
+            _: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(futures::stream::once(async {
