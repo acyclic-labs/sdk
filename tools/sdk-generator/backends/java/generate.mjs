@@ -1,30 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, endianness } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { loadAuthority, sha256, within } from "./authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = JSON.parse(readFileSync(join(directory, "toolchain.json"), "utf8"));
-const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
-const within = (root, path) => {
-  const child = relative(root, path);
-  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
-};
-const canonical = name => typeof name === "string" && name !== "" && name !== "."
-  && !posix.isAbsolute(name) && !name.includes("\\") && !name.includes(":")
-  && !name.includes("\0") && !name.split("/").includes("..") && posix.normalize(name) === name;
-
-function readAuthorityInput(root, name, digest) {
-  if (!canonical(name)) throw new Error("unsafe authority path");
-  const path = realpathSync(join(root, name));
-  if (!within(root, path)) throw new Error("authority input escapes root");
-  const bytes = readFileSync(path);
-  if (!/^[a-f0-9]{64}$/.test(digest) || sha256(bytes) !== digest) throw new Error("authority input digest mismatch");
-  return bytes;
-}
 
 function inventory(root, prefix = "") {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
@@ -49,28 +32,12 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   for (const input of [source, authority, protoc, plugin, directory]) {
     if (within(input, output) || within(output, input)) throw new Error("output overlaps protected input");
   }
-  const manifestBytes = readFileSync(join(authority, "rust-authority.json"));
-  const manifest = JSON.parse(manifestBytes);
-  if (manifest.schema !== "acyclic.sdk.rust-authority.v1" || manifest.authority !== "rust"
-    || !/^[a-f0-9]{40}$/.test(manifest.source_revision) || !Array.isArray(manifest.families)
-    || manifest.families.length === 0) throw new Error("not an immutable Rust authority export");
-  const sources = new Set();
+  const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
   const descriptors = new Map();
-  const inputHashes = {};
   for (const family of manifest.families) {
-    const key = process.platform === "win32" ? family.source?.toLowerCase() : family.source;
-    if (sources.has(key)) throw new Error("duplicate authority source");
-    readAuthorityInput(authority, family.source, family.source_sha256);
-    if (!family.source.endsWith(".proto")) throw new Error("authority source is not a proto file");
-    sources.add(key);
-    inputHashes[family.source] = family.source_sha256;
-    if (family.descriptor) {
-      const bytes = readAuthorityInput(authority, family.descriptor, family.descriptor_sha256);
-      descriptors.set(family.descriptor_sha256, bytes);
-      inputHashes[family.descriptor] = family.descriptor_sha256;
-    }
+    if (family.descriptor) descriptors.set(family.descriptor_sha256, inputs.get(family.descriptor));
   }
-  if (descriptors.size === 0) throw new Error("authority contains no descriptor sets");
+  const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
   const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
   metadata["pom.xml"] = readFileSync(join(directory, "package", "pom.xml"));
   const host = `${process.platform}-${process.arch}`;
@@ -127,6 +94,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       grpc_java_version: toolchain.grpc_java_version, grpc_java_coordinate: pluginPin.url,
       tool_sha256: { protoc: sha256(readFileSync(protoc)), grpc_java: pluginHash },
       generator_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
+      authority_reader_sha256: sha256(readFileSync(join(directory, "authority.mjs"))),
       toolchain_sha256: sha256(JSON.stringify(toolchain)), node_version: process.version,
       outputs, output_sha256: Object.fromEntries(outputs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     };

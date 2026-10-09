@@ -130,7 +130,7 @@ exceed the consumer's actual scope.
 
 The new `tools/sdk-generator/backends/java` producer consumes verified descriptor
 snapshots through protoc 28.3 and grpc-java 1.75.0. The plugin executable matches
-Maven Central's published host digest. Six offline generator controls pass, and
+Maven Central's published host digest. Eleven offline generator/runner controls pass, and
 real Actors/Workers/Stream generation from foundation source
 `51f3fe070c7b48ff5c7413671638634086aabe75` produces an installable Java 17 JAR.
 Two clean builds and a third through the reusable producer are byte-identical,

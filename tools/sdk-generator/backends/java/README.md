@@ -9,7 +9,10 @@ boundary and its applicable conformance checks.
 ```text
 java/
   generate.mjs          authority validation, descriptor snapshots and generation
+  authority.mjs         shared path, digest and Rust manifest admission
   generate.test.mjs     offline admission and staging controls
+  qualify.mjs           opt-in offline build and installed-consumer runner
+  qualify.test.mjs      runner success, admission and failure controls
   toolchain.json        maintained generator versions and published host hashes
   package/pom.xml      pinned Java package dependencies and build plugins
   testdata/consumer/    installed descriptor, wire, RPC-shape and type controls
@@ -49,14 +52,32 @@ older generated code within the supported major version, as documented in the
 Run the lightweight generator controls with:
 
 ```sh
-node --test tools/sdk-generator/backends/java/generate.test.mjs
+node --test --test-concurrency=1 tools/sdk-generator/backends/java/generate.test.mjs tools/sdk-generator/backends/java/qualify.test.mjs
 ```
 
-These controls use a command double and establish staging behavior. Actual
-installed qualification additionally compiles `testdata/consumer/InstalledConsumer.java`
-against the installed JAR and its resolved dependencies, runs it with the
-verified Actors, Workers and Stream descriptor paths, and requires all three
-assignments in `NegativeConsumer.java` to fail compilation. Descriptor equality
+These controls use a command double and establish staging and runner behavior.
+Run actual installed qualification separately with JDK 17.0.14, Maven 3.9.9 and
+an exclusively owned dependency cache prepared by the package build above:
+
+```sh
+node tools/sdk-generator/backends/java/qualify.mjs \
+  --package /new-package --authority /rust-export \
+  --java-home /jdk-17.0.14 --maven-home /maven-3.9.9 \
+  --cache /owned-cache --output /new-qualification
+```
+
+The runner verifies and snapshots the receipt's payload into a fresh project,
+builds and installs it offline, then compiles and runs `InstalledConsumer.java`
+against a fresh copy of the installed JAR and its resolved dependencies. It
+checks that the SDK classes actually load from that JAR. Each invalid assignment
+is compiled independently and must fail for the intended byte/integer type
+mismatch. Inherited Java/Maven options and user settings are excluded. The cache
+must remain exclusively owned during the run. A receipt is written only after
+all controls pass; it records the tools, cache inputs, installed artifacts,
+controls and logs. Partial output remains on failure. Routine CI runs neither
+Maven nor the actual installed runner.
+
+Descriptor equality
 retains all API fields and other unknown fields, excluding source comments and
 Buf's file-level image metadata tag 8042. The positive controls cover bytes,
 unsigned integer bounds, optional-zero presence, oneof and exact gRPC method

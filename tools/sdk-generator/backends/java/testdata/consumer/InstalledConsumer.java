@@ -34,6 +34,13 @@ public final class InstalledConsumer {
 
   public static void main(String[] args) throws Exception {
     require(args.length == 3, "pass verified Actors/Workers/Stream descriptor paths");
+    Path installedJar = Path.of(System.getProperty("sdk.qualified.jar"));
+    for (Class<?> type : List.of(Actors.class, ActorsServiceGrpc.class, Actors.CreateActorRequest.class,
+      Workers.class, WorkersServiceGrpc.class, Workers.PublishVersionRequest.class, Workers.JobTarget.class,
+      Stream.class, StreamServiceGrpc.class, Stream.AppendRequest.class, Stream.ReadRequest.class)) {
+      Path origin = Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI());
+      require(Files.isSameFile(installedJar, origin), "class did not load from installed JAR: " + type.getName());
+    }
     descriptor(Actors.getDescriptor(), args[0]);
     descriptor(Workers.getDescriptor(), args[1]);
     descriptor(Stream.getDescriptor(), args[2]);
