@@ -1045,6 +1045,24 @@ pub struct ExtensionAdmission {
     configurations: Vec<ExtensionConfiguration>,
 }
 
+/// Original reducer-owned admission and immutable registry captured together.
+/// Private fields prevent construction from a decoded admission or later agent.
+#[derive(Clone)]
+pub(crate) struct OriginalExtensionBinding {
+    admission: Option<ExtensionAdmission>,
+    schemas: SchemaRegistry,
+}
+
+impl OriginalExtensionBinding {
+    pub(crate) fn admission(&self) -> Option<&ExtensionAdmission> {
+        self.admission.as_ref()
+    }
+
+    pub(crate) fn into_parts(self) -> (Option<ExtensionAdmission>, SchemaRegistry) {
+        (self.admission, self.schemas)
+    }
+}
+
 impl ExtensionAdmission {
     /// Exact committed selection event that supplied these bindings.
     #[must_use]
@@ -1510,9 +1528,12 @@ impl Reducer {
         self.revision
     }
 
-    /// Immutable registry captured with a sealed task extension admission.
-    pub(crate) fn admission_schema_registry(&self) -> SchemaRegistry {
-        self.schemas.clone()
+    /// Captures the original authenticated selection and its registry atomically.
+    pub(crate) fn original_extension_binding(&self) -> Result<OriginalExtensionBinding> {
+        Ok(OriginalExtensionBinding {
+            admission: self.extension_admission()?,
+            schemas: self.schemas.clone(),
+        })
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.

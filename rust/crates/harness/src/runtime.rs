@@ -9,7 +9,7 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, Reducer, SchemaRegistry, Scope},
+    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
     durable_tool::{ResumableToolRegistry, ResumableToolSession},
     executor::ModelEventAdmission,
     extension::{ExtensionLeases, ExtensionRuntime},
@@ -1717,20 +1717,27 @@ impl RuntimeScope {
 
     /// Pins one committed agent selection for this scope and all descendants.
     /// Calling this on an already pinned scope cannot retarget it.
-    pub fn with_extensions_from(mut self, agent: &Reducer) -> Result<Self> {
+    pub fn with_extensions_from(self, agent: &Reducer) -> Result<Self> {
+        self.with_original_extensions(agent.original_extension_binding()?)
+    }
+
+    pub(crate) fn with_original_extensions(
+        mut self,
+        original: OriginalExtensionBinding,
+    ) -> Result<Self> {
         if self.extensions_sealed {
             return Err(Error::Unauthorized(
                 "descendant scope cannot change extension selection".into(),
             ));
         }
-        let selection = agent.extension_admission()?;
+        let (selection, schemas) = original.into_parts();
         if self.extensions.is_some() && self.extensions != selection {
             return Err(Error::Conflict(
                 "runtime scope extension selection is already pinned".into(),
             ));
         }
         self.extensions = selection;
-        self.extension_schemas = Some(agent.admission_schema_registry());
+        self.extension_schemas = Some(schemas);
         if let Some(runtime) = &self.extension_runtime {
             self.validate_extension_runtime(runtime)?;
         }
