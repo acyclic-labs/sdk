@@ -10,7 +10,7 @@ export function syntheticAccounting(contracts) {
     contextCapacity() { return { contextTokens: 1_048_576, outputTokens: 16_384 }; },
     countTokens(request) {
       return {
-        requestDigest: contracts.digestCanonicalJson(contracts.decodeModelJson(request.serializedInput)),
+        requestDigest: contracts.digestCanonicalJson(contracts.decodeCanonicalJson(request.serializedInput)),
         fixedTokens: request.serializedInput.byteLength + 512,
         messageTokens: request.messages.map(message => {
           const bytes = 512 + contracts.modelContentInventory(message.content, DEFAULT_LIMITS).files

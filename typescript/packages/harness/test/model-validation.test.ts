@@ -414,7 +414,7 @@ test("synthetic accounting counts nested media and native options with wide revi
   };
   const serializedInput = prepareModelRequest(request, DEFAULT_LIMITS);
   const count = syntheticAccounting(contracts).countTokens({ ...request, serializedInput });
-  expect(count.requestDigest).toEqual(contracts.digestCanonicalJson(contracts.decodeModelJson(serializedInput)));
+  expect(count.requestDigest).toEqual(contracts.digestCanonicalJson(contracts.decodeCanonicalJson(serializedInput)));
   expect(count.fixedTokens).toBe(serializedInput.byteLength + 512);
   expect(count.messageTokens).toEqual([512, 512 + part.file.descriptor.byte_length
     + part.policy.native.configuration.configuration.content.descriptor.byte_length]);
