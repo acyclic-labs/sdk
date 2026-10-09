@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { verifyNativeAssembly } from "./assemble-stream-native-package.mjs";
+import { verifyNativeAssembly as verifyActorsNativeAssembly } from "./assemble-actors-native-package.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -105,14 +106,21 @@ async function main() {
       : run("node", ["scripts/plugin-qualification.mjs", "verify", "plugin/QUALIFICATION.json", sourceSha, archive, releaseVersion], { stdio: "inherit" });
     if (verification.status !== 0) fail(`qualified archive verification failed for ${item.name}`);
 
-    if (item.directory === "stream") {
-      const inventory = JSON.parse(readFileSync(join(root, "release/stream-native-packages.json"), "utf8"));
-      const assembly = await verifyNativeAssembly(artifactDirectory, sourceSha, releaseVersion, inventory);
-      for (const companion of assembly.companions) await publishExact(companion.name, companion.version, join(artifactDirectory, companion.asset));
+    if (item.directory === "stream" || item.directory === "actors") {
+      const inventory = JSON.parse(readFileSync(join(root, `release/${item.directory}-native-packages.json`), "utf8"));
+      const verify = item.directory === "stream" ? verifyNativeAssembly : verifyActorsNativeAssembly;
+      const assembly = await verify(artifactDirectory, sourceSha, releaseVersion, inventory);
+      await publishNativeAssembly(assembly, artifactDirectory);
+      continue;
     }
 
     await publishExact(item.name, releaseVersion, archive);
   }
+}
+
+export async function publishNativeAssembly(assembly, directory, publish = publishExact) {
+  for (const companion of assembly.companions) await publish(companion.name, companion.version, join(directory, companion.asset));
+  await publish(assembly.parent.name, assembly.parent.version, join(directory, assembly.parent.asset));
 }
 
 async function publishExact(name, version, archive) {

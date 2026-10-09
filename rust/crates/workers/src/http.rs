@@ -27,8 +27,10 @@ pub enum Error {
     Service {
         /// HTTP response status.
         status: u16,
-        /// Canonical semantic error detail.
+        /// Decoded wire error, including service codes unknown to this SDK.
         detail: Option<wire::Error>,
+        /// Exact response body, including empty or malformed error payloads.
+        raw_details: Vec<u8>,
     },
 }
 
@@ -196,13 +198,11 @@ impl Client {
             let detail = self
                 .decode::<wire::Error>("acyclic.workers.v1.Error", &bytes)
                 .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
+                .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
             return Err(Error::Service {
                 status: status.as_u16(),
                 detail,
+                raw_details: bytes,
             });
         }
         self.decode(output, &bytes)
@@ -313,9 +313,7 @@ impl Client {
         &self,
         request: &wire::InvokeVersionRequest,
     ) -> Result<wire::InvokeResponse, Error> {
-        if request.version_sha256.len() != 32 {
-            return Err(Error::InvalidArgument);
-        }
+        crate::validate_invoke_version(request).map_err(|_| Error::InvalidArgument)?;
         let digest: String = request
             .version_sha256
             .iter()
@@ -340,17 +338,7 @@ impl Client {
         &self,
         request: &wire::InvokeDeploymentRequest,
     ) -> Result<wire::InvokeResponse, Error> {
-        if request.alias.is_empty()
-            || request.alias.len() > 256
-            || request.alias == "."
-            || request.alias == ".."
-            || !request
-                .alias
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        {
-            return Err(Error::InvalidArgument);
-        }
+        crate::validate_invoke_deployment(request).map_err(|_| Error::InvalidArgument)?;
         let template = HTTP_ROUTES.get(6).ok_or(Error::InvalidArgument)?.1;
         self.call_at(
             template,

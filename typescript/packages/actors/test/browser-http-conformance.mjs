@@ -12,8 +12,6 @@ import { fileURLToPath } from "node:url";
 import { create, fromBinary, fromJsonString, toBinary, toJsonString } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
-import { HTTP_ROUTES as actorRoutes } from "../dist/routes.js";
-import { HTTP_ROUTES as workerRoutes } from "../../workers/dist/routes.js";
 import * as objectsWire from "../../objects/generated/proto/objects/v2/objects_pb.js";
 import { MemoryObjectsV2 } from "../../objects/dist/v2.js";
 import { ObjectsV2Memory, objects_v2_http_type, decode_objects_v2_json, encode_objects_v2_json } from "../../objects/generated/wasm/acyclic_objects_wasm.js";
@@ -21,6 +19,13 @@ import { MemoryStreamProvider } from "../../stream/dist/memory.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const require = createRequire(import.meta.url);
+function rustRoutes(packageName, example) {
+  const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", packageName, "--example", example], { cwd: root, encoding: "utf8" });
+  assert.equal(generated.status, 0, generated.stderr);
+  return Object.fromEntries(JSON.parse(generated.stdout));
+}
+const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
+const workerRoutes = rustRoutes("acyclic-workers", "workers-http-routes");
 const protobufRoot = resolve(require.resolve("@bufbuild/protobuf"), "../../..");
 const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
 assert.equal(generated.status, 0, generated.stderr);
@@ -31,6 +36,8 @@ await MemoryObjectsV2.create();
 const objects = new ObjectsV2Memory(64n * 1024n * 1024n, 10000);
 const stream = new MemoryStreamProvider();
 const seen = new Set();
+let cancellationDispatched = false;
+let cancellationClosed = false;
 const byteValue = value => new Uint8Array(Buffer.from(value, "base64"));
 function revive(name, value) {
   if (value === null) return value;
@@ -64,12 +71,24 @@ function actorWorkerResponse(method, input) {
     assert.equal(input.subscription.streamPath, "events/input");
     assert.equal(input.subscription.start.start.value, 9007199254740993n);
   }
-  if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, checkpointEpoch: 9n } }; }
+  if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
   if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
   if (method.name === "InvokeVersion") { assert.deepEqual(input.versionSha256, new Uint8Array(32).fill(1)); return { resolvedSha256: input.versionSha256 }; }
   if (method.name === "InvokeDeployment") { assert.equal(input.alias, "current"); return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n }; }
   if (method.name === "SelectDeployment") assert.equal(input.expectedRevision, 7n);
+  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
   return {};
+}
+function grpcWebFrame(flags, payload) {
+  const frame = Buffer.alloc(payload.length + 5);
+  frame[0] = flags;
+  frame.writeUInt32BE(payload.length, 1);
+  Buffer.from(payload).copy(frame, 5);
+  return frame;
+}
+function grpcWebResponse(payload, status = 0, message = "") {
+  const trailers = Buffer.from(`grpc-status: ${status}\r\ngrpc-message: ${encodeURIComponent(message)}\r\n`);
+  return Buffer.concat([grpcWebFrame(0, payload), grpcWebFrame(0x80, trailers)]);
 }
 const server = createServer({ key: identity.key, cert: identity.certificate }, async (request, response) => {
   const pathname = new URL(request.url, "https://localhost").pathname;
@@ -85,13 +104,39 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
     }
     const isObjects = pathname.startsWith("/v2/objects/");
     const isStream = pathname.startsWith("/v1/stream/");
+    const isActorsGrpcWeb = (pathname.startsWith(`/acyclic.actors.v1.ActorsService/`) || ActorsService.methods.some(method => pathname === `/${method.name}`)) && request.headers["content-type"]?.startsWith("application/grpc-web");
     if (request.headers.authorization !== "Bearer conformance") {
+      if (isActorsGrpcWeb) {
+        response.writeHead(200, { "content-type": "application/grpc-web+proto", "access-control-expose-headers": "grpc-status,grpc-message" });
+        response.end(grpcWebResponse(new Uint8Array(), 16, "capability denied")); return;
+      }
       response.writeHead(403, { "content-type": "application/json" });
       response.end(isObjects ? '{"code":"ERROR_CODE_ACCESS_DENIED"}' : isStream ? '{"code":"access_denied"}' : '{"code":"ERROR_CODE_CAPABILITY_DENIED"}'); return;
     }
     const chunks = []; let total = 0;
     for await (const chunk of request) { total += chunk.length; assert.ok(total <= 16 * 1024 * 1024); chunks.push(chunk); }
     const data = Buffer.concat(chunks);
+    if (isActorsGrpcWeb) {
+      const methodName = pathname.startsWith("/acyclic.actors.v1.ActorsService/") ? pathname.slice("/acyclic.actors.v1.ActorsService/".length) : pathname.slice(1);
+      const method = ActorsService.methods.find(candidate => candidate.name === methodName);
+      assert.ok(method, `unknown Actors gRPC-Web route ${methodName}`);
+      assert.ok(data.length >= 5);
+      const frameLength = data.readUInt32BE(1);
+      assert.equal(data[0] & 0x80, 0);
+      assert.equal(frameLength, data.length - 5);
+      const input = fromBinary(method.input, data.subarray(5));
+      if (input.actorId === "cancel") {
+        assert.equal(cancellationDispatched, false, "one cancellation request must dispatch");
+        cancellationDispatched = true;
+        await new Promise(resolveClose => response.once("close", resolveClose));
+        cancellationClosed = !response.writableEnded;
+        return;
+      }
+      seen.add(`${ActorsService.typeName}/${method.name}`);
+      const body = toBinary(method.output, create(method.output, actorWorkerResponse(method, input)));
+      response.writeHead(200, { "content-type": "application/grpc-web+proto", "access-control-expose-headers": "grpc-status,grpc-message" });
+      response.end(grpcWebResponse(body)); return;
+    }
     if (isObjects) {
       const route = pathname.slice("/v2/objects/".length);
       const input = objects_v2_http_type(route, false); const output = objects_v2_http_type(route, true);
@@ -169,10 +214,16 @@ try {
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/actors/test/browser-http.html` }, sessionId);
   const result = await until("browser HTTP conformance", async () => {
     if (errors.length) throw new Error(errors.join("\n"));
+    if (cancellationDispatched && !cancellationClosed) {
+      await send("Runtime.evaluate", { expression: "globalThis.abortActorsRequest?.()" }, sessionId);
+    }
     const value = await send("Runtime.evaluate", { expression: "globalThis.sdkHttpResult", returnByValue: true }, sessionId);
     return value.result.value;
   }, 120000);
   assert.equal(result.status, "passed", result.detail);
+  await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
+  assert.equal(cancellationDispatched, true);
+  console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
   assert.equal(seen.size, 38, `expected 13 Objects, 15 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);

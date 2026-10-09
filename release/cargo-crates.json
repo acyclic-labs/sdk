@@ -3,6 +3,8 @@
   "acyclic-machines",
   "acyclic-native-runtime",
   "acyclic-objects",
+  "acyclic-protify-proc-macro",
+  "acyclic-tonic-web-wasm-client",
   "acyclic-actors",
   "acyclic-workers",
   "acyclic-stream",

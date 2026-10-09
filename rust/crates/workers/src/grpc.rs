@@ -183,23 +183,11 @@ pub async fn connect_with_ca_certificate(
     token: &str,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
-    let valid_endpoint = reqwest::Url::parse(endpoint).is_ok_and(|url| {
-        url.scheme() == "https"
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none()
-    });
-    if !valid_endpoint {
+    if !crate::client_config::valid_endpoint(endpoint) {
         return Err(ConnectError::InsecureEndpoint);
     }
-    if !crate::valid_token(token) {
-        return Err(ConnectError::InvalidCredential);
-    }
-    let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
-        .parse()
-        .map_err(|_| ConnectError::InvalidCredential)?;
-    authorization.set_sensitive(true);
+    let authorization = crate::client_config::authorization(token)
+        .map_err(|()| ConnectError::InvalidCredential)?;
     let mut tls = ClientTlsConfig::new().with_webpki_roots();
     if let Some(ca) = ca {
         if ca.is_empty() || ca.len() > 64 * 1024 {
@@ -208,22 +196,23 @@ pub async fn connect_with_ca_certificate(
         tls = tls.ca_certificate(Certificate::from_pem(ca));
     }
     let channel = Endpoint::from_shared(endpoint.to_owned())?
+        .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES)
         .tls_config(tls)?
         .connect()
         .await?;
     Ok(
-        wire::workers_service_client::WorkersServiceClient::with_interceptor(
-            TracedChannel(channel),
-            BearerAuth(authorization),
+        wire::workers_service_client::WorkersServiceClient::with_origin(
+            tonic::service::interceptor::InterceptedService::new(TracedChannel(channel), BearerAuth(authorization)),
+            endpoint.trim_end_matches('/').parse().map_err(|_| ConnectError::InsecureEndpoint)?,
         )
         .max_decoding_message_size(16 * 1024 * 1024)
         .max_encoding_message_size(16 * 1024 * 1024),
     )
 }
 
-/// Decode the canonical semantic error carried in gRPC status details.
+/// Decode the wire error carried in gRPC status details, retaining unknown codes.
 #[must_use]
 pub fn error_detail(status: &Status) -> Option<wire::Error> {
     let detail = wire::Error::decode(status.details()).ok()?;
-    (wire::ErrorCode::try_from(detail.code).ok()? != wire::ErrorCode::Unspecified).then_some(detail)
+    (detail.code != wire::ErrorCode::Unspecified as i32).then_some(detail)
 }

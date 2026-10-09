@@ -10,6 +10,15 @@ publish = false
 build = "build.rs"
 
 [package.metadata.napi]
+family = "stream"
+npm-package = "@acyclic-labs/stream"
+package-path = "typescript/packages/stream"
+companion-directory = "native"
+wasm-package = "acyclic-stream"
+wasm-output-name = "acyclic_stream_wasm"
+wasm-target-directory = "stream-wasm"
+wasm-features = ["wasm"]
+wasm-no-default-features = true
 targets = [
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
