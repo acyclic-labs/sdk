@@ -209,3 +209,15 @@ The default portable consumer adaptation, browser and full context/compaction
 integration, combined final platform/adversarial and installed-artifact checks,
 final simplification review, required exact-head CI and owned main landing
 remain open. No full D goal completion is claimed.
+
+An independent replay audit found that bounded range/search tools accepted
+scope-only authorization, while fresh execution required the original admitted
+call context. Production fix `00b41f142` shares one original-context preflight
+between execution and retained replay; scope-only authorization now rejects.
+The real admitted/reopened regression verifies wrong operation/call rejection
+before journal IO and unchanged canonical results with one execution. Frozen
+`a611d1545` matched all 1638 archive files and passed three text units, both
+portable replay/text-variant integration tests and strict library/test/example
+lint. Its complete library suite reports 291 passes and one failure: the
+existing default LocalHarness original-context consumer gap. This failure is
+preserved and remains a required integration gate.
