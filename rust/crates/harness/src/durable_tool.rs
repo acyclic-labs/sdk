@@ -267,12 +267,6 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        context
-            .task()
-            .authorize_tool(&definition, &invocation)
-            .await?;
-        tool.executor
-            .authorize(Some(context.task().scope()), &invocation)?;
         let content_limit = self.limits.file_bytes.min(scope.limits().file_bytes);
         let projection_limit = self.limits.render_bytes.min(scope.limits().render_bytes);
         let projection_limits = Limits {
@@ -287,6 +281,12 @@ impl DurableToolRunner {
                 "tool invocation exceeds admitted file limit".into(),
             ));
         }
+        context
+            .task()
+            .authorize_tool(&definition, &invocation)
+            .await?;
+        tool.executor
+            .authorize(Some(context.task().scope()), &invocation)?;
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(&(
             &task_id,
             &definition,
