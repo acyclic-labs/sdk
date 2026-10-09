@@ -41,3 +41,4 @@ jobs:
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
           node --test qualify.test.mjs
+          node --test ../java/generate.test.mjs
