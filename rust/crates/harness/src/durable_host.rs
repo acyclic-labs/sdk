@@ -3663,7 +3663,7 @@ mod tests {
             coordinator
                 .configure_session(
                     &owner,
-                    &owner_scope,
+                    owner_scope,
                     &issuer.verifier(),
                     operation_id,
                     crate::scheduler::SessionLimits {
