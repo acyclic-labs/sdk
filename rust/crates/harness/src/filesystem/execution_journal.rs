@@ -1095,7 +1095,7 @@ where
             let bindings = content.native_configurations();
             // Authenticate every retained claim before reading any media or options.
             for file in content.file_refs() {
-                if let Some((owner, _)) = &self.owner {
+                if let Some(owner) = &self.owner {
                     owner.validate_input_file(file)?;
                 }
                 if file.descriptor().byte_length() > self.maximum_payload_bytes {
@@ -1103,13 +1103,13 @@ where
                 }
             }
             for binding in &bindings {
-                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+                let owner = self.owner.as_ref().ok_or_else(|| {
                     Error::Unsupported("native options require an original task owner".into())
                 })?;
                 owner.validate_native_configuration(binding)?;
             }
             for binding in &bindings {
-                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+                let owner = self.owner.as_ref().ok_or_else(|| {
                     Error::Unsupported("native options require an original task owner".into())
                 })?;
                 owner.verify_native_configuration(binding).await?;
