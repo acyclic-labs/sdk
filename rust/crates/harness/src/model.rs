@@ -152,12 +152,15 @@ impl ModelContent {
                 } => {
                     crate::registry::validate_component_label(name, "tool name")?;
                     crate::contract::validate_json_byte_bound(arguments, limits.render_bytes)
-                        .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))?;
+                        .map_err(|_| {
+                            Error::Invalid("model tool projection exceeds render limit".into())
+                        })?;
                 }
                 ModelContentPart::ToolResult { name, value, .. } => {
                     crate::registry::validate_component_label(name, "tool name")?;
-                    crate::contract::validate_json_byte_bound(value, limits.render_bytes)
-                        .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))?;
+                    crate::contract::validate_json_byte_bound(value, limits.render_bytes).map_err(
+                        |_| Error::Invalid("model tool projection exceeds render limit".into()),
+                    )?;
                 }
                 ModelContentPart::Text { .. } => {}
             }
