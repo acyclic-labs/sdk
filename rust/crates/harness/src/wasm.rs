@@ -307,6 +307,7 @@ struct WasmNativeMediaPolicyWire {
     maximum_bytes: u64,
     #[tsify(type = "number")]
     maximum_work: u64,
+    #[tsify(type = "WasmNativeConfigurationBindingWire | null")]
     configuration: Option<WasmNativeConfigurationBindingWire>,
 }
 
