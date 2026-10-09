@@ -435,8 +435,8 @@ mod tests {
         maximum_matches: 2,
     };
 
-    fn assert_reference(projection: Value, expected: &FileRef) -> Result<()> {
-        let wire: ToolResultContent = decode(&projection)?;
+    fn assert_reference(projection: &Value, expected: &FileRef) -> Result<()> {
+        let wire: ToolResultContent = decode(projection)?;
         let ToolResultContent::Parts { parts } = wire else {
             panic!("reference envelope")
         };
@@ -471,7 +471,7 @@ mod tests {
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
             } else {
-                assert_reference(projected, &file)?;
+                assert_reference(&projected, &file)?;
             }
             assert_eq!(result, unchanged);
         }
@@ -493,7 +493,7 @@ mod tests {
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
             } else {
-                assert_reference(projected, &file)?;
+                assert_reference(&projected, &file)?;
             }
             assert_eq!(result, unchanged);
         }

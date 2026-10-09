@@ -72,7 +72,7 @@ enum ReferencePart {
         text: String,
     },
     File {
-        file: crate::conversation::FileRef,
+        file: Box<crate::conversation::FileRef>,
         policy: ReferencePolicy,
     },
 }
@@ -93,7 +93,7 @@ pub(crate) fn project_reference(file: crate::conversation::FileRef, text: String
         parts: [
             ReferencePart::Text { text },
             ReferencePart::File {
-                file,
+                file: Box::new(file),
                 policy: ReferencePolicy::Reference,
             },
         ],
