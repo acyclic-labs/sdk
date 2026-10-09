@@ -2057,7 +2057,7 @@ mod tests {
         let header = encode_header(limits, 0)?;
         std::fs::write(&journal_path, &header)?;
         let state = MemoryStream::new(limits.memory).encode_state().await;
-        for version in [b'0', b'2', b'4'] {
+        for version in *b"024" {
             let mut obsolete = encode_snapshot(limits, 1, &state)?;
             obsolete[SNAPSHOT_MAGIC.len() - 2] = version;
             let checksum_at = obsolete.len() - 32;

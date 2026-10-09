@@ -235,8 +235,9 @@ async fn obsolete_v2_magic_fails_closed_without_rewriting_the_journal()
     let mut bytes = fs::read(&path)?;
     let obsolete = b"ACYCLIC-OBJECTS-V2-LOCAL\0\x01";
     assert_eq!(obsolete.len(), MAGIC.len());
-    assert_eq!(&bytes[..MAGIC.len()], MAGIC);
-    bytes[..MAGIC.len()].copy_from_slice(obsolete);
+    let magic = bytes.get_mut(..MAGIC.len()).ok_or("short journal header")?;
+    assert_eq!(magic, MAGIC);
+    magic.copy_from_slice(obsolete);
     fs::write(&path, &bytes)?;
     assert!(matches!(reopen(root.path()), Err(LocalOpenError::Corrupt)));
     assert_eq!(fs::read(&path)?, bytes);

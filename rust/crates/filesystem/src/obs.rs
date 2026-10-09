@@ -264,12 +264,14 @@ mod worker_context_tests {
     use std::time::Duration;
     use tracing_subscriber::{layer::Context, prelude::*};
 
+    type RecordedFields = Vec<(String, String, String)>;
+
     #[derive(Default)]
     struct Evidence {
-        records: Vec<(String, String, String)>,
+        records: RecordedFields,
         closes: Vec<String>,
         event_parent: Option<String>,
-        events: Vec<(Option<String>, Vec<(String, String, String)>)>,
+        events: Vec<(Option<String>, RecordedFields)>,
     }
 
     struct Capture {
@@ -277,7 +279,7 @@ mod worker_context_tests {
         closed: mpsc::Sender<()>,
     }
 
-    struct Fields<'a>(&'a mut Vec<(String, String, String)>, String);
+    struct Fields<'a>(&'a mut RecordedFields, String);
     impl tracing::field::Visit for Fields<'_> {
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
             self.0
@@ -295,26 +297,27 @@ mod worker_context_tests {
             record: &tracing::span::Record<'_>,
             ctx: Context<'_, S>,
         ) {
-            let span = ctx.span(id).unwrap();
-            let mut evidence = self.evidence.lock().unwrap();
+            let span = ctx.span(id).expect("recorded span exists");
+            let mut evidence = self.evidence.lock().expect("evidence poisoned");
             record.record(&mut Fields(&mut evidence.records, span.name().into()));
         }
         fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
             let parent = ctx.event_span(event).map(|span| span.name().into());
             let mut fields = Vec::new();
             event.record(&mut Fields(&mut fields, event.metadata().target().into()));
-            let mut evidence = self.evidence.lock().unwrap();
+            let mut evidence = self.evidence.lock().expect("evidence poisoned");
             evidence.event_parent = parent.clone();
             evidence.events.push((parent, fields));
         }
         fn on_close(&self, id: tracing::Id, ctx: Context<'_, S>) {
+            let span = ctx.span(&id).expect("closing span exists");
             self.evidence
                 .lock()
-                .unwrap()
+                .expect("evidence poisoned")
                 .closes
-                .push(ctx.span(&id).unwrap().name().into());
-            if ctx.span(&id).unwrap().name() == "worker_operation" {
-                self.closed.send(()).unwrap();
+                .push(span.name().into());
+            if span.name() == "worker_operation" {
+                self.closed.send(()).expect("worker close observer is live");
             }
         }
     }
@@ -352,7 +355,11 @@ mod worker_context_tests {
                     // ancestry owns their last references until foreign drop.
                 });
                 assert!(
-                    origin_seen.lock().unwrap().closes.is_empty(),
+                    origin_seen
+                        .lock()
+                        .expect("evidence poisoned")
+                        .closes
+                        .is_empty(),
                     "operation lost retained ancestry"
                 );
                 let clone = operation.clone();
@@ -367,7 +374,7 @@ mod worker_context_tests {
                     });
                 }));
                 assert_eq!(result.is_err(), unwind);
-                let seen = origin_seen.lock().unwrap();
+                let seen = origin_seen.lock().expect("evidence poisoned");
                 for name in ["drop_root", "drop_caller"] {
                     assert_eq!(
                         seen.closes.iter().filter(|closed| *closed == name).count(),
@@ -381,7 +388,7 @@ mod worker_context_tests {
                         .count(),
                     usize::from(!filtered)
                 );
-                let foreign = foreign_seen.lock().unwrap();
+                let foreign = foreign_seen.lock().expect("evidence poisoned");
                 assert!(
                     foreign.records.is_empty()
                         && foreign.closes.is_empty()
@@ -419,10 +426,10 @@ mod worker_context_tests {
             tracing::dispatcher::with_default(&foreign, || {
                 let mut task = std::task::Context::from_waker(std::task::Waker::noop());
                 assert!(future.as_mut().poll(&mut task).is_pending());
-                assert!(seen.lock().unwrap().closes.is_empty());
+                assert!(seen.lock().expect("evidence poisoned").closes.is_empty());
                 drop(future);
             });
-            let seen = seen.lock().unwrap();
+            let seen = seen.lock().expect("evidence poisoned");
             for name in ["frame_root", "frame_caller"] {
                 assert_eq!(
                     seen.closes.iter().filter(|closed| *closed == name).count(),
@@ -481,7 +488,7 @@ mod worker_context_tests {
                 }
                 body(&child)
             });
-            let evidence = evidence.lock().unwrap();
+            let evidence = evidence.lock().expect("evidence poisoned");
             assert!(
                 evidence
                     .records
@@ -541,7 +548,7 @@ mod worker_context_tests {
         }
         .with_subscriber(dispatch)
         .await?;
-        let evidence = evidence.lock().unwrap();
+        let evidence = evidence.lock().expect("evidence poisoned");
         assert!(
             evidence.records.is_empty(),
             "filtered operations mutated caller: {:?}",
@@ -587,20 +594,27 @@ mod worker_context_tests {
         let unrelated = tracing::Dispatch::new(tracing_subscriber::registry());
         async {
             let worker_span = operation.clone();
-            let job = super::in_span(&operation, async {
+            let mut job = None;
+            super::in_span(&operation, async {
                 tracing::info!("future reached worker boundary");
-                tokio::task::spawn_blocking(super::in_context(worker_span.clone(), move || {
-                    started_tx.send(()).unwrap();
-                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                    tracing::info!("actual work completed");
-                    #[derive(strum::IntoStaticStr)]
-                    enum Failure {
-                        Fault,
-                    }
-                    let _ = super::outcome_on::<(), _>(&worker_span, Err(Failure::Fault));
-                }))
+                job = Some(tokio::task::spawn_blocking(super::in_context(
+                    worker_span.clone(),
+                    move || {
+                        started_tx.send(()).expect("worker start observer is live");
+                        release_rx
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("worker release arrives");
+                        tracing::info!("actual work completed");
+                        #[derive(strum::IntoStaticStr)]
+                        enum Failure {
+                            Fault,
+                        }
+                        let _ = super::outcome_on::<(), _>(&worker_span, Err(Failure::Fault));
+                    },
+                )));
             })
             .await;
+            let job = job.expect("worker launched inside operation scope");
             started_rx.recv_timeout(Duration::from_secs(5))?;
             drop(job); // Tokio detaches: abandoning the caller cannot end actual work.
             drop(operation);
@@ -615,7 +629,7 @@ mod worker_context_tests {
         }
         .with_subscriber(unrelated)
         .await?;
-        let evidence = evidence.lock().unwrap();
+        let evidence = evidence.lock().expect("evidence poisoned");
         assert_eq!(evidence.event_parent.as_deref(), Some("worker_operation"));
         assert_eq!(
             evidence.events.len(),

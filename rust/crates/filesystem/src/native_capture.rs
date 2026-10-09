@@ -4852,10 +4852,10 @@ mod capture_span_tests {
             _: tracing_subscriber::layer::Context<'_, S>,
         ) {
             let mut captured = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(index) = captured.indexes.get(&id.into_u64()).copied() {
-                if let Some((_, fields)) = captured.spans.get_mut(index) {
-                    values.record(&mut Fields(fields));
-                }
+            if let Some(index) = captured.indexes.get(&id.into_u64()).copied()
+                && let Some((_, fields)) = captured.spans.get_mut(index)
+            {
+                values.record(&mut Fields(fields));
             }
         }
         fn on_close(&self, id: tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {

@@ -295,11 +295,10 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
     let pem = certified.cert.pem();
-    let key = certified.signing_key.serialize_pem();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
     let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
-    let identity = Identity::from_pem(pem.clone(), key);
+    let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -393,8 +392,7 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
     .await?;
     exercise_transfer_deadlines(&client).await?;
     let _ = shutdown_tx.send(());
-    server.await??;
-    Ok(())
+    server.await?.map_err(Into::into)
 }
 
 async fn exercise_transfer_deadlines(
@@ -794,8 +792,7 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
     })
     .await?;
     let _ = shutdown_tx.send(());
-    server.await??;
-    Ok(())
+    server.await?.map_err(Into::into)
 }
 
 async fn assert_transport_denied(client: Result<GrpcObjects, super::grpc::ConnectError>) {
@@ -987,6 +984,5 @@ async fn grpc_download_trace_requires_validated_eof_and_records_cancellation()
             .all(|key| matches!(key.as_str(), "rpc.code" | "outcome" | "error.kind"))
     }));
     let _ = shutdown.send(());
-    server.await??;
-    Ok(())
+    server.await?.map_err(Into::into)
 }

@@ -810,7 +810,7 @@ mod tests {
             Err(StreamError::InvalidArgument)
         );
         // Reject obsolete version markers explicitly, without changing live state.
-        for version in [b'0', b'2', b'4'] {
+        for version in *b"024" {
             let mut obsolete = valid.clone();
             obsolete[MAGIC.len() - 2] = version;
             assert_eq!(

@@ -2230,8 +2230,7 @@ mod restore_recovery_tests {
         let text = String::from_utf8(bytes)?;
         let parent = text
             .lines()
-            .filter(|line| line.contains("acyclic.fs.restore_host_path{") && line.contains("close"))
-            .next_back()
+            .rfind(|line| line.contains("acyclic.fs.restore_host_path{") && line.contains("close"))
             .ok_or("restore close missing")?;
         assert!(parent.contains("outcome=\"ok\""), "{parent}");
         assert!(parent.contains("path.depth=1"), "{parent}");
@@ -2292,8 +2291,7 @@ mod restore_recovery_tests {
         assert!(!text.contains("acyclic.fs.materialize"), "{text}");
         let caller = text
             .lines()
-            .filter(|line| line.contains("restore_caller{") && line.contains("close"))
-            .next_back()
+            .rfind(|line| line.contains("restore_caller{") && line.contains("close"))
             .ok_or("caller close missing")?;
         assert!(caller.contains("outcome=\"caller\""), "{caller}");
         assert!(caller.contains("error.kind=\"caller_error\""), "{caller}");
