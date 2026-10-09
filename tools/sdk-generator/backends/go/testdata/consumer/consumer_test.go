@@ -1,9 +1,9 @@
 package consumer
 
 import (
+	"encoding/json"
 	"math"
 	"os"
-	"path/filepath"
 	"testing"
 
 	actors "github.com/acyclic-labs/sdk/go/gen/actors/v1"
@@ -17,6 +17,10 @@ import (
 )
 
 func TestRustDescriptors(t *testing.T) {
+	var descriptors map[string]string
+	if err := json.Unmarshal([]byte(os.Getenv("SDK_DESCRIPTOR_FILES")), &descriptors); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name string
 		file protoreflect.FileDescriptor
@@ -27,7 +31,11 @@ func TestRustDescriptors(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			b, err := os.ReadFile(filepath.Join(os.Getenv("SDK_AUTHORITY_DIR"), filepath.FromSlash(c.name+".descriptor.bin")))
+			path, ok := descriptors[c.name]
+			if !ok {
+				t.Fatal("tested family has no attested descriptor")
+			}
+			b, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
