@@ -96,12 +96,13 @@ func TestSuccessfulStaging(t *testing.T) {
 	writeJSON(t, manifestPath, authorityManifest{Schema: "acyclic.sdk.rust-authority.v1", Authority: "rust", SourceRevision: "test-only", Families: families})
 	moduleFiles := map[string]string{
 		"go/go.mod": "module staging.example\n\ngo 1.27.0\n",
-		"go/go.sum": "", "go/README.md": "staging fixture", "go/client.go": "package example\n",
+		"go/go.sum": "", "go/README.md": "staging fixture",
 		"LICENSE": "fixture license", "NOTICE": "fixture notice",
 	}
 	for name, content := range moduleFiles {
 		writeInput(t, source, name, content)
 	}
+	writeInput(t, source, "go/client.go", "legacy facade must not be copied")
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -134,8 +135,11 @@ func TestSuccessfulStaging(t *testing.T) {
 	if got.Schema != "acyclic.sdk.go-producer-receipt.v1" || got.SourceRevision != "test-only" || got.AuthoritySHA256 != hex.EncodeToString(manifestSum[:]) || got.GoVersion != runtime.Version() {
 		t.Fatalf("incorrect receipt identity: %+v", got)
 	}
-	if len(got.Outputs) != 8 || len(got.OutputSHA256) != 8 || len(got.ToolSHA256) != 3 || len(got.Inputs) != 2 {
+	if len(got.Outputs) != 7 || len(got.OutputSHA256) != 7 || len(got.ToolSHA256) != 3 || len(got.Inputs) != 2 {
 		t.Fatalf("incorrect receipt inventory: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(output, "client.go")); !os.IsNotExist(err) {
+		t.Fatalf("legacy facade copied: %v", err)
 	}
 	for _, name := range got.Outputs {
 		b, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(name)))

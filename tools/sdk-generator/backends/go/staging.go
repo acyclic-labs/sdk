@@ -44,9 +44,9 @@ func copyModuleFiles(sourceRoot, outputRoot string) error {
 		return fmt.Errorf("create module output: %w", err)
 	}
 	moduleRoot := filepath.Join(sourceRoot, "go")
-	// client.go is a Rust-owned generated facade. Keep it inside the staged
-	// module so consumers receive seamless transport defaults with bindings.
-	for _, name := range []string{"go.mod", "go.sum", "README.md", "client.go"} {
+	// Stage package metadata only. A legacy facade must not silently become the
+	// public interface of a newly generated package.
+	for _, name := range []string{"go.mod", "go.sum", "README.md"} {
 		b, err := os.ReadFile(filepath.Join(moduleRoot, name))
 		if err != nil {
 			return fmt.Errorf("read Go module file %s: %w", name, err)

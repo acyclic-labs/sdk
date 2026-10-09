@@ -4,6 +4,8 @@ This isolated standard-library tool repairs the staging boundary of the
 historical Go producer. It is not an SDK package and is not connected to the
 pending foundation generation entrypoint. Do not use historical generated
 `go/client.go` as the new public interface.
+Only module metadata (`go.mod`, `go.sum`, `README.md`, `LICENSE`, `NOTICE`) is
+copied from the source checkout. Historical facade source is never copied.
 
 The imported producer source was read from the parent migration checkout with
 SHA-256 `7e3d0ecd856be85d10aaca6e21ea803689d574331f260d07e2d53146feba4feb`.
