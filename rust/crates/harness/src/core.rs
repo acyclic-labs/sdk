@@ -1821,17 +1821,26 @@ impl Reducer {
 
     /// Only the owning Stream adapter calls this after its authoritative identity lookup.
     /// Atomic publication still compares absence of that identity with the event append.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.reducer.plan",
+            level = "debug",
+            skip_all,
+            fields(rev = self.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub(crate) fn plan_indexed(
         &self,
         command: &Command,
         migration_verified: bool,
     ) -> Result<ApplyResult> {
         if migration_verified && !matches!(&command.action, Action::MigrateExtensionState { .. }) {
-            return Err(Error::Invalid(
+            return crate::obs::outcome(Err(Error::Invalid(
                 "verified migration planner requires a migration action".into(),
-            ));
+            )));
         }
-        self.plan_with_migration_boundary(
+        crate::obs::outcome(self.plan_with_migration_boundary(
             command,
             if migration_verified {
                 Migration::Verified
@@ -1839,7 +1848,7 @@ impl Reducer {
                 Migration::Unverified
             },
             true,
-        )
+        ))
     }
 
     pub(crate) fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
@@ -5247,15 +5256,26 @@ resolve_interaction interaction_resolved interaction:resolve";
             restored.resident_context_selections().collect::<Vec<_>>(),
             reducer.resident_context_selections().collect::<Vec<_>>()
         );
+        // The complete reference reducer can admit fresh identities. Once its
+        // event cache is bounded, a bare reducer must not assert archive absence.
+        // Replay the resulting authenticated committed events into that cache.
+        let mut canonical = restored;
         reducer.set_resident_event_limit(1)?;
         for identity in 5..=68 {
-            reducer.apply(command(
+            let next = command(
                 operation(identity),
                 reducer.revision(),
                 Action::SelectModelContext {
                     selection: selection.clone(),
                 },
-            ))?;
+            );
+            assert!(matches!(reducer.plan(&next), Err(Error::Unsupported(_))));
+            let ApplyResult::Applied { event } = canonical.apply(next)? else {
+                return Err(Error::Invalid(
+                    "fresh canonical selection was not admitted".into(),
+                ));
+            };
+            reducer.apply_committed(event)?;
             assert_eq!(reducer.resident_context_selections().count(), 1);
         }
         assert!(
