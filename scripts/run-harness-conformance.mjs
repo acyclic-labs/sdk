@@ -132,7 +132,7 @@ for (const [marker, target, name, features] of e2e) {
   executed.e2e.add(name);
   e2eTranscripts.set(marker, createHash("sha256").update(transcript).digest("hex"));
 }
-command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
+command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-harness-conformance", "--bin", "harness-conformance"]);
 const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
 const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);
 const hash = bytes => command(runnerBinary, ["digest"], bytes);
