@@ -2314,6 +2314,26 @@ async fn stock_restart_with_publication_fault(
                 .is_err()
         );
         if reopened {
+            if direct_executor {
+                let drifted = runtime
+                    .stock_execution(
+                        task,
+                        fence.clone(),
+                        OperationId::from_bytes([8; 16]),
+                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        model.clone(),
+                        ContextPipeline::default(),
+                    )
+                    .await?
+                    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
+                assert!(matches!(
+                    drifted.execute(turn.clone()).await,
+                    Err(Error::Conflict(message))
+                        if message == "execution identity is bound to another request or configuration"
+                ));
+                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            }
             let restored = execution.execute(turn.clone()).await?;
             assert_eq!(
                 restored.text,
