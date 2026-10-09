@@ -385,7 +385,7 @@ async function main() {
     const receipt = { ...assembly, parent: { name: manifest.name, version: manifest.version, asset: parentArchive, sha256: digest(join(output, parentArchive)) } };
     await writeFile(join(output, assemblyFile), `${JSON.stringify(receipt, null, 2)}\n`);
     await writeFile(join(output, "SHA256SUMS"), [receipt.parent, ...companions].map(entry => `${entry.sha256}  ${entry.asset}`).sort().join("\n") + "\n");
-    await assertExactInventory(output, new Set([parentArchive, companionDirectory, assemblyFile, "SHA256SUMS"]));
+    await assertExactInventory(output, new Set([parentArchive, companionDirectory, assemblyFile, "SHA256SUMS"]), new Set([companionDirectory]));
     await assertExactInventory(companionOutput, new Set(companions.map(companion => companion.asset.slice(`${companionDirectory}/`.length))));
     console.log(JSON.stringify(receipt));
   } finally {

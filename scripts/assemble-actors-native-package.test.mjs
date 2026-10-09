@@ -2,17 +2,36 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { assertCommonBindings, assertNativeSet, verifyNativeAssembly } from "./assemble-actors-native-package.mjs";
-import { assertSelectedArtifact, normalizeBuildInputs, buildInputsReceipt } from "./build-actors-native.mjs";
+import { assertExactInventory, assertSelectedArtifact, normalizeBuildInputs, buildInputsReceipt } from "./build-actors-native.mjs";
 import { validBuildInputs } from "./fixtures/native-build-inputs.mjs";
 import { writeWasmReceiptFixture } from "./fixtures/wasm-receipt.mjs";
 
 const targets = ["target-a", "target-b", "target-c"];
 const source = "a".repeat(40);
+test("assembly output admits only explicitly declared real directories", async () => {
+  const output = await mkdtemp(join(tmpdir(), "actors-assembly-inventory-"));
+  try {
+    await writeFile(join(output, "parent.tgz"), "archive");
+    await mkdir(join(output, "actors-native"));
+    const allowed = new Set(["parent.tgz", "actors-native"]);
+    await assertExactInventory(output, allowed, new Set(["actors-native"]));
+    await assert.rejects(() => assertExactInventory(output, allowed), /non-regular artifact/);
+    await rm(join(output, "actors-native"), { recursive: true });
+    await writeFile(join(output, "actors-native"), "wrong type");
+    await assert.rejects(() => assertExactInventory(output, allowed, new Set(["actors-native"])), /non-regular artifact/);
+    await rm(join(output, "actors-native"));
+    await symlink(output, join(output, "actors-native"), process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(() => assertExactInventory(output, allowed, new Set(["actors-native"])), /symlink/);
+    await rm(join(output, "actors-native"));
+    await writeFile(join(output, "unexpected"), "extra");
+    await assert.rejects(() => assertExactInventory(output, allowed), /unstated files/);
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
 const qualified = () => targets.map(selected_target => ({ selected_target, source_revision: source, source_sha256: "sha256:source", source_files: [{ path: "contract.rs", sha256: "sha256:contract", bytes: 10 }], package: "acyclic-actors-napi", version: "0.2.0", targets }));
 
 test("selected native artifact must match the complete generation record", () => {

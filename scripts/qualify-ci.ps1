@@ -152,7 +152,7 @@ try {
 cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
     --ignored --test-threads=1 --skip support::
 foreach ($family in @('actors', 'workers')) {
-  $clientBundle = Join-Path $env:SDK_TEMP_DIR "client-native/$family"
+  $clientBundle = Join-Path $StreamNativeRoot "$family-native/bundle"
   node "scripts/build-$family-native.mjs" build --target x86_64-pc-windows-msvc `
       --output $clientBundle --target-dir "$CargoTargetDir-$family-native"
   node "scripts/build-$family-native.mjs" stage --bundle $clientBundle

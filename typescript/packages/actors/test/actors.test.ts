@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { ActorId, CodeSha256, CurrentHeadMarker, PositiveU64, ActorsClient, type ActorsRustBinding, type OperationEvent, type semantic } from "../src/index.js";
 import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema, InspectActorResponseSchema, SubscriptionStartSchema } from "../generated/proto/actors/v1/actors_pb.js";
@@ -20,6 +21,19 @@ function errorCode(error: unknown): string | undefined {
 }
 
 describe("Rust-backed Actors client", () => {
+  test("rejects private CA configuration on the browser WASM path before initialization", () => {
+    const entry = new URL("../src/client.ts", import.meta.url).href;
+    const probe = `
+      import assert from "node:assert/strict";
+      globalThis.process = undefined;
+      const { ActorsClient } = await import(${JSON.stringify(entry)});
+      const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "test", caCertificate: new Uint8Array([1]) });
+      await assert.rejects(client.transport, { code: "configuration", message: "WASM Actors transport cannot configure a private CA certificate" });
+    `;
+    const result = spawnSync(process.execPath, ["--eval", probe], { encoding: "utf8" });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+  });
   test("exposes nominal constructors from the package entrypoint", async () => {
     const actorId = await ActorId("actor-a");
     const digest = await CodeSha256(new Uint8Array([1, ...new Uint8Array(31)]));

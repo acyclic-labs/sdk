@@ -254,6 +254,9 @@ const main = async () => {
       const actorsEnv = { ...process.env, ACTORS_TLS_IDENTITY: identity };
       run("node", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
       run("bun", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
+      await writeFile(join(tempRoot, "actors-native-fallback.mjs"),
+        await readFile(join(packagesRoot, "actors/test/native-fallback-installed.mjs")));
+      run("node", ["actors-native-fallback.mjs"], { cwd: tempRoot, env: actorsEnv });
     }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });

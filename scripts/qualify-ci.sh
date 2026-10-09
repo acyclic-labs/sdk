@@ -125,7 +125,7 @@ client_bindings() {
   local target family bundle
   target="$(rustc --version --verbose | sed -n 's/^host: //p')"
   for family in actors workers; do
-    bundle="$SDK_TEMP_DIR/client-native/$family"
+    bundle="$SDK_ARTIFACT_DIR/packages/$family-native/bundle"
     node "scripts/build-$family-native.mjs" build --target "$target" \
       --output "$bundle" --target-dir "$target_dir-$family-native"
     node "scripts/build-$family-native.mjs" stage --bundle "$bundle"
@@ -488,6 +488,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked --doc
     finish napi release x86_64
     stream_binding
+    client_bindings
     native_mount_tests
     fork_join_conformance
     ;;

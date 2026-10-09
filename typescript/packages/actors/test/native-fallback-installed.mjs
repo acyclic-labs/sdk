@@ -38,6 +38,14 @@ function assertFallback(executable, label) {
   const result = run(executable);
   assert.equal(result.status, 0, `${label} fallback failed:\n${result.stderr}`);
   assert.match(result.stdout, /fallback-probe/);
+  const caProbe = `
+    import assert from "node:assert/strict";
+    import { ActorsClient } from "@acyclic-labs/actors";
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "test", caCertificate: new Uint8Array([1]) });
+    await assert.rejects(client.transport, { code: "configuration", message: "WASM Actors transport cannot configure a private CA certificate" });
+  `;
+  const caResult = spawnSync(executable, ["--input-type=module", "-e", caProbe], { cwd: packageRoot, encoding: "utf8" });
+  assert.equal(caResult.status, 0, `${label} must reject private CA fallback:\n${caResult.stderr}`);
 }
 
 function assertFatal(executable, label) {

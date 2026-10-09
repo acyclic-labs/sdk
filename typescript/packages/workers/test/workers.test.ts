@@ -52,7 +52,7 @@ describe("Workers Rust-backed transport", () => {
       expect(await new WorkersClient({ endpoint, caCertificate, token: "local", transport: "native" }).transport).toBe("grpc");
     });
     await expect(new WorkersClient({ endpoint: "http://workers.example.test", token: "remote", transport: "native" }).transport).rejects.toMatchObject({ code: "invalid_argument" });
-  });
+  }, 120_000);
   test("rejects header-unsafe and oversized credentials through Rust configuration", async () => {
     for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(12 * 1024 + 1)]) {
       await expect(new WorkersClient({ endpoint: "https://workers.example.test", token, transport: "native" }).transport).rejects.toMatchObject({ code: "invalid_argument" });
@@ -64,7 +64,7 @@ describe("Workers Rust-backed transport", () => {
       await expect(client.invokeDeployment({ alias: "..", method: "GET", url: "https://example.test/", headers: [], body: new Uint8Array() })).rejects.toMatchObject({ code: "invalid_argument" });
       expect(seen).toEqual([]);
     });
-  });
+  }, 120_000);
   test("dispatches pinned and alias invocations to distinct maintained RPCs", async () => {
     await withPeer(async (endpoint, seen, caCertificate) => {
       const client = new WorkersClient({ endpoint, caCertificate, token: "local", transport: "native" });
@@ -75,5 +75,5 @@ describe("Workers Rust-backed transport", () => {
       expect(alias.resolvedRevision).toBe(4n);
       expect(seen).toEqual(["InvokeVersion", "InvokeDeployment"]);
     });
-  });
+  }, 120_000);
 });

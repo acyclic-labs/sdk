@@ -255,7 +255,8 @@ async function nativeResult<T>(result: Promise<NativeActorsResult<T>>, key: "val
 
 function wasmBinding(): ActorsRustBinding {
   return {
-    async connect(endpoint, token, signal) {
+    async connect(endpoint, token, signal, caCertificate) {
+      if (caCertificate !== undefined) throw new ActorsTransportError("WASM Actors transport cannot configure a private CA certificate", "configuration");
       const module = await loadWasmModule();
       const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
