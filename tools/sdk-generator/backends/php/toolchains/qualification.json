@@ -89,5 +89,13 @@
         }
       }
     }
-  ]
+  ],
+  "archiver": {
+    "win32-x64": {
+      "sha256": "4e598a8cec84af779e3377442fce2b94b976f614ed4c6e5a665e19308fd1e379",
+      "version": "bsdtar 3.8.8 - libarchive 3.8.8 zlib/1.2.13.1-motley liblzma/5.8.1 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled",
+      "source": "Microsoft Windows signed system tar.exe",
+      "signer": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+    }
+  }
 }

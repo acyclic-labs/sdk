@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "require": {
     "php": ">=8.2",
+    "ext-grpc": "1.82.0",
     "google/protobuf": "5.36.2",
     "grpc/grpc": "1.82.0"
   },
