@@ -369,9 +369,9 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .reducer()
         .conversation()
         .ok_or_else(|| Error::Invalid("missing conversation".into()))?;
-    assert_eq!(conversation.messages.len(), 2);
+    assert_eq!(conversation.messages().len(), 2);
     let first_message = conversation
-        .messages
+        .messages()
         .first()
         .ok_or_else(|| Error::Invalid("reopened conversation is empty".into()))?;
     assert_eq!(first_message.content, message_file);

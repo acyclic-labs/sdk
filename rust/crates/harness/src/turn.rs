@@ -6,7 +6,7 @@ use crate::{
         Attachment, ConversationMessage, ConversationState, FileRef, Limits, MessageKind,
         ModelContextSelection, ReferencedAttachments,
     },
-    projection::{bounded_model_context_selection, validate_model_context_selection_at_revision},
+    projection::{select_turn_suffix, validate_model_context_selection_at_revision},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -146,32 +146,16 @@ pub fn prepare_turn_with_user_id(
     }
 
     let user_id = user_id_override.unwrap_or_else(|| canonical_user_message_id(operation_id));
-    if let Some(last_user) = conversation
-        .messages
-        .iter()
-        .rfind(|message| message.kind == MessageKind::User)
-        && last_user.id != user_id
-        && !conversation.messages.iter().any(|message| {
-            (message.kind == MessageKind::Assistant
-                || (message.kind == MessageKind::System
-                    && message.extensions.contains_key("acyclic.turn.outcome")))
-                && message.reply_to == Some(last_user.id)
-        })
+    if conversation
+        .unresolved_user()
+        .is_some_and(|id| id != user_id)
     {
         return Err(Error::Conflict(
             "previous conversation turn is unresolved; retry it before admitting another".into(),
         ));
     }
-
-    let current = conversation
-        .messages
-        .iter()
-        .find(|message| message.id == user_id);
-    if let Some(outcome) = conversation.messages.iter().find(|message| {
-        message.kind == MessageKind::System
-            && message.reply_to == Some(user_id)
-            && message.extensions.contains_key("acyclic.turn.outcome")
-    }) {
+    let current = conversation.message(user_id);
+    if let Some(outcome) = conversation.turn_outcome(user_id) {
         let abandoned_id = derived_uuid(operation_id, "indeterminate-notice");
         return Err(Error::Conflict(
             if outcome.id == abandoned_id {
@@ -206,10 +190,9 @@ pub fn prepare_turn_with_user_id(
         ));
     }
 
-    let mut prepared = conversation.clone();
     let append_user = current.is_none();
     if append_user {
-        prepared.append(user_message.clone())?;
+        conversation.validate_append(&user_message)?;
     }
     let selection_is_new = existing_selection.is_none();
     let selection = match existing_selection {
@@ -219,14 +202,14 @@ pub fn prepare_turn_with_user_id(
             // conversation, so validate its provenance against that anchor
             // rather than requiring the current tail length to remain equal.
             if selection.conversation_revision < user_message.sequence
-                || selection.conversation_revision > prepared.messages.len() as u64
+                || selection.conversation_revision > conversation.messages.len() as u64
             {
                 return Err(Error::Conflict(
                     "model context selection has a stale conversation revision".into(),
                 ));
             }
             validate_model_context_selection_at_revision(
-                &prepared,
+                conversation,
                 &selection,
                 selection.conversation_revision,
             )?;
@@ -237,7 +220,12 @@ pub fn prepare_turn_with_user_id(
             }
             selection
         }
-        None => bounded_model_context_selection(&prepared, user_id, limits.context_messages)?,
+        None => select_turn_suffix(
+            conversation,
+            &user_message,
+            append_user,
+            limits.context_messages,
+        )?,
     };
     let disposition = if has_completed_output {
         TurnDisposition::Completed
