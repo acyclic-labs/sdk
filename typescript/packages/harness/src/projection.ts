@@ -231,7 +231,7 @@ async function captureProjectionFiles(
   return files;
 }
 
-function publicFile(file: NativeFileRef): FileRef {
+function publicFile(file: NativeFileRef | Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef {
   return { ...file,
     descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
   } as FileRef;

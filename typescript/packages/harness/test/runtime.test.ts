@@ -2208,6 +2208,7 @@ test("model projections receive parsed invocation and retain independent canonic
   // The admitted method is captured once, including a prototype method's receiver.
   projector.project = () => { throw new Error("replacement must not execute"); };
   const runtime = await builder.model(testModel, {
+    ...syntheticAccounting(contracts),
     async *generate(request) {
       if (steps++ === 0) yield { kind: "tool_call" as const, callId: "projected", name: "projected", arguments: 3 };
       else expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "projected",
@@ -2231,7 +2232,7 @@ test("invalid model projection fails before the next provider request", async ()
   }, () => 1);
   let calls = 0;
   const runtime = await Harness.builder(contracts).tool(definition).grant("tool:call:invalid-projection")
-    .model(testModel, { async *generate() {
+    .model(testModel, { ...syntheticAccounting(contracts), async *generate() {
       calls++;
       yield { kind: "tool_call" as const, callId: "invalid", name: "invalid-projection", arguments: null };
       yield { kind: "completed" as const, metadata: {} };

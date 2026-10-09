@@ -1,6 +1,8 @@
-/** This synthetic provider declares UTF-8 bytes as token units, including file
- * bodies. Counting the complete canonical request as fixed framing deliberately
- * overcounts message descriptors, so schemas/options are never omitted. */
+import { DEFAULT_LIMITS } from "../../src/conversation.js";
+
+/** This synthetic provider declares canonical UTF-8 bytes and file body bytes
+ * as token units, with 512 units of framing per request and message. Rust owns
+ * the complete nested media inventory, including immutable native options. */
 /** @param {import("../../src/native-contracts.js").NativeContracts} contracts
  * @returns {Pick<import("../../src/model.js").ModelProvider, "contextCapacity" | "countTokens">} */
 export function syntheticAccounting(contracts) {
@@ -11,18 +13,12 @@ export function syntheticAccounting(contracts) {
         requestDigest: contracts.digestCanonicalJson(contracts.decodeModelJson(request.serializedInput)),
         fixedTokens: request.serializedInput.byteLength + 512,
         messageTokens: request.messages.map(message => {
-          const bytes = new TextEncoder().encode(JSON.stringify(message)).byteLength + fileBytes(message.content);
+          const bytes = 512 + contracts.modelContentInventory(message.content, DEFAULT_LIMITS).files
+            .reduce((total, file) => total + file.descriptor.byte_length, 0);
           if (!Number.isSafeInteger(bytes) || bytes > 0xffff_ffff) throw new RangeError("synthetic message count exceeds u32");
           return bytes;
         }),
       };
     },
   };
-}
-
-/** @param {import("../../src/model.js").ModelContent} content */
-function fileBytes(content) {
-  const parts = typeof content === "string" ? []
-    : "kind" in content ? [content] : content;
-  return parts.reduce((bytes, part) => bytes + (part.kind === "file" ? part.file.descriptor.byte_length : 0), 0);
 }

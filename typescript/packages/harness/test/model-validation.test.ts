@@ -400,6 +400,26 @@ test("Rust inventory includes nested tool media and options while preserving ori
   expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
 });
 
+test("synthetic accounting counts nested media and native options with wide revisions", async () => {
+  const part = await nativeOptionPart();
+  const request: import("../src/model.js").ModelRequest = {
+    model: { provider: "mock", name: "nested-accounting", revision: "1", options: {} },
+    messages: [
+      { role: "assistant", content: { kind: "tool_call", callId: "call", name: "inspect", arguments: {} } },
+      { role: "tool", content: { kind: "tool_result", callId: "call", name: "inspect",
+        content: { kind: "parts", parts: [part] } } },
+    ],
+    tools: [{ name: "inspect", revision: "1", description: "inspect", inputSchema: {}, outputSchema: {},
+      projectionSchema: {} }],
+  };
+  const serializedInput = prepareModelRequest(request, DEFAULT_LIMITS);
+  const count = syntheticAccounting(contracts).countTokens({ ...request, serializedInput });
+  expect(count.requestDigest).toEqual(contracts.digestCanonicalJson(contracts.decodeModelJson(serializedInput)));
+  expect(count.fixedTokens).toBe(serializedInput.byteLength + 512);
+  expect(count.messageTokens).toEqual([512, 512 + part.file.descriptor.byte_length
+    + part.policy.native.configuration.configuration.content.descriptor.byte_length]);
+});
+
 test("public model content preserves original option revisions across Rust context projection", async () => {
   const part = await nativeOptionPart();
   const projected = contracts.applyContextProjection({ messages: [], metadata: {} },
@@ -418,6 +438,7 @@ test("local model dispatch rejects claimed native options before invoking a cust
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(
     { provider: "mock", name: "native-options", revision: "pinned", options: {} }, {
+      ...syntheticAccounting(contracts),
       async *generate() { calls += 1; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
