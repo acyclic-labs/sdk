@@ -22,7 +22,12 @@ use acyclic_harness::{
         AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext,
     },
     scheduler::SessionLimits,
-    tool::{ToolExecutor, ToolInvocation, ToolRegistry, ToolResult, files},
+    tool::{
+        ToolExecutor, ToolInvocation, ToolRegistry, ToolResult, files,
+        schema::ProjectionMode,
+        text::{ReadOptions, SearchOptions},
+        text_files,
+    },
     workflow::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
@@ -210,6 +215,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "operation:cancel".to_owned(),
             "task:spawn:fixture.file_replay@1".to_owned(),
             "tool:call:acyclic.read_file".to_owned(),
+            "tool:call:acyclic.read_file_range".to_owned(),
+            "tool:call:acyclic.search_file".to_owned(),
             "tool:call:acyclic.write_file".to_owned(),
             "tool:call:acyclic.edit_file".to_owned(),
             "tool:call:acyclic.patch_file".to_owned(),
@@ -271,6 +278,44 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         }
         tools.register(tool)?;
     }
+    let mut bounded_text = [
+        (
+            text_files::read_file_range(
+                ReadOptions {
+                    maximum_input_bytes: 4096,
+                    maximum_text_bytes: 32,
+                },
+                4096,
+                ProjectionMode::Reference,
+            )?,
+            json!({"file":source,"range":{"start":0,"end":8}}),
+        ),
+        (
+            text_files::search_file(
+                SearchOptions {
+                    maximum_input_bytes: 4096,
+                    maximum_query_bytes: 16,
+                    maximum_work: 4096,
+                    maximum_matches: 2,
+                },
+                4096,
+                ProjectionMode::Full,
+            )?,
+            json!({"file":source,"query":"exact"}),
+        ),
+    ];
+    let mut bounded_executors = Vec::new();
+    for (tool, _) in &mut bounded_text {
+        let executor = Arc::new(FileExecutorSpy {
+            inner: tool.executor.clone(),
+            executions: AtomicUsize::new(0),
+            reconciliations: AtomicUsize::new(0),
+        });
+        tool.executor = executor.clone();
+        tools.register(tool.clone())?;
+        bounded_executors.push(executor);
+    }
+    let mut retained_text_results = Vec::new();
     let machine: Arc<dyn ResumableMachine> = Arc::new(AdmissionMachine {
         identity: MachineIdentity {
             name: "fixture.file_replay".into(),
@@ -383,6 +428,73 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         assert!(journal.reads.load(Ordering::SeqCst) > 0);
         if reopened {
             assert_eq!(journal.writes.load(Ordering::SeqCst), 0);
+        }
+        for (index, (tool, arguments)) in bounded_text.iter().enumerate() {
+            let operation = OperationId::from_bytes([if index == 0 { 87 } else { 88 }; 16]);
+            let invocation = ToolInvocation {
+                operation_id: operation,
+                call_id: operation.to_string(),
+                name: tool.definition.name.clone(),
+                arguments: arguments.clone(),
+            };
+            let original = ToolContext::new(context.clone(), operation, operation.to_string())?;
+            let reads = journal.reads.load(Ordering::SeqCst);
+            let writes = journal.writes.load(Ordering::SeqCst);
+            // A valid retained scope cannot replace the originally admitted call context.
+            assert!(matches!(
+                tool.executor.authorize(Some(context.scope()), &invocation),
+                Err(Error::Unauthorized(_))
+            ));
+            tool.executor
+                .authorize_with_context(&original, &invocation)?;
+            for wrong in [
+                ToolContext::new(context.clone(), OperationId::new(), operation.to_string())?,
+                ToolContext::new(context.clone(), operation, "different-call")?,
+            ] {
+                assert!(matches!(
+                    tool.executor.authorize_with_context(&wrong, &invocation),
+                    Err(Error::Unauthorized(_))
+                ));
+            }
+            assert_eq!(journal.reads.load(Ordering::SeqCst), reads);
+            assert_eq!(journal.writes.load(Ordering::SeqCst), writes);
+            let Outcome::Succeeded(value) = runner
+                .run_with_context(
+                    task,
+                    operation,
+                    tool.definition.clone(),
+                    arguments.clone(),
+                    original,
+                )
+                .await?
+            else {
+                panic!("admitted bounded text must complete")
+            };
+            assert_eq!(
+                bounded_executors[index].executions.load(Ordering::SeqCst),
+                1
+            );
+            assert_eq!(
+                bounded_executors[index]
+                    .reconciliations
+                    .load(Ordering::SeqCst),
+                0
+            );
+            assert_eq!(value.get("file"), Some(&json!(source)));
+            if index == 0 {
+                assert_eq!(value["selection"]["text"], "original");
+                assert_eq!(value["selection"]["range"], json!({"start":0,"end":8}));
+            } else {
+                assert_eq!(value["matches"]["matches"], json!([{"start":15,"end":20}]));
+                assert_eq!(value["matches"]["total_matches"], 1);
+                assert_eq!(value["matches"]["omitted_matches"], 0);
+            }
+            if reopened {
+                assert_eq!(Some(&value), retained_text_results.get(index));
+                assert_eq!(journal.writes.load(Ordering::SeqCst), writes);
+            } else {
+                retained_text_results.push(value);
+            }
         }
         let write_call = OperationId::from_bytes([86; 16]);
         let write_result = runner

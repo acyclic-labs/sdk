@@ -303,7 +303,11 @@ impl TextTool {
         Ok(file)
     }
 
-    async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
+    fn preflight_with_context(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<FileRef> {
         if context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
         {
@@ -311,8 +315,12 @@ impl TextTool {
                 "text tool requires its exact admitted call context".into(),
             ));
         }
+        self.preflight(context.task().scope(), invocation)
+    }
+
+    async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
+        let file = self.preflight_with_context(&context, &invocation)?;
         let task = context.task();
-        let file = self.preflight(task.scope(), &invocation)?;
         let bytes = task.read_file(&file).await?;
         let source = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("text tool requires UTF-8 content".into()))?;
@@ -350,7 +358,18 @@ impl ToolExecutor for TextTool {
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("text tool requires original runtime scope".into())
         })?;
-        self.preflight(scope, invocation).map(|_| ())
+        self.preflight(scope, invocation)?;
+        Err(Error::Unauthorized(
+            "portable text tool requires original task context".into(),
+        ))
+    }
+
+    fn authorize_with_context(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        self.preflight_with_context(context, invocation).map(|_| ())
     }
 
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
