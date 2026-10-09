@@ -244,7 +244,7 @@ pub fn export_client_typescript(
 ) -> Result<Vec<(String, std::path::PathBuf)>, ts_rs::ExportError> {
     use ts_rs::TS;
     let config = ts_rs::Config::default()
-        .with_out_dir(path)
+        .with_out_dir(path.as_ref())
         .with_import_extension(Some("js"));
     let mut exports = Vec::new();
     macro_rules! roots {
