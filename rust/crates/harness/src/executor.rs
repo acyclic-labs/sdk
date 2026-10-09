@@ -1766,6 +1766,17 @@ fn validate_model_content_scope(
             }
         }
     }
+    let bindings = content.native_configurations();
+    if !bindings.is_empty() {
+        let scope = scope.ok_or_else(|| {
+            Error::Unsupported("original native task scope is unavailable".into())
+        })?;
+        let schemas = scope.extension_schema_registry();
+        let runtime = scope.extension_runtime();
+        for binding in bindings {
+            binding.verify_original(scope.extensions(), schemas.as_ref(), runtime.as_deref())?;
+        }
+    }
     Ok(())
 }
 
@@ -3836,7 +3847,35 @@ mod tests {
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
-        verify_model_content_scoped(&journal, &content, Limits::default(), Some(&allowed)).await?;
+        // Read grants alone cannot authenticate a claimed native configuration.
+        assert!(matches!(
+            verify_model_contents_scoped(
+                &journal,
+                [
+                    ModelContent::Part(ModelContentPart::File {
+                        file: file.clone(),
+                        policy: crate::model::FileProjectionPolicy::Reference
+                    }),
+                    content
+                ]
+                .iter(),
+                Limits::default(),
+                Some(&allowed)
+            )
+            .await,
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        let references = ModelContent::Parts(
+            [file, options]
+                .map(|file| ModelContentPart::File {
+                    file,
+                    policy: crate::model::FileProjectionPolicy::Reference,
+                })
+                .to_vec(),
+        );
+        verify_model_content_scoped(&journal, &references, Limits::default(), Some(&allowed))
+            .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
         Ok(())
     }
@@ -3932,6 +3971,19 @@ mod tests {
         fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             self.journal.load(file)
+        }
+        fn open_interaction<'a>(
+            &'a self,
+            id: InteractionId,
+            interaction: Interaction,
+        ) -> BoxFuture<'a, Result<()>> {
+            self.journal.open_interaction(id, interaction)
+        }
+        fn interaction_outcome<'a>(
+            &'a self,
+            id: InteractionId,
+        ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
+            self.journal.interaction_outcome(id)
         }
         // This spy exercises the real pre-reader scope barrier, not option authentication.
         fn verify_model_content<'a>(
