@@ -2524,3 +2524,6 @@ async fn stock_restart_with_publication_fault(
     }
     Ok(())
 }
+
+#[path = "task_workflow/stock_turn.rs"]
+mod stock_turn;
