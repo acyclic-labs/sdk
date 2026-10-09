@@ -597,7 +597,7 @@ impl StockExecutor {
     /// Context does not replace the durable host's current fence verification.
     pub fn with_task_context(
         mut self,
-        context: crate::runtime::TaskContext,
+        context: &crate::runtime::TaskContext,
         execution_operation: OperationId,
     ) -> Result<Self> {
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
@@ -2097,7 +2097,7 @@ mod tests {
         )
         .with_tool_authority(scope.clone(), None)?;
         let operation = OperationId::new();
-        let executor = base.clone().with_task_context(original, operation)?;
+        let executor = base.clone().with_task_context(&original, operation)?;
         let input = TurnInput {
             operation_id: operation,
             input: ModelContent::Text("input".into()),
@@ -2110,7 +2110,7 @@ mod tests {
             Err(Error::Indeterminate(_))
         ));
         let retained = journal.0.lock().unwrap().len();
-        let retargeted = base.clone().with_task_context(replacement, operation)?;
+        let retargeted = base.clone().with_task_context(&replacement, operation)?;
         assert!(matches!(
             retargeted.execute(input.clone(), &journal).await,
             Err(Error::Conflict(_))
