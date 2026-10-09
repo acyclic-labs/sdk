@@ -1,3 +1,10 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+export const writeChanged = (path, content) => {
+  const bytes = typeof content === "string" ? Buffer.from(content) : content;
+  if (!existsSync(path) || !readFileSync(path).equals(bytes)) writeFileSync(path, bytes);
+};
+
 // Canonical generation inputs and their published copies live here.
 // Every family that negotiates a protocol ships the shared handshake schema.
 /** @type {[string, string[]][]} */

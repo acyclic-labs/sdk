@@ -1,14 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const writeChanged = (path, content) => {
-  const bytes = Buffer.from(content);
-  if (!existsSync(path) || !readFileSync(path).equals(bytes)) writeFileSync(path, bytes);
-};
 for (const [source, packaged] of packagedSourceCopies) {
   const destination = join(root, packaged);
   mkdirSync(dirname(destination), { recursive: true });
