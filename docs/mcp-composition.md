@@ -33,6 +33,14 @@ dependency. Native construction disables redirects/retries and performs no I/O.
 The generated WASM bridge uses the same trait and Rust decoder. The TypeScript
 browser provider supplies Fetch, byte reads and cancellation only; it shares the
 ordinary task AbortSignal and enforces the finite whole-exchange deadline.
+`WasmMcpHttpTransport` also exposes the same explicit initialization/discovery
+primitives. `initializationRequest` stages without I/O. `acceptInitialization`
+validates retained bytes and returns `WasmMcpHttpInitialization`, containing the
+negotiated JSON observation, readiness request and independently pinned transport.
+The host admits the readiness notification separately. `listToolsJson` returns
+one page as UTF-8 JSON; the host must collect and validate the complete catalog
+before registry publication. These methods do not start a session worker or
+publish tools automatically.
 
 Initialization and discovery are explicit admitted host operations. A host stages
 `initialization_request`, dispatches it through its admitted provider route,
@@ -478,3 +486,50 @@ by B/I and its joined qualification remains pending. Model-request integration,
 fault cuts spanning both tool and native journals, full final-source platform,
 formal, Chromium, installed-artifact and full-CI gates, owner review and actual
 main landing remain open.
+
+### Portable HTTP lifecycle development checkpoint
+
+Browser hosts can now use the existing Rust initialization and discovery
+operations, including a staged initialization request and acceptance of a
+retained response. Acceptance clones the immutable HTTP binding, validates the
+response through the existing protocol/session decoder and returns a new pinned
+transport with the negotiated observation and exact readiness notification.
+The original binding remains unchanged; staging and acceptance perform no
+provider I/O. The host must admit readiness separately and explicitly request
+each discovery page before complete-catalog publication. The new observation
+class only carries the existing Rust method's tuple; it adds no admission or
+session state machine.
+
+Retained response length is checked before copying bytes into WASM memory. The
+bytes are detached before host response-head properties are read. A head getter
+that mutates the original byte array is a negative control for that ordering.
+Negotiated results and discovery pages return UTF-8 JSON bytes so remote integer
+literals survive the boundary. Their JavaScript consumers choose how to decode
+that JSON; no second protocol parser was added to the TypeScript provider.
+
+Two new Node controls drive JSON and SSE initialization and paged discovery,
+explicit readiness admission, negotiated session headers and immutable old
+bindings. The page includes a full-width integer schema constraint and Unicode.
+Foreign IDs, unsupported versions, oversized retained bodies, injected session
+headers, callbacks requiring G and initialization of an already session-bound
+client are rejected without I/O. Exactly four provider calls occur in the
+successful lifecycle: separately dispatched initialization, readiness and two
+discovery pages. Staging and acceptance make no request. Reconciliation makes
+no additional request.
+
+Strict native library/test/example Clippy with the WASM feature and strict Clippy
+on the actual `wasm32-unknown-unknown` target pass without new suppressions. A
+fresh established release-profile WASM build updates both generated declaration
+files and the TypeScript package exports the observation class. All nine MCP
+Node/WASM controls pass against fresh artifacts. Each command used one Cargo job
+after fresh adequate headroom. Initial checks and generation were sequential;
+the final warm native/WASM lint reruns briefly overlapped in separate target
+directories, with at most two Cargo jobs. Terminal results and absence of owned
+compiler/build-script processes were verified. No performance qualification is
+claimed from these runs.
+
+This is portable lifecycle development evidence. Actual Chromium task/worker
+execution, the pinned full-package and installed-artifact gates, native server
+admission, the B/I stock model-loop join, faults spanning both journals, final
+platform/formal/full-CI qualification, owner review and actual-main landing remain
+open.

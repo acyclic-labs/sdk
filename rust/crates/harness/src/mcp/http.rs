@@ -65,6 +65,7 @@ pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
 
 /// Pinned HTTP endpoint, session, and finite exchange allowances. Construction
 /// performs no initialization, starts no worker, and grants no network authority.
+#[derive(Clone)]
 pub struct HttpMcpTransport {
     provider: Arc<dyn McpHttpProvider>,
     endpoint: String,
@@ -140,7 +141,7 @@ impl HttpMcpTransport {
         serde_json::from_value(self.rpc(operation, "tools/list", params).await?)
             .map_err(|e| Error::Invalid(e.to_string()))
     }
-    /// Binds a host-supplied initialized session. Session negotiation is an
+    /// Binds a host-supplied session or sessionless endpoint. Negotiation is an
     /// explicit admitted exchange, never silently performed during a tool call.
     pub fn new(
         provider: Arc<dyn McpHttpProvider>,

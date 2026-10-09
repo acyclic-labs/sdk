@@ -961,19 +961,56 @@ export class WasmContentStore {
 }
 
 /**
- * Low-level explicitly bound transport for a host's admitted tool executor.
+ * An observed initialization and immutable binding, with a readiness request
+ * that the host must admit separately. Acceptance performs no network I/O.
+ */
+export class WasmMcpHttpInitialization {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Returns the exact readiness notification for separate host admission.
+     */
+    initializedRequest(): McpHttpRequest;
+    /**
+     * Consumes this observation and returns its independently pinned binding.
+     */
+    intoTransport(): WasmMcpHttpTransport;
+    /**
+     * Returns the negotiated result as UTF-8 JSON, preserving remote integers.
+     */
+    resultJson(): Uint8Array;
+}
+
+/**
+ * Low-level explicitly bound transport for a host's admitted MCP operations.
  * The existing Harness tool/task journal owns admission and result retention.
  */
 export class WasmMcpHttpTransport {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Validates a host-retained response through the same native decoder.
+     * The original binding remains unchanged. Check the byte allowance before
+     * copying the host's body into WASM memory.
+     */
+    acceptInitialization(operation: string, head: McpBrowserResponseHead, body: Uint8Array): Promise<WasmMcpHttpInitialization>;
+    /**
      * Calls an already admitted operation. Canonical JSON bytes preserve
      * full-width remote numbers and avoid a second JavaScript result engine.
      */
     callJson(operation: string, name: string, _arguments: WasmToolJsonValue): Promise<Uint8Array>;
     /**
-     * Binds an initialized session and bounded platform I/O without effects.
+     * Stages the Rust-owned initialization message without invoking a provider.
+     */
+    initializationRequest(operation: string, name: string, version: string): McpHttpRequest;
+    /**
+     * Discovers one separately admitted page. The host gathers and validates
+     * the complete catalog before publishing a replacement.
+     */
+    listToolsJson(operation: string, cursor?: string | null): Promise<Uint8Array>;
+    /**
+     * Binds finite platform I/O and an optional host-provided session without effects.
      */
     constructor(provider: McpBrowserHttpProvider, endpoint: string, session: string | null | undefined, maximum_bytes: number, timeout_ms: number);
     /**
@@ -1482,6 +1519,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
+    readonly __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
     readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
     readonly admitBatch: (a: any) => [number, number, number];
@@ -1554,7 +1592,13 @@ export interface InitOutput {
     readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
     readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+    readonly wasmmcphttpinitialization_initializedRequest: (a: number) => [number, number, number];
+    readonly wasmmcphttpinitialization_intoTransport: (a: number) => number;
+    readonly wasmmcphttpinitialization_resultJson: (a: number) => [number, number, number, number];
+    readonly wasmmcphttptransport_acceptInitialization: (a: number, b: number, c: number, d: any, e: any) => any;
     readonly wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+    readonly wasmmcphttptransport_initializationRequest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmmcphttptransport_listToolsJson: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];

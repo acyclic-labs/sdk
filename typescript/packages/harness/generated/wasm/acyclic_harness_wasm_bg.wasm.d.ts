@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmcontentstore_free: (a: number, b: number) => void;
+export const __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
 export const __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
 export const __wbg_wasmreducer_free: (a: number, b: number) => void;
 export const admitBatch: (a: any) => [number, number, number];
@@ -74,7 +75,13 @@ export const wasmcontentstore_pathConflicts: (a: number, b: number, c: number) =
 export const wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
 export const wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
 export const wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+export const wasmmcphttpinitialization_initializedRequest: (a: number) => [number, number, number];
+export const wasmmcphttpinitialization_intoTransport: (a: number) => number;
+export const wasmmcphttpinitialization_resultJson: (a: number) => [number, number, number, number];
+export const wasmmcphttptransport_acceptInitialization: (a: number, b: number, c: number, d: any, e: any) => any;
 export const wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+export const wasmmcphttptransport_initializationRequest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+export const wasmmcphttptransport_listToolsJson: (a: number, b: number, c: number, d: number, e: number) => any;
 export const wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
 export const wasmreducer_apply: (a: number, b: any) => [number, number, number];
