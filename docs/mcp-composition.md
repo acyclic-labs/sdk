@@ -533,3 +533,41 @@ execution, the pinned full-package and installed-artifact gates, native server
 admission, the B/I stock model-loop join, faults spanning both journals, final
 platform/formal/full-CI qualification, owner review and actual-main landing remain
 open.
+
+### Scoped catalog installation development checkpoint
+
+`McpCatalog::install_scoped` now admits an agent-selected complete catalog through
+the existing signed scope and durable tool approval verifiers before invoking
+the existing atomic registry replacement. The scope must grant
+`mcp:install:<server>`. The approval pins the operation and interaction, complete
+catalog, schema exposure and discovery policies, exact previous catalog, and
+finite tool/byte allowances. Changing any of those inputs requires a different
+approval. The host still supplies an immutable transport and projection binding
+under its catalog revision; trait objects and credential metadata are not part
+of this digest.
+
+The trusted-host `install` builder remains available. Installation authority
+does not grant `mcp:call:<server>` or ordinary tool-call authority. No approval
+read, remote request or registry mutation occurs for an invalid signed scope or
+missing installation grant. Approval rejection leaves the selected schemas,
+retained revisions and catalog replacement stamp unchanged. Replacement retains
+old tool revisions for existing calls and can explicitly select no new schemas.
+
+Development controls cover signed namespace authority, approval input mutations,
+exact predecessor binding and installation/call authority separation. The
+disk-backed HTTP fault matrix now creates a real approval interaction in the
+existing filesystem execution journal, resolves it under signed authority and
+reopens that approval before scoped catalog installation. This adds no approval
+journal or registration owner. Final-source platform, formal, browser,
+installed-artifact, full-CI, owner review and actual-main landing gates remain
+open.
+
+Windows development verification passes 277 library tests and the seven-case
+disk-backed HTTP matrix. Its first run exposed a missing conversation-to-agent
+binding in the fixture; the fixture now creates that binding through the existing
+aggregate command before opening the approval interaction, and the rerun passes.
+Strict native library/test/example Clippy and strict actual-WASM-target Clippy
+pass without new suppressions. Formatting and whitespace checks pass. Cargo
+checks ran sequentially with one job; the WASM check followed fresh headroom of
+27% CPU and 31,906 MiB free memory. These results do not qualify final platform,
+browser or installed package behavior.

@@ -3,20 +3,22 @@
 
 use acyclic_fs::{Fs, LocalOptions};
 use acyclic_harness::{
-    AgentId, Capabilities, Error, InteractionId, OperationId, Outcome, Result, TaskId,
+    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result,
+    TaskId,
     conversation::{FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
     durable_tool::DurableToolRunner,
     executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
-    interaction::{Interaction, InteractionOutcome},
+    interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
-        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolResult,
-        McpToolTransport,
+        McpCatalog, McpCatalogInstallation, McpDiscoveryPolicy, McpSchemaExposure,
+        McpToolDefinition, McpToolResult, McpToolTransport,
         http::{HttpMcpTransport, NativeMcpHttpProvider},
     },
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
+    store::StreamAggregate,
     tool::{ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
@@ -228,7 +230,41 @@ fn catalog() -> McpCatalog {
     }
 }
 
-async fn journal(root: &Path, create: bool) -> Result<Arc<dyn ExecutionJournal>> {
+type LocalJournal = FilesystemExecutionJournal<
+    LocalStream,
+    acyclic_fs::LocalAuthorityBackend,
+    acyclic_fs::LocalObjectBackend,
+>;
+
+async fn bind_conversation(
+    stream: &StreamClient<LocalStream>,
+    issuer: &AuthorityIssuer,
+    agent: AgentId,
+) -> Result<()> {
+    let mut aggregate = StreamAggregate::open(
+        stream,
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "mcp-fault".into(),
+        },
+        issuer.verifier(),
+        SchemaRegistry::new(),
+    )
+    .await?;
+    aggregate
+        .execute(Command {
+            operation_id: OperationId::from_bytes([45; 16]),
+            idempotency_key: IdempotencyKey::new("bind:mcp-fault")?,
+            expected_revision: 0,
+            scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
+            causal_parent: None,
+            action: Action::BindConversation { agent },
+        })
+        .await?;
+    Ok(())
+}
+
+async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
     let provider = ProviderRef::new("mcp-fault", "filesystem", "2")?;
     let host = Arc::new(FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
@@ -260,6 +296,13 @@ async fn journal(root: &Path, create: bool) -> Result<Arc<dyn ExecutionJournal>>
         Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
+            "mcp:install:fixture".into(),
+            "interaction:open".into(),
+            "interaction:resolve".into(),
+            format!(
+                "interaction:respond:{}",
+                InteractionId::from_bytes([47; 16])
+            ),
         ]),
     );
     let stream = StreamClient::new(Arc::new(
@@ -267,14 +310,42 @@ async fn journal(root: &Path, create: bool) -> Result<Arc<dyn ExecutionJournal>>
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
     ));
-    Ok(Arc::new(FilesystemExecutionJournal::new(
+    if create {
+        bind_conversation(&stream, &issuer, agent).await?;
+    }
+    let journal = Arc::new(FilesystemExecutionJournal::new(
         stream,
         host,
         private,
         issuer.verifier(),
-        signed,
+        signed.clone(),
         8192,
-    )?))
+    )?);
+    if create {
+        let operation = OperationId::from_bytes([46; 16]);
+        let interaction = InteractionId::from_bytes([47; 16]);
+        journal
+            .open_interaction(
+                interaction,
+                Interaction::approval(
+                    "Install this exact MCP catalog",
+                    operation,
+                    catalog().installation_digest(None, 1, 8192)?,
+                )?,
+            )
+            .await?;
+        journal
+            .resolve_interaction(
+                interaction,
+                InteractionResponse::Approval {
+                    approved: true,
+                    reason: None,
+                },
+                &signed,
+            )
+            .await?;
+    }
+    Ok((journal, issuer, signed))
 }
 
 async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
@@ -361,12 +432,12 @@ async fn phase(
     fault: Fault,
     reopened: bool,
 ) -> Result<Outcome<Value>> {
-    let journal = journal(root, !reopened).await?;
+    let (approval, issuer, signed) = journal(root, !reopened).await?;
     let journal: Arc<dyn ExecutionJournal> = if reopened {
-        journal
+        approval.clone()
     } else {
         Arc::new(FaultJournal {
-            inner: journal,
+            inner: approval.clone(),
             fault,
             fired: AtomicBool::new(false),
         })
@@ -382,7 +453,23 @@ async fn phase(
     )?));
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
     let mut tools = ToolRegistry::new();
-    catalog().install(&mut tools, None, &transport, &projection, 1, 8192)?;
+    catalog()
+        .install_scoped(
+            &mut tools,
+            None,
+            &transport,
+            &projection,
+            McpCatalogInstallation {
+                operation: OperationId::from_bytes([46; 16]),
+                interaction: InteractionId::from_bytes([47; 16]),
+                scope: &signed,
+                verifier: &issuer.verifier(),
+                approval: approval.as_ref(),
+                maximum_tools: 1,
+                maximum_bytes: 8192,
+            },
+        )
+        .await?;
     let definition = tools
         .get("mcp.fixture.echo")
         .ok_or_else(|| Error::NotFound("fixture tool".into()))?

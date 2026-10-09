@@ -4,11 +4,12 @@
 //! neither constructing a client nor publishing a catalog performs remote I/O.
 
 use crate::{
-    Error, OperationId, Result,
+    Error, InteractionId, OperationId, Result,
+    core::{AuthorityVerifier, Scope},
     runtime::ToolContext,
     tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
-        ToolResult,
+        Tool, ToolApprovalVerifier, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
+        ToolRegistry, ToolResult,
     },
 };
 use acyclic_stream::BoxProviderFuture;
@@ -201,7 +202,92 @@ pub struct McpCatalog {
     pub tools: Vec<McpToolDefinition>,
 }
 
+/// Existing signed authority and durable approval inputs for one atomic catalog
+/// replacement. The host supplies the pinned transport/projection separately.
+pub struct McpCatalogInstallation<'a> {
+    /// Exact installation operation used by the retained approval.
+    pub operation: OperationId,
+    /// Exact retained approval interaction.
+    pub interaction: InteractionId,
+    /// Signed host scope requiring `mcp:install:<server>`.
+    pub scope: &'a Scope,
+    /// Existing authority verifier for that scope.
+    pub verifier: &'a AuthorityVerifier,
+    /// Existing durable tool approval verifier.
+    pub approval: &'a dyn ToolApprovalVerifier,
+    /// Finite complete-catalog tool allowance, included in approval identity.
+    pub maximum_tools: u32,
+    /// Finite complete-catalog byte allowance, included in approval identity.
+    pub maximum_bytes: u32,
+}
+
 impl McpCatalog {
+    /// Approval identity for this complete replacement, its exact predecessor
+    /// and finite allowances. Configuration/executor identity remains pinned by
+    /// the host's immutable catalog revision, as for ordinary tool definitions.
+    pub fn installation_digest(
+        &self,
+        previous: Option<&Self>,
+        maximum_tools: u32,
+        maximum_bytes: u32,
+    ) -> Result<[u8; 32]> {
+        self.validate(maximum_tools, maximum_bytes)?;
+        if previous.is_some_and(|old| old.server != self.server) {
+            return Err(Error::Conflict(
+                "MCP replacement changes server namespace".into(),
+            ));
+        }
+        crate::contract::canonical_json_digest(&(
+            "harness/mcp-catalog-install/v1",
+            self,
+            previous
+                .map(crate::contract::canonical_json_digest)
+                .transpose()?,
+            maximum_tools,
+            maximum_bytes,
+        ))
+    }
+
+    /// Agent-selected installation through the ordinary scope/approval boundary.
+    /// Approval and authorization precede the existing atomic registry mutation;
+    /// publishing schemas grants no authority to call the installed tools.
+    pub async fn install_scoped(
+        &self,
+        registry: &mut ToolRegistry,
+        previous: Option<&Self>,
+        transport: &Arc<dyn McpToolTransport>,
+        projection: &Arc<dyn ToolProjection>,
+        installation: McpCatalogInstallation<'_>,
+    ) -> Result<()> {
+        installation.verifier.verify(installation.scope)?;
+        if !installation
+            .scope
+            .capabilities()
+            .contains(&format!("mcp:install:{}", self.server))
+        {
+            return Err(Error::Unauthorized(
+                "scope does not permit MCP catalog installation".into(),
+            ));
+        }
+        let digest = self.installation_digest(
+            previous,
+            installation.maximum_tools,
+            installation.maximum_bytes,
+        )?;
+        installation
+            .approval
+            .verify(installation.interaction, installation.operation, digest)
+            .await?;
+        self.install(
+            registry,
+            previous,
+            transport,
+            projection,
+            installation.maximum_tools,
+            installation.maximum_bytes,
+        )
+    }
+
     /// Validates a complete catalog before any registry change.
     pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
         crate::registry::validate_component_label(&self.server, "MCP server")?;
@@ -583,6 +669,223 @@ mod tests {
             discovery:McpDiscoveryPolicy::Search, tools:names.iter().map(|name| McpToolDefinition {
             name:(*name).into(), title:None, description:format!("Find {name}"), input_schema:json!({"type":"object"}),
             output_schema:Some(json!({"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}})) }).collect() }
+    }
+
+    struct CatalogApproval {
+        operation: OperationId,
+        interaction: InteractionId,
+        digest: [u8; 32],
+        reads: AtomicUsize,
+    }
+
+    impl ToolApprovalVerifier for CatalogApproval {
+        fn verify<'a>(
+            &'a self,
+            interaction: InteractionId,
+            operation: OperationId,
+            digest: [u8; 32],
+        ) -> BoxProviderFuture<'a, Result<()>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if interaction != self.interaction
+                    || operation != self.operation
+                    || digest != self.digest
+                {
+                    return Err(Error::Unauthorized("catalog approval differs".into()));
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_installation_requires_signed_namespace_and_exact_complete_approval()
+    -> Result<()> {
+        use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "catalog".into(),
+        };
+        let issuer = AuthorityIssuer::new("catalog", [8; 32], authority.clone());
+        let foreign = AuthorityIssuer::new("catalog", [9; 32], authority);
+        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
+        let missing = issuer.root("installer", Capabilities::default());
+        let forged = foreign.root("installer", Capabilities::new(["mcp:install:fixture"]));
+        let verifier = issuer.verifier();
+        let original = catalog("1", &["a", "b"]);
+        let approval = CatalogApproval {
+            operation: OperationId::from_bytes([46; 16]),
+            interaction: InteractionId::from_bytes([47; 16]),
+            digest: original.installation_digest(None, 8, 8192)?,
+            reads: AtomicUsize::new(0),
+        };
+        let transport = Arc::new(Transport::default());
+        let bound: Arc<dyn McpToolTransport> = transport.clone();
+        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let mut registry = ToolRegistry::new();
+        for control in 0..12 {
+            let mut input = original.clone();
+            let mut installation = McpCatalogInstallation {
+                operation: approval.operation,
+                interaction: approval.interaction,
+                scope: &scope,
+                verifier: &verifier,
+                approval: &approval,
+                maximum_tools: 8,
+                maximum_bytes: 8192,
+            };
+            match control {
+                0 => installation.scope = &missing,
+                1 => installation.scope = &forged,
+                2 => installation.operation = OperationId::from_bytes([48; 16]),
+                3 => installation.interaction = InteractionId::from_bytes([48; 16]),
+                4 => installation.maximum_tools = 9,
+                5 => installation.maximum_bytes = 8193,
+                6 => input.revision = "different".into(),
+                7 => input.schema_exposure = McpSchemaExposure::Selected { names: vec![] },
+                8 => input.discovery = McpDiscoveryPolicy::Disabled,
+                9 => input.tools.pop().map(|_| ()).unwrap_or_default(),
+                10 => input
+                    .tools
+                    .first_mut()
+                    .ok_or_else(|| Error::Invalid("fixture".into()))?
+                    .description
+                    .push('!'),
+                _ => {
+                    input
+                        .tools
+                        .first_mut()
+                        .ok_or_else(|| Error::Invalid("fixture".into()))?
+                        .input_schema = json!({"type":"object","additionalProperties":false});
+                }
+            }
+            let reads = approval.reads.load(Ordering::SeqCst);
+            assert!(
+                input
+                    .install_scoped(&mut registry, None, &bound, &projection, installation)
+                    .await
+                    .is_err()
+            );
+            assert!(registry.definitions()?.is_empty());
+            assert!(registry.get_version("mcp.fixture.a", "1").is_none());
+            if control < 2 {
+                assert_eq!(approval.reads.load(Ordering::SeqCst), reads);
+            }
+            assert_eq!(transport.0.load(Ordering::SeqCst), 0);
+        }
+        original
+            .install_scoped(
+                &mut registry,
+                None,
+                &bound,
+                &projection,
+                McpCatalogInstallation {
+                    operation: approval.operation,
+                    interaction: approval.interaction,
+                    scope: &scope,
+                    verifier: &verifier,
+                    approval: &approval,
+                    maximum_tools: 8,
+                    maximum_bytes: 8192,
+                },
+            )
+            .await?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::from_bytes([49; 16]),
+            call_id: "call".into(),
+            name: "mcp.fixture.a".into(),
+            arguments: json!({}),
+        };
+        let installer = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
+        let tool = registry
+            .get("mcp.fixture.a")
+            .ok_or_else(|| Error::NotFound("installed tool".into()))?;
+        assert!(matches!(
+            tool.executor.authorize(Some(&installer), &invocation),
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(registry.definitions()?.len(), 2);
+        assert_eq!(transport.0.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result<()> {
+        use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+        let issuer = AuthorityIssuer::new(
+            "catalog",
+            [8; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "catalog".into(),
+            },
+        );
+        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
+        let verifier = issuer.verifier();
+        let original = catalog("1", &["a", "b"]);
+        let mut replacement = catalog("2", &["a"]);
+        replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };
+        let bound: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
+        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let mut registry = ToolRegistry::new();
+        original.install(&mut registry, None, &bound, &projection, 8, 8192)?;
+        let approval = CatalogApproval {
+            operation: OperationId::from_bytes([50; 16]),
+            interaction: InteractionId::from_bytes([51; 16]),
+            digest: replacement.installation_digest(Some(&original), 8, 8192)?,
+            reads: AtomicUsize::new(0),
+        };
+        let mut stale = original.clone();
+        stale.discovery = McpDiscoveryPolicy::Disabled;
+        for previous in [None, Some(&stale)] {
+            assert!(matches!(
+                replacement
+                    .install_scoped(
+                        &mut registry,
+                        previous,
+                        &bound,
+                        &projection,
+                        McpCatalogInstallation {
+                            operation: approval.operation,
+                            interaction: approval.interaction,
+                            scope: &scope,
+                            verifier: &verifier,
+                            approval: &approval,
+                            maximum_tools: 8,
+                            maximum_bytes: 8192
+                        }
+                    )
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert_eq!(
+                registry.definitions()?,
+                original.model_definitions(8, 8192)?
+            );
+            assert!(registry.get_version("mcp.fixture.a", "2").is_none());
+        }
+        replacement
+            .install_scoped(
+                &mut registry,
+                Some(&original),
+                &bound,
+                &projection,
+                McpCatalogInstallation {
+                    operation: approval.operation,
+                    interaction: approval.interaction,
+                    scope: &scope,
+                    verifier: &verifier,
+                    approval: &approval,
+                    maximum_tools: 8,
+                    maximum_bytes: 8192,
+                },
+            )
+            .await?;
+        assert!(registry.definitions()?.is_empty());
+        assert!(registry.get_version("mcp.fixture.a", "1").is_some());
+        assert!(registry.get_version("mcp.fixture.b", "1").is_some());
+        assert!(registry.get_version("mcp.fixture.a", "2").is_some());
+        Ok(())
     }
 
     #[derive(Default)]
