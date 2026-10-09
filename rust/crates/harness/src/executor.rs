@@ -4250,7 +4250,7 @@ mod tests {
             content: crate::model::ToolResultContent::Parts {
                 parts: vec![crate::model::ModelDataPart::File {
                     file: file.clone(),
-                    policy: crate::model::FileProjectionPolicy::Native(
+                    policy: crate::model::FileProjectionPolicy::Native(Box::new(
                         crate::model::NativeMediaPolicy {
                             intent: crate::model::NativeMediaIntent::Image {
                                 detail: crate::model::ImageDetail::Auto,
@@ -4276,7 +4276,7 @@ mod tests {
                                 implementation_digest: [2; 32],
                             }),
                         },
-                    ),
+                    )),
                 }],
             },
         });

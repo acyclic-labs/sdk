@@ -495,7 +495,7 @@ impl ToolProjection for NativeProjector {
         })
         .chain(self.0.iter().map(|(file, policy)| ModelDataPart::File {
             file: file.clone(),
-            policy: FileProjectionPolicy::Native(policy.clone()),
+            policy: FileProjectionPolicy::Native(Box::new(policy.clone())),
         }))
         .collect();
         serde_json::to_value(ToolResultContent::Parts { parts })
@@ -516,7 +516,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
         role: ModelRole::User,
         content: ModelContent::Part(ModelContentPart::File {
             file: file.clone(),
-            policy: FileProjectionPolicy::Native(policy.clone()),
+            policy: FileProjectionPolicy::Native(Box::new(policy.clone())),
         }),
     }]
 }
@@ -730,13 +730,13 @@ async fn exercise_live_native_boundary() -> Result<()> {
                     .ok_or_else(|| Error::NotFound("image".into()))?
                     .0
                     .clone(),
-                policy: FileProjectionPolicy::Native(
+                policy: FileProjectionPolicy::Native(Box::new(
                     selected
                         .first()
                         .ok_or_else(|| Error::NotFound("image policy".into()))?
                         .1
                         .clone(),
-                ),
+                )),
             },
             ModelContentPart::Text {
                 text: "between".into(),
@@ -747,13 +747,13 @@ async fn exercise_live_native_boundary() -> Result<()> {
                     .ok_or_else(|| Error::NotFound("audio".into()))?
                     .0
                     .clone(),
-                policy: FileProjectionPolicy::Native(
+                policy: FileProjectionPolicy::Native(Box::new(
                     selected
                         .get(1)
                         .ok_or_else(|| Error::NotFound("audio policy".into()))?
                         .1
                         .clone(),
-                ),
+                )),
             },
         ]),
     }];
@@ -1370,7 +1370,7 @@ where
             .iter()
             .map(|(file, policy)| ModelContentPart::File {
                 file: file.clone(),
-                policy: FileProjectionPolicy::Native(policy.clone()),
+                policy: FileProjectionPolicy::Native(Box::new(policy.clone())),
             })
             .collect(),
     );

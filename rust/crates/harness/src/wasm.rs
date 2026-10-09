@@ -257,7 +257,7 @@ enum WasmModelRole {
 enum WasmFileProjectionPolicy {
     Reference,
     BoundedFull,
-    Native(WasmNativeMediaPolicyWire),
+    Native(Box<WasmNativeMediaPolicyWire>),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
@@ -2826,7 +2826,11 @@ fn context_part_to_js(
             let values = js_sys::Reflect::get(&content, &JsValue::from_str("parts"))?;
             for (index, data) in parts.iter().enumerate() {
                 if let crate::model::ModelDataPart::File { file, policy } = data {
-                    let value = js_sys::Reflect::get(&values, &JsValue::from_f64(index as f64))?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        JsValue::from_str("model data index exceeds portable bound")
+                    })?;
+                    let value =
+                        js_sys::Reflect::get(&values, &JsValue::from_f64(f64::from(index)))?;
                     model_file_part_to_js(&value, file, policy)?;
                 }
             }

@@ -784,7 +784,7 @@ mod tests {
                 9 => input.tools.pop().map(|_| ()).unwrap_or_default(),
                 12 => {
                     input.projection_schema =
-                        crate::tool::json_projection_schema(json!({"type":"string"}))
+                        crate::tool::json_projection_schema(json!({"type":"string"}));
                 }
                 10 => input
                     .tools

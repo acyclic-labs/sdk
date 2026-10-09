@@ -4008,6 +4008,10 @@ impl TaskContext {
 
     /// Runs one bounded, provider-neutral model request from live task code.
     /// Durable tasks must use a resumable recorded effect instead of hidden I/O.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep authorization, token admission and bounded streaming in execution order"
+    )]
     pub async fn model_events(
         &self,
         messages: Vec<ModelMessage>,
@@ -6932,7 +6936,7 @@ mod tests {
                         role: crate::model::ModelRole::User,
                         content: ModelContent::Part(ModelContentPart::File {
                             file: foreign,
-                            policy: crate::model::FileProjectionPolicy::Native(
+                            policy: crate::model::FileProjectionPolicy::Native(Box::new(
                                 crate::model::NativeMediaPolicy {
                                     intent: crate::model::NativeMediaIntent::Image {
                                         detail: crate::model::ImageDetail::Auto
@@ -6941,7 +6945,7 @@ mod tests {
                                     maximum_work: 4096,
                                     configuration: None
                                 }
-                            ),
+                            )),
                         }),
                     }],
                     None

@@ -1344,14 +1344,16 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         },
         ModelContentPart::File {
             file: file.clone(),
-            policy: FileProjectionPolicy::Native(acyclic_harness::model::NativeMediaPolicy {
-                intent: acyclic_harness::model::NativeMediaIntent::Image {
-                    detail: acyclic_harness::model::ImageDetail::Auto,
+            policy: FileProjectionPolicy::Native(Box::new(
+                acyclic_harness::model::NativeMediaPolicy {
+                    intent: acyclic_harness::model::NativeMediaIntent::Image {
+                        detail: acyclic_harness::model::ImageDetail::Auto,
+                    },
+                    maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                    maximum_work: 4096,
+                    configuration: None,
                 },
-                maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
-                maximum_work: 4096,
-                configuration: None,
-            }),
+            )),
         },
     ]);
     let invalid = FileRef::new(
@@ -1369,7 +1371,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                     operation_id,
                     input: ModelContent::Part(ModelContentPart::File {
                         file: invalid,
-                        policy: FileProjectionPolicy::Native(
+                        policy: FileProjectionPolicy::Native(Box::new(
                             acyclic_harness::model::NativeMediaPolicy {
                                 intent: acyclic_harness::model::NativeMediaIntent::Image {
                                     detail: acyclic_harness::model::ImageDetail::Auto
@@ -1378,7 +1380,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                                 maximum_work: 4096,
                                 configuration: None
                             }
-                        )
+                        ))
                     }),
                     selected_context: None,
                     max_steps: 1
