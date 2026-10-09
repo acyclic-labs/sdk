@@ -153,7 +153,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn validate_native_configuration(
         &self,
         binding: &crate::model::NativeConfigurationBinding,
-    ) -> Result<(&SchemaRegistry, [u8; 32])> {
+    ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
         let (schemas, expected) = binding.verify_original(
             self.extensions.as_ref(),
             self.extension_schemas.as_ref(),
