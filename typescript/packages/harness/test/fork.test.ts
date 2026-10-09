@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { validateContract, type ForkRequest as NativeForkRequest } from "../generated/wasm/acyclic_harness_wasm.js";
 import { DEFAULT_LIMITS, ExecutionScope, Harness, MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
   MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
   NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkRequest, validateForkSeed,
@@ -458,6 +459,13 @@ test("Summary fork selection preserves bigint work bounds and requires its exact
     ...prepared.request.preparation, inherited_through_sequence: 1n, summary: selection,
   } };
   await validateForkRequest(request);
+  const admitted: NativeForkRequest = validateContract("fork_request", request, null);
+  const nativeLimits = admitted.preparation.summary?.limits;
+  expect(nativeLimits).toBeDefined();
+  for (const field of Object.keys(DEFAULT_LIMITS) as (keyof typeof DEFAULT_LIMITS)[]) {
+    expect(typeof nativeLimits?.[field]).toBe("bigint");
+    expect(nativeLimits?.[field]).toBe(BigInt(DEFAULT_LIMITS[field]));
+  }
   await expect(validateForkReport({ ...prepared, request, summary: null })).rejects.toThrow();
   await expect(validateForkRequest({ ...request, preparation: {
     ...request.preparation, inherited_through_sequence: 0n,

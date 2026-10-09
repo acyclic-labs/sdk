@@ -39,6 +39,8 @@ test("installed local runtime rejects unsupported original option admission befo
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(
     { provider: "mock", name: "installed-native-options", revision: "pinned", options: {} }, {
+      contextCapacity() { calls++; throw new Error("native rejection invoked model capacity"); },
+      countTokens() { calls++; throw new Error("native rejection invoked token accounting"); },
       async *generate() { calls++; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
