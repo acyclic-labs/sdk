@@ -11,7 +11,8 @@ use acyclic_harness::{
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
     interaction::{Interaction, InteractionOutcome},
     mcp::{
-        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolTransport,
+        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolResult,
+        McpToolTransport,
         http::{HttpMcpTransport, NativeMcpHttpProvider},
     },
     resources::ProviderRef,
@@ -157,6 +158,57 @@ struct Projection;
 impl ToolProjection for Projection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         Ok(result.value.clone())
+    }
+}
+
+// Require the actual durable runner's context at both transport boundaries.
+// The underlying HTTP adapter still owns all network I/O and reconciliation.
+struct ScopedHttp(HttpMcpTransport);
+
+fn verify_transport_context(context: &ToolContext) -> Result<()> {
+    let operation = OperationId::from_bytes([43; 16]);
+    if context.task().durable_task_id() != Some(TaskId::from_bytes([42; 16]))
+        || context.task().id() != OperationId::from_bytes([44; 16])
+        || context.operation_id() != operation
+        || context.call_id() != operation.to_string()
+        || !context.task().scope().grants().contains("mcp:call:fixture")
+    {
+        return Err(Error::Unauthorized("durable MCP context changed".into()));
+    }
+    Ok(())
+}
+
+impl McpToolTransport for ScopedHttp {
+    fn call<'a>(
+        &'a self,
+        _: OperationId,
+        _: &'a str,
+        _: Value,
+    ) -> BoxFuture<'a, Result<McpToolResult>> {
+        Box::pin(async { Err(Error::Unsupported("durable task context required".into())) })
+    }
+    fn reconcile<'a>(&'a self, _: OperationId) -> BoxFuture<'a, Result<Option<McpToolResult>>> {
+        Box::pin(async { Err(Error::Unsupported("durable task context required".into())) })
+    }
+    fn call_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        name: &'a str,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<McpToolResult>> {
+        Box::pin(async move {
+            verify_transport_context(&context)?;
+            self.0.call(context.operation_id(), name, arguments).await
+        })
+    }
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+    ) -> BoxFuture<'a, Result<Option<McpToolResult>>> {
+        Box::pin(async move {
+            verify_transport_context(&context)?;
+            self.0.reconcile(context.operation_id()).await
+        })
     }
 }
 
@@ -319,7 +371,7 @@ async fn phase(
             fired: AtomicBool::new(false),
         })
     };
-    let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(
+    let transport: Arc<dyn McpToolTransport> = Arc::new(ScopedHttp(HttpMcpTransport::new(
         Arc::new(NativeMcpHttpProvider::new(
             reqwest::header::HeaderMap::new(),
         )?),
@@ -327,7 +379,7 @@ async fn phase(
         Some("session".into()),
         8192,
         2000,
-    )?);
+    )?));
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
     let mut tools = ToolRegistry::new();
     catalog().install(&mut tools, None, &transport, &projection, 1, 8192)?;

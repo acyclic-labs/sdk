@@ -5,6 +5,7 @@
 
 use crate::{
     Error, OperationId, Result,
+    runtime::ToolContext,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
@@ -131,11 +132,29 @@ pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
         name: &'a str,
         arguments: Value,
     ) -> BoxProviderFuture<'a, Result<McpToolResult>>;
+    /// Calls under the enclosing task's scope and exact tool identity. Hosts
+    /// needing task authority override this; operation-only transports keep
+    /// their existing behavior.
+    fn call_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        name: &'a str,
+        arguments: Value,
+    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+        self.call(context.operation_id(), name, arguments)
+    }
     /// Queries a prior operation without dispatching it again.
     fn reconcile<'a>(
         &'a self,
         operation: OperationId,
     ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>>;
+    /// Queries under the same scoped task context without repeating dispatch.
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+        self.reconcile(context.operation_id())
+    }
 }
 
 /// Explicit model schema exposure for an installed complete catalog.
@@ -412,6 +431,17 @@ struct RemoteTool {
 }
 
 impl RemoteTool {
+    fn authorize_context(&self, context: &ToolContext, invocation: &ToolInvocation) -> Result<()> {
+        if context.operation_id() != invocation.operation_id
+            || context.call_id() != invocation.call_id
+        {
+            return Err(Error::Unauthorized(
+                "MCP tool context identity mismatch".into(),
+            ));
+        }
+        self.authorize(Some(context.task().scope()), invocation)
+    }
+
     fn result(&self, result: McpToolResult) -> Result<ToolResult> {
         if !result.is_error
             && let Some(schema) = &self.remote.output_schema
@@ -474,12 +504,46 @@ impl ToolExecutor for RemoteTool {
                 .transpose()
         })
     }
+
+    fn execute_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            self.authorize_context(&context, &invocation)?;
+            self.result(
+                self.transport
+                    .call_with_context(context, &self.remote.name, invocation.arguments)
+                    .await?,
+            )
+        })
+    }
+
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            self.authorize_context(&context, &invocation)?;
+            self.transport
+                .reconcile_with_context(context)
+                .await?
+                .map(|result| self.result(result))
+                .transpose()
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Capabilities, conversation::Limits, runtime::RuntimeScope};
+    use crate::{
+        Capabilities, Outcome,
+        conversation::Limits,
+        runtime::{Bindings, RuntimeScope, TaskContext, TaskDefinition},
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -519,6 +583,193 @@ mod tests {
             discovery:McpDiscoveryPolicy::Search, tools:names.iter().map(|name| McpToolDefinition {
             name:(*name).into(), title:None, description:format!("Find {name}"), input_schema:json!({"type":"object"}),
             output_schema:Some(json!({"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}})) }).collect() }
+    }
+
+    #[derive(Default)]
+    struct ContextTransport {
+        calls: AtomicUsize,
+        reconciliations: AtomicUsize,
+    }
+
+    fn context_result(context: &ToolContext, structured_content: Value) -> McpToolResult {
+        McpToolResult {
+            content: vec![],
+            structured_content: Some(structured_content),
+            is_error: false,
+            meta: Some(json!({
+                "task": context.task().id(),
+                "operation": context.operation_id(),
+                "call": context.call_id(),
+                "serverGrant": context.task().scope().grants().contains("mcp:call:fixture"),
+                "durableTask": context.task().durable_task_id(),
+            })),
+        }
+    }
+
+    impl McpToolTransport for ContextTransport {
+        fn call<'a>(
+            &'a self,
+            _: OperationId,
+            _: &'a str,
+            _: Value,
+        ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+            Box::pin(async { Err(Error::Unsupported("task context required".into())) })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: OperationId,
+        ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+            Box::pin(async { Err(Error::Unsupported("task context required".into())) })
+        }
+        fn call_with_context<'a>(
+            &'a self,
+            context: ToolContext,
+            name: &'a str,
+            arguments: Value,
+        ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+            Box::pin(async move {
+                assert_eq!(name, "a");
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(context_result(&context, arguments))
+            })
+        }
+        fn reconcile_with_context<'a>(
+            &'a self,
+            context: ToolContext,
+        ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+            self.reconciliations.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Ok(Some(context_result(&context, json!({"value":1})))) })
+        }
+    }
+
+    async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
+        let operation = OperationId::from_bytes([17; 16]);
+        let context = ToolContext::new(task.clone(), operation, "provider-call")?;
+        let invocation = ToolInvocation {
+            operation_id: operation,
+            call_id: "provider-call".into(),
+            name: tool.definition.name.clone(),
+            arguments: json!({"value":1}),
+        };
+        let expected = json!({"task":task.id(), "operation":operation,
+            "call":"provider-call", "serverGrant":true, "durableTask":null});
+        let result = tool
+            .executor
+            .execute_with_context(context.clone(), invocation.clone())
+            .await?;
+        assert_eq!(result.value["_meta"], expected);
+        let recovered = tool
+            .executor
+            .reconcile_with_context(context.clone(), invocation.clone())
+            .await?
+            .ok_or_else(|| Error::NotFound("context result".into()))?;
+        assert_eq!(recovered.value["_meta"], expected);
+        let denied = task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?;
+        for wrong in [
+            ToolContext::new(
+                task.clone(),
+                OperationId::from_bytes([18; 16]),
+                "provider-call",
+            )?,
+            ToolContext::new(task, operation, "different-call")?,
+            ToolContext::new(denied, operation, "provider-call")?,
+        ] {
+            assert!(matches!(
+                tool.executor
+                    .execute_with_context(wrong.clone(), invocation.clone())
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert!(matches!(
+                tool.executor
+                    .reconcile_with_context(wrong, invocation.clone())
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        let mut invalid = invocation;
+        invalid.arguments = json!({"value":"wrong"});
+        assert!(matches!(
+            tool.executor.execute_with_context(context, invalid).await,
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_changes() -> Result<()>
+    {
+        let transport = Arc::new(ContextTransport::default());
+        let bound: Arc<dyn McpToolTransport> = transport.clone();
+        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let mut registry = ToolRegistry::new();
+        catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
+        let tool = registry
+            .get("mcp.fixture.a")
+            .cloned()
+            .ok_or_else(|| Error::NotFound("context fixture".into()))?;
+        let legacy = Arc::new(Transport::default());
+        let legacy_bound: Arc<dyn McpToolTransport> = legacy.clone();
+        let mut legacy_registry = ToolRegistry::new();
+        catalog("1", &["a"]).install(
+            &mut legacy_registry,
+            None,
+            &legacy_bound,
+            &projection,
+            8,
+            8192,
+        )?;
+        let legacy_tool = legacy_registry
+            .get("mcp.fixture.a")
+            .cloned()
+            .ok_or_else(|| Error::NotFound("legacy fixture".into()))?;
+        let definition = TaskDefinition::live("mcp.context", "1", move |task, (): ()| {
+            let tool = tool.clone();
+            let legacy_tool = legacy_tool.clone();
+            async move {
+                check_context_dispatch(task.clone(), &tool).await?;
+                let operation = OperationId::from_bytes([19; 16]);
+                let context = ToolContext::new(task, operation, "legacy-call")?;
+                let invocation = ToolInvocation {
+                    operation_id: operation,
+                    call_id: "legacy-call".into(),
+                    name: legacy_tool.definition.name.clone(),
+                    arguments: json!({}),
+                };
+                assert!(
+                    legacy_tool
+                        .executor
+                        .reconcile_with_context(context.clone(), invocation.clone())
+                        .await?
+                        .is_none()
+                );
+                assert_eq!(
+                    legacy_tool
+                        .executor
+                        .execute_with_context(context, invocation)
+                        .await?
+                        .value["structuredContent"]["value"],
+                    1
+                );
+                Ok(1_u32)
+            }
+        })?;
+        let mut bindings = Bindings::local();
+        bindings.tasks.register(definition)?;
+        bindings.scope = RuntimeScope::new(
+            Capabilities::new(["task:spawn:mcp.context@1", "mcp:call:fixture"]),
+            Limits::default(),
+        )?;
+        let harness = bindings.build()?;
+        let definition = harness.task::<(), u32>("mcp.context")?;
+        assert_eq!(
+            harness.spawn(&definition, ()).await?.result().await?,
+            Outcome::Succeeded(1)
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(transport.reconciliations.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy.0.load(Ordering::SeqCst), 1);
+        Ok(())
     }
     #[test]
     fn catalog_reload_is_atomic_and_retains_pinned_removed_tools() -> Result<()> {

@@ -118,6 +118,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | --- | --- | --- | --- | --- |
 | Atomic reload and retained revision | `McpCatalog::install`, `ToolRegistry` | Host retains installed catalog/configuration identity | Exhaustive replacement subsets; stale/malformed/duplicate controls; actual in-flight call | Pending |
 | No authority by discovery | Catalog search, executor authorization | Ordinary runtime owns signed scope/task admission | Missing/wrong grant; admitted executor integration | Pending |
+| Scoped transport context | Existing `ToolExecutor` context methods forward to `McpToolTransport` | Context-aware provider validates its execution authority | Live task identity/grant controls and durable HTTP disk-reopen matrix | Development controls pass; native model-tool binding and final qualification open |
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
@@ -382,3 +383,46 @@ absence of the owned Cargo/rustc and example host/peer processes were verified.
 These are development receipts, not the final cross-platform, formal, Chromium,
 installed-artifact or full-CI qualification. Model-tool binding, owner review and
 actual-main landing remain open.
+
+### MCP task-context forwarding development checkpoint
+
+The MCP executor now overrides the existing tool executor's contextual dispatch
+and reconciliation methods. Before provider I/O, it checks the context's exact
+operation and provider call ID against the invocation and requires the pinned
+server's grant from the enclosing task scope. It then forwards the complete
+`ToolContext` to the transport and uses the same retained result/schema validator
+as the operation-only path. Context-aware transports can override the new methods;
+their defaults preserve existing operation-only transports. A provider still
+must validate its own execution authority, including native task ownership and
+exact approval where required.
+
+A real live-task fixture uses a transport whose operation-only methods reject
+dispatch and reconciliation. Its results attest the received task, operation,
+call ID, server grant and absent durable task identity. Different operations,
+different call IDs and a scope missing the server grant are rejected before
+either provider method is reached. Invalid structured output is still rejected,
+and a legacy transport works through both contextual defaults.
+
+The existing seven-case HTTP/disk-reopen matrix additionally requires context at
+both transport boundaries. Its wrapper verifies the retained durable task,
+parent operation, tool operation, provider call ID and server grant, then delegates
+to the existing HTTP adapter. The fixture still supplies an already admitted
+task scope; it does not qualify the full task scheduler or a native model-tool
+adapter. The final source passes all 275 Harness library tests, the seven-case
+HTTP disk matrix and strict library/test/example Clippy without new suppressions.
+The library and disk executable builds were run sequentially with one Cargo job.
+
+The cold development-profile WASM check did not complete: Windows denied the
+`wasm-bindgen-shared` dependency build script before execution. Its suspended
+owned child was terminated and Cargo reported the access-denied terminal result;
+both processes exited. The established release-profile WASM build then passed
+with one Cargo job and produced fresh artifacts with unchanged tracked
+declarations. All seven Node/WASM catalog, descriptor and HTTP bridge controls
+pass against those artifacts. These Node controls do not qualify actual Chromium.
+Terminal results and absence of the owned native/WASM compiler and build-script
+processes were verified.
+
+This closes the context-loss seam through the existing registry and tool journal.
+The approved native transport still needs a model-tool consumer using the owning
+task/effect path. Final platform, formal, Chromium, installed-artifact and full-CI
+gates, owner review and actual-main landing remain open.
