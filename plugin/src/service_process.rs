@@ -629,6 +629,7 @@ pub(crate) fn doctor_report(
     if let Some(filters) = obs::active_filters() {
         checks.push(doctor_check("tracing", "pass", filters));
     }
+    checks.push(pi_installation_check());
     let ok = checks
         .iter()
         .all(|check| check.get("status").and_then(Value::as_str) != Some("fail"));

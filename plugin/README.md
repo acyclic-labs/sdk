@@ -69,6 +69,13 @@ acyclic uninstall <host> [--purge]
 acyclic doctor [--json]
 ```
 
+`acyclic install pi [--project]` installs the initial Pi diagnostics extension.
+Pi owns its context, compaction and model retries. This source slice exposes
+`/acyclic-doctor`; recursive workspace execution and host qualification remain
+pending. `acyclic uninstall pi` restores the owned settings and retains cached,
+pinned extension assets. Modified settings are preserved and reported for manual
+resolution. The current API target is Pi 1.1.0; see [Pi qualification](pi/README.md).
+
 `acyclic doctor` reports the packaged binary identity, plugin/cache version,
 marketplace and hook assets, service and durable recovery state, native mount
 backend, CLI availability, and an exact-binary-bound live

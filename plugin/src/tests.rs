@@ -4183,6 +4183,7 @@ async fn spawn_preparation_case() {
         .expect("root turn");
     let incomplete_key = [9; 16];
     control.state.pending.push_back(PendingSpawn {
+        task_binding: PluginTaskBinding::HostManaged,
         parent_agent_id: control.state.root_agent_id.clone(),
         tool_use_id: "incomplete".to_owned(),
         active_root_id: None,
@@ -5884,6 +5885,7 @@ fn persisted_mount_paths_are_derived_not_authoritative() {
     assert_eq!(staging_segments[1].len(), 22);
     assert_eq!(staging_segments[2].len(), 22);
     let mut route = Route {
+        task_binding: PluginTaskBinding::HostManaged,
         agent_id: "child".to_owned(),
         turn_id: "turn".to_owned(),
         context_id: [2; 16],
@@ -6778,4 +6780,65 @@ fn structured_paths_reject_symlink_escapes() {
         "command": "*** Begin Patch\n*** Add File: escape/file\n*** End Patch"
     });
     assert!(rewrite_tool_input("apply_patch", patch, temporary.path(), &child).is_err());
+}
+#[test]
+fn pi_install_pins_assets_preserves_settings_and_refuses_modified_uninstall() {
+    let temporary = tempfile::tempdir().expect("Pi test directory");
+    let settings = temporary.path().join("settings.json");
+    let assets = temporary.path().join("assets");
+    let executable = temporary.path().join("acyclic path with spaces.exe");
+    let prior = json!({"theme":"dark", "extensions":["foreign.ts"]});
+    fs::write(&settings, serde_json::to_vec(&prior).unwrap()).unwrap();
+    install_pi_at(&settings, &assets, &executable).expect("install Pi");
+    install_pi_at(&settings, &assets, &executable).expect("idempotent Pi install");
+    let installed = read_optional_json(&settings, "Pi settings")
+        .unwrap()
+        .unwrap();
+    assert_eq!(installed["theme"], prior["theme"]);
+    assert_eq!(installed["extensions"][0], "foreign.ts");
+    assert_eq!(installed["extensions"].as_array().unwrap().len(), 2);
+    let asset = Path::new(installed["extensions"][1].as_str().unwrap());
+    let source = fs::read_to_string(asset).unwrap();
+    assert!(source.contains(&serde_json::to_string(&executable).unwrap()));
+    assert!(!source.contains("__ACYCLIC_EXECUTABLE__"));
+    let mut edited = installed.clone();
+    edited["theme"] = json!("light");
+    fs::write(&settings, serde_json::to_vec(&edited).unwrap()).unwrap();
+    assert!(install_pi_at(&settings, &assets, &executable).is_err());
+    assert!(remove_owned_json(&settings, "pi-extension", "Pi settings").is_err());
+    assert_eq!(
+        read_optional_json(&settings, "Pi settings").unwrap(),
+        Some(edited)
+    );
+    fs::write(&settings, serde_json::to_vec(&installed).unwrap()).unwrap();
+    remove_owned_json(&settings, "pi-extension", "Pi settings").unwrap();
+    assert_eq!(
+        read_optional_json(&settings, "Pi settings").unwrap(),
+        Some(prior)
+    );
+    fs::write(asset, "corrupt").unwrap();
+    assert!(install_pi_at(&settings, &assets, &executable).is_err());
+}
+
+#[test]
+fn adapter_state_requires_single_v1_and_explicit_task_binding() {
+    assert_eq!(ADAPTER_STATE_VERSION, 1);
+    let state = AdapterState {
+        version: ADAPTER_STATE_VERSION,
+        ..AdapterState::default()
+    };
+    validate_state_version(&state).expect("current producer version");
+    let current = serde_json::to_value(&state).unwrap();
+    assert_eq!(current["task_binding"]["kind"], "host_managed");
+    for version in [4, 5] {
+        let mut historical = state.clone();
+        historical.version = version;
+        assert!(validate_state_version(&historical).is_err());
+    }
+    let mut historical_shape = current;
+    historical_shape
+        .as_object_mut()
+        .unwrap()
+        .remove("task_binding");
+    assert!(serde_json::from_value::<AdapterState>(historical_shape).is_err());
 }
