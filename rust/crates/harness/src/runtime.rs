@@ -9,7 +9,7 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, Reducer, Scope},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry, Scope},
     durable_tool::{ResumableToolRegistry, ResumableToolSession},
     executor::ModelEventAdmission,
     extension::{ExtensionLeases, ExtensionRuntime},
@@ -1650,6 +1650,7 @@ pub struct RuntimeScope {
     extensions: Option<ExtensionAdmission>,
     extensions_sealed: bool,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
+    extension_schemas: Option<SchemaRegistry>,
 }
 
 impl RuntimeScope {
@@ -1663,6 +1664,7 @@ impl RuntimeScope {
             extensions: None,
             extensions_sealed: false,
             extension_runtime: None,
+            extension_schemas: None,
         })
     }
 
@@ -1690,6 +1692,7 @@ impl RuntimeScope {
             extensions: self.extensions.clone(),
             extensions_sealed: true,
             extension_runtime: self.extension_runtime.clone(),
+            extension_schemas: self.extension_schemas.clone(),
         })
     }
 
@@ -1727,8 +1730,9 @@ impl RuntimeScope {
             ));
         }
         self.extensions = selection;
+        self.extension_schemas = Some(agent.admission_schema_registry());
         if let Some(runtime) = &self.extension_runtime {
-            runtime.validate_admission(self.extensions.as_ref())?;
+            self.validate_extension_runtime(runtime)?;
         }
         self.extensions_sealed = true;
         Ok(self)
@@ -1742,9 +1746,36 @@ impl RuntimeScope {
 
     /// Binds process-local executable implementations for this scope.
     pub fn with_extension_runtime(mut self, runtime: Arc<ExtensionRuntime>) -> Result<Self> {
-        runtime.validate_admission(self.extensions.as_ref())?;
+        self.validate_extension_runtime(&runtime)?;
+        if let Some(original) = &self.extension_runtime
+            && original.selected() != runtime.selected()
+        {
+            return Err(Error::Conflict(
+                "runtime scope cannot retarget linked extension implementations".into(),
+            ));
+        }
         self.extension_runtime = Some(runtime);
         Ok(self)
+    }
+
+    fn validate_extension_runtime(&self, runtime: &ExtensionRuntime) -> Result<()> {
+        runtime.validate_admission(self.extensions.as_ref())?;
+        if let Some(schemas) = &self.extension_schemas {
+            for identity in runtime.selected() {
+                if schemas.implementation_digest(&identity.name, identity.version)?
+                    != identity.digest
+                {
+                    return Err(Error::Conflict(
+                        "linked implementation differs from original admission registry".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn extension_schema_registry(&self) -> Option<SchemaRegistry> {
+        self.extension_schemas.clone()
     }
 
     /// Returns the executable extension selection attached to this scope.
@@ -1766,9 +1797,14 @@ impl RuntimeScope {
         if let Some(extensions) = &extensions {
             extensions.validate()?;
         }
+        if self.extensions_sealed && self.extensions != extensions {
+            return Err(Error::Conflict(
+                "replay cannot retarget original extension admission".into(),
+            ));
+        }
         self.extensions = extensions;
         if let Some(runtime) = &self.extension_runtime {
-            runtime.validate_admission(self.extensions.as_ref())?;
+            self.validate_extension_runtime(runtime)?;
         }
         self.extensions_sealed = true;
         Ok(self)

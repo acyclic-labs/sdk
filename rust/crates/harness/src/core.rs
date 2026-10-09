@@ -1386,6 +1386,47 @@ impl SchemaRegistry {
         Ok(record)
     }
 
+    pub(crate) fn implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
+        Ok(self
+            .pinned_binding(name, version, None)?
+            .implementation_digest)
+    }
+
+    /// Checks an exact configuration against the supplied immutable registry and linked implementation.
+    /// The host separately authenticates the retained admission, membership, read grant and fence.
+    pub(crate) fn verify_configuration_binding(
+        &self,
+        record: &ExtensionConfiguration,
+        expected_implementation_digest: [u8; 32],
+        bytes: &[u8],
+        limits: crate::conversation::Limits,
+    ) -> Result<()> {
+        limits.validate_file(&record.content)?;
+        let byte_length = u64::try_from(bytes.len())
+            .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
+        if byte_length > limits.file_bytes
+            || byte_length > limits.render_bytes
+            || record.content.descriptor().byte_length() > limits.render_bytes
+        {
+            return Err(Error::Invalid(
+                "configuration exceeds native option byte limits".into(),
+            ));
+        }
+        if self.configuration_record(&record.extension, &record.content)? != *record {
+            return Err(Error::Conflict(
+                "configuration registry record mismatch".into(),
+            ));
+        }
+        let binding =
+            self.pinned_binding(&record.extension.name, record.extension.version, None)?;
+        if binding.implementation_digest != expected_implementation_digest {
+            return Err(Error::Conflict(
+                "configuration implementation binding mismatch".into(),
+            ));
+        }
+        self.validate_configuration_bytes(&record.extension, &record.content, bytes)
+    }
+
     fn validate_configuration_bytes(
         &self,
         extension: &ExtensionDependency,
@@ -1467,6 +1508,11 @@ impl Reducer {
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Immutable registry captured with a sealed task extension admission.
+    pub(crate) fn admission_schema_registry(&self) -> SchemaRegistry {
+        self.schemas.clone()
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.
