@@ -84,10 +84,16 @@ impl ToolDefinition {
 /// The value schema is a child schema; local references resolve from the complete envelope.
 #[must_use]
 pub fn json_projection_schema(value_schema: Value) -> Value {
-    let mut schema = serde_json::json!({"type":"object","properties":{"kind":{"const":"json"}},
-        "required":["kind","value"],"additionalProperties":false});
-    schema["properties"]["value"] = value_schema;
-    schema
+    let properties = serde_json::Map::from_iter([
+        ("kind".into(), serde_json::json!({"const":"json"})),
+        ("value".into(), value_schema),
+    ]);
+    Value::Object(serde_json::Map::from_iter([
+        ("type".into(), Value::String("object".into())),
+        ("properties".into(), Value::Object(properties)),
+        ("required".into(), serde_json::json!(["kind", "value"])),
+        ("additionalProperties".into(), Value::Bool(false)),
+    ]))
 }
 
 /// One admitted invocation.
