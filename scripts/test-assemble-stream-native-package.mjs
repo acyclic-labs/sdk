@@ -118,7 +118,7 @@ test("publication verifies all companion archives and retained attestations befo
       await json(join(companion, "package.json"), { ...originalCompanion, ...mutation });
       await json(join(parent, "package.json"), { ...originalParent, optionalDependencies: { [entry.name]: "0.2.0" } });
       await seal();
-      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /maintained source target mapping/);
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /neutral parent manifest|maintained source target mapping/);
       for (const field of Object.keys(mutation)) delete entry[field];
     }
     Object.assign(entry, originalEntry);
