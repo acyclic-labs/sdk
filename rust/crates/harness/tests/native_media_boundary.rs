@@ -359,13 +359,13 @@ impl ModelProvider for MockAdapter {
                 for part in message.content.parts() {
                     match part {
                         ModelContentPart::Text { text } => {
-                            parts.push(CapturedPart::Text(text.clone()))
+                            parts.push(CapturedPart::Text(text.clone()));
                         }
                         ModelContentPart::File { file, policy } => {
-                            parts.push(self.file(file, policy).await?)
+                            parts.push(self.file(file, policy).await?);
                         }
                         ModelContentPart::ToolCall { call_id, name, .. } => {
-                            parts.push(CapturedPart::Call(call_id.clone(), name.clone()))
+                            parts.push(CapturedPart::Call(call_id.clone(), name.clone()));
                         }
                         ModelContentPart::ToolResult {
                             call_id,
@@ -375,16 +375,16 @@ impl ModelProvider for MockAdapter {
                             parts.push(CapturedPart::Result(call_id.clone(), name.clone()));
                             match content {
                                 ToolResultContent::Json { value } => {
-                                    parts.push(CapturedPart::Json(value.clone()))
+                                    parts.push(CapturedPart::Json(value.clone()));
                                 }
                                 ToolResultContent::Parts { parts: data } => {
                                     for part in data {
                                         match part {
                                             ModelDataPart::Text { text } => {
-                                                parts.push(CapturedPart::Text(text.clone()))
+                                                parts.push(CapturedPart::Text(text.clone()));
                                             }
                                             ModelDataPart::File { file, policy } => {
-                                                parts.push(self.file(file, policy).await?)
+                                                parts.push(self.file(file, policy).await?);
                                             }
                                         }
                                     }
@@ -447,7 +447,10 @@ impl ModelProvider for MockAdapter {
             {
                 return Err(Error::Conflict("fixture original attempt differs".into()));
             }
-            Ok(Some(events[attempt.observed.len()..].to_vec()))
+            let remaining = events
+                .get(attempt.observed.len()..)
+                .ok_or_else(|| Error::Conflict("fixture observed prefix exceeds receipt".into()))?;
+            Ok(Some(remaining.to_vec()))
         })
     }
 }
@@ -1307,7 +1310,8 @@ impl ResumableMachine for ReplayMachine {
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the fixture explicitly supplies original admission and provider bindings"
+    clippy::cognitive_complexity,
+    reason = "one retained original-admission scenario includes reopen and mutation controls"
 )]
 async fn exercise_retained_native_boundary<A, O>(
     host: Arc<FilesystemHost<A, O>>,
