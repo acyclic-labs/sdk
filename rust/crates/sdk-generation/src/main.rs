@@ -1440,7 +1440,7 @@ fn execute_historical_profiles(
                 } else {
                     rustdoc_dir
                         .join("profiles")
-                        .join(format!("{}.json", spec.id().0.replace(';', "_")))
+                        .join(profile_receipt_filename(&spec, ""))
                 };
                 fs::create_dir_all(
                     receipt
@@ -1591,7 +1591,7 @@ fn execute_default_profiles(
                 let prefix = if wasm_binding { "wasm-" } else { "" };
                 rustdoc_dir
                     .join("profiles")
-                    .join(format!("{prefix}{}.json", profile.id().0.replace(';', "_")))
+                    .join(profile_receipt_filename(&profile, prefix))
             };
             if let Some(parent) = receipt.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
@@ -1616,6 +1616,15 @@ fn execute_default_profiles(
         }
     }
     Ok(executed)
+}
+
+// Feature identities stay complete in receipt metadata, while physical path
+// components have a fixed size on every supported filesystem.
+fn profile_receipt_filename(profile: &ProfileSpec, prefix: &str) -> String {
+    format!(
+        "{prefix}profile-{:x}.json",
+        Sha256::digest(profile.id().0.as_bytes())
+    )
 }
 
 fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), CliError> {

@@ -956,6 +956,54 @@ fn concurrent_preview_publications_are_idempotent() {
 }
 
 #[test]
+fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
+    let fixture = feature_profile_fixture();
+    let feature = "native-execution-observation-".repeat(8);
+    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
+    let original = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{original}\n{feature} = []\n")).unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "long feature identity fixture"],
+    );
+    let generated = run_generate_execute_profiles(&fixture);
+    assert!(generated.status.success(), "{}", output_message(&generated));
+    let receipts: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
+    )
+    .unwrap();
+    let long_profiles = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|receipt| {
+            receipt["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|value| value == &feature))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !long_profiles.is_empty(),
+        "the long Cargo feature must be executed"
+    );
+    for receipt in long_profiles {
+        assert!(receipt["profile"].as_str().unwrap().len() > 255);
+        let relative = receipt["rustdocFile"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("rustdoc/")
+            .unwrap();
+        let path = fixture.rustdoc.join(relative);
+        assert!(path.file_name().unwrap().to_string_lossy().len() < 255);
+        assert!(path.is_file(), "the executed receipt must be retained");
+        assert!(path.with_extension("source.sha256").is_file());
+    }
+    let drift = run_drift_execute_profiles(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+}
+
+#[test]
 fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     let fixture = feature_profile_fixture();
     let result = run_generate_execute_profiles(&fixture);
