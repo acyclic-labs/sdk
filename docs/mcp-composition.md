@@ -701,3 +701,43 @@ fixture received loopback `EACCES`; rerunning the same suite with loopback acces
 passes all twelve. Fixture syntax and whitespace checks pass. These receipts
 qualify this ABI repair, not the still-open installed, Chromium, stock-loop,
 final-platform, formal/fault or full-CI requirements.
+
+### Joined native receipt and tool journal checkpoint
+
+The four native launch/observation receipt cuts now dispatch through the same
+approved `McpToolTransport` and `DurableToolRunner` as the positive consumer.
+The initial interrupted attempt stops before a retry, retaining the tool's
+dispatch boundary while the native receipt fault is consumed. Physical disk
+restart still drops every old runtime/storage handle, removes the original
+process output and checks the independent peer trace. Reopened effect and tool
+journals reconcile the retained attempt; no second transport dispatch is allowed.
+An uncommitted or launch-only native observation remains indeterminate. A
+committed observation whose reply was lost can complete the tool on recovery.
+Bounded public journal reads verify exactly `Started`/`ToolStarted` for unresolved
+outcomes and one additional `ToolCompleted` for known results. This extends the
+existing fixture rather than adding a process or recovery owner. Fault injection
+at the tool journal's own claim/terminal commit boundaries remains a separate
+open requirement.
+
+Automatic CI run `37872221310` at `57d9ba4fb2d05cbe8cd74e13e6cc55ea809958c1`
+completed successfully: plan, policy, TypeScript, gate, aggregate and record pass;
+Windows is skipped. Its gate reports 2,045 tests passed and 70 skipped. The saved
+UTF-8 gate log hashes to
+`6F6770F5117310351E6C373367D7C829E73F893AD2CE8894AB5115BCE34C862D`.
+This receipt predates the unsigned WASM and joined fault repairs.
+
+Further inspection found that the earlier custom listing branch also reported
+the batch for `--list --ignored`. The old local binary reproduces that result,
+which lets nextest classify the batch as ignored. Therefore this successful
+gate is not evidence that the custom native batch ran. The listing branch now
+reports no ignored tests while retaining the ordinary batch listing. No local
+nextest installation is available; exact CLI listing controls and the next CI
+run must establish the repaired behavior in nextest itself. The rebuilt local
+binary reports exactly one ordinary batch and an empty ignored list. Its exact
+batch invocation passes the native/call/discovery positives, all four joined
+memory receipt cuts, lost response, eight complete physical disk-reopen cases
+and actual host termination, with the persisted tool-event assertions enabled.
+Strict example Clippy passes without a new suppression. The final rebuild used
+one Cargo job after 34% CPU/40,432 MiB free-memory headroom and completed in
+3m05s; the exact final batch completed in 7.83 seconds. Formatting and whitespace
+checks pass. These are development receipts; full final qualification stays open.

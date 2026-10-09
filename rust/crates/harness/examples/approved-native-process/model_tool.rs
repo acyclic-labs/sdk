@@ -5,6 +5,7 @@ use super::*;
 use acyclic_harness::{
     Error, Outcome,
     durable_tool::DurableToolRunner,
+    executor::{ExecutionEvent, ExecutionRecord},
     mcp::{
         McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolResult,
         McpToolTransport,
@@ -179,6 +180,7 @@ pub(super) async fn run<P: StreamProvider>(
     journal: Arc<dyn ExecutionJournal>,
     replay: bool,
     completed: bool,
+    interrupted: bool,
 ) -> Result<()> {
     let descriptor = approved
         .request
@@ -223,8 +225,8 @@ pub(super) async fn run<P: StreamProvider>(
             ));
         }
     }
-    let runner = DurableToolRunner::new(tools, journal);
-    for _ in 0..2 {
+    let runner = DurableToolRunner::new(tools, journal.clone());
+    for _ in 0..if interrupted && !replay { 1 } else { 2 } {
         let result = runner
             .run_with_context(
                 task_id,
@@ -236,18 +238,60 @@ pub(super) async fn run<P: StreamProvider>(
             .await?;
         verify_result(result, &arguments, operation, completed)?;
     }
+    verify_journal(journal.as_ref(), operation, completed).await?;
     if transport.calls.load(Ordering::SeqCst) != usize::from(!replay)
         || transport.reconciliations.load(Ordering::SeqCst)
             != if completed {
-                0
+                usize::from(interrupted && replay)
             } else if replay {
                 2
             } else {
-                1
+                usize::from(!interrupted)
             }
     {
         return Err(Error::Invalid(
             "native tool replay repeated dispatch or skipped required reconciliation".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_journal(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    completed: bool,
+) -> Result<()> {
+    let mut records = Vec::new();
+    for _ in 0..4 {
+        let after = records
+            .last()
+            .map_or(0, |record: &ExecutionRecord| record.sequence);
+        let batch = journal.replay(operation, after, 4).await?;
+        if batch.is_empty() {
+            break;
+        }
+        records.extend(batch);
+        if records.len() > 3 {
+            return Err(Error::Invalid(
+                "native MCP tool journal has excess events".into(),
+            ));
+        }
+    }
+    if !matches!(
+        records.first().map(|record| &record.event),
+        Some(ExecutionEvent::Started { .. })
+    ) || !matches!(
+        records.get(1).map(|record| &record.event),
+        Some(ExecutionEvent::ToolStarted { .. })
+    ) || records.len() != if completed { 3 } else { 2 }
+        || (completed
+            && !matches!(
+                records.get(2).map(|record| &record.event),
+                Some(ExecutionEvent::ToolCompleted { .. })
+            ))
+    {
+        return Err(Error::Invalid(
+            "native MCP tool journal changed its dispatch or completion boundary".into(),
         ));
     }
     Ok(())

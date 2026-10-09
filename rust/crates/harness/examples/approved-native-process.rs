@@ -514,7 +514,7 @@ where
         file.write_all(&serde_json::to_vec(&restart)?)?;
         file.sync_all()?;
     }
-    if mcp == Some(McpStdioMethod::CallTool) && receipt_fault.is_none() && restart_path.is_none() {
+    if mcp == Some(McpStdioMethod::CallTool) && restart_path.is_none() {
         model_tool::run(
             model_tool::Approved {
                 recovery: Recovery {
@@ -533,19 +533,26 @@ where
                 .await?,
             approvals.clone(),
             false,
-            !lost_response,
+            !lost_response && receipt_fault.is_none(),
+            receipt_fault.is_some(),
         )
         .await?;
     }
-    let first = effects.run_task_effect(&owner, command, plan).await;
-    let status = verify_first_result(
-        first,
-        content.as_ref(),
-        &request,
-        receipt_fault,
-        lost_response,
-    )
-    .await?;
+    let status = if mcp == Some(McpStdioMethod::CallTool) && receipt_fault.is_some() {
+        // The tool journal owns the dispatch. Its interrupted first observation
+        // was checked above; retain that cut until the storage providers reopen.
+        None
+    } else {
+        let first = effects.run_task_effect(&owner, command, plan).await;
+        verify_first_result(
+            first,
+            content.as_ref(),
+            &request,
+            receipt_fault,
+            lost_response,
+        )
+        .await?
+    };
     let applied = receipt_fault.is_none_or(|(kind, _)| kind == "observed");
     verify_publication(&files, &destination, applied && !lost_response).await?;
     drop(effects);
@@ -601,8 +608,7 @@ where
         .mcp_stdio
         .as_ref()
         .is_some_and(|request| request.method == McpStdioMethod::CallTool)
-        && receipt_fault.is_none()
-        && seed.first.is_some()
+        && (receipt_fault.is_some() || seed.first.is_some())
     {
         let journal = execution_journal(
             stream.clone(),
@@ -629,7 +635,8 @@ where
                 .await?,
             journal,
             true,
-            !lost_response,
+            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
+            receipt_fault.is_some(),
         )
         .await?;
     }
@@ -1088,7 +1095,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // This example uses its own main so the same executable can be the stdio
     // peer. Nextest discovery must list the batch without running its effects.
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
-        println!("approved_native_process: test");
+        if !std::env::args().any(|arg| arg == "--ignored") {
+            println!("approved_native_process: test");
+        }
         return Ok(());
     }
     #[cfg(all(test, feature = "filesystem-local"))]
