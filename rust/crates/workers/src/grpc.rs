@@ -1,16 +1,9 @@
 //! Authenticated client for the generated Workers v1 service.
 
 use crate::wire;
-use http_body::Body as _;
 use prost::Message;
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
 use tonic::{
     Request, Status,
-    body::Body,
-    codegen::{BoxFuture, Bytes, Service, http},
     metadata::{Ascii, MetadataValue},
     service::Interceptor,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
@@ -35,120 +28,27 @@ pub type Client = wire::workers_service_client::WorkersServiceClient<
     tonic::service::interceptor::InterceptedService<TracedChannel, BearerAuth>,
 >;
 
-/// Channel that opens one `acyclic.workers.grpc.call` span per RPC, open until the
-/// response body ends so it covers the body and a status sent in trailers.
+/// Shared transport-status channel retaining the originating trace context.
+///
+/// A transport OK does not certify typed protobuf decoding or a unary message.
+pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
+
+/// Statically named workers RPC span factory.
 #[derive(Clone, Debug)]
-pub struct TracedChannel(pub(crate) Channel);
+pub struct CallSpan;
 
-impl Service<http::Request<Body>> for TracedChannel {
-    type Response = http::Response<Body>;
-    type Error = tonic::transport::Error;
-    type Future = BoxFuture<Self::Response, Self::Error>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.0.poll_ready(cx)
-    }
-
-    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let span = tracing::info_span!(
-            "acyclic.workers.grpc.call",
-            rpc = request.uri().path().rsplit('/').next(),
+impl acyclic_grpc_observability::CallSpan for CallSpan {
+    fn span(rpc: Option<&str>) -> tracing::Span {
+        tracing::trace_span!(
+            "acyclic.workers.grpc.transport",
+            rpc,
             rpc.code = Empty,
             outcome = Empty,
-            error.kind = Empty,
-        );
-        let response = self.0.call(request);
-        Box::pin(tracing::Instrument::instrument(
-            async move {
-                let span = tracing::Span::current();
-                match response.await {
-                    Err(error) => {
-                        record(&span, Err("transport"));
-                        Err(error)
-                    }
-                    // A trailers-only response carries its status in the headers.
-                    Ok(response)
-                        if response.headers().contains_key("grpc-status")
-                            || response.body().is_end_stream() =>
-                    {
-                        record(&span, Ok(Some(response.headers())));
-                        Ok(response)
-                    }
-                    Ok(response) => {
-                        Ok(response.map(|body| Body::new(TracedBody(body, Some(span)))))
-                    }
-                }
-            },
-            span,
-        ))
+            outcome.scope = "grpc_transport",
+            error.kind = Empty
+        )
     }
 }
-
-/// Response body that records the final gRPC status and closes the span at its end.
-struct TracedBody(Body, Option<tracing::Span>);
-
-impl TracedBody {
-    fn finish(&mut self, status: Result<Option<&http::HeaderMap>, &'static str>) {
-        if let Some(span) = self.1.take() {
-            record(&span, status);
-        }
-    }
-}
-
-impl http_body::Body for TracedBody {
-    type Data = Bytes;
-    type Error = Status;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Status>>> {
-        let frame = std::task::ready!(Pin::new(&mut self.0).poll_frame(cx));
-        match &frame {
-            Some(Ok(frame)) => {
-                if let Some(trailers) = frame.trailers_ref() {
-                    self.finish(Ok(Some(trailers)));
-                }
-            }
-            Some(Err(_)) => self.finish(Err("transport")),
-            None => self.finish(Ok(None)),
-        }
-        Poll::Ready(frame)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.0.is_end_stream()
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.0.size_hint()
-    }
-}
-
-impl Drop for TracedBody {
-    fn drop(&mut self) {
-        self.finish(Err("cancelled"));
-    }
-}
-
-/// Records `grpc-status` (absent means OK) or a failure kind on an RPC span.
-fn record(span: &tracing::Span, status: Result<Option<&http::HeaderMap>, &'static str>) {
-    let code = status.map(|headers| {
-        headers
-            .and_then(|headers| headers.get("grpc-status"))
-            .and_then(|code| code.to_str().ok()?.parse::<u64>().ok())
-            .unwrap_or(0)
-    });
-    match code {
-        Ok(0) => span.record("rpc.code", 0).record("outcome", "ok"),
-        Ok(code) => span
-            .record("rpc.code", code)
-            .record("outcome", "err")
-            .record("error.kind", "status"),
-        Err(kind) => span.record("outcome", "err").record("error.kind", kind),
-    };
-}
-
 /// Client configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -203,7 +103,7 @@ pub async fn connect_with_ca_certificate(
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
             tonic::service::interceptor::InterceptedService::new(
-                TracedChannel(channel),
+                TracedChannel::new(channel),
                 BearerAuth(authorization),
             ),
             endpoint

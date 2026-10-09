@@ -46,7 +46,11 @@ sha2.workspace = true
 thiserror.workspace = true
 tonic-prost.workspace = true
 
+[dev-dependencies]
+http-body = "1.1.0"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
 tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring", "tls-webpki-roots"] }
@@ -69,6 +73,7 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 
 [build-dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
 napi-build = { version = "2.3.1", optional = true }
 prost.workspace = true
 acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
