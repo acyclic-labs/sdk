@@ -7,8 +7,8 @@ import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const buf = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
-const run = (args, stdout = "inherit") => {
-  const result = spawnSync(buf, args, { cwd: root, stdio: ["inherit", stdout, "inherit"], maxBuffer: 1 << 20 });
+const run = (args, capture = false) => {
+  const result = spawnSync(buf, args, { cwd: root, stdio: ["inherit", capture ? "pipe" : "inherit", "inherit"], maxBuffer: 1 << 20 });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
   return result.stdout;
@@ -17,7 +17,7 @@ const run = (args, stdout = "inherit") => {
 run(["generate"]);
 for (const [source, destination] of generatedDescriptors) {
   mkdirSync(dirname(join(root, destination)), { recursive: true });
-  writeChanged(join(root, destination), run(["build", "--path", source, "-o", "-"], "pipe"));
+  writeChanged(join(root, destination), run(["build", "--path", source, "-o", "-"], true));
 }
 writeChanged(
   join(root, "typescript/packages/filesystem/generated/descriptor-digest.js"),
