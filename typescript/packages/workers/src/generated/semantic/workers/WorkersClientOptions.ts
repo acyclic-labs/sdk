@@ -22,7 +22,7 @@ transport?: WorkersTransportPreference,
  */
 maximumMessageBytes?: number, 
 /**
- * Positive whole-operation deadline, bounded to i32::MAX milliseconds.
+ * Positive whole-operation deadline, bounded to `i32::MAX` milliseconds.
  */
 deadlineMillis?: number, 
 /**

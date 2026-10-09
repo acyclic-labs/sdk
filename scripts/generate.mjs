@@ -32,6 +32,7 @@ if (actors.status !== 0) process.exit(actors.status ?? 1);
 const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", join(root, "proto"), join(root, "typescript/packages/workers/src/generated/semantic")], { cwd: root, stdio: "inherit" });
 if (workers.error) throw workers.error;
 if (workers.status !== 0) process.exit(workers.status ?? 1);
+run(["format", "-w", join(root, "proto/workers/v1/workers.proto")]);
 await serviceGenerate("Workers", join(root, "typescript/packages/workers/src/generated"), join(root, "typescript/packages/workers/src/generated/workers-service.ts"));
 copyFileSync(join(root, "typescript/packages/actors/src/generated/readonly.ts"), join(root, "typescript/packages/workers/src/generated/readonly.ts"));
 

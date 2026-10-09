@@ -36,7 +36,7 @@ pub struct WorkersClientOptions {
     /// Positive message ceiling; defaults to 16 MiB and cannot exceed it.
     #[ts(optional)]
     pub maximum_message_bytes: Option<u32>,
-    /// Positive whole-operation deadline, bounded to i32::MAX milliseconds.
+    /// Positive whole-operation deadline, bounded to `i32::MAX` milliseconds.
     #[ts(optional)]
     pub deadline_millis: Option<u32>,
     /// Additional native PEM root, at most 64 KiB; browser trust is platform-owned.

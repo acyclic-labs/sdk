@@ -68,7 +68,7 @@ impl WorkersCancellation {
 }
 
 impl Failure {
-    fn status(status: tonic::Status, maximum: usize) -> Self {
+    fn status(status: &tonic::Status, maximum: usize) -> Self {
         if status.details().len() > maximum {
             return Self::local(
                 "response_too_large",
@@ -290,7 +290,7 @@ macro_rules! typed_methods {
                 let mut client = self.inner.clone();
                 run(async move {
                     let output = client.$method(request(input, &metadata, deadline)).await
-                        .map_err(|status| Failure::status(status, self.maximum))?.into_inner();
+                        .map_err(|status| Failure::status(&status, self.maximum))?.into_inner();
                     checked_response::<wire::$output, domain::$output>(output)
                 }, token, deadline).await
             }
@@ -383,7 +383,7 @@ where
             match method { $( $name => {
                 let input = admit::<wire::$input, domain::$input>(bytes, $validate)?;
                 let output = client.$method(request(input, metadata, deadline)).await
-                    .map_err(|status| Failure::status(status, maximum))?.into_inner();
+                    .map_err(|status| Failure::status(&status, maximum))?.into_inner();
                 response::<wire::$output, domain::$output>(output, maximum)
             }, )* _ => Err(Failure::local("invalid_argument", "unknown Workers service method")) }
         };

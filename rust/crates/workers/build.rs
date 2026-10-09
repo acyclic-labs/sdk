@@ -1,5 +1,9 @@
 //! Build Workers descriptors and tonic directly from executable Rust declarations.
 #[path = "src/admission.rs"]
+#[allow(
+    dead_code,
+    reason = "Build-time schema rendering does not dispatch invocation validators"
+)]
 mod admission;
 pub use admission::{
     ContractError, MAX_INLINE_BYTES, MAX_JOB_ATTEMPTS, MAX_MODULE_BYTES, validate_publish,

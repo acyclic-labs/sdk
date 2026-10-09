@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package acyclic.workers.v1;
 
-
 option go_package = "github.com/acyclic-labs/sdk/go/gen/workers/v1;workersv1";
 
 enum ErrorCode {
@@ -176,11 +175,11 @@ message SubmitJobResponse {
 }
 
 service WorkersService {
-  rpc PublishVersion (PublishVersionRequest) returns (PublishVersionResponse);
-  rpc SelectDeployment (SelectDeploymentRequest) returns (SelectDeploymentResponse);
-  rpc SubmitJob (SubmitJobRequest) returns (SubmitJobResponse);
-  rpc InspectJob (InspectJobRequest) returns (InspectJobResponse);
-  rpc CancelJob (CancelJobRequest) returns (CancelJobResponse);
-  rpc InvokeVersion (InvokeVersionRequest) returns (InvokeResponse);
-  rpc InvokeDeployment (InvokeDeploymentRequest) returns (InvokeResponse);
+  rpc PublishVersion(PublishVersionRequest) returns (PublishVersionResponse);
+  rpc SelectDeployment(SelectDeploymentRequest) returns (SelectDeploymentResponse);
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc InspectJob(InspectJobRequest) returns (InspectJobResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  rpc InvokeVersion(InvokeVersionRequest) returns (InvokeResponse);
+  rpc InvokeDeployment(InvokeDeploymentRequest) returns (InvokeResponse);
 }

@@ -121,6 +121,10 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the HTTP service-detail boundary cases in one fixture"
+    )]
     async fn http_service_details_retain_body_codes_and_bounds()
     -> Result<(), Box<dyn std::error::Error>> {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

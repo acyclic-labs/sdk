@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Fixture construction and peer assertions must fail the test immediately"
+)]
 //! Focused production boundary tests; service/runtime qualification is separate.
 use super::*;
 
@@ -227,7 +231,7 @@ fn status_projection_retains_unknown_codes_and_malformed_raw_details() {
             "original 100%: café / %25",
             bytes.clone().into(),
         );
-        let projected = Failure::status(status, 1024);
+        let projected = Failure::status(&status, 1024);
         assert_eq!(projected.grpc_code, Some(7));
         assert_eq!(projected.message, "original 100%: café / %25");
         assert_eq!(projected.raw_details, bytes);
@@ -242,7 +246,10 @@ async fn cancellation_never_polls_precancelled_work() {
     let error = run(
         async {
             panic!("pre-cancelled work must not be polled");
-            #[allow(unreachable_code)]
+            #[allow(
+                unreachable_code,
+                reason = "The pending cancellation fixture never produces a response"
+            )]
             Ok::<(), Failure>(())
         },
         token,
@@ -308,6 +315,10 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> f
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Exercise every generated method against one descriptor-bound peer"
+)]
 async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_details() {
     use sha2::{Digest, Sha256};
     let module = b"x";

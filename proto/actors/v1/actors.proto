@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package acyclic.actors.v1;
 
-
 option go_package = "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1";
 
 enum ActorState {
@@ -180,12 +179,12 @@ message UpdateActorResponse {
 }
 
 service ActorsService {
-  rpc CreateActor (CreateActorRequest) returns (CreateActorResponse);
-  rpc UpdateActor (UpdateActorRequest) returns (UpdateActorResponse);
-  rpc InspectActor (InspectActorRequest) returns (InspectActorResponse);
-  rpc AddSubscription (AddSubscriptionRequest) returns (AddSubscriptionResponse);
-  rpc RemoveSubscription (RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse);
-  rpc ResumeSubscription (ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse);
-  rpc CheckpointActor (CheckpointActorRequest) returns (CheckpointActorResponse);
-  rpc InvokeActor (InvokeActorRequest) returns (InvokeActorResponse);
+  rpc CreateActor(CreateActorRequest) returns (CreateActorResponse);
+  rpc UpdateActor(UpdateActorRequest) returns (UpdateActorResponse);
+  rpc InspectActor(InspectActorRequest) returns (InspectActorResponse);
+  rpc AddSubscription(AddSubscriptionRequest) returns (AddSubscriptionResponse);
+  rpc RemoveSubscription(RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse);
+  rpc ResumeSubscription(ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse);
+  rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse);
+  rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse);
 }

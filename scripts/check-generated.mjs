@@ -175,6 +175,9 @@ try {
   const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", freshWorkersProto, freshWorkers], { cwd: root, encoding: "utf8" });
   if (workers.error) throw workers.error;
   if (workers.status !== 0) throw new Error(`Workers Rust generation failed: ${workers.stderr}`);
+  const formattedWorkers = spawnSync(join(root, "node_modules/.bin", process.platform === "win32" ? "buf.exe" : "buf"), ["format", "-w", join(freshWorkersProto, "workers/v1/workers.proto")], { cwd: root, encoding: "utf8" });
+  if (formattedWorkers.error) throw formattedWorkers.error;
+  if (formattedWorkers.status !== 0) throw new Error(`Workers Proto formatting failed: ${formattedWorkers.stderr}`);
   if (!readFileSync(join(freshWorkersProto, "workers/v1/workers.proto")).equals(readFileSync(join(root, "proto/workers/v1/workers.proto")))) throw new Error("Workers Rust-rendered Proto drift");
   const generatedService = join(temporary, "workers-service.ts");
   await serviceGenerate("Workers", temporary, generatedService);

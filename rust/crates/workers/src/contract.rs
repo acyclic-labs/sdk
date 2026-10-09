@@ -6,6 +6,8 @@ mod generated {
         dead_code,
         missing_docs,
         clippy::allow_attributes_without_reason,
+        clippy::redundant_closure,
+        clippy::unnecessary_fallible_conversions,
         reason = "maintained semantic/schema derivation"
     )]
     pub mod domain {
@@ -95,8 +97,16 @@ mod generated {
 }
 pub(crate) use generated::WORKERS_FILE;
 /// Strong semantic types.
+#[allow(
+    unused_imports,
+    reason = "The semantic domain is a public bridge namespace, also included by the schema build"
+)]
 pub use generated::domain;
 /// Public wire shadows.
+#[allow(
+    unused_imports,
+    reason = "Public wire aliases are consumed by transport and FFI bridges"
+)]
 pub use generated::{
     CancelJobRequestProto as CancelJobRequest, CancelJobResponseProto as CancelJobResponse,
     CodeVersionProto as CodeVersion, DeploymentProto as Deployment, ErrorCode, ErrorProto as Error,

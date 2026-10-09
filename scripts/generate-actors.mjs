@@ -48,6 +48,7 @@ async function rustGenerate(output, protoRoot) {
     "run", "--offline", "--locked", "-p", "acyclic-actors", "--example", "actors-http-routes", "--",
     output, "--proto-out", protoRoot,
   ]);
+  run(buf, ["format", "-w", join(protoRoot, "actors/v1/actors.proto")]);
   await serviceGenerate("Actors", dirname(output), output);
   const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
   if (readonly.error) throw readonly.error;

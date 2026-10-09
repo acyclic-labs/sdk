@@ -30,12 +30,12 @@ fn main() -> io::Result<()> {
     }
     if generator.as_deref() == Some("native-family") {
         let args = std::env::args().skip(2).collect::<Vec<_>>();
-        if args.len() != 2 {
+        let [root, family] = args.as_slice() else {
             return Err(io::Error::other(
                 "native-family expects workspace root and family",
             ));
-        }
-        let facts = native_family::render(std::path::Path::new(&args[0]), &args[1])
+        };
+        let facts = native_family::render(std::path::Path::new(root), family)
             .map_err(|error| io::Error::other(error.to_string()))?;
         return serde_json::to_writer(io::stdout(), &facts).map_err(io::Error::other);
     }

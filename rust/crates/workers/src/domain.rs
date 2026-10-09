@@ -21,7 +21,7 @@ impl From<std::convert::Infallible> for DomainError {
     }
 }
 
-/// Known JobState values; raw shadows retain unknown protobuf integers.
+/// Known `JobState` values; raw shadows retain unknown protobuf integers.
 #[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownJobState)]
 #[proto(file = WORKERS_FILE)]
 #[derive(TS)]
@@ -47,7 +47,7 @@ fn encode_jobstate(value: JobState) -> i32 {
     value as i32
 }
 
-/// Known ErrorCode values; raw shadows retain unknown protobuf integers.
+/// Known `ErrorCode` values; raw shadows retain unknown protobuf integers.
 #[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownErrorCode)]
 #[proto(file = WORKERS_FILE)]
 #[derive(TS)]
@@ -676,8 +676,10 @@ pub struct Error {
 pub fn export_typescript(path: impl AsRef<std::path::Path>) -> Result<(), ExportError> {
     export_typescript_with_metadata(path, Vec::new()).map(drop)
 }
+/// Exported TypeScript identifiers and their compiler-linked protobuf identities.
+pub type TypeScriptMetadata = (Vec<String>, Vec<(String, String)>);
 /// Export actual declarations and compiler-linked wire/TS identities from one root registry.
-pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additional: Vec<(String, std::path::PathBuf)>) -> Result<(Vec<String>, Vec<(String, String)>), ExportError> {
+pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additional: Vec<(String, std::path::PathBuf)>) -> Result<TypeScriptMetadata, ExportError> {
     let config = Config::default()
         .with_out_dir(path.as_ref())
         .with_import_extension(Some("js"));
@@ -751,16 +753,16 @@ pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additi
     let raw = exports
         .iter()
         .map(|(_, output)| {
-            format!(
+            Ok(format!(
                 "export * from \"./{}\";",
                 output
                     .file_name()
-                    .expect("TS export file")
+                    .ok_or(ExportError::CannotBeExported("TypeScript output filename"))?
                     .to_string_lossy()
                     .replace(".ts", ".js")
-            )
+            ))
         })
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>, ExportError>>()?
         .join("\n");
     let aliases = exports
         .iter()

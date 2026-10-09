@@ -23,6 +23,10 @@ struct Napi {
     build_features: Vec<String>,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the complete Cargo ownership and source-closure admission sequence together"
+)]
 pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let root = root.canonicalize()?;
     let metadata = MetadataCommand::new()
@@ -35,12 +39,11 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     }
     let mut matches = Vec::new();
     for package in &metadata.packages {
-        if package.source.is_none() {
-            if let Some(value) = package.metadata.get("napi") {
-                if value.get("family").and_then(Value::as_str) == Some(key) {
-                    matches.push((package, serde_json::from_value::<Napi>(value.clone())?));
-                }
-            }
+        if package.source.is_none()
+            && let Some(value) = package.metadata.get("napi")
+            && value.get("family").and_then(Value::as_str) == Some(key)
+        {
+            matches.push((package, serde_json::from_value::<Napi>(value.clone())?));
         }
     }
     if matches.len() != 1 {
@@ -68,10 +71,13 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         .iter()
         .filter(|p| p.source.is_none() && p.name.as_str() == napi.wasm_package)
         .collect();
-    if wasm_owners.len() != 1 || wasm_owners[0].version != package.version {
+    let [wasm_owner] = wasm_owners.as_slice() else {
+        return Err("WASM package must have one owner".into());
+    };
+    let wasm_owner = *wasm_owner;
+    if wasm_owner.version != package.version {
         return Err("WASM package owner or version differs".into());
     }
-    let wasm_owner = wasm_owners[0];
     let wasm_libraries: Vec<_> = wasm_owner
         .targets
         .iter()
@@ -85,6 +91,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     {
         return Err("WASM owner must declare one cdylib and its selected features".into());
     }
+    let wasm_library = wasm_libraries.first().ok_or("WASM cdylib is missing")?;
     if napi.wasm_output_name.is_empty()
         || !napi
             .wasm_output_name
@@ -121,6 +128,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     if libraries.len() != 1 {
         return Err("native Rust owner must have one cdylib target".into());
     }
+    let library = libraries.first().ok_or("native cdylib is missing")?;
     let relative = |path: &Path| -> Result<String, Box<dyn std::error::Error>> {
         Ok(path
             .canonicalize()?
@@ -244,6 +252,6 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         roots.insert(path);
     }
     Ok(
-        json!({"schema":"acyclic.native-family.v1", "key":key, "rustPackageName":package.name.to_string(), "version":package.version.to_string(), "rustTarget":libraries[0].name, "manifestRelative":manifest, "packageRelative":format!("{package_path}/package.json"), "packageDirectory":package_path, "companionDirectory":napi.companion_directory, "wasmPackageName":napi.wasm_package, "wasm":{"artifact":wasm_libraries[0].name, "outName":napi.wasm_output_name, "targetDirectory":napi.wasm_target_directory, "features":napi.wasm_features, "noDefaultFeatures":napi.wasm_no_default_features}, "npmPackage":napi.npm_package, "targets":napi.targets, "features":napi.build_features, "buildScript":format!("scripts/build-{key}-native.mjs"), "sourceRoots":roots.into_iter().collect::<Vec<_>>() }),
+        json!({"schema":"acyclic.native-family.v1", "key":key, "rustPackageName":package.name.to_string(), "version":package.version.to_string(), "rustTarget":library.name, "manifestRelative":manifest, "packageRelative":format!("{package_path}/package.json"), "packageDirectory":package_path, "companionDirectory":napi.companion_directory, "wasmPackageName":napi.wasm_package, "wasm":{"artifact":wasm_library.name, "outName":napi.wasm_output_name, "targetDirectory":napi.wasm_target_directory, "features":napi.wasm_features, "noDefaultFeatures":napi.wasm_no_default_features}, "npmPackage":napi.npm_package, "targets":napi.targets, "features":napi.build_features, "buildScript":format!("scripts/build-{key}-native.mjs"), "sourceRoots":roots.into_iter().collect::<Vec<_>>() }),
     )
 }
