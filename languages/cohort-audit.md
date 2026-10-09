@@ -206,3 +206,28 @@ and log hashes; compiler work is bounded to one CPU and 512 MiB.
 These results establish Java-binding interoperability. Dedicated Kotlin/Scala
 API generation, remaining families, Rust-backed RPC, TLS/authentication,
 cancellation/recovery and embedded qualification remain outstanding.
+
+### Reusable Ruby transport tooling
+
+The reusable Ruby backend consumes the accepted Rust descriptor exports through
+hash-pinned protoc 28.3 and the maintained grpc-tools 1.84.0 plugin. It stages
+only verified descriptors, rejects unsafe/overlapping destinations, and retains
+per-input and per-output receipts. Seventeen offline producer/qualifier controls
+cover admission, isolation, independent runtime negatives and failure receipts.
+Routine CI selects affected backends and downloads no Ruby tools or gems.
+
+On portable RubyInstaller 3.4.11-1 Windows x64, the accepted foundation
+`5f13157414a5f48425007ffd957ea7d09611e5fe` passes actual installed transport
+controls. Independent generation runs emit identical sources; clean official
+RubyGems builds and the reusable qualifier produce gem SHA-256
+`c4bac636334fbd2662b5eea962d48ad82b36301a4f66d78215bfd98d5c59c197`.
+The qualifier verifies four raw dependency archives and pinned runtime components,
+installs offline into a fresh cache, and checks the exact SDK archive and payload.
+It compares complete Actors/Workers/Stream API descriptors after removing only
+source comments and Buf image tag 8042, then checks wire bytes, unsigned bounds,
+optional zero, both oneof branches/switching/clearing and gRPC message/method shapes.
+Loaded SDK source provenance and completion messages are checked. Three independent
+invalid assignments produce their intended runtime TypeErrors. Ruby's dynamic
+checks do not establish compile-time typing. Receipts retain all runtime/cache
+file hashes, controls and logs. Remaining families/platforms, Rust-backed RPC,
+TLS/authentication, cancellation/recovery and embedded runtime remain pending.
