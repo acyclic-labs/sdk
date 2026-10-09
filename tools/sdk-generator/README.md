@@ -9,7 +9,7 @@ tools/sdk-generator/
   shared/               Rust manifest admission and maintained compiler pins
   backends/
     go/                 Go producer, module and focused tests
-    java/               Java producer and installed consumer qualification
+    java/               Java producer and Java/Kotlin/Scala consumer qualification
     dotnet/             C# producer, pinned package and installed controls
 ```
 
