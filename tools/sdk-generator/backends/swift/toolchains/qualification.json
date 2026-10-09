@@ -3,6 +3,9 @@
   "sdk_archive_sha256": "bce85ea80f1471b85f39993f9285dbc798ec8e1eac5f677e24b2ac693856f9f8",
   "sdk_files": 2317,
   "sdk_links": 39,
+  "git": {
+    "linux-x64": { "sha256": "587ef21868c948b883993e23209b86a72a6ddc06aab1545c697ffc31075acd4a", "version": "git version 2.34.1" }
+  },
   "dependencies": [
     { "name": "grpc-swift-2", "version": "2.4.3", "revision": "ac33066eb6edb1a21a6ca172ea8184a9b06f3cc7" },
     { "name": "grpc-swift-protobuf", "version": "2.4.1", "revision": "176c5a434fd76f6f479848d1a8f7d44967534168" },

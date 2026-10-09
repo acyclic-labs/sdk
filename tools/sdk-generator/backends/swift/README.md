@@ -36,13 +36,38 @@ match their exact admitted Git revisions.
 producer receipt, maintained source/tool pins and verified Rust authority.
 Offline controls reject unsafe members, links, duplicate paths, missing bindings,
 payload changes and substituted package metadata. Admission does not execute
-native consumers. A reusable installed qualifier, all-method native RPC controls
-and Rust-backed RPC qualification remain pending.
+native consumers. `RPCConsumer.swift` has separately passed all 25 generated
+client/server calls over the maintained in-process gRPC transport, using Rust
+descriptors for populated field values, type names, paths and streaming shapes.
+This is native in-process transport evidence; network and Rust-backed RPC
+qualification remain pending.
 
 `toolchains/qualification.json` pins the full SDK inventory artifact and exact
 dependency revisions. The inventory contains 2,317 files and 39 symlinks and has
 been compared with the checksum-verified official SDK archive. The inventory,
 SDK downloads and native build outputs remain outside the maintained source tree.
+
+The reusable installed workflow in `src/qualify.mjs` stages only admitted archive
+bytes, creates isolated local dependency mirrors, builds with one worker, runs
+both consumer fixtures, checks three negative compilations and verifies input
+provenance again. Git HTTP/HTTPS transports are disabled. Its offline command
+controls are covered by CI; a real end-to-end invocation is being qualified.
+
+```sh
+node tools/sdk-generator/backends/swift/src/qualify.mjs \
+  --package package.tar.gz --sha256 <archive-sha256> \
+  --receipt generation-receipt.json --authority foundation/authority \
+  --swift-home /absolute/path/to/swift-6.4 \
+  --sdk-inventory /absolute/path/to/admitted-sdk-inventory.json \
+  --dependencies /absolute/path/to/prepared-source-checkouts \
+  --git /usr/bin/git --output /absolute/path/to/new-qualification
+```
+
+The dependency directory contains the four checkouts named in
+`toolchains/qualification.json`, at their exact revisions and version tags.
+The SDK inventory is an external artifact verified by its maintained checksum.
+Qualification output must be absent, with an existing parent. A failed native
+operation retains logs and partial output and does not emit a success receipt.
 
 `toolchains/build-generators.sh` accepts absolute paths in `SWIFT_HOME`,
 `PROTOBUF_SOURCE`, `GRPC_PROTOBUF_SOURCE`, `GRPC_SOURCE`, `COLLECTIONS_SOURCE`
