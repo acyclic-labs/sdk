@@ -21,8 +21,8 @@ export async function exerciseCheckpoint(Harness, harness, options, contracts) {
   if (!contracts.canonicalEqual(harness.head(), [snapshot.authority, snapshot.revision])) {
     throw new Error("command head disagrees with the checkpoint");
   }
-  if (snapshot.format_version !== 5) throw new Error("checkpoint format was not updated");
-  for (const format_version of [2, 3, 4]) {
+  if (snapshot.format_version !== 6) throw new Error("checkpoint format was not updated");
+  for (const format_version of [2, 3, 4, 5]) {
     let rejected = false;
     try { (await Harness.restore({ ...snapshot, format_version }, options)).free(); }
     catch (error) { rejected = error.code === ErrorCode.UNSUPPORTED; }
