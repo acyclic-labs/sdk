@@ -5,7 +5,7 @@ use prost_reflect::DescriptorPool;
 
 #[test]
 fn preserves_descriptor_contract_without_source_locations() {
-    let old = DescriptorPool::decode(include_bytes!("fixtures/workers-v1.bin").as_slice())
+    let expected = DescriptorPool::decode(include_bytes!("fixtures/workers-v1.bin").as_slice())
         .expect("baseline");
     let current =
         DescriptorPool::decode(acyclic_workers::FILE_DESCRIPTOR_SET).expect("Rust descriptor");
@@ -16,20 +16,20 @@ fn preserves_descriptor_contract_without_source_locations() {
             .file_descriptor_proto()
             .clone();
         file.source_code_info = None;
-        // Protify sorts top-level declarations by name. Declaration order is
+        // Declaration order is
         // not wire identity; retain every declaration's complete contents.
         file.message_type.sort_by(|a, b| a.name.cmp(&b.name));
         file.enum_type.sort_by(|a, b| a.name.cmp(&b.name));
         file
     };
-    assert_eq!(normalize(&old), normalize(&current));
+    assert_eq!(normalize(&expected), normalize(&current));
 }
 
 #[test]
 fn semantic_ingress_preserves_presence_and_existing_admission() {
     let request = wire::SelectDeploymentRequest {
         alias: "A_1".into(),
-        version_sha256: vec![1; 32].into(),
+        version_sha256: vec![1; 32],
         expected_revision: None,
         idempotency_key: "select".into(),
     };
@@ -49,7 +49,7 @@ fn semantic_ingress_preserves_presence_and_existing_admission() {
     maximum.expected_revision = Some(u64::MAX);
     assert!(domain::SelectDeploymentRequest::try_from(maximum).is_ok());
     let payload = wire::Payload {
-        source: Some(wire::payload::Source::InlineBytes(Vec::new().into())),
+        source: Some(wire::payload::Source::InlineBytes(Vec::new())),
     };
     assert!(domain::Payload::try_from(payload).is_ok());
     assert!(domain::Payload::try_from(wire::Payload { source: None }).is_err());
@@ -76,7 +76,7 @@ fn empty_inline_and_permitted_object_spelling_preserve_admission() {
             target: Some(wire::job_target::Target::DeploymentAlias("A_1".into())),
         }),
         input: Some(wire::Payload {
-            source: Some(wire::payload::Source::InlineBytes(Vec::new().into())),
+            source: Some(wire::payload::Source::InlineBytes(Vec::new())),
         }),
         limits: Some(wire::JobLimits {
             timeout_millis: 1,
@@ -109,12 +109,12 @@ fn every_request_ingress_uses_the_real_admission_hook() {
     use sha2::{Digest, Sha256};
     let module = b"export default {}";
     let mut publish = wire::PublishVersionRequest {
-        javascript_module: module.to_vec().into(),
-        expected_sha256: Sha256::digest(module).to_vec().into(),
+        javascript_module: module.to_vec(),
+        expected_sha256: Sha256::digest(module).to_vec(),
         idempotency_key: "publish".into(),
     };
     assert!(domain::PublishVersionRequest::try_from(publish.clone()).is_ok());
-    publish.expected_sha256 = vec![1; 32].into();
+    publish.expected_sha256 = vec![1; 32];
     assert!(matches!(
         domain::PublishVersionRequest::try_from(publish),
         Err(domain::DomainError::Contract(
@@ -126,7 +126,7 @@ fn every_request_ingress_uses_the_real_admission_hook() {
             target: Some(wire::job_target::Target::DeploymentAlias("current".into())),
         }),
         input: Some(wire::Payload {
-            source: Some(wire::payload::Source::InlineBytes(Vec::new().into())),
+            source: Some(wire::payload::Source::InlineBytes(Vec::new())),
         }),
         limits: Some(wire::JobLimits {
             timeout_millis: 1,
@@ -164,7 +164,7 @@ fn submit_requires_every_message_and_both_selectors() {
             target: Some(wire::job_target::Target::DeploymentAlias("A_1".into())),
         }),
         input: Some(wire::Payload {
-            source: Some(wire::payload::Source::InlineBytes(Vec::new().into())),
+            source: Some(wire::payload::Source::InlineBytes(Vec::new())),
         }),
         limits: Some(wire::JobLimits {
             timeout_millis: 1,
@@ -206,8 +206,8 @@ fn submit_requires_every_message_and_both_selectors() {
 #[test]
 fn publish_preserves_ordered_error_classes() {
     let empty = wire::PublishVersionRequest {
-        javascript_module: Vec::new().into(),
-        expected_sha256: vec![1; 32].into(),
+        javascript_module: Vec::new(),
+        expected_sha256: vec![1; 32],
         idempotency_key: "publish".into(),
     };
     assert!(matches!(
@@ -217,8 +217,8 @@ fn publish_preserves_ordered_error_classes() {
         ))
     ));
     let oversized = wire::PublishVersionRequest {
-        javascript_module: vec![0; acyclic_workers::MAX_MODULE_BYTES + 1].into(),
-        expected_sha256: vec![0; 32].into(),
+        javascript_module: vec![0; acyclic_workers::MAX_MODULE_BYTES + 1],
+        expected_sha256: vec![0; 32],
         idempotency_key: "publish".into(),
     };
     assert!(matches!(

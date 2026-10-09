@@ -12,12 +12,12 @@
     "workers": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:9ab74cc1f0dff8a2bbc15b4487f943512877308ed16c2ab0be7d355b6a0c9f5a",
-      "descriptorDigest": "sha256:5f66b4d6943de85d417e1550fb476d2b3d59c898159d54ad551346b97be9f845"
+      "schemaDigest": "sha256:c8fa507d88f24a0e644e1c0fded4364ec33e2468b47db1db2a2fc24762492a80",
+      "descriptorDigest": "sha256:aa586c0713d6a9b327b2eba75cc59662ba1114d77f793cc06169a7c08283ae42"
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:a1545818685020f8fb18bd90179c7a14c014c5da67463098447204dc8b35f782",
+      "schemaDigest": "sha256:8608e415b400621d8d50beaa86a8707acd5ce14d32a58c39d3e364ea3dfa97cf",
       "conformanceDigest": "sha256:a8de2d0a1c26369ebbbf123db6a26c0beb7ec4dc1650832c0c5ee0b4a8165cb7"
     },
     "filesystem": {

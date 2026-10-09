@@ -1,6 +1,6 @@
 // Executable Workers semantic declarations. Wire shadows and schema come from these types.
-use crate::contract::WORKERS_FILE;
-use protify::*;
+use crate::contract::WorkersFile;
+
 use ts_rs::{Config, ExportError, TS};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, thiserror::Error)]
@@ -22,8 +22,8 @@ impl From<std::convert::Infallible> for DomainError {
 }
 
 /// Known `JobState` values; raw shadows retain unknown protobuf integers.
-#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownJobState)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownJobState)]
+
 #[derive(TS)]
 #[ts(export_to = "workers/JobState.ts", repr(enum))]
 pub enum JobState {
@@ -40,16 +40,9 @@ pub enum JobState {
     /// The job was cancelled.
     Cancelled = 5,
 }
-fn parse_jobstate(value: i32) -> Result<JobState, DomainError> {
-    JobState::try_from(value)
-}
-fn encode_jobstate(value: JobState) -> i32 {
-    value as i32
-}
-
 /// Known `ErrorCode` values; raw shadows retain unknown protobuf integers.
-#[acyclic_protify_proc_macro::proto_enum(error = DomainError, unknown = DomainError::UnknownErrorCode)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownErrorCode)]
+
 #[derive(TS)]
 #[ts(export_to = "workers/ErrorCode.ts", repr(enum))]
 pub enum ErrorCode {
@@ -76,17 +69,10 @@ pub enum ErrorCode {
     /// Durable execution ended with a terminal failure.
     TerminalJobFailure = 10,
 }
-fn parse_errorcode(value: i32) -> Result<ErrorCode, DomainError> {
-    ErrorCode::try_from(value)
-}
-fn encode_errorcode(value: ErrorCode) -> i32 {
-    value as i32
-}
-
 /// Semantic Source cases preserving the published oneof.
 pub mod payload {
     use super::*;
-    #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = DomainError)]
+    #[acyclic_contract_derive::oneof(error = DomainError, file = WorkersFile)]
     #[derive(Clone, Debug, Eq, PartialEq, TS)]
     #[ts(
         export_to = "workers/Source.ts",
@@ -96,10 +82,10 @@ pub mod payload {
     )]
     pub enum Source {
         /// Inline input bytes; an empty byte sequence is a present input.
-        #[proto(tag = 1, bytes)]
+        #[wire(tag = 1, bytes)]
         InlineBytes(#[ts(type = "Uint8Array")] Vec<u8>),
         /// Logical object privately retained when the job is accepted.
-        #[proto(tag = 2, message(proxied))]
+        #[wire(tag = 2, message)]
         Object(ObjectRef),
     }
 }
@@ -107,7 +93,7 @@ pub mod payload {
 /// Semantic Target cases preserving the published oneof.
 pub mod job_target {
     use super::*;
-    #[acyclic_protify_proc_macro::proto_oneof(proxied, fallible = DomainError)]
+    #[acyclic_contract_derive::oneof(error = DomainError, file = WorkersFile)]
     #[derive(Clone, Debug, Eq, PartialEq, TS)]
     #[ts(
         export_to = "workers/Target.ts",
@@ -117,67 +103,67 @@ pub mod job_target {
     )]
     pub enum Target {
         /// Deployment alias resolved at job acceptance.
-        #[proto(tag = 1, string)]
+        #[wire(tag = 1, string)]
         DeploymentAlias(String),
         /// Exact immutable version selected for the job.
-        #[proto(tag = 2, bytes)]
+        #[wire(tag = 2, bytes)]
         VersionSha256(#[ts(type = "Uint8Array")] Vec<u8>),
     }
 }
 
 /// A digest identifies exact immutable JavaScript module bytes.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CodeVersion.ts", rename_all = "camelCase")]
 pub struct CodeVersion {
-    #[proto(tag = 1, bytes)]
+    #[wire(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
     /// SHA-256 identifying the exact immutable module bytes.
     pub sha256: Vec<u8>,
-    #[proto(tag = 2, uint64)]
+    #[wire(tag = 2, uint64)]
     #[ts(type = "bigint")]
     /// Size of the module in bytes.
     pub size_bytes: u64,
 }
 
 /// A deployment alias may change; revision increases on every selection.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Deployment.ts", rename_all = "camelCase")]
 pub struct Deployment {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Mutable deployment alias.
     pub alias: String,
-    #[proto(tag = 2, message(proxied))]
+    #[wire(tag = 2, message)]
     #[ts(optional)]
     /// Selected immutable version, when reported by the service.
     pub version: Option<CodeVersion>,
-    #[proto(tag = 3, uint64)]
+    #[wire(tag = 3, uint64)]
     #[ts(type = "bigint")]
     /// Deployment revision, advanced by each successful selection.
     pub revision: u64,
 }
 
 /// Publish exact module bytes with their expected SHA-256 and idempotency key.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE, post_from_proto = PublishVersionRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = PublishVersionRequest::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/PublishVersionRequest.ts",
     rename_all = "camelCase"
 )]
 pub struct PublishVersionRequest {
-    #[proto(tag = 1, bytes)]
+    #[wire(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
     /// Exact module bytes; publication requires a nonempty module within `MAX_MODULE_BYTES`.
     javascript_module: Vec<u8>,
-    #[proto(tag = 2, bytes)]
+    #[wire(tag = 2, bytes)]
     #[ts(type = "Uint8Array")]
     /// Expected SHA-256, checked against the exact module bytes at publication.
     expected_sha256: Vec<u8>,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     /// Caller-provided key for idempotent admission.
     idempotency_key: String,
 }
@@ -217,42 +203,42 @@ impl PublishVersionRequest {
 }
 
 /// The immutable version accepted by module publication.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/PublishVersionResponse.ts",
     rename_all = "camelCase"
 )]
 pub struct PublishVersionResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[wire(tag = 1, message)]
     #[ts(optional)]
     /// Selected immutable version, when reported by the service.
     pub version: Option<CodeVersion>,
 }
 
 /// Select an immutable version for a deployment alias using revision preconditions.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE, post_from_proto = SelectDeploymentRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SelectDeploymentRequest::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/SelectDeploymentRequest.ts",
     rename_all = "camelCase"
 )]
 pub struct SelectDeploymentRequest {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Mutable deployment alias.
     alias: String,
-    #[proto(tag = 2, bytes)]
+    #[wire(tag = 2, bytes)]
     #[ts(type = "Uint8Array")]
     /// SHA-256 selecting the immutable version.
     version_sha256: Vec<u8>,
-    #[proto(tag = 3, optional(uint64))]
+    #[wire(tag = 3, uint64)]
     #[ts(optional)]
     /// Omitted means create only if absent. A present positive value selects only
     /// when it matches the current revision; every successful selection advances it.
     expected_revision: Option<u64>,
-    #[proto(tag = 4)]
+    #[wire(tag = 4)]
     /// Caller-provided key for idempotent admission.
     idempotency_key: String,
 }
@@ -300,15 +286,15 @@ impl SelectDeploymentRequest {
 }
 
 /// The deployment selected by the alias mutation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/SelectDeploymentResponse.ts",
     rename_all = "camelCase"
 )]
 pub struct SelectDeploymentResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[wire(tag = 1, message)]
     #[ts(optional)]
     /// Selected deployment, when reported by the service.
     pub deployment: Option<Deployment>,
@@ -316,109 +302,109 @@ pub struct SelectDeploymentResponse {
 
 /// Logical S3 object selected and privately retained at durable job acceptance.
 /// Retries read the same retained bytes even if this public key is replaced.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE, reserved_numbers(3), reserved_names("version_id"))]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/ObjectRef.ts", rename_all = "camelCase")]
 pub struct ObjectRef {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Logical object bucket; job admission checks nonempty text and at most 63 bytes.
     pub bucket: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     /// Logical object key; job admission checks nonempty text and at most 1024 bytes.
     pub key: String,
 }
 
 /// Durable job input selected from inline bytes or a retained logical object.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Payload.ts", rename_all = "camelCase")]
 pub struct Payload {
-    #[proto(tag = 1, oneof(proxied, tags(1, 2), required))]
+    #[wire(oneof = "1,2")]
     /// Inline bytes or the logical object retained at job acceptance.
     pub source: payload::Source,
 }
 
 /// Exact accepted job output, bounded by `JobLimits.output_bytes`. Storage and
 /// retention are service-owned; no replaceable public Object pointer is exposed.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE, reserved_numbers(2), reserved_names("object_version"))]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobResult.ts", rename_all = "camelCase")]
 pub struct JobResult {
-    #[proto(tag = 1, bytes)]
+    #[wire(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
     /// Exact accepted job output bytes.
     pub body: Vec<u8>,
 }
 
 /// Resource budgets applied to the accepted durable job.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobLimits.ts", rename_all = "camelCase")]
 pub struct JobLimits {
-    #[proto(tag = 1, uint64)]
+    #[wire(tag = 1, uint64)]
     #[ts(type = "bigint")]
     /// Execution timeout in milliseconds; job submission requires a positive value.
     pub timeout_millis: u64,
-    #[proto(tag = 2, uint64)]
+    #[wire(tag = 2, uint64)]
     #[ts(type = "bigint")]
     /// Memory budget in bytes; job submission requires a positive value.
     pub memory_bytes: u64,
-    #[proto(tag = 3, uint64)]
+    #[wire(tag = 3, uint64)]
     #[ts(type = "bigint")]
     /// Result budget in bytes; job submission requires a positive value at most `MAX_INLINE_BYTES`.
     pub output_bytes: u64,
 }
 
 /// Bounded attempts and retry delay for the accepted durable job.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/RetryPolicy.ts", rename_all = "camelCase")]
 pub struct RetryPolicy {
-    #[proto(tag = 1, uint32)]
+    #[wire(tag = 1, uint32)]
     /// Number of attempts, including the first; job submission admits 1 through `MAX_JOB_ATTEMPTS`.
     pub max_attempts: u32,
-    #[proto(tag = 2, uint64)]
+    #[wire(tag = 2, uint64)]
     #[ts(type = "bigint")]
     /// Delay between attempts in milliseconds; zero is admitted.
     pub backoff_millis: u64,
 }
 
 /// Resolve a deployment alias or select an exact immutable version at job acceptance.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobTarget.ts", rename_all = "camelCase")]
 pub struct JobTarget {
-    #[proto(tag = 1, oneof(proxied, tags(1, 2), required))]
+    #[wire(oneof = "1,2")]
     /// Deployment alias or immutable version selected for job admission.
     pub target: job_target::Target,
 }
 
 /// Accepted input is delivered to `default.run`, never to `default.fetch`.
 /// The same job ID and input recur on retry; attempt numbering starts at one.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE, post_from_proto = SubmitJobRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SubmitJobRequest::validate_from_proto)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobRequest.ts", rename_all = "camelCase")]
 pub struct SubmitJobRequest {
-    #[proto(tag = 1, message(proxied, required))]
+    #[wire(tag = 1, message)]
     /// Deployment alias or immutable version selected for job admission.
     target: JobTarget,
-    #[proto(tag = 2, message(proxied, required))]
+    #[wire(tag = 2, message)]
     /// Input delivered to the durable run handler.
     input: Payload,
-    #[proto(tag = 3, message(proxied, required))]
+    #[wire(tag = 3, message)]
     /// Accepted execution and result budgets.
     limits: JobLimits,
-    #[proto(tag = 4, message(proxied, required))]
+    #[wire(tag = 4, message)]
     /// Accepted attempt count and backoff policy.
     retry: RetryPolicy,
-    #[proto(tag = 5)]
+    #[wire(tag = 5)]
     /// Caller-provided key for idempotent admission.
     idempotency_key: String,
 }
@@ -472,202 +458,202 @@ impl SubmitJobRequest {
 }
 
 /// The durable job observation returned at acceptance.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobResponse.ts", rename_all = "camelCase")]
 pub struct SubmitJobResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[wire(tag = 1, message)]
     #[ts(optional)]
     /// Durable job observation, when reported by the service.
     pub job: Option<JobObservation>,
 }
 
 /// Current execution state, resolved version and result of a durable job.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobObservation.ts", rename_all = "camelCase")]
 pub struct JobObservation {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Identity of the accepted durable job.
     pub job_id: String,
-    #[proto(tag = 2, enum_(JobState), from_proto = parse_jobstate, into_proto = encode_jobstate)]
+    #[wire(tag = 2, enumeration)]
     /// Current execution state reported for the job.
     pub state: JobState,
-    #[proto(tag = 3, bytes)]
+    #[wire(tag = 3, bytes)]
     #[ts(type = "Uint8Array")]
     /// SHA-256 of the immutable version resolved for this operation.
     pub resolved_sha256: Vec<u8>,
-    #[proto(tag = 4, uint32)]
+    #[wire(tag = 4, uint32)]
     /// Attempt number, starting at one for accepted jobs.
     pub attempt: u32,
-    #[proto(tag = 5, message(proxied))]
+    #[wire(tag = 5, message)]
     #[ts(optional)]
     /// Accepted result bytes, when reported by execution.
     pub result: Option<JobResult>,
-    #[proto(tag = 6)]
+    #[wire(tag = 6)]
     /// Failure code reported by job execution.
     pub failure_code: String,
-    #[proto(tag = 7)]
+    #[wire(tag = 7)]
     /// Whether cancellation has been requested for the job.
     pub cancellation_requested: bool,
 }
 
 /// Inspect the current observation of an accepted durable job.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobRequest.ts", rename_all = "camelCase")]
 pub struct InspectJobRequest {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Identity of the accepted durable job.
     pub job_id: String,
 }
 
 /// The durable job observation returned by inspection.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobResponse.ts", rename_all = "camelCase")]
 pub struct InspectJobResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[wire(tag = 1, message)]
     #[ts(optional)]
     /// Durable job observation, when reported by the service.
     pub job: Option<JobObservation>,
 }
 
 /// Request cancellation of an accepted job with an idempotency key.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobRequest.ts", rename_all = "camelCase")]
 pub struct CancelJobRequest {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Identity of the accepted durable job.
     pub job_id: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     /// Caller-provided key for idempotent admission.
     pub idempotency_key: String,
 }
 
 /// The durable job observation returned after requesting cancellation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobResponse.ts", rename_all = "camelCase")]
 pub struct CancelJobResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[wire(tag = 1, message)]
     #[ts(optional)]
     /// Durable job observation, when reported by the service.
     pub job: Option<JobObservation>,
 }
 
 /// A name and value carried by the ordinary HTTP invocation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Header.ts", rename_all = "camelCase")]
 pub struct Header {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// HTTP header name.
     pub name: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     /// HTTP header value.
     pub value: String,
 }
 
 /// Invocation is ordinary HTTP work, not durable job acceptance.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/InvokeVersionRequest.ts",
     rename_all = "camelCase"
 )]
 pub struct InvokeVersionRequest {
-    #[proto(tag = 1, bytes)]
+    #[wire(tag = 1, bytes)]
     #[ts(type = "Uint8Array")]
     /// SHA-256 selecting the immutable version.
     pub version_sha256: Vec<u8>,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     /// HTTP method passed to the invoked worker.
     pub method: String,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     /// HTTP URL passed to the invoked worker.
     pub url: String,
-    #[proto(tag = 4, repeated(message(proxied)))]
+    #[wire(tag = 4, message)]
     /// HTTP headers in their supplied order.
     pub headers: Vec<Header>,
-    #[proto(tag = 5, bytes)]
+    #[wire(tag = 5, bytes)]
     #[ts(type = "Uint8Array")]
     /// HTTP request body bytes.
     pub body: Vec<u8>,
 }
 
 /// Resolve a deployment alias for an ordinary HTTP invocation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/InvokeDeploymentRequest.ts",
     rename_all = "camelCase"
 )]
 pub struct InvokeDeploymentRequest {
-    #[proto(tag = 1)]
+    #[wire(tag = 1)]
     /// Mutable deployment alias.
     pub alias: String,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     /// HTTP method passed to the invoked worker.
     pub method: String,
-    #[proto(tag = 3)]
+    #[wire(tag = 3)]
     /// HTTP URL passed to the invoked worker.
     pub url: String,
-    #[proto(tag = 4, repeated(message(proxied)))]
+    #[wire(tag = 4, message)]
     /// HTTP headers in their supplied order.
     pub headers: Vec<Header>,
-    #[proto(tag = 5, bytes)]
+    #[wire(tag = 5, bytes)]
     #[ts(type = "Uint8Array")]
     /// HTTP request body bytes.
     pub body: Vec<u8>,
 }
 
 /// HTTP response and the immutable version resolved for the invocation.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InvokeResponse.ts", rename_all = "camelCase")]
 pub struct InvokeResponse {
-    #[proto(tag = 1, uint32)]
+    #[wire(tag = 1, uint32)]
     /// HTTP status returned by the invocation.
     pub status: u32,
-    #[proto(tag = 2, repeated(message(proxied)))]
+    #[wire(tag = 2, message)]
     /// HTTP headers in their supplied order.
     pub headers: Vec<Header>,
-    #[proto(tag = 3, bytes)]
+    #[wire(tag = 3, bytes)]
     #[ts(type = "Uint8Array")]
     /// HTTP response body bytes.
     pub body: Vec<u8>,
-    #[proto(tag = 4, bytes)]
+    #[wire(tag = 4, bytes)]
     #[ts(type = "Uint8Array")]
     /// SHA-256 of the immutable version resolved for this operation.
     pub resolved_sha256: Vec<u8>,
-    #[proto(tag = 5, optional(uint64))]
+    #[wire(tag = 5, uint64)]
     #[ts(optional)]
     /// Deployment revision when an alias was resolved; absent for a direct version invocation.
     pub resolved_revision: Option<u64>,
 }
 
 /// Workers service rejection with its known code and original message.
-#[acyclic_protify_proc_macro::proto_message(proxied, fallible = DomainError)]
-#[proto(file = WORKERS_FILE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
+
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Error.ts", rename_all = "camelCase")]
 pub struct Error {
-    #[proto(tag = 1, enum_(ErrorCode), from_proto = parse_errorcode, into_proto = encode_errorcode)]
+    #[wire(tag = 1, enumeration)]
     /// Known Workers service error code.
     pub code: ErrorCode,
-    #[proto(tag = 2)]
+    #[wire(tag = 2)]
     /// Original service error message.
     pub message: String,
 }
@@ -686,8 +672,8 @@ pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additi
     let mut exports = additional;
     let mut messages = Vec::new();
     fn paired<D, W>(config: &Config) -> (String, String)
-    where D: TS + TryFrom<W>, W: protify::ProtoMessage + From<D> {
-        (W::full_name().to_owned(), D::ident(config))
+    where D: TS + TryFrom<W>, W: prost::Name + prost::Message + From<D> {
+        (W::full_name(), D::ident(config))
     }
     macro_rules! export_roots {
         ($($root:ty),+ $(,)?) => { $(

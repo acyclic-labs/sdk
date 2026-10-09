@@ -72,15 +72,6 @@
       "license": "Apache-2.0",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs model adapter extraction audit"
-    },
-    {
-      "sourceRepository": "https://github.com/Rick-Phoenix/protify",
-      "sourceCommit": "8b74dcd0247c53d0663a3741454d83d7cb19d4b8",
-      "sourcePath": "protify-proc-macro",
-      "destinationPath": "rust/vendor/protify-proc-macro-0.1.4",
-      "license": "MPL-2.0",
-      "auditResult": "approved",
-      "reviewer": "SDK Rust contract macro source comparison and retained-license review"
     }
   ],
   "references": [
