@@ -850,21 +850,24 @@ async fn assert_cold_summary_reads(
 
 #[tokio::test]
 async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 262_144).await?;
+    let mut storage = MemoryHarnessStorage::new(AgentId::new(), 262_144).await?;
     let model = Arc::new(SummaryModel::default());
     let limits = Limits {
         context_messages: 8,
         ..Limits::default()
     };
-    let bundle = storage
-        .builder()
-        .model(
-            Model::new("synthetic", "small-message-continuation", "1", Value::Null)?,
-            model.clone(),
-        )
-        .grant("model:generate")
-        .limits(limits)
-        .build()?;
+    let build_bundle = |storage: &MemoryHarnessStorage| -> Result<crate::bundle::HarnessBundle> {
+        storage
+            .builder()
+            .model(
+                Model::new("synthetic", "small-message-continuation", "1", Value::Null)?,
+                model.clone(),
+            )
+            .grant("model:generate")
+            .limits(limits)
+            .build()
+    };
+    let mut bundle = build_bundle(&storage)?;
     let mut original = None;
     for index in 0..20 {
         let operation = OperationId::new();
@@ -892,6 +895,23 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         assert!(conversation.messages().len() <= limits.context_messages);
         if index >= 3 {
             assert!(conversation.resident_after_sequence() > 0);
+        }
+        drop(aggregate);
+        if index == 17 {
+            // Reconstruct the real journal and bundle with original authority
+            // and providers. No original projection or execution cache survives.
+            storage.journal = Arc::new(
+                FilesystemExecutionJournal::new(
+                    storage.stream.clone(),
+                    storage.host.clone(),
+                    storage.volume.clone(),
+                    storage.verifier(),
+                    storage.scope.clone(),
+                    storage.maximum_file_bytes,
+                )?
+                .with_input_verifier(storage.content_verifier.clone()),
+            );
+            bundle = build_bundle(&storage)?;
         }
     }
     let requests = model

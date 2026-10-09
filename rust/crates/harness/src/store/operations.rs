@@ -167,6 +167,10 @@ impl IndexedPublication {
         })
     }
 
+    pub(super) fn add_projection_index(&mut self, path: StreamPath, tail: u64, bytes: Bytes) {
+        self.indexes.push((path, tail, bytes));
+    }
+
     pub(crate) fn add_index(&self, request: &mut CommitRequest) {
         for (path, tail, bytes) in &self.indexes {
             request.conditions.push(if *tail == 0 {
@@ -256,7 +260,7 @@ impl IndexedPublication {
     }
 }
 
-async fn one_record<P: StreamProvider>(
+pub(super) async fn one_record<P: StreamProvider>(
     client: &StreamClient<P>,
     path: &StreamPath,
     from: u64,
