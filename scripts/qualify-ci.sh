@@ -128,6 +128,7 @@ client_bindings() {
     bundle="$SDK_ARTIFACT_DIR/packages/$family-native/bundle"
     node "scripts/build-$family-native.mjs" build --target "$target" \
       --output "$bundle" --target-dir "$target_dir-$family-native"
+    cp "$target_dir-$family-native/$family-native-build-inputs.receipt.json" "$(dirname "$bundle")/producer-receipt.json"
     node "scripts/build-$family-native.mjs" stage --bundle "$bundle"
   done
   # The live TLS fixture invokes this helper inside Bun's short test deadline.

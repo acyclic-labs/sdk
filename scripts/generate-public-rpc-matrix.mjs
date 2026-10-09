@@ -74,7 +74,8 @@ if (process.argv[2] === "check" || process.argv[2] === "complete") {
 } else if (process.argv[2] === "write") writeFileSync(path, output);
 else throw new Error("expected write, check, or complete");
 if (process.argv[2] === "complete") {
-  const gaps = rows.filter(row => row.contractStatus !== "retired" && (!row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !row.typescriptHttp || !row.typescriptPackageExported));
+  const gaps = rows.filter(row => row.contractStatus !== "retired" && (!row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun ||
+    !(row.rpc.startsWith("acyclic.actors.") || row.rpc.startsWith("acyclic.workers.") ? row.typescriptGrpcWeb : row.typescriptHttp) || !row.typescriptPackageExported));
   if (gaps.length) throw new Error(`public SDK surface incomplete:\n${gaps.map(row => `${row.rpc}: ${row.contractStatus === "retired" ? "legacy source retired" : "target transport/package export missing"}`).join("\n")}`);
 }
 const target = rows.filter(row => row.contractStatus === "target").length;

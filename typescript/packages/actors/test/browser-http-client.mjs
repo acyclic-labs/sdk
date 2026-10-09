@@ -52,12 +52,22 @@ try {
       if (method.name === "AddSubscription") Object.assign(init, { actorId: "browser-actor", subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } }, idempotencyKey: "subscribe-browser" });
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
       if (method.name === "InvokeActor") Object.assign(init, { actorId: "browser-actor", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
-      if (method.name === "SelectDeployment") init.expectedRevision = 7n;
+      if (method.name === "PublishVersion") {
+        const javascriptModule = new TextEncoder().encode("export default { run() {} }");
+        Object.assign(init, { javascriptModule, expectedSha256: new Uint8Array(await crypto.subtle.digest("SHA-256", javascriptModule)), idempotencyKey: "publish-browser" });
+      }
+      if (method.name === "SelectDeployment") Object.assign(init, { alias: "current", versionSha256: new Uint8Array(32).fill(1), expectedRevision: 7n, idempotencyKey: "select-browser" });
+      if (["InspectJob", "CancelJob"].includes(method.name)) init.jobId = "job-browser";
+      if (method.name === "CancelJob") init.idempotencyKey = "cancel-browser";
+      if (method.name === "SubmitJob") Object.assign(init, {
+        target: { target: { case: "deploymentAlias", value: "current" } },
+        input: { source: { case: "object", value: { bucket: "customer-input", key: "video/input.mp4" } } },
+        limits: { timeoutMillis: 1000n, memoryBytes: 1024n, outputBytes: 1024n }, retry: { maxAttempts: 2 }, idempotencyKey: "job-browser",
+      });
       if (method.name === "InvokeVersion") init.versionSha256 = new Uint8Array(32).fill(1);
       if (method.name === "InvokeDeployment") init.alias = "current";
       const result = await client[method.localName](create(method.input, init));
-      if (service === ActorsService) assert.ok(result);
-      else assert.equal(result.$typeName, method.output.typeName);
+      assert.ok(result);
       if (method.name === "CheckpointActor") assert.equal(result.actor.checkpointEpoch, 9n);
       if (method.name === "InvokeActor") assert.equal(result.status, 201);
       if (method.name === "InvokeVersion") { assert.deepEqual(result.resolvedSha256, new Uint8Array(32).fill(1)); assert.equal(result.resolvedRevision, undefined); }
@@ -74,8 +84,8 @@ try {
   await assert.rejects(pending, error => error.code === "cancelled");
   delete globalThis.abortActorsRequest;
   const inspectJob = WorkersService.methods.find(method => method.name === "InspectJob");
-  await assert.rejects(new HttpWorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.status === 403 && typeof error.code === "number");
-  await assert.rejects(new HttpWorkersClient({ ...options, maximumResponseBytes: 8 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.message === "response exceeds configured bound");
+  await assert.rejects(new HttpWorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.code === "service" && error.metadata?.grpcCode === 16);
+  await assert.rejects(new HttpWorkersClient({ ...options, maximumMessageBytes: 32 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.code === "service" && /byte ceiling|message.*(?:large|size)/i.test(error.message));
 
   const stream = new HttpStreamProvider(options);
   const key = text => idempotencyKey(new TextEncoder().encode(text));

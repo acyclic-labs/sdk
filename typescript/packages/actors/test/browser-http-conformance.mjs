@@ -73,7 +73,7 @@ function actorWorkerResponse(method, input) {
   }
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
   if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
-  if (method.name === "InvokeVersion") { assert.deepEqual(input.versionSha256, new Uint8Array(32).fill(1)); return { resolvedSha256: input.versionSha256 }; }
+  if (method.name === "InvokeVersion") { assert.deepEqual(Uint8Array.from(input.versionSha256), new Uint8Array(32).fill(1)); return { resolvedSha256: input.versionSha256 }; }
   if (method.name === "InvokeDeployment") { assert.equal(input.alias, "current"); return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n }; }
   if (method.name === "SelectDeployment") assert.equal(input.expectedRevision, 7n);
   if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
@@ -104,9 +104,11 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
     }
     const isObjects = pathname.startsWith("/v2/objects/");
     const isStream = pathname.startsWith("/v1/stream/");
-    const isActorsGrpcWeb = (pathname.startsWith(`/acyclic.actors.v1.ActorsService/`) || ActorsService.methods.some(method => pathname === `/${method.name}`)) && request.headers["content-type"]?.startsWith("application/grpc-web");
+    const grpcWebService = request.headers["content-type"]?.startsWith("application/grpc-web")
+      ? [ActorsService, WorkersService].find(service => pathname.startsWith(`/${service.typeName}/`) || service.methods.some(method => pathname === `/${method.name}`))
+      : undefined;
     if (request.headers.authorization !== "Bearer conformance") {
-      if (isActorsGrpcWeb) {
+      if (grpcWebService) {
         response.writeHead(200, { "content-type": "application/grpc-web+proto", "access-control-expose-headers": "grpc-status,grpc-message" });
         response.end(grpcWebResponse(new Uint8Array(), 16, "capability denied")); return;
       }
@@ -116,15 +118,20 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
     const chunks = []; let total = 0;
     for await (const chunk of request) { total += chunk.length; assert.ok(total <= 16 * 1024 * 1024); chunks.push(chunk); }
     const data = Buffer.concat(chunks);
-    if (isActorsGrpcWeb) {
-      const methodName = pathname.startsWith("/acyclic.actors.v1.ActorsService/") ? pathname.slice("/acyclic.actors.v1.ActorsService/".length) : pathname.slice(1);
-      const method = ActorsService.methods.find(candidate => candidate.name === methodName);
-      assert.ok(method, `unknown Actors gRPC-Web route ${methodName}`);
+    if (grpcWebService) {
+      const prefix = `/${grpcWebService.typeName}/`;
+      const methodName = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : pathname.slice(1);
+      const method = grpcWebService.methods.find(candidate => candidate.name === methodName);
+      assert.ok(method, `unknown gRPC-Web route ${methodName}`);
       assert.ok(data.length >= 5);
       const frameLength = data.readUInt32BE(1);
       assert.equal(data[0] & 0x80, 0);
       assert.equal(frameLength, data.length - 5);
       const input = fromBinary(method.input, data.subarray(5));
+      if (input.jobId === "oversize") {
+        response.writeHead(200, { "content-type": "application/grpc-web+proto" });
+        response.end(grpcWebResponse(new Uint8Array(128))); return;
+      }
       if (input.actorId === "cancel") {
         assert.equal(cancellationDispatched, false, "one cancellation request must dispatch");
         cancellationDispatched = true;
@@ -132,7 +139,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
         cancellationClosed = !response.writableEnded;
         return;
       }
-      seen.add(`${ActorsService.typeName}/${method.name}`);
+      seen.add(`${grpcWebService.typeName}/${method.name}`);
       const body = toBinary(method.output, create(method.output, actorWorkerResponse(method, input)));
       response.writeHead(200, { "content-type": "application/grpc-web+proto", "access-control-expose-headers": "grpc-status,grpc-message" });
       response.end(grpcWebResponse(body)); return;
@@ -176,6 +183,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
     }
     response.writeHead(404).end();
   } catch (error) {
+    if (pathname.startsWith("/acyclic.")) console.error(`browser fixture handler failed for ${pathname}`, error);
     response.writeHead(400, { "content-type": "application/json" });
     if (pathname.startsWith("/v2/objects/")) response.end(encode_objects_v2_json("ErrorDetail", toBinary(objectsWire.ErrorDetailSchema, create(objectsWire.ErrorDetailSchema, { code: typeof error.code === "number" ? error.code : objectsWire.ErrorCode.UNAVAILABLE })), 1024));
     else response.end(JSON.stringify({ code: error.code ?? "unavailable" }));

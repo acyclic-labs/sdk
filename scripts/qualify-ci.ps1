@@ -155,6 +155,7 @@ foreach ($family in @('actors', 'workers')) {
   $clientBundle = Join-Path $StreamNativeRoot "$family-native/bundle"
   node "scripts/build-$family-native.mjs" build --target x86_64-pc-windows-msvc `
       --output $clientBundle --target-dir "$CargoTargetDir-$family-native"
+  Copy-Item -LiteralPath "$CargoTargetDir-$family-native/$family-native-build-inputs.receipt.json" -Destination (Join-Path (Split-Path -Parent $clientBundle) 'producer-receipt.json')
   node "scripts/build-$family-native.mjs" stage --bundle $clientBundle
 }
 cargo build --offline --locked -p acyclic-actors --example conformance-certificate
