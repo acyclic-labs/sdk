@@ -20,7 +20,7 @@ required-features = ["local"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:tonic", "dep:tonic-prost", "tokio/time"]
+grpc = ["dep:rustls", "dep:rustls-platform-verifier", "dep:tonic", "dep:tonic-prost", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
@@ -40,7 +40,9 @@ prost-types = "0.14.4"
 ruzstd.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
-tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+tonic = { version = "0.14.6", features = ["tls-ring"], optional = true }
 tonic-prost = { workspace = true, optional = true }
 imbl = { version = "=7.0.2", default-features = false }
 

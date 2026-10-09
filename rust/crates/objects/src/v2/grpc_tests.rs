@@ -341,6 +341,69 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
     Ok(())
 }
 
+/// Without a declared CA the client trusts what the platform trusts: on Linux,
+/// the roots `SSL_CERT_FILE` names. A declared CA replaces that trust rather
+/// than joining it. The environment is process-wide, so the test re-runs
+/// itself in a child process that carries it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const SERVER_KEY: &str = "ACYCLIC_OBJECTS_TEST_SERVER_KEY";
+    let Ok(key) = std::env::var(SERVER_KEY) else {
+        let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+        let roots = tempfile::NamedTempFile::new()?;
+        std::fs::write(roots.path(), certified.cert.pem())?;
+        let module = module_path!();
+        let test = format!(
+            "{}::platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them",
+            module.split_once("::").map_or(module, |(_, path)| path)
+        );
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([test.as_str(), "--exact", "--nocapture"])
+            .env("SSL_CERT_FILE", roots.path())
+            .env_remove("SSL_CERT_DIR")
+            .env(SERVER_KEY, certified.signing_key.serialize_pem())
+            .status()?;
+        assert!(status.success(), "child test failed: {status}");
+        return Ok(());
+    };
+    let pem = std::fs::read_to_string(std::env::var("SSL_CERT_FILE")?)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
+    let identity = Identity::from_pem(pem, key);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .tls_config(ServerTlsConfig::new().identity(identity))?
+            .add_service(wire::buckets_service_server::BucketsServiceServer::new(
+                fixture,
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+    let client = GrpcObjects::connect(&endpoint, "exact-token", None).await?;
+    client
+        .create_bucket(wire::CreateBucketRequest {
+            name: "platform.roots".into(),
+            mutation: None,
+        })
+        .await?;
+    let other = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+    assert!(
+        GrpcObjects::connect(&endpoint, "exact-token", Some(other.cert.pem().as_bytes()))
+            .await
+            .is_err(),
+        "a declared CA must be the whole trust"
+    );
+    let _ = shutdown_tx.send(());
+    server.await??;
+    Ok(())
+}
+
 async fn exercise_transfer_deadlines(
     client: &GrpcObjects,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

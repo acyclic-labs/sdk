@@ -5,6 +5,7 @@ use http_body::Body as _;
 use prost::Message;
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 use tonic::{
@@ -161,12 +162,18 @@ pub enum ConnectError {
     /// Private CA must contain between one byte and 64 KiB.
     #[error("invalid Workers private CA")]
     InvalidCaCertificate,
+    /// The platform certificate verifier could not be initialized.
+    #[error("Workers platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
     /// URI or TLS connection failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
 }
 
-/// Connect using standard TLS roots and account-bound bearer metadata.
+/// Connect trusting the platform's roots and with account-bound bearer metadata.
+///
+/// Server certificates are verified by the operating system's verifier (on
+/// Linux, the native roots, which `SSL_CERT_FILE` and `SSL_CERT_DIR` select).
 ///
 /// # Errors
 /// Returns an error for invalid configuration or an unavailable TLS endpoint.
@@ -174,7 +181,8 @@ pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError
     connect_with_ca_certificate(endpoint, token, None).await
 }
 
-/// Connect with an optional additional private CA, scoped to this connection.
+/// Connect trusting exactly `ca` when one is given, else the platform's roots
+/// as [`connect`] does. A declared CA is the whole trust for this connection.
 ///
 /// # Errors
 /// Returns an error for invalid configuration, CA bytes, or TLS connection.
@@ -200,17 +208,17 @@ pub async fn connect_with_ca_certificate(
         .parse()
         .map_err(|_| ConnectError::InvalidCredential)?;
     authorization.set_sensitive(true);
-    let mut tls = ClientTlsConfig::new().with_webpki_roots();
-    if let Some(ca) = ca {
-        if ca.is_empty() || ca.len() > 64 * 1024 {
-            return Err(ConnectError::InvalidCaCertificate);
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
+    let endpoint = match ca {
+        Some(ca) => {
+            if ca.is_empty() || ca.len() > 64 * 1024 {
+                return Err(ConnectError::InvalidCaCertificate);
+            }
+            endpoint.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
         }
-        tls = tls.ca_certificate(Certificate::from_pem(ca));
-    }
-    let channel = Endpoint::from_shared(endpoint.to_owned())?
-        .tls_config(tls)?
-        .connect()
-        .await?;
+        None => endpoint.tls_config_with_verifier(ClientTlsConfig::new(), platform_verifier()?)?,
+    };
+    let channel = endpoint.connect().await?;
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_interceptor(
             TracedChannel(channel),
@@ -219,6 +227,12 @@ pub async fn connect_with_ca_certificate(
         .max_decoding_message_size(16 * 1024 * 1024)
         .max_encoding_message_size(16 * 1024 * 1024),
     )
+}
+
+fn platform_verifier() -> Result<Arc<rustls_platform_verifier::Verifier>, ConnectError> {
+    rustls_platform_verifier::Verifier::new(Arc::new(rustls::crypto::ring::default_provider()))
+        .map(Arc::new)
+        .map_err(ConnectError::PlatformVerifier)
 }
 
 /// Decode the canonical semantic error carried in gRPC status details.
