@@ -214,7 +214,8 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
-    owner: Option<(TaskJournalOwner<P>, TaskExecutionIdentity)>,
+    owner: Option<TaskJournalOwner<P>>,
+    execution: Option<TaskExecutionIdentity>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
 }
 
@@ -250,27 +251,31 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             scope,
             maximum_payload_bytes,
         )?;
-        journal.owner = Some((
-            owner,
-            TaskExecutionIdentity {
-                operation: operation_id,
-                turn: turn_operation,
-            },
-        ));
+        journal.owner = Some(owner);
+        journal.execution = Some(TaskExecutionIdentity {
+            operation: operation_id,
+            turn: turn_operation,
+        });
         Ok(journal)
     }
 
+    /// Fixes the original turn for passive replay without granting a task lease.
+    pub(super) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
+        self.execution = Some(TaskExecutionIdentity { operation, turn });
+        self
+    }
+
     fn turn_operation(&self, operation: OperationId) -> OperationId {
-        self.owner
+        self.execution
             .as_ref()
-            .map_or(operation, |(_, identity)| identity.turn)
+            .map_or(operation, |identity| identity.turn)
     }
 
     fn require_operation(&self, operation: OperationId) -> Result<()> {
         if self
-            .owner
+            .execution
             .as_ref()
-            .is_some_and(|(_, bound)| bound.operation != operation)
+            .is_some_and(|bound| bound.operation != operation)
         {
             return Err(Error::Unauthorized(
                 "journal belongs to another task execution".into(),
@@ -289,7 +294,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+        let owner = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
         loop {
@@ -331,10 +336,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let (owner, identity) = self.owner.as_ref().ok_or_else(|| {
+        let owner = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        let operation = identity.operation;
+        let operation = self
+            .execution
+            .as_ref()
+            .ok_or_else(|| Error::Storage("task execution identity is missing".into()))?
+            .operation;
         let mut summary = self.verified.lock().await;
         Box::pin(self.refresh_summary(operation, &mut summary)).await?;
         if !summary.quiescent() {
@@ -363,7 +372,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 "execution journal compare-and-append is invalid".into(),
             ));
         }
-        let (owner, _) = self
+        let owner = self
             .owner
             .as_ref()
             .ok_or_else(|| Error::Invalid("task journal owner required".into()))?;
@@ -494,6 +503,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             input_verifier: None,
             interactions,
             owner: None,
+            execution: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
         })
     }
@@ -514,7 +524,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        if let Some((owner, _)) = &self.owner {
+        if let Some(owner) = &self.owner {
             owner.require_interaction_grant()?;
         } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
             return Err(Error::Unauthorized(
@@ -757,7 +767,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 model,
             ));
         }
-        if let Some((owner, _)) = &self.owner {
+        if let Some(owner) = &self.owner {
             let records = result
                 .iter()
                 .map(|(record, _)| record.clone())
@@ -1045,7 +1055,7 @@ where
 
     fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = &self.owner {
                 owner.validate_input_file(reference)?;
             }
             if reference.descriptor().byte_length() > self.maximum_payload_bytes {
@@ -1128,7 +1138,7 @@ where
                     crate::conversation::MAX_PORTABLE_COUNT,
                     self.maximum_payload_bytes,
                 ),
-                |(owner, _)| {
+                |owner| {
                     let limits = owner.input_limits();
                     (
                         limits.context_messages,
@@ -1163,12 +1173,12 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             interaction.validate()?;
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = &self.owner {
                 owner.require_interaction_grant()?;
                 owner.verify(false).await?;
             }
             if let Some(original) = self.interactions()?.read_request(id).await? {
-                if let Some((owner, _)) = &self.owner {
+                if let Some(owner) = &self.owner {
                     owner.verify(false).await?;
                 }
                 return if original == interaction {
@@ -1181,7 +1191,7 @@ where
             let ticket =
                 Box::pin(self.interactions()?.stage_request(id, &interaction, None)).await?;
             let owner_scope = self.interactions()?.owner_scope();
-            let publication = if let Some((owner, _)) = &self.owner {
+            let publication = if let Some(owner) = &self.owner {
                 Box::pin(self.interactions()?.open_owned(
                     interaction_operation(id, "open"),
                     owner_scope,
@@ -1197,7 +1207,7 @@ where
                 ))
                 .await
             };
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = &self.owner {
                 owner.verify(false).await?;
             }
             let result = match publication {
@@ -1211,7 +1221,7 @@ where
                 }
                 Err(error) => Err(error),
             };
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = &self.owner {
                 owner.verify(false).await?;
             }
             result
@@ -1223,7 +1233,7 @@ where
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
         Box::pin(async move {
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = &self.owner {
                 owner.require_interaction_grant()?;
                 owner.verify(true).await?;
             }
@@ -1232,7 +1242,7 @@ where
                 .read(id)
                 .await?
                 .and_then(|(_, resolution)| resolution.map(|value| value.outcome));
-            if let Some((owner, _)) = &self.owner {
+            if let Some(owner) = &self.owner {
                 owner.verify(true).await?;
             }
             Ok(outcome)

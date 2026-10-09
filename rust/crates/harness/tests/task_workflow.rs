@@ -2319,7 +2319,7 @@ async fn stock_restart_with_publication_fault(
                 let journal = FilesystemExecutionJournal::for_task(
                     host.journal_owner(task, fence.clone()).await?,
                     execution.operation_id(),
-                    operation,
+                    OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
                     volume.clone(),
                     issuer.verifier(),
