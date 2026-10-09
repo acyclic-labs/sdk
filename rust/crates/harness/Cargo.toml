@@ -15,6 +15,11 @@ build = "build.rs"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[[bin]]
+name = "graphcoder"
+path = "src/bin/graphcoder.rs"
+required-features = ["terminal"]
+
 [[example]]
 name = "native-process-approval"
 required-features = ["filesystem"]
@@ -30,6 +35,8 @@ name = "harness"
 harness = false
 
 [features]
+# Native presentation only; this does not select providers or grant authority.
+terminal = ["dep:hex"]
 wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]

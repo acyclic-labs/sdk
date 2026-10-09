@@ -1,6 +1,6 @@
 [workspace]
 # Publishable SDK families, private qualification/binding crates, and the
-# single product binary are listed explicitly so retired crates cannot return.
+# native product targets are listed explicitly so retired crates cannot return.
 members = [
   "rust/crates/actors",
   "rust/crates/conformance",

@@ -1008,7 +1008,7 @@ pub enum ModelEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelDispatch {
-    /// Admitted attempt identity, including summary-purpose separation.
+    /// Admitted execution operation identity.
     pub operation_id: OperationId,
     /// Zero-based logical executor step.
     pub step: u32,

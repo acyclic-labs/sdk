@@ -31,6 +31,7 @@ impl RouteRoot {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Route {
+    pub(crate) task_binding: PluginTaskBinding,
     pub(crate) agent_id: String,
     pub(crate) turn_id: String,
     pub(crate) context_id: [u8; 16],
@@ -77,6 +78,7 @@ impl RouteLifecycle {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PendingSpawn {
+    pub(crate) task_binding: PluginTaskBinding,
     pub(crate) parent_agent_id: String,
     pub(crate) tool_use_id: String,
     pub(crate) active_root_id: Option<[u8; 16]>,
@@ -201,6 +203,7 @@ impl RootLeaseRecord {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AdapterState {
+    pub(crate) task_binding: PluginTaskBinding,
     pub(crate) version: u32,
     pub(crate) root_session_id: String,
     pub(crate) active: bool,
@@ -1335,6 +1338,7 @@ impl ControlPlane {
             }
             let fork_key = IdempotencyKey::new();
             self.state.pending.push_back(PendingSpawn {
+                task_binding: PluginTaskBinding::HostManaged,
                 parent_agent_id: caller,
                 tool_use_id,
                 active_root_id: input
@@ -1968,6 +1972,7 @@ impl ControlPlane {
             .remove(&pending.fork_key)
             .ok_or_else(|| "prepared child mount is unavailable".to_owned())?;
         let route = Route {
+            task_binding: pending.task_binding.clone(),
             agent_id: agent_id.clone(),
             turn_id: turn_id.clone(),
             context_id: pending.fork_key,

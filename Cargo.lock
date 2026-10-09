@@ -394,7 +394,9 @@ name = "acyclic-plugin"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-harness",
  "acyclic-native-runtime",
+ "acyclic-stream",
  "base64 0.22.1",
  "blake3",
  "bytes",
