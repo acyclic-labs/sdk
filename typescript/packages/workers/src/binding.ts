@@ -25,7 +25,7 @@ function checkedVersion(Client: { version(): string }): void {
     throw new WorkersTransportError("Workers binding package identity mismatch", "configuration");
   }
 }
-function cancellation(Cancel: new () => Cancellation, signal?: AbortSignal) {
+function cancellation<T extends Cancellation>(Cancel: new () => T, signal?: AbortSignal) {
   if (typeof Cancel !== "function") throw new WorkersTransportError("Workers binding cancellation export missing", "configuration");
   const handle = new Cancel();
   const abort = () => handle.cancel();
