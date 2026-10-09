@@ -1977,19 +1977,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_publication_close_expiry_interleavings_preserve_peer_authority() {
-        // Exhaustive serial linearizations of three events, two leases, one
-        // publication and two clock samples. This is a finite invariant check,
-        // assuming atomic provider transactions and a trusted monotonic clock;
+    async fn bounded_publication_close_renewal_expiry_interleavings_preserve_peer_authority() {
+        // Exhaustive serial linearizations of publication, close or renewal, and
+        // expiry: twelve traces, two leases and two clock samples. This finite check
+        // assumes atomic provider transactions and a trusted monotonic clock;
         // it makes no unbounded liveness or browser scheduling claim.
-        for events in [
+        for (events, renew) in [
             [0, 1, 2],
             [0, 2, 1],
             [1, 0, 2],
             [1, 2, 0],
             [2, 0, 1],
             [2, 1, 0],
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|events| [false, true].map(move |renew| (events, renew)))
+        {
             let clock = Arc::new(TestClock::default());
             clock.0.store(10, Ordering::SeqCst);
             let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
@@ -2018,7 +2021,8 @@ mod tests {
                 .begin(workspace, generation(1), "peer", 10, 30)
                 .await
                 .expect("peer");
-            let mut closed = false;
+            let mut revoked = false;
+            let mut renewed = None;
             for event in events {
                 match event {
                     0 => {
@@ -2031,7 +2035,7 @@ mod tests {
                         .await
                         .expect("head")
                         .value;
-                        let allowed = !closed && clock.0.load(Ordering::SeqCst) < 20;
+                        let allowed = !revoked && clock.0.load(Ordering::SeqCst) < 20;
                         let outcome = AsyncAuthorityStore::compare_and_append_guarded(
                             &authority,
                             crate::GuardedAppend {
@@ -2054,53 +2058,67 @@ mod tests {
                         assert_eq!(
                             matches!(outcome, crate::AppendOutcome::Committed(_)),
                             allowed,
-                            "trace {events:?}"
+                            "trace {events:?}, renew={renew}"
                         );
                     }
                     1 => {
-                        windows
-                            .finish(&first, clock.0.load(Ordering::SeqCst))
-                            .await
-                            .expect("close");
-                        closed = true;
+                        let now = clock.0.load(Ordering::SeqCst);
+                        if renew {
+                            let outcome = windows.renew(&first, now, 30).await;
+                            if now < 20 {
+                                renewed = Some(outcome.expect("renew live lease"));
+                                revoked = true;
+                            } else {
+                                assert!(matches!(outcome, Err(OperationWindowError::StaleLease)));
+                            }
+                        } else {
+                            windows.finish(&first, now).await.expect("close");
+                            revoked = true;
+                        }
                     }
                     _ => {
                         clock.0.store(20, Ordering::SeqCst);
                     }
                 }
             }
-            let head = AsyncAuthorityStore::head(
-                &authority,
-                authority_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("peer head")
-            .value;
-            let outcome = AsyncAuthorityStore::compare_and_append_guarded(
-                &authority,
-                crate::GuardedAppend {
+            for (index, lease) in std::iter::once(peer).chain(renewed).enumerate() {
+                let head = AsyncAuthorityStore::head(
+                    &authority,
                     authority_id,
-                    epoch: head.epoch,
-                    expected: head,
-                    commit: ProposedCommit {
-                        operation_id: OperationId::from_bytes([94; 16]),
-                        fingerprint: Digest::from_bytes([95; 32]),
-                        payload: Bytes::from_static(b"peer"),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .expect("peer head")
+                .value;
+                let outcome = AsyncAuthorityStore::compare_and_append_guarded(
+                    &authority,
+                    crate::GuardedAppend {
+                        authority_id,
+                        epoch: head.epoch,
+                        expected: head,
+                        commit: ProposedCommit {
+                            operation_id: OperationId::from_bytes(
+                                [94 + u8::try_from(index).expect("two leases"); 16],
+                            ),
+                            fingerprint: Digest::from_bytes(
+                                [95 + u8::try_from(index).expect("two leases"); 32],
+                            ),
+                            payload: Bytes::from_static(b"peer"),
+                        },
+                        permit: lease.publication_permit(),
                     },
-                    permit: peer.publication_permit(),
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("peer publish")
-            .value;
-            assert!(
-                matches!(outcome, crate::AppendOutcome::Committed(_)),
-                "trace {events:?}"
-            );
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .expect("peer publish")
+                .value;
+                assert!(
+                    matches!(outcome, crate::AppendOutcome::Committed(_)),
+                    "trace {events:?}, renew={renew}"
+                );
+            }
         }
     }
 

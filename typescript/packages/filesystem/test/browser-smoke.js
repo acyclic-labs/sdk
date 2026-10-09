@@ -15,6 +15,51 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function indexedDbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function rejectObsoleteDatabase(name) {
+  const request = indexedDB.open(name, 4);
+  request.onupgradeneeded = () => request.result.createObjectStore("sentinel");
+  const obsolete = await indexedDbRequest(request);
+  const transaction = obsolete.transaction("sentinel", "readwrite");
+  transaction.objectStore("sentinel").put("preserved", "marker");
+  await new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onabort = () => reject(transaction.error);
+  });
+  obsolete.close();
+  let rejected = false;
+  try {
+    const unexpected = await openBrowserFs({
+      databaseName: name,
+      maximumObjectBytes: 64 * 1024 * 1024,
+      objectAcceleration: "opfs",
+      objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+    });
+    unexpected.close();
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "obsolete IndexedDB schema was accepted");
+  const retainedRequest = indexedDB.open(name);
+  retainedRequest.onupgradeneeded = () => retainedRequest.transaction.abort();
+  const retained = await indexedDbRequest(retainedRequest);
+  try {
+    assert(retained.version === 4, "rejected IndexedDB schema was replaced");
+    assert(retained.objectStoreNames.length === 1 && retained.objectStoreNames.contains("sentinel"),
+      "rejected IndexedDB schema was mutated");
+    assert(await indexedDbRequest(retained.transaction("sentinel").objectStore("sentinel").get("marker"))
+      === "preserved", "rejected IndexedDB sentinel was mutated");
+  } finally {
+    retained.close();
+  }
+}
+
 async function run() {
   const memory = await openMemoryFs({
     maximumObjectBytes: 1024 * 1024,
@@ -33,6 +78,10 @@ async function run() {
     objectAcceleration: "opfs",
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   });
+  const current = await indexedDbRequest(indexedDB.open(`acyclic-fs-smoke-source-${suffix}`));
+  assert(current.version === 1, "fresh IndexedDB schema was not v1");
+  current.close();
+  await rejectObsoleteDatabase(`acyclic-fs-smoke-obsolete-${suffix}`);
   const volume = await source.createVolume(portableVolumeOptions("durable"));
   const leasedWorkspace = await source.createWorkspace("leased");
   const windows = await openBrowserOperationWindowCoordinator(source);
@@ -337,6 +386,7 @@ async function run() {
   result.textContent = JSON.stringify({
     status: "passed",
     memoryWorkspace: "passed",
+    indexedDbSchema: "v1 durable reopen; obsolete v4 rejected without mutation",
     sourceAuthority: reopened.capabilities.authority,
     sourceObjects: reopened.capabilities.immutableObjects,
     exportedObjects: manifest.objects.length,
