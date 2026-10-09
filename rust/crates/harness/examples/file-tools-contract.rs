@@ -52,12 +52,17 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 }
 
 fn definitions() -> Result<Vec<Value>> {
+    let mut reference_read = files::read_file()?;
+    let read_projector = ReadFileProjection(ProjectionMode::Reference);
+    reference_read.definition.projection_schema = read_projector.schema()?;
+    reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write_file()?;
     let reference_projector = FileResultProjection(ProjectionMode::Reference);
     reference_write.definition.projection_schema = reference_projector.schema()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
     Ok(vec![
         definition("exact_read_full", files::read_file()?)?,
+        definition("exact_read_reference", reference_read)?,
         definition("write_full", files::write_file()?)?,
         definition("write_reference", reference_write)?,
         definition("exact_edit_full", files::edit_file()?)?,

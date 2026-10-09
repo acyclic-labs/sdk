@@ -30,6 +30,7 @@ export * from "./conversation.js";
 export * from "./native-contracts.js";
 export { createBrowserMcpHttpProvider } from "./mcp-http.js";
 export { WasmMcpHttpTransport, WasmMcpHttpInitialization } from "../generated/wasm/acyclic_harness_wasm.js";
+export type * from "./file-tools.js";
 export type { SessionLimitsWire } from "./limits-contract.js";
 export * from "./fork.js";
 export * from "./project.js";

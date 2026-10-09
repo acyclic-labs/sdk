@@ -21,6 +21,7 @@ const modules = [
   "generate-harness-child-page-contract.mjs",
   "generate-harness-private-directory-page-contract.mjs",
   "generate-harness-conversation-page-contract.mjs",
+  "generate-harness-file-tools-contract.mjs",
   "generate-machines-managed-oci-contract.mjs",
   "generate-observe.mjs",
 ];
