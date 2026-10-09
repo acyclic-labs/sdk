@@ -1,6 +1,8 @@
 //! Individually assembled portable file tools using owner-bound task providers.
 
-use super::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
+use super::{
+    Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult, decode,
+};
 use crate::{
     Error, Result,
     conversation::FileRef,
@@ -183,10 +185,6 @@ pub struct FileResult {
     pub file: FileRef,
 }
 
-fn decode<T: serde::de::DeserializeOwned>(arguments: Value) -> Result<T> {
-    serde_json::from_value(arguments).map_err(|error| Error::Invalid(error.to_string()))
-}
-
 fn public_path(path: &str) -> Result<()> {
     crate::conversation::validate_content_path(path)?;
     if crate::conversation::is_internal_path(path) {
@@ -204,14 +202,14 @@ impl FileTool {
         self.authorize_with_context(&context, &invocation)?;
         let value = match self {
             Self::Read => {
-                let input: ReadFileInput = decode(invocation.arguments)?;
+                let input: ReadFileInput = decode(&invocation.arguments)?;
                 let bytes = task.read_file(&input.file).await?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?;
                 Value::String(text)
             }
             Self::Write => {
-                let input: WriteFileInput = decode(invocation.arguments)?;
+                let input: WriteFileInput = decode(&invocation.arguments)?;
                 let file = task
                     .stage_file_once(
                         invocation.operation_id,
@@ -228,7 +226,7 @@ impl FileTool {
                 maximum_work,
                 maximum_hunks,
             } => {
-                let input: PatchFileInput = decode(invocation.arguments)?;
+                let input: PatchFileInput = decode(&invocation.arguments)?;
                 let limits = super::patch::PatchLimits {
                     maximum_bytes: task.scope().limits().file_bytes,
                     maximum_work: *maximum_work,
@@ -253,7 +251,7 @@ impl FileTool {
                     .map_err(|error| Error::Invalid(error.to_string()))?
             }
             Self::Edit => {
-                let input: EditFileInput = decode(invocation.arguments)?;
+                let input: EditFileInput = decode(&invocation.arguments)?;
                 let maximum = task.scope().limits().file_bytes;
                 super::edit::validate_edit_bound(maximum)?;
                 let bytes = task.read_file(&input.file).await?;
@@ -304,7 +302,7 @@ impl FileTool {
             let value = invocation.arguments.get("file").ok_or_else(|| {
                 Error::Invalid("file tool requires an original source reference".into())
             })?;
-            let file: FileRef = decode(value.clone())?;
+            let file: FileRef = decode(value)?;
             public_path(file.path())?;
             scope.limits().validate_file(&file)?;
             if !crate::runtime::read_granted(scope.grants(), &file)? {
@@ -349,10 +347,9 @@ impl ToolExecutor for FileTool {
             Self::Read => Ok(()),
             Self::Write => context.task().authorize_content_publication(None),
             Self::Edit | Self::Patch { .. } => {
-                let file: FileRef =
-                    decode(invocation.arguments.get("file").cloned().ok_or_else(|| {
-                        Error::Invalid("file tool requires an original source reference".into())
-                    })?)?;
+                let file: FileRef = decode(invocation.arguments.get("file").ok_or_else(|| {
+                    Error::Invalid("file tool requires an original source reference".into())
+                })?)?;
                 context.task().authorize_content_publication(Some(&file))
             }
         }
@@ -412,7 +409,7 @@ impl FileResultProjection {
 
 impl ToolProjection for FileResultProjection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let value: FileResult = decode(result.value.clone())?;
+        let value: FileResult = decode(&result.value)?;
         match self.0 {
             super::schema::ProjectionMode::Full => super::schema::project_json(value),
             super::schema::ProjectionMode::Reference => super::schema::project_reference(value.file,
@@ -437,11 +434,11 @@ impl ReadFileProjection {
 
 impl ToolProjection for ReadFileProjection {
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let text: String = decode(result.value.clone())?;
+        let text: String = decode(&result.value)?;
         match self.0 {
             super::schema::ProjectionMode::Full => super::schema::project_json(text),
             super::schema::ProjectionMode::Reference => {
-                let input: ReadFileInput = decode(invocation.arguments.clone())?;
+                let input: ReadFileInput = decode(&invocation.arguments)?;
                 input.file.descriptor().verify(text.as_bytes())?;
                 super::schema::project_reference(
                     input.file,

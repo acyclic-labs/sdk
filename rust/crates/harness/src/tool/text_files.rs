@@ -2,7 +2,9 @@
 
 use super::schema::ProjectionMode;
 use super::text::{ReadOptions, SearchMatches, SearchOptions, TextRange, TextSelection};
-use super::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
+use super::{
+    Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult, decode,
+};
 use crate::{
     Error, Result,
     conversation::FileRef,
@@ -10,7 +12,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -73,10 +75,6 @@ pub struct ReadProjection(pub ProjectionMode);
 #[derive(Clone, Copy)]
 pub struct SearchProjection(pub ProjectionMode);
 
-fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
-}
-
 fn encode<T: Serialize>(value: T) -> Result<Value> {
     serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -93,7 +91,7 @@ impl ReadProjection {
 
 impl ToolProjection for ReadProjection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let value: ReadResult = decode(result.value.clone())?;
+        let value: ReadResult = decode(&result.value)?;
         match self.0 {
             ProjectionMode::Full => super::schema::project_json(value),
             ProjectionMode::Reference => super::schema::project_reference(
@@ -122,7 +120,7 @@ impl SearchProjection {
 
 impl ToolProjection for SearchProjection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let value: SearchResult = decode(result.value.clone())?;
+        let value: SearchResult = decode(&result.value)?;
         match self.0 {
             ProjectionMode::Full => super::schema::project_json(value),
             ProjectionMode::Reference => super::schema::project_reference(
@@ -257,7 +255,7 @@ impl TextTool {
         let file = match self.kind {
             TextKind::Read(options) => {
                 options.validate()?;
-                let input: ReadInput = decode(invocation.arguments.clone())?;
+                let input: ReadInput = decode(&invocation.arguments)?;
                 let length = input
                     .range
                     .end
@@ -275,7 +273,7 @@ impl TextTool {
             }
             TextKind::Search(options) => {
                 options.validate()?;
-                let input: SearchInput = decode(invocation.arguments.clone())?;
+                let input: SearchInput = decode(&invocation.arguments)?;
                 if input.file.descriptor().byte_length() > options.maximum_input_bytes
                     || input.query.is_empty()
                     || input.query.len() as u64 > options.maximum_query_bytes
@@ -323,7 +321,7 @@ impl TextTool {
             .min(task.scope().limits().file_bytes);
         let value = match self.kind {
             TextKind::Read(options) => {
-                let input: ReadInput = decode(invocation.arguments)?;
+                let input: ReadInput = decode(&invocation.arguments)?;
                 let value = ReadResult {
                     file,
                     selection: super::text::read_range(source, input.range, options)?,
@@ -332,7 +330,7 @@ impl TextTool {
                 encode(value)?
             }
             TextKind::Search(options) => {
-                let input: SearchInput = decode(invocation.arguments)?;
+                let input: SearchInput = decode(&invocation.arguments)?;
                 let matches = super::text::literal_search(source, &input.query, options)?;
                 let value = SearchResult {
                     file,
@@ -438,7 +436,7 @@ mod tests {
     };
 
     fn assert_reference(projection: Value, expected: &FileRef) -> Result<()> {
-        let wire: ToolResultContent = decode(projection)?;
+        let wire: ToolResultContent = decode(&projection)?;
         let ToolResultContent::Parts { parts } = wire else {
             panic!("reference envelope")
         };
