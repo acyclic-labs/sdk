@@ -14,7 +14,7 @@ replacement needs an immutable source handoff and matching installed packages.
 
 | Cohort | Targets | Historical evidence and limits |
 | --- | --- | --- |
-| Go transport | Go | The historical installed-method matrix dated 2026-10-04 records Stream and Machines coverage; Actors and Inference remain partial. `go/qualification-matrix.md` distinguishes protobuf-over-HTTP fixture probes from local gRPC cancellation. |
+| Go transport | Go | The historical `current-installed-method-matrix-20261004.json` records Stream and Machines coverage; Actors and Inference remain partial. `go/qualification-matrix.md` distinguishes protobuf-over-HTTP fixture probes from local gRPC cancellation. |
 | JVM/.NET | Java, Kotlin, Scala, C# | `research/acceptance/jvm-dotnet/current-producer-receipt-20261004.json` records reproducible installed JAR/NuGet artifacts. This does not qualify embedded Rust bindings. Kotlin `qualify-final-producer.ps1` explicitly retains the maintained-binding/type-table cutover gap. |
 | Native | Swift, C++, Objective-C | Swift's historical Windows transport guard does not exclude its Linux/macOS target. Embedded consumer sources and historical execution notes require matching accepted runtime artifacts. |
 | Remaining core | Ruby, PHP, Dart | `research/acceptance/ruby-php-dart/qualification/current-source-qualification-20261004.receipt.json` and `installed-runtime-availability.receipt.json` contain bounded package/runtime evidence. The retained native shutdown failure and PHP generator availability gap prevent a clean completion claim. |
