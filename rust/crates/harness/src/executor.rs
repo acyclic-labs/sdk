@@ -905,6 +905,32 @@ impl StockExecutor {
         step: u32,
         call_id: &str,
     ) -> Result<crate::model::PreparedModelRequest> {
+        self.completed_tool_prefix_through(journal, input, step, Some(call_id))
+            .await
+    }
+
+    /// Freezes one complete ordered tool batch from the retained model step.
+    /// Every call must have its actual validated result and projection before
+    /// this boundary is available. Missing or uncertain calls fail closed;
+    /// this method reads artifacts only and never dispatches or reconciles effects.
+    /// Child activation and fork publication remain separately admitted operations.
+    pub async fn completed_tool_batch_prefix(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+    ) -> Result<crate::model::PreparedModelRequest> {
+        self.completed_tool_prefix_through(journal, input, step, None)
+            .await
+    }
+
+    async fn completed_tool_prefix_through(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        through_call: Option<&str>,
+    ) -> Result<crate::model::PreparedModelRequest> {
         self.verify_task_context_binding(input.operation_id)?;
         let records = self
             .prefix_records(journal, input.operation_id, step)
@@ -948,7 +974,10 @@ impl StockExecutor {
                 ));
             }
         }
-        if !retained.admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
+        if !retained.admission.completed
+            || calls.is_empty()
+            || through_call.is_some_and(|id| !calls.iter().any(|call| call.call_id == id))
+        {
             return Err(Error::Indeterminate(input.operation_id));
         }
         for invocation in calls {
@@ -974,7 +1003,7 @@ impl StockExecutor {
                     }),
                 },
             ]);
-            if invocation.call_id == call_id {
+            if through_call.is_some_and(|id| invocation.call_id == id) {
                 break;
             }
         }
@@ -5267,6 +5296,235 @@ mod tests {
                 assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
             }
         }
+        Ok(())
+    }
+
+    struct TwoCallModel(FakeModel);
+
+    impl ModelProvider for TwoCallModel {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+            dispatch: crate::model::ModelDispatch,
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+            Box::pin(futures::StreamExt::flat_map(
+                self.0.generate(request, dispatch),
+                |event| {
+                    let is_call = matches!(&event, Ok(ModelEvent::ToolCall { .. }));
+                    let mut events = vec![event];
+                    if is_call {
+                        events.push(Ok(ModelEvent::ToolCall {
+                            call_id: "call-2".into(),
+                            name: "example.echo".into(),
+                            arguments: json!({"value":"later"}),
+                        }));
+                    }
+                    stream::iter(events)
+                },
+            ))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            attempt: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(attempt)
+        }
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one actual retained two-call batch and later-call recovery controls"
+    )]
+    async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> Result<()> {
+        let model = Arc::new(TwoCallModel(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        }));
+        let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
+            },
+            executor: tool.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = uncompacted_executor(
+            Model::new("example", "batch", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("ordered batch".into()),
+            selected_context: None,
+            max_steps: 3,
+        };
+        let journal = Journal::default();
+        executor.execute(input.clone(), &journal).await?;
+        let batch = executor
+            .completed_tool_batch_prefix(&journal, &input, 0)
+            .await?;
+        let first = executor
+            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .await?;
+        assert_eq!(first.request().messages.len(), 3);
+        assert_eq!(batch.request().messages.len(), 5);
+        assert_eq!(
+            batch.request().messages.get(..3),
+            Some(first.request().messages.as_slice())
+        );
+        let dispatched = model
+            .0
+            .requests
+            .lock()
+            .map_err(|_| Error::Storage("model lock".into()))?
+            .get(1)
+            .cloned()
+            .ok_or_else(|| Error::NotFound("batch continuation".into()))?;
+        assert_eq!(
+            batch.bytes(),
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+        );
+        let order: Vec<_> = batch
+            .request()
+            .messages
+            .iter()
+            .filter_map(|message| match &message.content {
+                ModelContent::Part(ModelContentPart::ToolCall { call_id, .. }) => {
+                    Some(call_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, ["call-1", "call-2"]);
+        // Reattach retained journal records and artifacts, without an OS restart.
+        let records = journal
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("journal lock".into()))?
+            .clone();
+        let artifacts = journal
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("artifact lock".into()))?
+            .clone();
+        let interactions = journal
+            .2
+            .lock()
+            .map_err(|_| Error::Storage("interaction lock".into()))?
+            .clone();
+        let reopened = Journal(
+            Mutex::new(records.clone()),
+            Mutex::new(artifacts.clone()),
+            Mutex::new(interactions.clone()),
+        );
+        assert_eq!(
+            executor
+                .completed_tool_batch_prefix(&reopened, &input, 0)
+                .await?
+                .bytes(),
+            batch.bytes()
+        );
+        for uncertain in [false, true] {
+            let partial = records
+                .iter()
+                .take_while(|record| !match &record.event {
+                    ExecutionEvent::ToolStarted { call_id, .. } if !uncertain => {
+                        call_id == "call-2"
+                    }
+                    ExecutionEvent::ToolCompleted { call_id, .. } if uncertain => {
+                        call_id == "call-2"
+                    }
+                    _ => false,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let length = partial.len();
+            let pending = Journal(
+                Mutex::new(partial),
+                Mutex::new(artifacts.clone()),
+                Mutex::new(interactions.clone()),
+            );
+            assert_eq!(
+                executor
+                    .completed_tool_prefix(&pending, &input, 0, "call-1")
+                    .await?
+                    .bytes(),
+                first.bytes()
+            );
+            assert!(matches!(
+                executor
+                    .completed_tool_batch_prefix(&pending, &input, 0)
+                    .await,
+                Err(Error::Indeterminate(_))
+            ));
+            assert_eq!(
+                pending
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock".into()))?
+                    .len(),
+                length
+            );
+        }
+        // A completed record with a missing later projection is not a usable boundary.
+        let projection = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ToolCompleted {
+                    call_id,
+                    projection,
+                    ..
+                } if call_id == "call-2" => Some(projection),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound("later projection".into()))?;
+        let mut missing = artifacts;
+        missing.retain(|_, (file, _)| &*file != projection);
+        let unavailable = Journal(
+            Mutex::new(records.clone()),
+            Mutex::new(missing),
+            Mutex::new(interactions),
+        );
+        assert!(
+            executor
+                .completed_tool_batch_prefix(&unavailable, &input, 0)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            executor
+                .completed_tool_prefix(&unavailable, &input, 0, "call-1")
+                .await?
+                .bytes(),
+            first.bytes()
+        );
+        assert_eq!(
+            unavailable
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock".into()))?
+                .len(),
+            records.len()
+        );
+        assert_eq!(model.0.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tool.0.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
