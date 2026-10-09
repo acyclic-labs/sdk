@@ -21,7 +21,7 @@
   "devDependencies": {
     "@bufbuild/buf": "1.73.0",
     "@bufbuild/protoc-gen-es": "2.15.0",
-    "@napi-rs/cli": "3.10.5",
+    "@napi-rs/cli": "3.10.8",
     "@noble/hashes": "2.4.0",
     "@types/bun": "1.4.2",
     "@types/node": "26.4.1",
