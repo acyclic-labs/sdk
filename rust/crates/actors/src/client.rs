@@ -280,14 +280,17 @@ impl Client {
                 .parse()
                 .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         authorization.set_sensitive(true);
-        let transport =
-            tonic_web_wasm_client::Client::new_with_options(
-                browser_transport_base_url(endpoint.as_str()),
-                tonic_web_wasm_client::options::FetchOptions::new()
-                    .redirect(tonic_web_wasm_client::options::Redirect::Error)
-                    .response_limits(tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_MESSAGE_BYTES)
-                        .ok_or_else(|| Error::Configuration("response budget exceeds platform size".into()))?),
-            );
+        let transport = tonic_web_wasm_client::Client::new_with_options(
+            browser_transport_base_url(endpoint.as_str()),
+            tonic_web_wasm_client::options::FetchOptions::new()
+                .redirect(tonic_web_wasm_client::options::Redirect::Error)
+                .response_limits(
+                    tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_MESSAGE_BYTES)
+                        .ok_or_else(|| {
+                            Error::Configuration("response budget exceeds platform size".into())
+                        })?,
+                ),
+        );
         let inner = wire::actors_service_client::ActorsServiceClient::with_interceptor(
             transport,
             BrowserBearerAuth(authorization),

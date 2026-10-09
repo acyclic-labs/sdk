@@ -14,7 +14,9 @@ mod wire {
 mod codegen;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "node-binding")]
-    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") { napi_build::setup(); }
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") {
+        napi_build::setup();
+    }
     for source in [
         "build.rs",
         "Cargo.toml",

@@ -32,8 +32,12 @@ pub fn validate_invoke_version(request: &wire::InvokeVersionRequest) -> Result<(
 }
 
 /// Validates a deployment alias before resolving its invocation target.
-pub fn validate_invoke_deployment(request: &wire::InvokeDeploymentRequest) -> Result<(), ContractError> {
-    if !name(&request.alias) { return Err(ContractError::InvalidArgument); }
+pub fn validate_invoke_deployment(
+    request: &wire::InvokeDeploymentRequest,
+) -> Result<(), ContractError> {
+    if !name(&request.alias) {
+        return Err(ContractError::InvalidArgument);
+    }
     Ok(())
 }
 

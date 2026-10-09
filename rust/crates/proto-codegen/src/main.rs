@@ -2,10 +2,10 @@
 
 use std::io::{self, Read, Write};
 
-mod readonly;
-mod service;
 mod native_absence;
 mod native_family;
+mod readonly;
+mod service;
 
 use prost::Message;
 use protoc_gen_prost::GeneratorResultExt;
@@ -31,7 +31,9 @@ fn main() -> io::Result<()> {
     if generator.as_deref() == Some("native-family") {
         let args = std::env::args().skip(2).collect::<Vec<_>>();
         if args.len() != 2 {
-            return Err(io::Error::other("native-family expects workspace root and family"));
+            return Err(io::Error::other(
+                "native-family expects workspace root and family",
+            ));
         }
         let facts = native_family::render(std::path::Path::new(&args[0]), &args[1])
             .map_err(|error| io::Error::other(error.to_string()))?;

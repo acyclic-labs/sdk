@@ -3,15 +3,19 @@
 mod admission;
 mod client_config;
 /// Source-defined binding configuration, diagnostics and message ceiling.
-pub use client_config::{export_client_typescript, Failure, WorkersClientOptions, WorkersCallOptions, WorkersTransportPreference, MAX_MESSAGE_BYTES};
+pub use client_config::{
+    Failure, MAX_MESSAGE_BYTES, WorkersCallOptions, WorkersClientOptions,
+    WorkersTransportPreference, export_client_typescript,
+};
 /// Target-selected Rust remote client; FFI features affect only exported bindings.
 pub mod client_binding;
+pub use admission::{
+    ContractError, MAX_INLINE_BYTES, MAX_JOB_ATTEMPTS, MAX_MODULE_BYTES,
+    validate_invoke_deployment, validate_invoke_version, validate_publish, validate_result,
+    validate_select, validate_submit,
+};
 pub use client_binding::Client;
 pub use tokio_util::sync::CancellationToken;
-pub use admission::{
-    ContractError, MAX_INLINE_BYTES, MAX_JOB_ATTEMPTS, MAX_MODULE_BYTES, validate_publish,
-    validate_invoke_deployment, validate_invoke_version, validate_result, validate_select, validate_submit,
-};
 
 /// Executable Rust-owned Workers declarations and schema.
 pub mod contract;
@@ -125,7 +129,11 @@ mod tests {
             (Vec::new(), None, false),
             (b"not JSON %25".to_vec(), None, false),
             (vec![255], None, false),
-            (br#"{"code":0,"message":"unspecified"}"#.to_vec(), None, false),
+            (
+                br#"{"code":0,"message":"unspecified"}"#.to_vec(),
+                None,
+                false,
+            ),
         ];
         for code in [1, 99, -7] {
             cases.push((
@@ -161,7 +169,9 @@ mod tests {
                         .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
                         .and_then(|(_, value)| value.trim().parse::<usize>().ok())
                         .filter(|length| *length <= 4096)
-                        .ok_or_else(|| std::io::Error::other("fixture request length missing or invalid"))?;
+                        .ok_or_else(|| {
+                            std::io::Error::other("fixture request length missing or invalid")
+                        })?;
                     stream.read_exact(&mut vec![0; length]).await?;
                     let framing = if chunked {
                         "transfer-encoding: chunked".into()

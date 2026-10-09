@@ -1,5 +1,4 @@
 //! Shared unary response policy and maintained browser gRPC-Web transport.
-pub mod limits;
 #[cfg(any(target_arch = "wasm32", test))]
 mod abort_guard;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -14,6 +13,7 @@ mod content_type;
 mod error;
 #[cfg(any(target_arch = "wasm32", test))]
 mod fetch;
+pub mod limits;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod options;
 #[cfg(any(target_arch = "wasm32", test))]

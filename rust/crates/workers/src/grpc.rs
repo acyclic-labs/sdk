@@ -186,8 +186,8 @@ pub async fn connect_with_ca_certificate(
     if !crate::client_config::valid_endpoint(endpoint) {
         return Err(ConnectError::InsecureEndpoint);
     }
-    let authorization = crate::client_config::authorization(token)
-        .map_err(|()| ConnectError::InvalidCredential)?;
+    let authorization =
+        crate::client_config::authorization(token).map_err(|()| ConnectError::InvalidCredential)?;
     let mut tls = ClientTlsConfig::new().with_webpki_roots();
     if let Some(ca) = ca {
         if ca.is_empty() || ca.len() > 64 * 1024 {
@@ -202,8 +202,14 @@ pub async fn connect_with_ca_certificate(
         .await?;
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
-            tonic::service::interceptor::InterceptedService::new(TracedChannel(channel), BearerAuth(authorization)),
-            endpoint.trim_end_matches('/').parse().map_err(|_| ConnectError::InsecureEndpoint)?,
+            tonic::service::interceptor::InterceptedService::new(
+                TracedChannel(channel),
+                BearerAuth(authorization),
+            ),
+            endpoint
+                .trim_end_matches('/')
+                .parse()
+                .map_err(|_| ConnectError::InsecureEndpoint)?,
         )
         .max_decoding_message_size(16 * 1024 * 1024)
         .max_encoding_message_size(16 * 1024 * 1024),

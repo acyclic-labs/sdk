@@ -39,11 +39,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 render_readonly_semantic(&ts_rs::Config::default()),
             )?;
         }
-        let parent = std::path::Path::new(&output).parent().ok_or("service output requires a parent")?;
-        fs::write(parent.join("Actors.service.bin"), acyclic_actors::FILE_DESCRIPTOR_SET)?;
-        fs::write(parent.join("Actors.semantic-names.json"), serde_json::to_vec(
-            &acyclic_actors::domain::typescript_export_metadata(&ts_rs::Config::default())
-        )?)?;
+        let parent = std::path::Path::new(&output)
+            .parent()
+            .ok_or("service output requires a parent")?;
+        fs::write(
+            parent.join("Actors.service.bin"),
+            acyclic_actors::FILE_DESCRIPTOR_SET,
+        )?;
+        fs::write(
+            parent.join("Actors.semantic-names.json"),
+            serde_json::to_vec(&acyclic_actors::domain::typescript_export_metadata(
+                &ts_rs::Config::default(),
+            ))?,
+        )?;
     } else {
         // Keep the original no-argument contract used by
         // `scripts/generate-runtime-routes.mjs`.  The package generation
