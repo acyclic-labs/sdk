@@ -4,16 +4,15 @@ use acyclic_objects::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
 use bytes::Bytes;
 use futures::executor::block_on;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     block_on(async {
-        let provider = MemoryObjects::new(MemoryOptions::default()).expect("Rust memory provider");
+        let provider = MemoryObjects::new(MemoryOptions::default())?;
         provider
             .create_bucket(wire::CreateBucketRequest {
                 name: "customer.example".into(),
                 mutation: None,
             })
-            .await
-            .expect("create bucket");
+            .await?;
         let body = Bytes::from_static(b"hello from Rust");
         let info = provider
             .put(
@@ -26,8 +25,7 @@ fn main() {
                 },
                 body.clone(),
             )
-            .await
-            .expect("put object");
+            .await?;
         let value = provider
             .get(
                 wire::GetObjectRequest {
@@ -39,13 +37,15 @@ fn main() {
                 },
                 1024,
             )
-            .await
-            .expect("get object");
-        assert_eq!(value.body, body);
+            .await?;
+        if value.body != body {
+            return Err("Rust Objects body parity failed".into());
+        }
         println!(
             "{{\"bucket\":\"customer.example\",\"key\":\"welcome.txt\",\"size\":{},\"etag_bytes\":{},\"body\":\"hello from Rust\"}}",
             info.size,
             info.etag.len()
         );
-    });
+        Ok(())
+    })
 }

@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 
-fn main() {
+fn main() -> Result<(), acyclic_workers::ContractError> {
     let module = b"export default async function run() { return new Uint8Array([7]); }";
     let digest = Sha256::digest(module).to_vec();
     let publication = acyclic_workers::wire::PublishVersionRequest {
@@ -10,7 +10,7 @@ fn main() {
         expected_sha256: digest.clone(),
         idempotency_key: "publish-example".into(),
     };
-    acyclic_workers::validate_publish(&publication).expect("Rust publication policy");
+    acyclic_workers::validate_publish(&publication)?;
 
     let submission = acyclic_workers::wire::SubmitJobRequest {
         target: Some(acyclic_workers::wire::JobTarget {
@@ -34,7 +34,7 @@ fn main() {
         }),
         idempotency_key: "job-example".into(),
     };
-    acyclic_workers::validate_submit(&submission).expect("Rust submission policy");
+    acyclic_workers::validate_submit(&submission)?;
 
     println!(
         "{}",
@@ -53,4 +53,5 @@ fn main() {
             "backoff_millis": 25,
         })
     );
+    Ok(())
 }
