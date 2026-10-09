@@ -60,32 +60,38 @@ func validateRequest(path, sourceRoot, outputRoot string) error {
 }
 
 func validateInput(root, relative, want string) error {
+	_, err := readInput(root, relative, want)
+	return err
+}
+
+// Return the exact bytes that passed admission, without rereading after hashing.
+func readInput(root, relative, want string) ([]byte, error) {
 	clean := filepath.ToSlash(filepath.Clean(relative))
 	if relative == "" || filepath.IsAbs(relative) || filepath.VolumeName(relative) != "" || clean != filepath.ToSlash(relative) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("unsafe authority input %q", relative)
+		return nil, fmt.Errorf("unsafe authority input %q", relative)
 	}
 	path := filepath.Join(root, filepath.FromSlash(relative))
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return fmt.Errorf("resolve authority input %s: %w", relative, err)
+		return nil, fmt.Errorf("resolve authority input %s: %w", relative, err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !within(resolvedRoot, resolved) {
-		return fmt.Errorf("authority input escapes root: %s", relative)
+		return nil, fmt.Errorf("authority input escapes root: %s", relative)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read authority input %s: %w", relative, err)
+		return nil, fmt.Errorf("read authority input %s: %w", relative, err)
 	}
 	if want == "" {
-		return fmt.Errorf("authority input %s has no digest", relative)
+		return nil, fmt.Errorf("authority input %s has no digest", relative)
 	}
 	got := sha256.Sum256(b)
 	if !strings.EqualFold(hex.EncodeToString(got[:]), want) {
-		return fmt.Errorf("authority input %s digest drift: got %s want %s", relative, hex.EncodeToString(got[:]), want)
+		return nil, fmt.Errorf("authority input %s digest drift: got %s want %s", relative, hex.EncodeToString(got[:]), want)
 	}
-	return nil
+	return b, nil
 }

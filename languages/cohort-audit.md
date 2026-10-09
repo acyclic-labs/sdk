@@ -60,8 +60,8 @@ the docs owner; reuse its canonical exports and native assets across consumers.
 Run local cohort checks with jobs and test threads set to one, bounded caches
 and owned output paths. Local builds, tests and locked dependency installation
 are authorized; coordinate contention without a repeated host-approval gate.
-Hosted CI remains coordinator-owned, and separate remote-upload rejections
-remain in force.
+Each loop owns its focused PR, affected required CI and protected merge against
+the latest `origin/main`. Separate backup-upload rejections remain in force.
 
 For each cohort, retain deterministic generation and artifact hashes, clean
 local installation, positive/negative type controls where supported, and actual
@@ -95,6 +95,12 @@ input/tool failure, lexical input escape and unattested options. The symlink
 escape and request-alias tests are skipped because the sandbox lacks Windows
 symlink privilege. Exact tool versions, absolute tool paths, duplicate source
 rejection and per-family generated-binding presence also have focused controls.
+Review controls additionally stage only digest-approved source snapshots,
+exercise a successful run through a subprocess test double and verify output
+and receipt hashes. A real protoc 28.3 control rejects an unlisted import and
+accepts it once attested. All twelve focused tests pass outside the Windows
+sandbox, including the two symlink controls; no generator correctness or SDK
+runtime claim follows from the test double.
 This evidence covers staging only; plugin generation, installed packages and
 the accepted Rust binding interface still need qualification. Local execution
 is now authorized; the earlier host-grant hold has been superseded.

@@ -12,10 +12,17 @@ import (
 	"testing"
 )
 
-// A subprocess helper exercises tool-path/version admission, not generation.
+// The helper exercises process invocation and staging, not protoc correctness.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == "--version" && os.Getenv("SDK_TOOL_TEST_VERSION") != "" {
 		fmt.Println("test-tool " + os.Getenv("SDK_TOOL_TEST_VERSION"))
+		os.Exit(0)
+	}
+	if os.Getenv("SDK_TOOL_TEST_GENERATE") == "1" {
+		if err := stagingTool(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	os.Exit(m.Run())

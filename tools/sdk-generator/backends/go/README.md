@@ -24,6 +24,12 @@ Descriptors may be shared between families: they are digest-checked separately
 and are not passed as protoc source inputs. The receipt hashes the entire
 authority manifest, including these descriptor declarations.
 
+Generation uses a temporary source snapshot containing only digest-approved
+family inputs, with that snapshot as both protoc's include root and working
+directory. Transitive imports, including well-known protobuf definitions, must
+be attested inputs too. Temporary inputs are cleaned after generation; partial
+package output remains available on failure.
+
 Run focused staging tests with `go test -p=1 -parallel=1 ./...` in this directory.
 Run the CLI with `go run .`; it accepts the same flags as the original producer.
 
@@ -37,6 +43,11 @@ The backend is one Go package, split by responsibility:
 - `generate.go`: generation orchestration.
 - `outputs.go`: generated file inventory and digests.
 - `main_test.go`: focused staging and tool admission tests.
+- `generate_test.go`: successful staging, receipt and isolated-input controls
+  using a subprocess test double. These do not qualify protoc or its plugins.
+- `protoc_test.go`: optional real-compiler import control. Set `SDK_TEST_PROTOC`
+  to an exact executable and `SDK_TEST_PROTOC_VERSION` to its complete version
+  report to run it. Ordinary staging CI skips this download-dependent check.
 
 Full acceptance additionally requires the final Rust export, exact plugin/tool
 identities, generated-package installation, idiomatic type controls and actual

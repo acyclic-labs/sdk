@@ -9,6 +9,36 @@ import (
 	"strings"
 )
 
+// Give protoc only approved source bytes. Imports omitted from the manifest
+// cannot be resolved from other files in the authority export.
+func stageSources(authority string, families []family) (string, error) {
+	root, err := os.MkdirTemp("", "sdk-go-authority-")
+	if err != nil {
+		return "", err
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.RemoveAll(root)
+		}
+	}()
+	for _, f := range families {
+		b, err := readInput(authority, f.Source, f.SourceSHA256)
+		if err != nil {
+			return "", err
+		}
+		path := filepath.Join(root, filepath.FromSlash(f.Source))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			return "", err
+		}
+	}
+	complete = true
+	return root, nil
+}
+
 func copyModuleFiles(sourceRoot, outputRoot string) error {
 	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
 		return fmt.Errorf("create module output: %w", err)

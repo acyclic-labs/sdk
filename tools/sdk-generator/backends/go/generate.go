@@ -116,6 +116,11 @@ func run(sourceRoot, authorityRoot, requestPath, outputRoot, protoc, genGo, genG
 		sum := sha256.Sum256(b)
 		toolHashes[name] = hex.EncodeToString(sum[:])
 	}
+	inputRoot, err := stageSources(authorityRoot, manifest.Families)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(inputRoot)
 	// Use a fresh destination. Never erase an earlier package or caller data.
 	if err := os.Mkdir(outputRoot, 0o755); err != nil {
 		return fmt.Errorf("create new output: %w", err)
@@ -123,14 +128,14 @@ func run(sourceRoot, authorityRoot, requestPath, outputRoot, protoc, genGo, genG
 	if err := os.Mkdir(filepath.Join(outputRoot, "gen"), 0o755); err != nil {
 		return err
 	}
-	args := []string{"--proto_path=" + authorityRoot, "--plugin=protoc-gen-go=" + genGo, "--plugin=protoc-gen-go-grpc=" + genGRPC, "--go_out=paths=source_relative:" + filepath.Join(outputRoot, "gen"), "--go-grpc_out=paths=source_relative:" + filepath.Join(outputRoot, "gen")}
+	args := []string{"--proto_path=" + inputRoot, "--plugin=protoc-gen-go=" + genGo, "--plugin=protoc-gen-go-grpc=" + genGRPC, "--go_out=paths=source_relative:" + filepath.Join(outputRoot, "gen"), "--go-grpc_out=paths=source_relative:" + filepath.Join(outputRoot, "gen")}
 	if hasValidation {
 		args = append(args, "--go_opt=Mvalidation/v1/options.proto=github.com/acyclic-labs/sdk/go/gen/validation/v1")
 		args = append(args, "--go-grpc_opt=Mvalidation/v1/options.proto=github.com/acyclic-labs/sdk/go/gen/validation/v1")
 	}
 	args = append(args, familySources...)
 	command := exec.Command(protoc, args...)
-	command.Dir = sourceRoot
+	command.Dir = inputRoot
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("protoc generation failed: %w\n%s", err, strings.TrimSpace(string(output)))
 	}
