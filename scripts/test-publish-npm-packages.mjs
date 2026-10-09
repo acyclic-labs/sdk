@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseNpmView, verifyPublicationAttempt, waitForPublishedExact } from "./publish-npm-packages.mjs";
+import { parseNpmView, publishNativeAssembly, verifyPublicationAttempt, waitForPublishedExact } from "./publish-npm-packages.mjs";
+
+test("native parent publication waits for every exact companion and stops on failure", async () => {
+  const assembly = { companions: ["linux", "mac", "windows"].map(name => ({ name, version: "0.2.0", asset: `${name}.tgz` })), parent: { name: "parent", version: "0.2.0", asset: "parent.tgz" } };
+  const published = [];
+  await publishNativeAssembly(assembly, "/qualified", async name => { published.push(name); });
+  assert.deepEqual(published, ["linux", "mac", "windows", "parent"]);
+  for (const failed of ["linux", "mac", "windows", "parent"]) {
+    const attempted = [];
+    await assert.rejects(publishNativeAssembly(assembly, "/qualified", async name => {
+      attempted.push(name);
+      if (name === failed) throw new Error(`exact publication failed: ${name}`);
+    }), /exact publication failed/);
+    assert.deepEqual(attempted, published.slice(0, published.indexOf(failed) + 1));
+  }
+});
 
 test("npm view tolerates an unpublished or partially visible field", () => {
   assert.equal(parseNpmView({ status: 0, stdout: "", stderr: "" }, "package"), null);

@@ -32,7 +32,7 @@ fabricates the missing history nor claims to reopen a durable snapshot.
 | Fixture cannot admit effects | Empty negotiated capabilities and unsupported mutation/control methods | Explicit fixture selection | Playback cursor, unavailable submit and installed default-denial scenarios |
 
 These are implementation/test obligations, not unrestricted correctness proofs.
-`scripts/test-graphcoder.py ABSOLUTE_INSTALLED_BINARY` exercises the installed
+`node scripts/test-graphcoder.mjs ABSOLUTE_INSTALLED_BINARY` exercises the installed
 headless presentation with an empty child `PATH`, finite process timeouts, explicit
 fixture labels, page/reset counts, unavailable input and oversized-line failure.
 It prints the actual binary/suite hashes, argv, exits and raw captured output for

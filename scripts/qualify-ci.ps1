@@ -151,6 +151,14 @@ try {
 # mounts. The shared test support module carries ignored tests of its own.
 cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
     --ignored --test-threads=1 --skip support::
+foreach ($family in @('actors', 'workers')) {
+  $clientBundle = Join-Path $StreamNativeRoot "$family-native/bundle"
+  node "scripts/build-$family-native.mjs" build --target x86_64-pc-windows-msvc `
+      --output $clientBundle --target-dir "$CargoTargetDir-$family-native"
+  Copy-Item -LiteralPath "$CargoTargetDir-$family-native/$family-native-build-inputs.receipt.json" -Destination (Join-Path (Split-Path -Parent $clientBundle) 'producer-receipt.json')
+  node "scripts/build-$family-native.mjs" stage --bundle $clientBundle
+}
+cargo build --offline --locked -p acyclic-actors --example conformance-certificate
 bun test --parallel=4 --reporter=junit `
     --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition

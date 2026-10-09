@@ -3,6 +3,8 @@
 # native product targets are listed explicitly so retired crates cannot return.
 members = [
   "rust/crates/actors",
+  "rust/crates/actors-napi",
+  "rust/crates/actors-wasm",
   "rust/crates/conformance",
   "rust/crates/filesystem",
   "rust/crates/filesystem-napi",
@@ -23,6 +25,7 @@ members = [
   "rust/crates/workers",
   "plugin",
 ]
+exclude = ["rust/vendor/protify-proc-macro-0.1.4", "rust/vendor/tonic-web-wasm-client-0.9.2"]
 resolver = "2"
 
 [workspace.package]
@@ -187,6 +190,3 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-
-
-

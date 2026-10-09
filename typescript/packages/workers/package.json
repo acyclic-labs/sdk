@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Generated Workers v1 contracts and authenticated HTTP client",
+  "description": "Rust-owned Workers contracts and unified native/browser client",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/acyclic-labs/sdk.git",
@@ -28,7 +28,9 @@
   "files": [
     "dist",
     "generated/proto",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "generated/native",
+    "generated/wasm"
   ],
   "scripts": {
     "build": "tsc -b",
@@ -36,12 +38,14 @@
     "pack:dry": "bun pm pack --dry-run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
-    "@connectrpc/connect": "2.1.1",
-    "@connectrpc/connect-node": "2.1.1"
+    "@bufbuild/protobuf": "2.15.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",
     "@types/node": "26.4.1"
+  },
+  "napi": {
+    "binaryName": "index",
+    "packageName": "@acyclic-labs/workers"
   }
 }

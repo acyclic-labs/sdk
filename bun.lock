@@ -21,12 +21,17 @@
       "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
-        "@connectrpc/connect": "2.1.1",
-        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
         "@types/node": "26.4.1",
         "typescript": "7.0.2",
+      },
+      "optionalDependencies": {
+        "@acyclic-labs/actors-darwin-arm64": "0.2.0",
+        "@acyclic-labs/actors-linux-x64-gnu": "0.2.0",
+        "@acyclic-labs/actors-win32-x64-msvc": "0.2.0",
       },
     },
     "typescript/packages/filesystem": {
@@ -146,14 +151,15 @@
       "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
-        "@connectrpc/connect": "2.1.1",
-        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
         "@types/node": "26.4.1",
         "typescript": "7.0.2",
       },
     },
+  },
+  "patchedDependencies": {
+    "@napi-rs/cli@3.10.5": "patches/napi-rs-cli-3.10.5.patch",
   },
   "packages": {
     "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],

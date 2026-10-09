@@ -11,7 +11,10 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 /// Borrowed asynchronous result returned by content-provider extension hooks.
@@ -1472,12 +1475,57 @@ impl ConversationMessage {
 
 /// Projection of one agent-owned conversation.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ConversationStateWire")]
 pub struct ConversationState {
     /// Set once at admission.
     pub agent: Option<AgentId>,
     /// Ordered canonical history.
-    pub messages: Vec<ConversationMessage>,
+    pub(crate) messages: Vec<ConversationMessage>,
+    #[serde(skip)]
+    by_id: BTreeMap<Uuid, usize>,
+    #[serde(skip)]
+    latest_user: Option<Uuid>,
+    #[serde(skip)]
+    settled_turns: BTreeSet<Uuid>,
+    #[serde(skip)]
+    outcomes: BTreeMap<Uuid, usize>,
+    #[serde(skip)]
+    model_positions: Vec<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConversationStateWire {
+    agent: Option<AgentId>,
+    messages: Vec<ConversationMessage>,
+}
+
+impl TryFrom<ConversationStateWire> for ConversationState {
+    type Error = Error;
+
+    fn try_from(wire: ConversationStateWire) -> Result<Self> {
+        let mut by_id = BTreeMap::new();
+        let mut previous = 0;
+        for (position, message) in wire.messages.iter().enumerate() {
+            message.validate()?;
+            if message.sequence <= previous || by_id.insert(message.id, position).is_some() {
+                return Err(Error::Invalid(
+                    "conversation order or identity is invalid".into(),
+                ));
+            }
+            previous = message.sequence;
+        }
+        let mut state = Self {
+            agent: wire.agent,
+            messages: wire.messages,
+            by_id,
+            ..Self::default()
+        };
+        for position in 0..state.messages.len() {
+            state.index_turn(position);
+        }
+        Ok(state)
+    }
 }
 
 /// Exact history revision and ordered subset selected for one model request.
@@ -1498,21 +1546,11 @@ impl ModelContextSelection {
                 "model context selection has a stale conversation revision".into(),
             ));
         }
-        let by_id = conversation
-            .messages
-            .iter()
-            .map(|message| (message.id, message.sequence))
-            .collect::<BTreeMap<_, _>>();
-        if by_id.len() != conversation.messages.len() {
-            return Err(Error::Invalid(
-                "conversation has duplicate message identities".into(),
-            ));
-        }
         let mut previous_sequence = 0;
         for id in &self.message_ids {
-            let sequence = by_id
-                .get(id)
-                .copied()
+            let sequence = conversation
+                .message(*id)
+                .map(|message| message.sequence)
                 .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
             if sequence <= previous_sequence {
                 return Err(Error::Invalid(
@@ -1526,6 +1564,104 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "only append-after-push and decode's in-bounds enumeration call this private indexer"
+    )]
+    fn index_turn(&mut self, position: usize) {
+        let message = &self.messages[position];
+        if matches!(
+            message.kind,
+            MessageKind::System
+                | MessageKind::User
+                | MessageKind::Assistant
+                | MessageKind::ToolCall
+                | MessageKind::ToolResult
+        ) {
+            self.model_positions.push(position);
+        }
+        if message.kind == MessageKind::User {
+            self.latest_user = Some(message.id);
+        }
+        let outcome = message.kind == MessageKind::System
+            && message.extensions.contains_key("acyclic.turn.outcome");
+        if let Some(parent) = message.reply_to {
+            if message.kind == MessageKind::Assistant || outcome {
+                self.settled_turns.insert(parent);
+            }
+            if outcome {
+                self.outcomes.entry(parent).or_insert(position);
+            }
+        }
+    }
+
+    pub(crate) fn unresolved_user(&self) -> Option<Uuid> {
+        self.latest_user
+            .filter(|id| !self.settled_turns.contains(id))
+    }
+
+    pub(crate) fn turn_outcome(&self, user: Uuid) -> Option<&ConversationMessage> {
+        self.outcomes
+            .get(&user)
+            .and_then(|position| self.messages.get(*position))
+    }
+
+    /// Loaded authoritative records, in sequence order. Mutation goes through `append`.
+    #[must_use]
+    pub fn messages(&self) -> &[ConversationMessage] {
+        &self.messages
+    }
+
+    /// Reads a bounded archive page at a caller-pinned logical tail. Later appends
+    /// are excluded; continue with the last returned sequence, preserving `through`.
+    pub fn page(&self, after: u64, through: u64, maximum: usize) -> Result<&[ConversationMessage]> {
+        let tail = self.messages.last().map_or(0, |message| message.sequence);
+        if maximum == 0 || after > through || through > tail {
+            return Err(Error::Invalid(
+                "conversation page cursor or bound is invalid".into(),
+            ));
+        }
+        let start = self
+            .messages
+            .partition_point(|message| message.sequence <= after);
+        let end = self
+            .messages
+            .partition_point(|message| message.sequence <= through)
+            .min(start.saturating_add(maximum));
+        self.messages
+            .get(start..end)
+            .ok_or_else(|| Error::Invalid("conversation page range is invalid".into()))
+    }
+
+    /// Reads one identity using the incrementally maintained, rebuildable index.
+    #[must_use]
+    pub fn message(&self, id: Uuid) -> Option<&ConversationMessage> {
+        self.by_id
+            .get(&id)
+            .and_then(|position| self.messages.get(*position))
+    }
+
+    pub(crate) fn message_position(&self, id: Uuid) -> Option<usize> {
+        self.by_id.get(&id).copied()
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "partition bounds the position slice; entries are inserted only from validated message positions"
+    )]
+    pub(crate) fn recent_model_messages(
+        &self,
+        before_position: usize,
+        maximum: usize,
+    ) -> impl DoubleEndedIterator<Item = &ConversationMessage> {
+        let end = self
+            .model_positions
+            .partition_point(|position| *position < before_position);
+        self.model_positions[end.saturating_sub(maximum)..end]
+            .iter()
+            .map(|position| &self.messages[*position])
+    }
+
     /// Binds an empty conversation to exactly one agent.
     pub fn bind(&mut self, agent: AgentId) -> Result<()> {
         if self.agent.is_some() || !self.messages.is_empty() {
@@ -1538,41 +1674,56 @@ impl ConversationState {
     /// Appends one ordered, validated message.
     pub fn append(&mut self, message: ConversationMessage) -> Result<()> {
         self.validate_append(&message)?;
-        // Foreign-owned refs may be carried globally. Their bytes are gated by
-        // the provider's owner-mediated read grant at event admission/resolution.
+        // Publish rebuildable indexes only after complete append validation.
+        self.by_id.insert(message.id, self.messages.len());
         self.messages.push(message);
+        self.index_turn(self.messages.len() - 1);
         Ok(())
     }
 
-    /// Admits `message` as the next append without copying the history; one
-    /// pass over prior messages answers identity, reply, and tool-call checks.
+    /// Admits the next append through rebuildable identity indexes without
+    /// copying or scanning the complete history.
     pub(crate) fn validate_append(&self, message: &ConversationMessage) -> Result<()> {
         self.agent
             .ok_or_else(|| Error::Conflict("conversation is unbound".into()))?;
         message.validate()?;
+        if self
+            .messages
+            .last()
+            .is_some_and(|last| last.sequence != self.messages.len() as u64)
+        {
+            return Err(Error::Invalid(
+                "sparse conversation history is read-only".into(),
+            ));
+        }
         let expected = (self.messages.len() as u64)
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))?;
-        let (mut duplicate, mut parent, mut call) = (false, false, false);
-        for prior in &self.messages {
-            duplicate |= prior.id == message.id;
-            if Some(prior.id) == message.reply_to {
-                parent = true;
-                call |= prior.kind == MessageKind::ToolCall
-                    && prior.tool_call_id.as_deref() == message.tool_call_id.as_deref();
-            }
-        }
-        if message.sequence != expected || duplicate {
+        if message.sequence != expected || self.by_id.contains_key(&message.id) {
             return Err(Error::Conflict(
                 "message sequence or identity is invalid".into(),
             ));
         }
-        if message.reply_to.is_some() && !parent {
+        if let Some(parent) = message.reply_to
+            && !self.by_id.contains_key(&parent)
+        {
             return Err(Error::Invalid("message reply target is missing".into()));
         }
-        if message.kind == MessageKind::ToolResult && !call {
+        if message.kind == MessageKind::ToolResult
+            && !message
+                .reply_to
+                .and_then(|id| self.message(id))
+                .is_some_and(|prior| {
+                    prior.kind == MessageKind::ToolCall
+                        && Some(prior.id) == message.reply_to
+                        && prior.tool_call_id.as_deref() == message.tool_call_id.as_deref()
+                })
+        {
             return Err(Error::Invalid("tool result has no preceding call".into()));
         }
+        // Foreign-owned refs may be carried globally. Their bytes are gated by
+        // the provider's owner-mediated read grant at event admission/resolution.
+
         Ok(())
     }
 }
@@ -1611,6 +1762,93 @@ pub fn validate_content_path(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_history_rebuilds_and_pinned_pages_exclude_later_appends() -> Result<()> {
+        let agent = AgentId::new();
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        let content = file(agent, "history.txt")?;
+        for sequence in 1..=65 {
+            state.append(ConversationMessage {
+                id: Uuid::new_v4(),
+                sequence,
+                kind: MessageKind::User,
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to: None,
+                tool_call_id: None,
+                extensions: Default::default(),
+            })?;
+        }
+        let pinned = 64;
+        let bytes =
+            serde_json::to_vec(&state).map_err(|error| Error::Invalid(error.to_string()))?;
+        let reopened: ConversationState =
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(reopened, state);
+        let mut after = 0;
+        let mut visited = Vec::new();
+        loop {
+            let page = reopened.page(after, pinned, 7)?;
+            if page.is_empty() {
+                break;
+            }
+            assert!(page.len() <= 7);
+            for message in page {
+                assert_eq!(reopened.message(message.id), Some(message));
+                visited.push(message.sequence);
+            }
+            after = page
+                .last()
+                .ok_or_else(|| Error::Invalid("empty page".into()))?
+                .sequence;
+        }
+        assert_eq!(visited, (1..=pinned).collect::<Vec<_>>());
+        assert!(reopened.page(0, 66, 7).is_err());
+        assert!(reopened.page(0, pinned, 0).is_err());
+        let mut corrupt =
+            serde_json::to_value(&state).map_err(|error| Error::Invalid(error.to_string()))?;
+        corrupt["messages"][1]["id"] = corrupt["messages"][0]["id"].clone();
+        assert!(serde_json::from_value::<ConversationState>(corrupt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_append_preserves_indexes_and_sparse_decode_cannot_append() -> Result<()> {
+        let agent = AgentId::new();
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        let mut candidate = ConversationMessage {
+            id: Uuid::new_v4(),
+            sequence: 1,
+            kind: MessageKind::User,
+            content: file(agent, "history.txt")?,
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to: Some(Uuid::new_v4()),
+            tool_call_id: None,
+            extensions: Default::default(),
+        };
+        let before = state.clone();
+        assert!(state.append(candidate.clone()).is_err());
+        assert_eq!(state, before);
+        assert!(state.message(candidate.id).is_none());
+        candidate.reply_to = None;
+        state.append(candidate.clone())?;
+        assert_eq!(state.message(candidate.id), Some(&candidate));
+        let mut wire =
+            serde_json::to_value(&state).map_err(|error| Error::Invalid(error.to_string()))?;
+        wire["messages"][0]["sequence"] = 3.into();
+        let mut sparse: ConversationState =
+            serde_json::from_value(wire).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(sparse.page(0, 3, 1)?.len(), 1);
+        candidate.id = Uuid::new_v4();
+        candidate.sequence = 2;
+        let before = sparse.clone();
+        assert!(sparse.append(candidate).is_err());
+        assert_eq!(sparse, before);
+        Ok(())
+    }
 
     #[test]
     fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability() -> Result<()>

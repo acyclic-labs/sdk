@@ -96,52 +96,63 @@ pub fn bounded_model_context_selection(
         ));
     }
     let current = conversation
-        .messages
-        .iter()
-        .position(|message| message.id == user_id)
+        .message(user_id)
         .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-    let prefix = conversation
-        .messages
-        .get(..=current)
-        .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-    let mut ids = prefix
-        .iter()
-        .filter(|message| {
-            matches!(
-                message.kind,
-                MessageKind::System
-                    | MessageKind::User
-                    | MessageKind::Assistant
-                    | MessageKind::ToolCall
-                    | MessageKind::ToolResult
-            )
-        })
+    select_turn_suffix(conversation, current, false, maximum_messages)
+}
+
+pub(crate) fn select_turn_suffix(
+    conversation: &ConversationState,
+    current: &ConversationMessage,
+    append: bool,
+    maximum_messages: usize,
+) -> Result<ModelContextSelection> {
+    if maximum_messages == 0 {
+        return Err(Error::Invalid(
+            "model context message limit must be positive".into(),
+        ));
+    }
+    let end = if append {
+        conversation.messages.len()
+    } else {
+        conversation
+            .message_position(current.id)
+            .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?
+            + 1
+    };
+    let mut ids = conversation
+        .recent_model_messages(end, maximum_messages - usize::from(append))
         .map(|message| message.id)
         .collect::<Vec<_>>();
-    if ids.len() > maximum_messages {
-        ids.drain(..ids.len() - maximum_messages);
+    if append {
+        ids.push(current.id);
     }
-    // A bounded suffix can start inside a tool exchange. Never hand a
-    // provider a result whose precise call fell outside the window.
     let included = ids.iter().copied().collect::<HashSet<_>>();
-    let by_id = prefix
-        .iter()
-        .map(|message| (message.id, message))
-        .collect::<HashMap<_, _>>();
-    ids.retain(|id| {
-        by_id.get(id).is_some_and(|message| {
-            message.kind != MessageKind::ToolResult
-                || message
+    for id in &ids {
+        let message = if *id == current.id {
+            Some(current)
+        } else {
+            conversation.message(*id)
+        };
+        if message.is_some_and(|message| {
+            message.kind == MessageKind::ToolResult
+                && !message
                     .reply_to
                     .is_some_and(|call| included.contains(&call))
-        })
-    });
+        }) {
+            return Err(Error::Invalid(
+                "context budget splits a tool exchange; compact or change selection".into(),
+            ));
+        }
+    }
     let selection = ModelContextSelection {
-        conversation_revision: conversation.messages.len() as u64,
+        conversation_revision: conversation.messages.len() as u64 + u64::from(append),
         message_ids: ids,
     };
-    selection.validate(conversation)?;
-    if selection.message_ids.last() != Some(&user_id) {
+    if !append {
+        selection.validate(conversation)?;
+    }
+    if selection.message_ids.last() != Some(&current.id) {
         return Err(Error::Conflict(
             "turn identity is bound to another context selection".into(),
         ));
@@ -245,22 +256,11 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             "selected message count exceeds projection limit".into(),
         ));
     }
-    let by_id = conversation
-        .messages
-        .iter()
-        .map(|message| (message.id, message))
-        .collect::<HashMap<_, _>>();
-    if by_id.len() != conversation.messages.len() {
-        return Err(Error::Invalid(
-            "conversation has duplicate message identities".into(),
-        ));
-    }
     let mut messages = Vec::with_capacity(selection.message_ids.len());
     let mut tool_calls: HashMap<Uuid, (String, String)> = HashMap::new();
     for id in &selection.message_ids {
-        let message = by_id
-            .get(id)
-            .copied()
+        let message = conversation
+            .message(*id)
             .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
         message.validate()?;
         if message.kind == MessageKind::ToolCall {
@@ -446,22 +446,11 @@ pub fn validate_model_context_selection_at_revision(
             "model context selection has a stale conversation revision".into(),
         ));
     }
-    let by_id = conversation
-        .messages
-        .iter()
-        .map(|message| (message.id, message))
-        .collect::<HashMap<_, _>>();
-    if by_id.len() != conversation.messages.len() {
-        return Err(Error::Invalid(
-            "conversation has duplicate message identities".into(),
-        ));
-    }
     let mut previous_sequence = 0;
     let mut tool_calls: HashMap<Uuid, &ConversationMessage> = HashMap::new();
     for id in &selection.message_ids {
-        let message = by_id
-            .get(id)
-            .copied()
+        let message = conversation
+            .message(*id)
             .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
         if message.sequence <= previous_sequence || message.sequence > conversation_revision {
             return Err(Error::Invalid(

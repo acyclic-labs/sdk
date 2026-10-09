@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,13 +59,10 @@ const narrowMachinesDecoder = output => {
 // dependent crate under fat LTO on each later run. Separate target
 // directories keep each configuration warm.
 const packages = {
+  workers: { family: true },
+  actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm", outName: "acyclic_fs_wasm" },
-  stream: {
-    cargo: ["-p", "acyclic-stream", "--no-default-features", "--features", "wasm"],
-    artifact: "acyclic_stream",
-    outName: "acyclic_stream_wasm",
-    targetDirectory: "stream-wasm",
-  },
+  stream: { family: true },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm", outName: "acyclic_objects_wasm" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
@@ -96,7 +93,7 @@ const capture = (executable, args) => {
 const run = (executable, args) => {
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit" });
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.status !== 0) throw new Error(`${executable} exited with ${result.status ?? "unknown"}`);
 };
 
 // The CLI must match the wasm-bindgen crate pinned in the workspace manifest.
@@ -127,7 +124,21 @@ const script = readFileSync(fileURLToPath(import.meta.url));
 const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
 
 for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
-  const { cargo: selection, artifact, outName, postprocess, targetDirectory } = packages[name];
+  let { cargo: selection, artifact, outName, postprocess, targetDirectory } = packages[name];
+  let family, producer, source, revision;
+  if (packages[name].family) {
+    const { nativeFamily } = await import("./native-family.mjs");
+    const { createNativeProducer } = await import("./build-native-family.mjs");
+    family = nativeFamily(name);
+    ({ artifact, outName, targetDirectory } = family.wasm);
+    selection = ["-p", family.wasmPackageName, ...(family.wasm.noDefaultFeatures ? ["--no-default-features"] : []), ...(family.wasm.features.length ? ["--features", family.wasm.features.join(",")] : [])];
+    producer = createNativeProducer(family);
+    producer.assertCurrentNativeFamily();
+    revision = capture("git", ["rev-parse", "HEAD"]);
+    const status = capture("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...family.sourceRoots]);
+    if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
+    source = await producer.sourceSnapshot();
+  }
   const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   // Panic locations embed source paths, including registry sources and
@@ -139,10 +150,23 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     "--remap-path-prefix", `${target}=/cargo/build-dir`,
     "--remap-path-prefix", `${cargoHome}=/cargo/home`,
   ];
-  run(cargo, [
+  const buildArgs = [
     "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
-  ]);
+  ];
+  let compilerInvocation, originalReceipt;
+  const cachedReceipt = resolve(target, "wasm-bindgen", `${name}.producer-receipt.json`);
+  const rustcCapture = producer ? await producer.createRustcInvocationCapture(artifact) : undefined;
+  try {
+    run(cargo, buildArgs);
+    if (rustcCapture) {
+      try { compilerInvocation = await rustcCapture.read("wasm32-unknown-unknown"); }
+      catch (error) {
+        if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message)) || !existsSync(cachedReceipt)) throw error;
+        originalReceipt = JSON.parse(readFileSync(cachedReceipt, "utf8"));
+      }
+    }
+  } finally { await rustcCapture?.close(); }
   // A lane builds each package several times (the workspace check, the
   // check-generated comparison, package checks). Cargo already makes the
   // repeated module build a no-op; the bindings are a pure function of the
@@ -164,4 +188,30 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
   }
   mkdirSync(output, { recursive: true });
   cpSync(bindings, output, { recursive: true });
+  if (producer) {
+    await producer.assertSourceSnapshot(source);
+    if (capture("git", ["rev-parse", "HEAD"]) !== revision) throw new Error("WASM source revision changed during build");
+    const artifacts = readdirSync(bindings, { withFileTypes: true }).map(entry => {
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("WASM bindings contain a non-regular artifact");
+      const bytes = readFileSync(resolve(output, entry.name));
+      return { path: `generated/wasm/${entry.name}`, bytes: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+    }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    const moduleSha256 = `sha256:${createHash("sha256").update(readFileSync(module)).digest("hex")}`;
+    const receipt = originalReceipt ?? {
+      schema: "acyclic.wasm-build-receipt.v1", family: name, package: family.wasmPackageName, version: family.version,
+      source_commit: revision, source_sha256: source.sha256, source_files: source.files,
+      build: { cargo: { command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }, rustc: { invocation: compilerInvocation, identity: producer.capturedCompilerIdentity(compilerInvocation, "wasm32-unknown-unknown") }, wasm_bindgen: { command: wasmBindgen, version: expectedVersion }, module_sha256: moduleSha256 },
+      artifacts,
+    };
+    if (!receipt.build?.cargo?.version || !receipt.build?.rustc?.identity?.output) throw new Error("WASM compiler identity is missing");
+    if (originalReceipt) {
+      // Reuse the original capture only for the identical source, recipe, tools
+      // and built module; never relabel an older receipt for a new source cut.
+      const actualCompiler = producer.capturedCompilerIdentity(receipt.build.rustc.invocation, "wasm32-unknown-unknown");
+      if (receipt.schema !== "acyclic.wasm-build-receipt.v1" || receipt.family !== name || receipt.package !== family.wasmPackageName || receipt.version !== family.version || receipt.source_commit !== revision || receipt.source_sha256 !== source.sha256 || JSON.stringify(receipt.source_files) !== JSON.stringify(source.files) || receipt.build.module_sha256 !== moduleSha256 || JSON.stringify(receipt.build.cargo) !== JSON.stringify({ command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }) || JSON.stringify(receipt.build.rustc.identity) !== JSON.stringify(actualCompiler) || JSON.stringify(receipt.build.wasm_bindgen) !== JSON.stringify({ command: wasmBindgen, version: expectedVersion }) || JSON.stringify(receipt.artifacts) !== JSON.stringify(artifacts)) throw new Error("Cached WASM compiler receipt differs; a fresh owned target build is required");
+    }
+    const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`;
+    writeFileSync(resolve(output, "producer-receipt.json"), receiptBytes);
+    writeFileSync(cachedReceipt, receiptBytes);
+  }
 }
