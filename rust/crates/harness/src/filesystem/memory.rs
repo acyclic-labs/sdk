@@ -1089,11 +1089,7 @@ impl MemoryHarnessStorage {
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
         let mut extensions = BTreeMap::new();
         extensions.insert("acyclic.model.metadata".to_owned(), metadata);
-        if let Some(existing) = state
-            .messages
-            .iter()
-            .find(|message| message.id == assistant_id)
-        {
+        if let Some(existing) = state.message(assistant_id) {
             if existing.content != content
                 || existing.attachments != attachments
                 || existing.extensions != extensions
@@ -1195,7 +1191,7 @@ impl MemoryHarnessStorage {
                     .reducer()
                     .conversation()
                     .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-                if let Some(existing) = state.messages.iter().find(|message| message.id == id) {
+                if let Some(existing) = state.message(id) {
                     if existing.kind != kind
                         || existing.content != content
                         || existing.attachments != attachments
