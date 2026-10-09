@@ -1,0 +1,24 @@
+{
+  "dart_plugin_version": "25.1.0",
+  "dart_plugin": {
+    "win32-x64": {
+      "sha256": "48721b02637c13f611d34ad9f79caf53c03c5ba106385db8d87c7600871dd1ec",
+      "url": "https://pub.dev/api/archives/protoc_plugin-25.1.0.tar.gz",
+      "build": "Dart 3.13.5 compile exe of unmodified bin/protoc_plugin.dart with pinned closure"
+    }
+  },
+  "dart_sdk_version": "3.13.5",
+  "dart_sdk_archive": {
+    "url": "https://storage.googleapis.com/dart-archive/channels/stable/release/3.13.5/sdk/dartsdk-windows-x64-release.zip",
+    "sha256": "aed8e4a8932ce8fa18ea32f990e43b4a1c9390a4c73777ab6fdf77fc9f4524d1",
+    "size": 219877920
+  },
+  "archiver": {
+    "win32-x64": {
+      "sha256": "4e598a8cec84af779e3377442fce2b94b976f614ed4c6e5a665e19308fd1e379",
+      "version": "bsdtar 3.8.8 - libarchive 3.8.8 zlib/1.2.13.1-motley liblzma/5.8.1 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled",
+      "source": "Microsoft Windows signed system tar.exe",
+      "signer": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+    }
+  }
+}

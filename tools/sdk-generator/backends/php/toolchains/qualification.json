@@ -1,0 +1,101 @@
+{
+  "php_version": "8.5.11",
+  "runtime_archive": {
+    "url": "https://windows.php.net/downloads/releases/php-8.5.11-Win32-vs17-x64.zip",
+    "sha256": "c83d5a1e0d760fb026ce695d8a70a73a4c81ac224b3e5c425406b23a7d53e1de"
+  },
+  "composer": {
+    "version": "2.10.3",
+    "url": "https://getcomposer.org/download/2.10.3/composer.phar",
+    "sha256": "7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6"
+  },
+  "grpc_extension": {
+    "version": "1.82.0",
+    "url": "https://downloads.php.net/~windows/pecl/releases/grpc/1.82.0/php_grpc-1.82.0-8.5-ts-vs17-x64.zip",
+    "archive_sha256": "5ac1fbfe710d60c121e6b327bcf347e37b2a6a814298e18925608e1377e9464c",
+    "binary_sha256": "fb382fff523510621d6dd6ed3498da25b4202fe98fbb8a69ac4772cd8c2d1283"
+  },
+  "dependencies": [
+    {
+      "name": "google/protobuf",
+      "version": "5.36.2",
+      "source": {
+        "url": "https://github.com/protocolbuffers/protobuf-php.git",
+        "type": "git",
+        "reference": "020bc8e831611869ac387ddd38fbbadd78d15195"
+      },
+      "archive_url": "https://api.github.com/repos/protocolbuffers/protobuf-php/zipball/020bc8e831611869ac387ddd38fbbadd78d15195",
+      "archive_sha256": "1a7e76eba86eec39cd9d6b2dbfcb4c5d11f6a724b65f6792b8e7fe8a748aa378",
+      "composer": {
+        "name": "google/protobuf",
+        "type": "library",
+        "description": "proto library for PHP",
+        "keywords": [
+          "proto"
+        ],
+        "homepage": "https://developers.google.com/protocol-buffers/",
+        "license": "BSD-3-Clause",
+        "require": {
+          "php": ">=8.2.0"
+        },
+        "require-dev": {
+          "phpunit/phpunit": ">=11.5.50 <12.0.0"
+        },
+        "suggest": {
+          "ext-bcmath": "Need to support JSON deserialization"
+        },
+        "autoload": {
+          "psr-4": {
+            "Google\\Protobuf\\": "src/Google/Protobuf",
+            "GPBMetadata\\Google\\Protobuf\\": "src/GPBMetadata/Google/Protobuf"
+          }
+        }
+      }
+    },
+    {
+      "name": "grpc/grpc",
+      "version": "1.82.0",
+      "source": {
+        "url": "https://github.com/grpc/grpc-php.git",
+        "type": "git",
+        "reference": "be984cb608f21e96453b3cfe54c748cc7b192250"
+      },
+      "archive_url": "https://api.github.com/repos/grpc/grpc-php/zipball/be984cb608f21e96453b3cfe54c748cc7b192250",
+      "archive_sha256": "f4c4e9f6635b23c2cbf2bef828187add068405a5dea4dd0813e82c3e9f40826e",
+      "composer": {
+        "name": "grpc/grpc",
+        "type": "library",
+        "description": "gRPC library for PHP",
+        "keywords": [
+          "rpc"
+        ],
+        "homepage": "https://grpc.io",
+        "license": "Apache-2.0",
+        "version": "1.82.0",
+        "require": {
+          "php": ">=7.1.0"
+        },
+        "require-dev": {
+          "google/auth": "^v1.3.0"
+        },
+        "suggest": {
+          "ext-protobuf": "For better performance, install the protobuf C extension.",
+          "google/protobuf": "To get started using grpc quickly, install the native protobuf library."
+        },
+        "autoload": {
+          "psr-4": {
+            "Grpc\\": "src/lib/"
+          }
+        }
+      }
+    }
+  ],
+  "archiver": {
+    "win32-x64": {
+      "sha256": "4e598a8cec84af779e3377442fce2b94b976f614ed4c6e5a665e19308fd1e379",
+      "version": "bsdtar 3.8.8 - libarchive 3.8.8 zlib/1.2.13.1-motley liblzma/5.8.1 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled",
+      "source": "Microsoft Windows signed system tar.exe",
+      "signer": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+    }
+  }
+}

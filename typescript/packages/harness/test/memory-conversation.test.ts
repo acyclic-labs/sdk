@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
-  defineTool, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
+  defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
+const jsonProjection = await jsonToolProjection({});
 const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
 const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
 
@@ -240,6 +241,7 @@ test("local conversation retains exact tool call and full result artifact", asyn
   const tool = await defineTool<number, string>({ name: "echo", revision: "1", description: "echo",
     inputSchema: {}, outputSchema: {},
     parseInput(value) { if (typeof value !== "number") throw new TypeError("expected number"); return value; },
+    projection: jsonProjection,
     parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
   }, async (_, value) => `value:${value}`);
   const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
@@ -268,6 +270,7 @@ test("partial tool-history publication is idempotent across a transient retry", 
   const tool = await defineTool<number, string>({ name: "echo_retry", revision: "1", description: "echo",
     inputSchema: {}, outputSchema: {},
     parseInput(value) { if (typeof value !== "number") throw new TypeError("expected number"); return value; },
+    projection: jsonProjection,
     parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
   }, async (_, value) => `value:${value}`);
   let step = 0;

@@ -1,18 +1,25 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
+import { posix } from "node:path";
+import { runInNewContext } from "node:vm";
+import { packagedSourceCopies } from "./generated-bindings.mjs";
 
 import {
   chooseLanes,
   classifyQualificationEvent,
   ignored,
+  languageGeneratorBackends,
   laneKeys,
+  parseGeneratorBackends,
   qualificationEventKinds,
   requiresFullQualification,
+  selectGeneratorBackends,
 } from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 const blob = (path, object = "a".repeat(40)) => `100644 blob ${object}\t${path}`;
+const generatorPaths = languageGeneratorBackends.map(backend => `tools/sdk-generator/backends/${backend}/src/generate.mjs`);
 const tree = [
   blob("Cargo.lock"),
   blob("rust/crates/stream/src/lib.rs"),
@@ -27,8 +34,9 @@ const tree = [
   blob("README.md"),
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
-  blob("tools/sdk-generator/backends/go/generate.go"),
-  blob("tools/sdk-generator/backends/java/generate.mjs"),
+  ...generatorPaths.map(path => blob(path)),
+  blob(".github/sdk-generator-backends.json"),
+  blob("tools/sdk-generator/shared/authority.mjs"),
   blob("tools/sdk-generator/backends/future/generate.mjs"),
 ];
 const changed = (path, object = "b".repeat(40)) =>
@@ -83,6 +91,47 @@ test("Rust that no package compiles skips the TypeScript lane", () => {
   assert.ok(wasm.includes("typescript"));
 });
 
+test("every generated source copy invalidates the TypeScript fingerprint on either side", () => {
+  const inputs = [...new Set(packagedSourceCopies.flat())];
+  const entries = inputs.map(path => blob(path));
+  const before = laneKeys(lanes, entries).typescript;
+  for (const path of inputs) {
+    const mutated = entries.map(entry => entry.endsWith(`\t${path}`) ? blob(path, "b".repeat(40)) : entry);
+    assert.notEqual(laneKeys(lanes, mutated).typescript, before, path);
+  }
+  const conformance = "rust/crates/conformance/";
+  const actual = new Set(inputs.filter(path => path.startsWith(conformance)));
+  const inventory = new Set(readdirSync(`${conformance}vectors`, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => `${entry.parentPath}/${entry.name}`.replaceAll("\\", "/")));
+  assert.deepEqual(actual, inventory, "the copy inventory must cover the complete packaged conformance vector set");
+  for (const path of ["Cargo.toml", "src/main.rs", "src/bin/qualify.rs"]) {
+    const unrelated = [...entries, blob(`${conformance}${path}`)];
+    assert.equal(laneKeys(lanes, unrelated).typescript, before, path);
+    unrelated[unrelated.length - 1] = blob(`${conformance}${path}`, "b".repeat(40));
+    assert.equal(laneKeys(lanes, unrelated).typescript, before, path);
+  }
+});
+
+test("the actual generated-copy guard rejects a mutation of every packaged conformance vector", () => {
+  const source = readFileSync("scripts/check-generated.mjs", "utf8");
+  const start = source.indexOf("  for (const [source, packaged] of packagedSourceCopies) {");
+  const end = source.indexOf("  const harnessSuite", start);
+  assert.ok(start >= 0 && end > start, "the maintained copy guard must remain identifiable");
+  const guard = source.slice(start, end);
+  const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
+  const check = () => runInNewContext(guard, { packagedSourceCopies, readFileSync: path => files.get(path), join: posix.join, root: "." });
+  assert.doesNotThrow(check);
+  for (const [, packaged] of packagedSourceCopies.filter(([, path]) => path.startsWith("rust/crates/conformance/"))) {
+    const original = files.get(packaged);
+    assert.ok(original, packaged);
+    files.set(packaged, Buffer.concat([original, Buffer.from(" ")]));
+    assert.throws(check, { message: `packaged source drift: ${packaged}` });
+    files.set(packaged, original);
+  }
+  assert.doesNotThrow(check);
+});
+
 test("the filesystem package manifest reaches native binding lanes", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("typescript/packages/filesystem/package.json"));
@@ -97,9 +146,52 @@ test("unrelated workflows reach only policy and repository lanes", () => {
 
 test("isolated language generator changes reuse Rust and TypeScript builds", () => {
   const before = laneKeys(lanes, tree);
-  for (const path of ["tools/sdk-generator/backends/go/generate.go", "tools/sdk-generator/backends/java/generate.mjs"]) {
+  for (const path of [...generatorPaths, "tools/sdk-generator/shared/authority.mjs", ".github/sdk-generator-backends.json"]) {
     const after = laneKeys(lanes, changed(path));
     assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
+  }
+});
+
+test("generator scope selects only affected backends and retains package README checks", () => {
+  for (const backend of languageGeneratorBackends) {
+    assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/src/generate.mjs`]), [backend]);
+    assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/README.md`]), []);
+  }
+  const sharedScope = parseGeneratorBackends([
+    { name: "source-only", shared: ["authority"] }, { name: "archive-only", shared: ["archive"] },
+    { name: "both-readers", shared: ["authority", "archive"] }, { name: "neither-reader", shared: [] },
+  ]);
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"], sharedScope), ["source-only", "both-readers"]);
+  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"], sharedScope), ["archive-only", "both-readers"]);
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/backends/dotnet/templates/package/README.md"]), ["dotnet"]);
+  for (const path of [".github/workflows/sdk-generator.yml", ".github/sdk-generator-backends.json", "scripts/plan-qualification.mjs", "scripts/test-plan-qualification.mjs"]) {
+    assert.deepEqual(selectGeneratorBackends([path]), languageGeneratorBackends);
+  }
+});
+
+test("generator registry rejects empty, duplicate and unsafe backend coordinates", () => {
+  const entry = { name: "go", shared: [] };
+  for (const value of [[], [entry, entry], ["go"], [{ ...entry, name: "../outside" }], [{ ...entry, name: "go;echo" }], [null], {},
+    [{ ...entry, name: "Go" }], [{ ...entry, shared: ["unknown"] }], [{ ...entry, shared: ["archive", "archive"] }],
+    [{ ...entry, unexpected: true }]]) assert.throws(() => parseGeneratorBackends(value));
+});
+
+test("future shared-reader dependencies are declared without planner code changes", () => {
+  const registry = parseGeneratorBackends([{ name: "new-backend", shared: ["archive"] }]);
+  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"], registry), ["new-backend"]);
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"], registry), []);
+});
+
+test("registered backends declare the shared readers used by their source and controls", () => {
+  const registry = parseGeneratorBackends(JSON.parse(readFileSync(".github/sdk-generator-backends.json", "utf8")));
+  const sources = root => readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+    const path = `${root}/${entry.name}`;
+    return entry.isDirectory() ? sources(path) : /\.(mjs|go)$/.test(entry.name) ? [readFileSync(path, "utf8")] : [];
+  }).join("\n");
+  for (const entry of registry) {
+    const text = sources(`tools/sdk-generator/backends/${entry.name}`);
+    if (/shared\/(authority\.mjs|protoc\.json)/.test(text)) assert.ok(entry.shared.includes("authority"), `${entry.name} must declare shared authority inputs`);
+    if (/scripts\/archive-utils\.mjs/.test(text)) assert.ok(entry.shared.includes("archive"), `${entry.name} must declare archive-reader inputs`);
   }
 });
 

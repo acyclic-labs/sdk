@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-grpc-observability",
  "acyclic-protify-proc-macro",
  "acyclic-tonic-web-wasm-client",
  "acyclic-workers",
@@ -196,6 +197,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-grpc-observability"
+version = "0.2.0"
+dependencies = [
+ "futures",
+ "http-body",
+ "pin-project-lite",
+ "prettyplease 0.2.37",
+ "syn 2.0.119",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "acyclic-harness"
 version = "0.2.0"
 dependencies = [
@@ -260,6 +275,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "acyclic-harness-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-conformance",
+ "acyclic-native-runtime",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -558,6 +585,7 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
+ "acyclic-grpc-observability",
  "acyclic-protify-proc-macro",
  "acyclic-tonic-web-wasm-client",
  "gloo-timers",

@@ -1,0 +1,50 @@
+{
+  "protoc_version": "libprotoc 28.3",
+  "protoc": {
+    "linux-ppc64": {
+      "published_sha1": "b00341c9a3d70a7b473c1b5c395326ffc977c209",
+      "sha256": "d7f53b97d8bdfb8d7ab7c2c664ad08d69f7c1d2060fb54f44d5e307acc0f9907",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-linux-ppcle_64.exe"
+    },
+    "win32-x64": {
+      "published_sha1": "d64d8116a8da167f8b274a0020e3e23b30529118",
+      "sha256": "38f442c16d2d681a321dabe9c2ddc5600d3def337d68e2b7a632f253cda6e39d",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-windows-x86_64.exe"
+    },
+    "darwin-x64": {
+      "published_sha1": "fd45f460f1d1753f0cd84c52096f47c9b145d747",
+      "sha256": "70171c15d173b3d0a5d06766c51f35e09a5be858910b10a737c943a19094b437",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-osx-x86_64.exe"
+    },
+    "win32-ia32": {
+      "published_sha1": "0c303aa7d2b00ca05308b71950e9b506e3a02423",
+      "sha256": "3740fe398fb9a265a1fcc998b7160ff431bd2ad50ea89c23a36d0ce7e5fe4caa",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-windows-x86_32.exe"
+    },
+    "linux-s390x": {
+      "published_sha1": "5d1179066e8e5aaa0d1261c7e2685fad46348ed3",
+      "sha256": "f9e178b088f94d310d525b0a859b59eab45d673989a88aa45fb9415848dc8f92",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-linux-s390_64.exe"
+    },
+    "linux-ia32": {
+      "published_sha1": "706f099242815e9460da45b0ca9453f38b602dc9",
+      "sha256": "ff2848bbf73e216054097d67f4a17d2bfae8d673ea9e92771140d9102549494f",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-linux-x86_32.exe"
+    },
+    "linux-arm64": {
+      "published_sha1": "d519fdbd3de63c9af1a11329275b913a422049ca",
+      "sha256": "fac5818bce92cfd652264514c0663173643752f6ab6dc83a44b268da880a5cec",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-linux-aarch_64.exe"
+    },
+    "darwin-arm64": {
+      "published_sha1": "80e5be68546268753498de55a63570b3742d9b1a",
+      "sha256": "32fa62ce249135f37eaf93f1556329b22d608a62901e8b1f3bfde4d6e0c2c7b6",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-osx-aarch_64.exe"
+    },
+    "linux-x64": {
+      "published_sha1": "beab4c7277f45212f62472492ab72f687d67604b",
+      "sha256": "0e8c86f9b69b2b0fff91d56d8906a846ad89ce56dfeb1b673287b61c959bd633",
+      "url": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/4.28.3/protoc-4.28.3-linux-x86_64.exe"
+    }
+  }
+}

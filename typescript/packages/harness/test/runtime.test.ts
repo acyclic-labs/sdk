@@ -15,6 +15,7 @@ import {
   DEFAULT_LIMITS,
   defineRuntimeSchema,
   defineTool,
+  jsonToolProjection,
   descriptorFor,
   policyIdentity,
   type BatchId,
@@ -48,6 +49,9 @@ import { HARNESS_CHILD_PAGE_DEFAULT } from "../src/child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
+const imagePolicy = { native: { intent: { kind: "image", detail: "auto" },
+  maximum_bytes: 64, maximum_work: 8, configuration: null } } as const;
+const jsonProjection = await jsonToolProjection({});
 
 test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
   const parent = "12345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
@@ -291,14 +295,14 @@ test("task and tool schemas enter the registry only as strict Rust JSON", async 
   expect(() => Harness.builder(contracts).task(task)).toThrow();
   const tool = await defineTool({ name: "unsafe-schema-tool", revision: "1", description: "unsafe schema",
     inputSchema: unsafe, outputSchema: { type: "number" }, parseInput: parseNumber,
-    parseOutput: parseNumber }, (_context, value) => value);
+    projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => value);
   expect(() => Harness.builder(contracts).tool(tool)).toThrow();
 });
 
 test("resumable tools are pinned at registration and execute only through durable owner state", async () => {
   const definition = { name: "resumable-file-tool", revision: "1", description: "read a pinned file",
     inputSchema: { type: "number" }, outputSchema: { type: "number" },
-    parseInput: parseNumber, parseOutput: parseNumber };
+    parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber };
   const machine = { name: definition.name, version: definition.revision, digest: Array(32).fill(7) as number[] };
   await expect(Harness.builder(contracts).resumableTool(definition, machine).build()).rejects.toThrow("owner-host");
   expect(() => Harness.builder(contracts).resumableTool(definition, { ...machine, digest: Array(32).fill(0) })).toThrow();
@@ -515,8 +519,8 @@ describe("typed agent runtime", () => {
   });
 
   test("pins tool revisions independently and selects the model-visible revision explicitly", async () => {
-    const first = await defineTool<null, number>({ name: "versioned-tool", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, parseOutput: parseNumber }, () => 1);
-    const second = await defineTool<null, number>({ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, parseInput: parseNull, parseOutput: parseNumber }, () => 2);
+    const first = await defineTool<null, number>({ name: "versioned-tool", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 1);
+    const second = await defineTool<null, number>({ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 2);
     const needsFirst = await TaskDefinition.live<void, number>("needs-first-tool", "1", () => 1,
       { requirements: ["tool:versioned-tool@1"] });
     const builder = Harness.builder(contracts).tool(first).tool(second).task(needsFirst).grant("tool:call:versioned-tool");
@@ -536,7 +540,7 @@ describe("typed agent runtime", () => {
     expect(typedValue).toBe(2);
     expect(() => selected.tool({ ...second })).toThrow("not registered");
     await selected.run("select");
-    expect(visible).toEqual([{ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {} }]);
+    expect(visible).toEqual([{ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, projectionSchema: jsonProjection.schema }]);
     expect(() => Harness.builder(contracts).tool(first).tool(first)).toThrow("conflicting registration");
     expect(() => builder.selectModelTool("versioned-tool", "3")).toThrow("not registered");
   });
@@ -564,7 +568,7 @@ describe("typed agent runtime", () => {
     });
     const tool = await defineTool({ name: "child-tool", revision: "1", description: "child tool",
       inputSchema: { type: "null" }, outputSchema: { type: "number" },
-      parseInput: parseNull, parseOutput: parseNumber }, () => 3);
+      parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 3);
     const owner = await Harness.builder(contracts).task(allowed).task(denied).task(nested).tool(tool)
       .grant("task:spawn:allowed-child@1", "task:spawn:denied-child@1", "tool:call:child-tool").build();
     const narrowed = await owner.scoped(ExecutionScope.create().onlyGrants("task:spawn:allowed-child@1"));
@@ -862,7 +866,7 @@ describe("typed agent runtime", () => {
     const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
     const tool = await defineTool<number, number>({ name: "split-tool", revision: "1", description: "split",
       inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
-      parseOutput: parseNumber }, () => { throw new Error("local tool must not run"); });
+      projection: jsonProjection, parseOutput: parseNumber }, () => { throw new Error("local tool must not run"); });
     const ownerTask = new Task(id, async () => 7);
     const untrustedTask = new Task(id, async () => 99);
     const state: HarnessRuntimeState = {
@@ -1372,7 +1376,7 @@ describe("typed agent runtime", () => {
           || !("text" in value) || typeof value.text !== "string") throw new TypeError("expected text input");
         return { text: value.text };
       },
-      parseOutput: parseNumber,
+      projection: jsonProjection, parseOutput: parseNumber,
     }, (_context, input) => input.text.length);
     const runtime = await Harness.builder(contracts)
       .interactions({ route: async interaction => {
@@ -1399,7 +1403,7 @@ describe("typed agent runtime", () => {
   test("approvals bind one exact tool action and only approved grants dispatch", async () => {
     const tool = await defineTool<number, number>({ name: "approved-action", revision: "1", description: "pinned action",
       inputSchema: { type: "number" }, outputSchema: { type: "number" },
-      parseInput: parseNumber, parseOutput: parseNumber }, (_context, value) => value);
+      parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => value);
     const seen: number[][] = [];
     const route = async (interaction: import("../src/index.js").Interaction) => {
       if (interaction.kind !== "approval") throw new TypeError("expected an exact approval request");
@@ -1442,7 +1446,7 @@ describe("typed agent runtime", () => {
     let declineSecond = true;
     const tool = await defineTool<number, number>({ name: "two-approvals", revision: "1", description: "two approvals",
       inputSchema: { type: "number" }, outputSchema: { type: "number" },
-      parseInput: parseNumber, parseOutput: parseNumber }, (_context, value) => { executed++; return value; });
+      parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => { executed++; return value; });
     const root = await Harness.builder(contracts).tool(tool).grant("tool:call:two-approvals")
       .policy({ identity: () => approvalPolicyIdentity,
         evaluate: async () => ({ kind: "require-approval", prompt: "parent approval" }) })
@@ -1471,7 +1475,7 @@ describe("typed agent runtime", () => {
     let localExecutions = 0;
     const tool = await defineTool<number, number>({ name: "durable-count", revision: "1", description: "count",
       inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
-      parseOutput: parseNumber }, () => { localExecutions++; return 99; });
+      projection: jsonProjection, parseOutput: parseNumber }, () => { localExecutions++; return 99; });
     const observed: unknown[] = [];
     const outcomes: Outcome<unknown, OperationId>[] = [
       { kind: "indeterminate", operationId: operation },
@@ -1504,7 +1508,7 @@ describe("typed agent runtime", () => {
     let dispatched = 0;
     const tool = await defineTool<number, number>({ name: "guarded-durable", revision: "1", description: "guarded",
       inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
-      parseOutput: parseNumber }, () => 1);
+      projection: jsonProjection, parseOutput: parseNumber }, () => 1);
     const host: HarnessRuntimeHost = {
       policyIdentity: () => approvalPolicyIdentity,
       async attach() { throw new Error("not used"); },
@@ -1543,7 +1547,7 @@ describe("typed agent runtime", () => {
     await expect(Harness.builder(contracts).host(host).policy({ identity: () => denyPolicyIdentity,
       evaluate: async () => ({ kind: "deny", reason: "denied" }) }).build()).rejects.toThrow("policy identity differs");
     const tool = await defineTool<null, number>({ name: "policy-probe", revision: "1", description: "probe",
-      inputSchema: {}, outputSchema: { type: "number" }, parseInput: parseNull, parseOutput: parseNumber }, () => 1);
+      inputSchema: {}, outputSchema: { type: "number" }, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 1);
     const runtime = await Harness.builder(contracts).host(host).tool(tool).grant("tool:call:policy-probe")
       .policy({ identity: () => approvalPolicyIdentity, evaluate: async () => ({ kind: "allow" }) }).build();
     const scoped = await runtime.scoped(ExecutionScope.create().policy({ identity: () => scopedPolicyIdentity,
@@ -1588,7 +1592,7 @@ describe("typed agent runtime", () => {
       inputSchema: { type: "number" },
       outputSchema: { type: "number" },
       parseInput: parseNumber,
-      parseOutput: parseNumber,
+      projection: jsonProjection, parseOutput: parseNumber,
     }, (_context, value) => value);
     const policy = {
       identity: () => identityWithMutation("runtime-policy", "mutated-policy"),
@@ -1653,7 +1657,7 @@ describe("typed agent runtime", () => {
       inputSchema: { type: "number" },
       outputSchema: { type: "number" },
       parseInput: parseNumber,
-      parseOutput: parseNumber,
+      projection: jsonProjection, parseOutput: parseNumber,
     }, (_context, value) => value);
     const runtime = await Harness.builder(contracts).policy({
       identity: () => approvalPolicyIdentity,
@@ -1668,7 +1672,7 @@ describe("typed agent runtime", () => {
     let executed = false;
     const tool = await defineTool<number, number>({ name: "pinned-evaluation", revision: "1", description: "pinned",
       inputSchema: { type: "number" }, outputSchema: { type: "number" },
-      parseInput: parseNumber, parseOutput: parseNumber }, (_context, value) => {
+      parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => {
       executed = true;
       return value;
     });
@@ -1699,7 +1703,7 @@ describe("typed agent runtime", () => {
 
   test("nested scopes preserve inherited grants, limits, and policy", async () => {
     const observed: EffectiveScope[] = [];
-    const tool = await defineTool<null, string>({ name: "guarded", revision: "1", description: "guarded", inputSchema: {}, outputSchema: {}, parseInput: parseNull, parseOutput: parseString }, () => "called");
+    const tool = await defineTool<null, string>({ name: "guarded", revision: "1", description: "guarded", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseString }, () => "called");
     const deadline = new Date(Date.now() + 60_000);
     const parentPolicy = {
       identity: () => denyPolicyIdentity,
@@ -1850,7 +1854,7 @@ describe("typed agent runtime", () => {
       async send(message: TaskMessage) { sender = message.sender; return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* [] as TaskMessage[]; },
     };
-    const tool = await defineTool<number, number>({ name: "double", revision: "1", description: "double", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (context, input) => {
+    const tool = await defineTool<number, number>({ name: "double", revision: "1", description: "double", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, async (context, input) => {
       toolOperationId = context.operationId;
       const effect = await context.reconcileEffect("effect:tool" as EffectId);
       await context.send(context.taskId!, payload);
@@ -1862,7 +1866,7 @@ describe("typed agent runtime", () => {
     }).build();
     const output = await runtime.run("go");
     expect(output.text).toBe("done");
-    expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: 12 }, { kind: "model-completed", metadata: { tokens: 1 } }]);
+    expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
     expect(sender).toBe(output.taskId);
     expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
@@ -1878,8 +1882,8 @@ describe("typed agent runtime", () => {
       async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
-    await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: "native" }] });
-    expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: "native" }]);
+    await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: imagePolicy }] });
+    expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: imagePolicy }]);
   });
 
   test("content-only turns dispatch exactly the content admitted by Rust validation", async () => {
@@ -1892,8 +1896,8 @@ describe("typed agent runtime", () => {
       async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
-    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: "native" }] });
-    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: "native" }]);
+    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: imagePolicy }] });
+    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: imagePolicy }]);
   });
 
   test("direct input is snapshotted before validation and model dispatch", async () => {
@@ -1903,7 +1907,7 @@ describe("typed agent runtime", () => {
       volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
       path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
     };
-    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: "native" }];
+    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: imagePolicy }];
     const input = {
       prompt: "",
       get content(): readonly UserContentPart[] {
@@ -2073,7 +2077,7 @@ describe("typed agent runtime", () => {
   });
 
   test("tool registration snapshots its public definition", async () => {
-    const mutable = { name: "echo", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, parseOutput: parseString,
+    const mutable = { name: "echo", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseString,
       handler: async () => "ok" };
     const runtime = await Harness.builder(contracts).tool(mutable).build();
     mutable.name = "different";
@@ -2086,7 +2090,7 @@ describe("typed agent runtime", () => {
     const operations: string[] = [];
     const argumentsSeen: number[] = [];
     const tool = await defineTool<number, number>({ name: "again", revision: "1", description: "again",
-      inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (context, input) => {
+      inputSchema: {}, outputSchema: {}, parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, async (context, input) => {
       expect(context.callId).toBe("provider-call");
       operations.push(context.operationId!);
       argumentsSeen.push(input);
@@ -2107,4 +2111,74 @@ describe("typed agent runtime", () => {
     expect(new Set(operations).size).toBe(2);
     expect(argumentsSeen).toEqual([1, 2]);
   });
+});
+
+
+test("model projections receive parsed invocation and retain independent canonical results", async () => {
+  const stringProjection = await jsonToolProjection<string>({ type: "string" });
+  class Projection {
+    readonly schema = stringProjection.schema;
+    readonly prefix = "selected";
+    project(invocation: { arguments: { count: number } }, result: { value: number }) {
+      return { kind: "json" as const, value: `${this.prefix}:${invocation.arguments.count}:${result.value}` };
+    }
+  }
+  const projector = new Projection();
+  const definition = await defineTool<{ count: number }, number>({
+    name: "projected", revision: "1", description: "projected",
+    inputSchema: { type: "number" }, outputSchema: { type: "number" },
+    parseInput: value => ({ count: parseNumber(value) }), parseOutput: parseNumber,
+    projection: projector,
+  }, (_context, input) => input.count * 2);
+  let steps = 0;
+  const builder = Harness.builder(contracts).tool(definition).grant("tool:call:projected");
+  // The admitted method is captured once, including a prototype method's receiver.
+  projector.project = () => { throw new Error("replacement must not execute"); };
+  const runtime = await builder.model(testModel, {
+    async *generate(request) {
+      if (steps++ === 0) yield { kind: "tool_call" as const, callId: "projected", name: "projected", arguments: 3 };
+      else expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "projected",
+        name: "projected", content: { kind: "json", value: "selected:3:6" } });
+      yield { kind: "completed" as const, metadata: {} };
+    }, async reconcile() { return undefined; },
+  }).build();
+  expect(runtime.tool(definition).definition.projectionSchema).toEqual(stringProjection.schema);
+  const result = await runtime.run("go");
+  expect(result.receipts.find(receipt => receipt.kind === "tool"))
+    .toMatchObject({ value: 6, projection: { kind: "json", value: "selected:3:6" } });
+  expect(steps).toBe(2);
+});
+
+test("invalid model projection fails before the next provider request", async () => {
+  const stringProjection = await jsonToolProjection<string>({ type: "string" });
+  const definition = await defineTool<null, number>({ name: "invalid-projection", revision: "1",
+    description: "invalid projection", inputSchema: { type: "null" }, outputSchema: { type: "number" },
+    parseInput: parseNull, parseOutput: parseNumber,
+    projection: { schema: stringProjection.schema, project: () => ({ kind: "json", value: 1 }) },
+  }, () => 1);
+  let calls = 0;
+  const runtime = await Harness.builder(contracts).tool(definition).grant("tool:call:invalid-projection")
+    .model(testModel, { async *generate() {
+      calls++;
+      yield { kind: "tool_call" as const, callId: "invalid", name: "invalid-projection", arguments: null };
+      yield { kind: "completed" as const, metadata: {} };
+    }, async reconcile() { return undefined; } }).build();
+  await expect(runtime.run("go")).rejects.toThrow();
+  expect(calls).toBe(1);
+});
+
+test("file batches check every scope and bound before the first owner read", async () => {
+  const first = await mailboxFile(1);
+  const denied = { ...first, path: "denied" };
+  let reads = 0;
+  const content = { validate: () => {}, verify: () => {},
+    read: async () => { reads++; return Uint8Array.of(0); },
+    fileReadCapability: (file: FileRef) => `read:${file.path}`,
+    volumeReadCapability: () => "read:volume", directoryReadCapability: () => "read:directory" };
+  const runtime = await Harness.builder(contracts).content(content).grant(content.fileReadCapability(first)).build();
+  const context = new TaskContext(runtime, new AbortController().signal);
+  await expect(context.readFiles([first, denied])).rejects.toThrow("task scope cannot read this file");
+  expect(reads).toBe(0);
+  expect(await context.readFiles([first])).toEqual([Uint8Array.of(0)]);
+  expect(reads).toBe(1);
 });
