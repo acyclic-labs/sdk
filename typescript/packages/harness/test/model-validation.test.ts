@@ -503,3 +503,19 @@ test("model event admission preserves full-width BigInts in provider JSON", () =
   const completed = contracts.admitModelEvent({ kind: "completed", metadata: { tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
   expect(completed.event).toEqual({ kind: "completed", metadata: { tokens: 1, cursor: value } });
 });
+
+
+test("public projection validator enforces complete JSON and Parts envelope byte bounds", () => {
+  const definition = { name: "inspect", revision: "1", description: "Inspect", inputSchema: {},
+    outputSchema: {}, projectionSchema: { type: "object" } };
+  for (const projection of [
+    { kind: "json", value: "é\0🦀" },
+    { kind: "parts", parts: [{ kind: "text", text: "é\0🦀" }] },
+  ] as const) {
+    const exact = contracts.encodeCanonicalJson(projection).byteLength;
+    expect(() => contracts.validateToolProjection(definition, projection,
+      { ...DEFAULT_LIMITS, render_bytes: exact })).not.toThrow();
+    expect(() => contracts.validateToolProjection(definition, projection,
+      { ...DEFAULT_LIMITS, render_bytes: exact - 1 })).toThrow("render limit");
+  }
+});

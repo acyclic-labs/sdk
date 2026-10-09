@@ -365,7 +365,7 @@ impl DurableToolRunner {
             // These are journal-owned JSON artifacts. Bound their descriptors
             // before the existing custody reader allocates or decodes bodies.
             if result.descriptor().byte_length() > content_limit
-                || projection.descriptor().byte_length() > content_limit.min(projection_limit)
+                || projection.descriptor().byte_length() > projection_limit
             {
                 return Err(Error::Conflict(
                     "durable tool history exceeds admitted descriptor limits".into(),
