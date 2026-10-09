@@ -25,6 +25,19 @@ and are not passed as protoc source inputs. The receipt hashes the entire
 authority manifest, including these descriptor declarations.
 
 Run focused staging tests with `go test -p=1 -parallel=1 ./...` in this directory.
+Run the CLI with `go run .`; it accepts the same flags as the original producer.
+
+The backend is one Go package, split by responsibility:
+
+- `main.go`: CLI flags and error reporting.
+- `schema.go`: generation request, authority manifest and receipt shapes.
+- `authority.go`: request and Rust export validation.
+- `staging.go`: path admission, package staging and required binding checks.
+- `tools.go`: pinned executable and version admission.
+- `generate.go`: generation orchestration.
+- `outputs.go`: generated file inventory and digests.
+- `main_test.go`: focused staging and tool admission tests.
+
 Full acceptance additionally requires the final Rust export, exact plugin/tool
 identities, generated-package installation, idiomatic type controls and actual
 remote/embedded conformance. Staging tests do not qualify any of those surfaces.

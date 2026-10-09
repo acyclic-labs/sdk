@@ -87,7 +87,7 @@ existence without the family-input digest checks. The accepted exporter must
 attest every transitive generator input, including custom options, before reuse.
 These are source findings; no destructive invocation was attempted.
 
-The isolated `scripts/sdk-go-producer` tooling repairs this staging boundary
+The isolated `tools/sdk-generator/backends/go` tooling repairs this staging boundary
 without connecting the historical facade to the new SDK interface. It requires
 a fresh disjoint output, validates before creating it, and removes the duplicate
 options generation. Focused Windows Go 1.27.2 tests pass for output admission,

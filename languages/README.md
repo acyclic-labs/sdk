@@ -20,6 +20,10 @@ coverage separately; a wire round trip, HTTP projection, or generated-source typ
 check proves only its stated scope. Registry publication is a separate action.
 No empty language package is published to reserve a name.
 
+Language generator tooling lives in `tools/sdk-generator/backends/<language>/`.
+See [the generator layout](../tools/sdk-generator/README.md) for entrypoints and
+focused checks. Generated SDK packages live in their language directories.
+
 Keep routine CI fast and inexpensive: use the existing input-fingerprinted core
 lanes for source and generated-drift checks, with focused consumer checks for
 affected targets. Do not add the complete language/platform matrix to every PR
