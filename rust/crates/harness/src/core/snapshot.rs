@@ -56,8 +56,27 @@ struct Projection {
 
 impl Reducer {
     /// Captures issuer-authenticated state for direct projection restoration.
-    /// The event cache is a suffix; conversation and terminal projections still need cold retention.
+    /// Closed checkpoint-covered conversation prefixes are represented by their
+    /// authenticated logical cut and digest. Terminal projections still need cold retention.
     pub fn snapshot(&self) -> Result<Snapshot> {
+        let checkpoint_selection =
+            self.events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    super::EventPayload::ModelContextSelected { selection }
+                        if selection.checkpoint.as_ref()
+                            == self.latest_context_checkpoint.as_ref()
+                            && selection.checkpoint.is_some() =>
+                    {
+                        Some(selection)
+                    }
+                    _ => None,
+                });
+        let conversation = match checkpoint_selection {
+            Some(selection) => self.conversation.checkpointed_suffix(selection)?,
+            None => self.conversation.clone(),
+        };
         let projection = Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions.clone(),
@@ -68,13 +87,13 @@ impl Reducer {
             effects: self.effects.clone(),
             forks: self.forks.clone().into_iter().collect(),
             published_merges: self.published_merges.clone(),
-            conversation: self.conversation.clone(),
+            conversation,
             latest_context_checkpoint: self.latest_context_checkpoint.clone(),
             interactions: self.interactions.clone(),
             bindings: registry_bindings(&self.schemas)?,
         };
         let mut snapshot = Snapshot {
-            format_version: 5,
+            format_version: 6,
             authority: self.authority.clone(),
             revision: self.revision,
             events: self.events.iter().cloned().collect(),
@@ -138,7 +157,7 @@ impl Snapshot {
     }
 
     fn verify(&self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry) -> Result<()> {
-        if self.format_version != 5 {
+        if self.format_version != 6 {
             return Err(Error::Unsupported(format!(
                 "snapshot format {}",
                 self.format_version
@@ -201,7 +220,7 @@ impl AuthorityVerifier {
             snapshot.state_digest,
         ))?;
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v5/reducer-checkpoint\0");
+        hasher.update(b"harness/v6/reducer-checkpoint\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
         Ok(*hasher.finalize().as_bytes())

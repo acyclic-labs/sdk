@@ -76,9 +76,7 @@ impl InheritedConversationPrefix {
         let parent_agent = conversation
             .agent
             .ok_or_else(|| Error::Invalid("inherited prefix parent is unbound".into()))?;
-        let count = usize::try_from(through_sequence)
-            .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
-        if count > conversation.messages().len() {
+        if through_sequence > conversation.logical_revision() {
             return Err(Error::Invalid(
                 "inherited prefix exceeds parent history".into(),
             ));

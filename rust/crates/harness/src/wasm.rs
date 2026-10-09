@@ -1565,7 +1565,7 @@ fn conversation_page_data(
     let conversation = reducer
         .conversation()
         .ok_or_else(|| JsValue::from_str("aggregate is not a conversation"))?;
-    let total_messages = conversation.messages.len() as u64;
+    let total_messages = conversation.logical_revision();
     let messages = conversation
         .page(after_sequence, total_messages, limit as usize)
         .map_err(js_error)?;

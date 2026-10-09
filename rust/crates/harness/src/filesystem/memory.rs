@@ -880,9 +880,7 @@ impl MemoryHarnessStorage {
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let selected_revision = usize::try_from(selection.conversation_revision)
-            .map_err(|_| Error::Storage("selection revision exceeds platform size".into()))?;
-        if selected_revision > historical.messages.len() {
+        if selection.conversation_revision > historical.logical_revision() {
             return Err(Error::Storage(
                 "selection revision exceeds conversation history".into(),
             ));
@@ -1104,7 +1102,7 @@ impl MemoryHarnessStorage {
         }
         let message = ConversationMessage {
             id: assistant_id,
-            sequence: state.messages.len() as u64 + 1,
+            sequence: state.logical_revision() + 1,
             kind: MessageKind::Assistant,
             content,
             attachments,
@@ -1206,7 +1204,7 @@ impl MemoryHarnessStorage {
                 }
                 let message = ConversationMessage {
                     id,
-                    sequence: state.messages.len() as u64 + 1,
+                    sequence: state.logical_revision() + 1,
                     kind,
                     content,
                     attachments,
