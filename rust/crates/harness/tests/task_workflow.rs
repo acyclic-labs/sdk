@@ -1982,7 +1982,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
 }
 
 #[tokio::test]
-async fn pre_context_stock_turn_reconciles_after_provider_reopen() -> Result<()> {
+async fn direct_stock_turn_reconciles_through_runtime_after_provider_reopen() -> Result<()> {
     stock_restart_with_publication_fault(None, false, true).await
 }
 
@@ -2018,7 +2018,7 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
 async fn stock_restart_with_publication_fault(
     fault: Option<ExecutionFaultMode>,
     cancel_after_failure: bool,
-    pre_context: bool,
+    direct_executor: bool,
 ) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
@@ -2264,6 +2264,16 @@ async fn stock_restart_with_publication_fault(
                 .await
                 .is_err()
         );
+        let compaction_policy = if fault.is_none() {
+            acyclic_harness::context::CompactionPolicy::Threshold(
+                acyclic_harness::context::ThresholdCompaction {
+                    response_reserve_tokens: 8_192,
+                    ..acyclic_harness::context::ThresholdCompaction::default()
+                },
+            )
+        } else {
+            acyclic_harness::context::CompactionPolicy::default()
+        };
         let execution = runtime
             .stock_execution(
                 task,
@@ -2274,16 +2284,7 @@ async fn stock_restart_with_publication_fault(
                 ContextPipeline::default(),
             )
             .await?
-            .with_compaction_policy(if fault.is_none() {
-                acyclic_harness::context::CompactionPolicy::Threshold(
-                    acyclic_harness::context::ThresholdCompaction {
-                        response_reserve_tokens: 8_192,
-                        ..acyclic_harness::context::ThresholdCompaction::default()
-                    },
-                )
-            } else {
-                acyclic_harness::context::CompactionPolicy::default()
-            });
+            .with_compaction_policy(compaction_policy.clone());
         let turn = TurnInput {
             operation_id: execution.operation_id(),
             input: ModelContent::Text("hello".into()),
@@ -2366,9 +2367,9 @@ async fn stock_restart_with_publication_fault(
                 // observed event. Keep the fault on event publication.
                 stream_provider.arm_execution(3, mode);
             }
-            let interrupted = if pre_context {
-                // Produce the actual earlier stock Started/request bytes and
-                // pending model history through the same fenced disk journal.
+            let interrupted = if direct_executor {
+                // Admit through the direct stock executor and recover through
+                // the runtime with the same pinned policy and fenced disk journal.
                 let admission = host.observe_admission(task).await?;
                 let admitted_scope = RuntimeScope::new(admission.grants, admission.limits)?
                     .with_run_limits(admission.run_limits)?;
@@ -2379,6 +2380,7 @@ async fn stock_restart_with_publication_fault(
                     ToolRegistry::default(),
                 )
                 .with_limits(admitted_scope.limits())
+                .with_compaction_policy(compaction_policy.clone())
                 .with_tool_authority(admitted_scope, None)?
                 .with_durable_task(host.clone(), task, fence.clone());
                 let journal = FilesystemExecutionJournal::for_task(
