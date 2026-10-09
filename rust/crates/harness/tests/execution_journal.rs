@@ -875,26 +875,26 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             ..
         })
     ));
-    let projection_operation = OperationId::from_bytes([65; 16]);
+    let large_operation = OperationId::from_bytes([66; 16]);
     for _ in 0..2 {
         assert!(matches!(
             runner
                 .run_with_context(
                     first_task,
-                    projection_operation,
+                    large_operation,
                     large_definition.clone(),
                     json!({}),
                     ToolContext::new(
                         projection_context.clone(),
-                        projection_operation,
-                        projection_operation.to_string()
+                        large_operation,
+                        large_operation.to_string()
                     )?
                 )
                 .await?,
             Outcome::Succeeded(Value::Null)
         ));
     }
-    let records = journal.replay(projection_operation, 0, 64).await?;
+    let records = journal.replay(large_operation, 0, 64).await?;
     let Some(ExecutionEvent::ToolCompleted {
         result, projection, ..
     }) = records.last().map(|record| &record.event)

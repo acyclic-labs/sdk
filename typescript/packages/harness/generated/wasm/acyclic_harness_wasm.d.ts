@@ -209,7 +209,8 @@ export interface WasmModelLimitsInput {
 }
 export type WasmModelToolResultContentInput =
 | Readonly<{ kind: "json"; value: unknown }>
-| Extract<WasmToolResultContent, { kind: "parts" }>;
+| (Omit<Extract<WasmToolResultContent, { kind: "parts" }>, "parts">
+& Readonly<{ parts: readonly WasmModelDataPart[] }>);
 type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
 Part extends { readonly kind: "tool_call"; readonly call_id: string }
     ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
@@ -1138,7 +1139,7 @@ export interface WasmNativeMediaPolicyWire {
     intent: WasmNativeMediaIntent;
     maximum_bytes: number;
     maximum_work: number;
-    configuration: WasmNativeConfigurationBindingWire | undefined;
+    configuration: WasmNativeConfigurationBindingWire | null;
 }
 
 export interface WasmTaskAdmissionInput {
