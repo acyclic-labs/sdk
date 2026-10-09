@@ -3489,4 +3489,67 @@ mod tests {
         assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
+    #[tokio::test]
+    async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()> {
+        #[derive(Default)]
+        struct Provider(Mutex<Vec<(crate::model::ModelDispatch, Vec<u8>)>>);
+        impl ModelProvider for Provider {
+            fn generate<'a>(
+                &'a self,
+                request: crate::model::PreparedModelRequest,
+                dispatch: crate::model::ModelDispatch,
+            ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+                Box::pin(stream::once(async move {
+                    assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+                    self.0
+                        .lock()
+                        .map_err(|_| Error::Storage("capture lock poisoned".into()))?
+                        .push((dispatch, request.bytes().to_vec()));
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    })
+                }))
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Err(Error::Unsupported("completed attempts must replay".into())) })
+            }
+        }
+        let provider = Arc::new(Provider::default());
+        let executor = StockExecutor::new(
+            Model::new("fixture", "identity", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let journal = Journal::default();
+        let operations = [
+            OperationId::from_bytes([31; 16]),
+            OperationId::from_bytes([32; 16]),
+        ];
+        let input = |operation_id| TurnInput {
+            operation_id,
+            input: ModelContent::Text("same input".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        for operation in operations {
+            executor.execute(input(operation), &journal).await?;
+        }
+        executor.execute(input(operations[0]), &journal).await?;
+        let captures = provider
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("capture lock poisoned".into()))?;
+        assert_eq!(captures.len(), 2);
+        assert_eq!(captures[0].0.operation_id, operations[0]);
+        assert_eq!(captures[1].0.operation_id, operations[1]);
+        assert_eq!(captures[0].0.step, 0);
+        assert_eq!(captures[1].0.step, 0);
+        assert_eq!(captures[0].0.request_digest, captures[1].0.request_digest);
+        assert_eq!(captures[0].1, captures[1].1);
+        Ok(())
+    }
 }
