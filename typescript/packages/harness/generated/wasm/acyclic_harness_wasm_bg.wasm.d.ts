@@ -120,6 +120,7 @@ export const wasmreducer_volumeCapability: (a: number, b: any, c: number, d: num
 export const wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
 export const wasmtaskregistry_new: () => number;
 export const wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+export const wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
 export const wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
 export const wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
 export const wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;

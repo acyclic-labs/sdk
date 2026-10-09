@@ -42,7 +42,8 @@ try {
     assert(attempt.request_digest.length === 32, "reconciliation lost canonical request identity");
     assert(attempt.operation_id === dispatch.operation_id && attempt.step === dispatch.step
       && describe(attempt.request_digest) === describe(dispatch.request_digest), "fresh and recovered dispatch identities differ");
-    return [prefix, { kind: "completed", metadata: {} }];
+    // Reconciliation returns only the unobserved suffix; Rust retains prefix.
+    return [{ kind: "completed", metadata: {} }];
   });
   runtime = await fixture.open();
   bind(runtime);

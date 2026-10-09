@@ -1564,6 +1564,11 @@ export class WasmTaskRegistry {
     constructor();
     registerMachine(definition: WasmMachineDefinition, initialize: Function, transition: Function): void;
     /**
+     * Registers the Rust stock-turn adapter over the ordinary model outbox.
+     * Registration starts no worker and grants no model or task authority.
+     */
+    registerStockTurn(): void;
+    /**
      * Callbacks share one immutable definition revision and are trusted host
      * implementations. They receive runtime-owned invocation identities.
      */
@@ -2228,6 +2233,7 @@ export interface InitOutput {
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
     readonly wasmtaskregistry_new: () => number;
     readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
     readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
     readonly wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
     readonly wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;

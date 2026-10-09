@@ -729,6 +729,8 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     ) -> BoxStream<'a, Result<ModelEvent>>;
 
     /// Continues or reconciles an interrupted run without starting another model request.
+    /// Returns only events after `attempt.observed`; the executor retains that
+    /// exact prefix and appends this continuation. `None` preserves uncertainty.
     fn reconcile<'a>(
         &'a self,
         attempt: ModelAttempt,
