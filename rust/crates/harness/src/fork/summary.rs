@@ -72,8 +72,8 @@ impl SummaryForkCapture {
             .payloads
             .len()
             .checked_add(2)
-            .is_none_or(|count| count > super::MAX_FORK_RESOURCES)
-            || self.references.len() > super::MAX_FORK_REFERENCES
+            .is_none_or(|count| count as u64 > super::MAX_FORK_RESOURCES as u64)
+            || self.references.len() as u64 > super::MAX_FORK_REFERENCES as u64
         {
             return Err(Error::Invalid(
                 "summary fork capture exceeds protocol counts".into(),
