@@ -6,7 +6,7 @@ import { gzipSync } from "node:zlib";
 import { pins, producerSources, targets } from "../../src/package.mjs";
 import { sha256 } from "../../../../shared/authority.mjs";
 const sourceDirectory = join(dirname(fileURLToPath(import.meta.url)), "../../src");
-function tar(entries) {
+export function tar(entries) {
   const blocks = [];
   for (const { name, bytes, type = "0" } of entries) {
     const header = Buffer.alloc(512);

@@ -43,17 +43,39 @@ the actually executed control source.
 These are installed message and transport-metadata controls. They do not execute
 native RPC calls or qualify network transport, Rust-backed RPC, remaining
 families/platforms or the embedded runtime. Two independent maintained CLI
-invocations emit identical receipts and the same 14 payload files as the archive-installed native prototype.
+invocations emit identical receipts and the same 14 payload files as the
+archive-installed native prototype.
 
 `src/package.mjs` admits a gzip/tar package using its external SHA256, generation
 receipt and accepted authority. It verifies the complete payload inventory,
 producer/tool/runtime pins, maintained templates and packaged Rust inputs before
 returning bytes. It rejects links, traversal, duplicate/unlisted entries and
 changed payloads. Admission passes against the actual native prototype archive.
-The reusable installed qualifier remains to be qualified.
+The maintained installed qualifier also passes against that archive.
 
 ```sh
 node tools/sdk-generator/backends/elixir/src/package.mjs \
   --package /package.tar.gz --sha256 <external-sha256> \
   --receipt /generation-receipt.json --authority /accepted-export
+```
+
+`src/qualify.mjs` stages only admitted archive bytes into a fresh Mix package.
+It verifies the complete OTP/Elixir runtime, 135 pinned Hex/Rebar/registry input
+files and six locked dependency archives before executing native tools. It
+compiles in a private home/build tree with Hex offline mode, a frozen lock and
+one Erlang scheduler. Every compiled dependency source matches its Hex archive
+before and after compilation. The executed `Provenance.exs` control checks the
+exact SDK module inventory, compiled source paths and loaded BEAM paths. The
+qualifier rejects changed sources, tools, inventories and unexpected Hex code,
+and writes success only after all message/type controls and post-run guards.
+These controls establish installed bindings and transport metadata; actual RPC
+calls remain outstanding.
+
+```sh
+node tools/sdk-generator/backends/elixir/src/qualify.mjs \
+  --package /package.tar.gz --sha256 <external-sha256> \
+  --receipt /generation-receipt.json --authority /accepted-export \
+  --runtime-root /admitted-runtime --runtime-inventory /runtime-admission.json \
+  --tool-home /admitted-mix-home --tool-inventory /qualification-tools.json \
+  --cache /locked-hex-archives --output /new-qualification
 ```
