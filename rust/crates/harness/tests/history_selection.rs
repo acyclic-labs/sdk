@@ -56,7 +56,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         context_messages: 2,
         ..Limits::default()
     };
-    let Err(error) = prepare_turn(
+    let error = prepare_turn(
         &reopened,
         operation,
         content.clone(),
@@ -65,11 +65,8 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         None,
         false,
         true,
-    ) else {
-        return Err(acyclic_harness::Error::Invalid(
-            "orphan result was admitted".into(),
-        ));
-    };
+    )
+    .expect_err("default turn admitted history beyond its explicit bound");
     assert!(
         error
             .to_string()
