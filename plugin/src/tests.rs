@@ -2732,6 +2732,41 @@ fn windows_control_endpoint_keeps_the_next_pipe_while_reaping_connections() {
         .expect("plugin sequential endpoint thread");
 }
 
+#[tokio::test]
+async fn git_lease_renewal_replaces_the_token_on_the_same_clock_tick() {
+    use acyclic_fs::{
+        GenerationId, MemoryOperationWindowStore, OperationWindowCoordinator, WorkspaceId,
+    };
+
+    for renewal_now in [100, 101, 10_000] {
+        let windows = OperationWindowCoordinator::new(MemoryOperationWindowStore::default());
+        let lease = windows
+            .begin(
+                WorkspaceId::from_bytes([1; 16]),
+                GenerationId::new(acyclic_fs::Digest::from_bytes([2; 32])),
+                "git-renewal",
+                100,
+                900_100,
+            )
+            .await
+            .expect("original lease");
+        let expiry = control_plane::git_lease_renewal_expiry(renewal_now, lease.expires_at_millis)
+            .expect("successor expiry");
+        assert!(expiry > lease.expires_at_millis);
+        assert!(expiry >= renewal_now + 900_000);
+        let renewed = windows
+            .renew(&lease, renewal_now, expiry)
+            .await
+            .expect("real coordinator accepts successor token");
+        assert_eq!(renewed.lease_id, lease.lease_id);
+        assert_eq!(renewed.workspace_id, lease.workspace_id);
+        assert_eq!(renewed.pinned_parent, lease.pinned_parent);
+        assert_eq!(renewed.expires_at_millis, expiry);
+    }
+    assert!(control_plane::git_lease_renewal_expiry(u64::MAX, 100).is_err());
+    assert!(control_plane::git_lease_renewal_expiry(100, u64::MAX).is_err());
+}
+
 #[test]
 fn authenticated_control_protocol_dispatches_git() {
     std::thread::Builder::new()
@@ -3694,6 +3729,24 @@ struct ControlledDispatcher {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     completed: Arc<tokio::sync::Notify>,
+}
+
+// Observes the real dispatcher result without reading the bounded response.
+// A rejected command must be reported directly, rather than masked by polling
+// for a workspace transition that can never happen.
+struct ObservedControlDispatcher {
+    control: Arc<AsyncMutex<ControlPlane>>,
+    completed: tokio::sync::mpsc::Sender<Result<Value, String>>,
+}
+
+impl ConcurrentControlRequestDispatcher for ObservedControlDispatcher {
+    async fn dispatch_request(&self, request: ControlRequest) -> Result<Value, String> {
+        let result = self.control.dispatch_request(request).await;
+        self.completed
+            .try_send(result.clone())
+            .expect("observe the single real dispatch result");
+        result
+    }
 }
 
 struct ReplayCountingDispatcher {
@@ -4953,9 +5006,13 @@ async fn authenticated_control_protocol_case() {
 
     let (mut client, server) = tokio::io::duplex(1);
     let (connection_shutdown, receiver) = watch::channel(false);
+    let (completed, mut completion) = tokio::sync::mpsc::channel(1);
     let handler = tokio::spawn(handle_control_connection(
         server,
-        Arc::clone(&shared),
+        Arc::new(ObservedControlDispatcher {
+            control: Arc::clone(&shared),
+            completed,
+        }),
         Arc::clone(&ledger),
         receiver,
     ));
@@ -4971,26 +5028,23 @@ async fn authenticated_control_protocol_case() {
     client.write_all(&request).await.expect("write request");
     client.write_all(b"\n").await.expect("write newline");
     client.flush().await.expect("flush request");
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let control = shared.lock().await;
-            let current = control
-                .distributed
-                .contexts()
-                .resolve(child_context_id)
-                .await
-                .expect("switched child context")
-                .roots[&child_root_id]
-                .workspace_id;
-            if current != original_workspace {
-                break;
-            }
-            drop(control);
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the accepted Git switch must finish before response cancellation");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), completion.recv())
+        .await
+        .expect("the accepted Git dispatch must finish before response cancellation")
+        .expect("Git dispatch observation")
+        .expect("the authenticated Git switch must succeed");
+    assert!(result.is_object());
+    let current = shared
+        .lock()
+        .await
+        .distributed
+        .contexts()
+        .resolve(child_context_id)
+        .await
+        .expect("switched child context")
+        .roots[&child_root_id]
+        .workspace_id;
+    assert_ne!(current, original_workspace);
     connection_shutdown
         .send(true)
         .expect("signal connection shutdown");
