@@ -116,7 +116,8 @@ foreach(['actors/v1/actors','workers/v1/workers','stream/v2/stream'] as $family)
  foreach($service->getMethod() as $method) {
   check(!$method->getClientStreaming(),'client streaming request control missing');
   $probe->expected=$method;$operation=$method->getName();$class=(string)$reflection->getMethod($operation)->getParameters()[0]->getType();$request=populated(new $class());
-  check($probe->$operation($request,['probe'=>['value']],['probe'=>true])===$request->serializeToString(),'client request content differs');
+  $expectedRequestBytes=$request->serializeToString();
+  check($probe->$operation($request,['probe'=>['value']],['probe'=>true])===$expectedRequestBytes,'client request content differs');
  }
  check($probe->calls===count($service->getMethod()),'client call count differs');
 }

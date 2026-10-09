@@ -39,9 +39,10 @@ oneof switching/clearing and every generated client method's path, message
 types and unary/server-streaming shape. Maintained gRPC serialization methods
 process nonempty samples. Three independent invalid assignments reject arrays
 for Actor bytes, Worker bytes and an optional Stream integer. These are runtime
-checks. Native gRPC 1.82.0 client creation and shutdown also pass. Four isolated
-generated-client mutations fail for their intended path, request-content,
-response-type and streaming-shape errors. Actual ZIP traversal, link and CRC
+checks. Native gRPC 1.82.0 client creation and shutdown also pass. Five isolated
+generated-client mutations fail for their intended path, replaced request,
+in-place request mutation, response-type and streaming-shape errors. Expected
+request bytes are captured before each generated client call. Actual ZIP traversal, link and CRC
 faults are rejected before dependency extraction.
 
 The pure PHP runtime uses signed integers for unsigned wire values on this
@@ -64,6 +65,13 @@ node tools/sdk-generator/backends/php/src/qualify.mjs \
   --composer /composer.phar --grpc-extension /php_grpc.dll --archiver /tar.exe \
   --cache /verified-raw-dependencies --output /new-qualification
 ```
+
+To repeat the five actual client mutation controls, run
+`node tools/sdk-generator/backends/php/tests/check-client-mutations.mjs` with
+the same arguments and a new output directory. It qualifies the unmodified
+package first, then installs each mutation separately, requiring its intended
+diagnostic and absence of a success receipt. It retains all logs and a hashed
+`mutation-results.json` summary.
 
 The entire runtime, Composer, extension, archiver and dependency archives are
 pinned. PHP runs with `-n`; homes, temporary directories and Composer settings
