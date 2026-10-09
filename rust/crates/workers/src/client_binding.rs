@@ -455,6 +455,7 @@ mod native {
     #[napi]
     impl WorkersClient {
         /// Binding package identity for the maintained loader handshake.
+        #[napi]
         pub fn version() -> String {
             env!("CARGO_PKG_VERSION").to_owned()
         }

@@ -416,6 +416,7 @@ impl NativeActorsClient {
         .await)
     }
     /// Native bridge package version.
+    #[napi]
     pub fn version() -> String {
         PACKAGE_VERSION.to_owned()
     }
