@@ -231,7 +231,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
             yield { kind: "completed" as const, metadata: {} };
           }, async reconcile() { return undefined; } })
           .tool({ ...tools[0]!, inputSchema: { type: "string" }, outputSchema: { type: "string" },
-            parseInput: value => value, projection: jsonProjection, parseOutput: value => value }, {
+            parseInput: value => value, projection: await jsonToolProjection({ type: "string" }), parseOutput: value => value }, {
             async execute(invocation) { return { value: invocation.arguments }; }, async reconcile() { return undefined; },
           }).grant("tool:call:echo").build();
         await runtime.run(prompt);
