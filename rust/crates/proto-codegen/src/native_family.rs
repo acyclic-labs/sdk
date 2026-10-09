@@ -46,7 +46,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     if matches.len() != 1 {
         return Err("native family must have one Rust package owner".into());
     }
-    let (package, napi) = matches.pop().unwrap();
+    let (package, napi) = matches.pop().ok_or("native family owner is missing")?;
     if napi.family.is_empty()
         || !napi
             .family
