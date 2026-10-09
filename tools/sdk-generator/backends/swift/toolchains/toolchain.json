@@ -1,0 +1,42 @@
+{
+  "swift_plugin_version": "1.38.1",
+  "swift_plugin": {
+    "linux-x64": {
+      "sha256": "00916e8ebd838b77ddb3045b3b2cd99767eae2f884e66396cb406e11a1ed7e66",
+      "url": "https://github.com/apple/swift-protobuf/tree/55d7a1cc5666b85c13464aea1c4b4a90feccb4c8"
+    }
+  },
+  "grpc_plugin_version": "2.4.1",
+  "grpc_plugin": {
+    "linux-x64": {
+      "sha256": "e2799ff899b56407ffafc84683056a286df831522d91c9ba646131381b2422a9",
+      "url": "https://github.com/grpc/grpc-swift-protobuf/tree/176c5a434fd76f6f479848d1a8f7d44967534168"
+    }
+  },
+  "swift_runtime": {
+    "linux-x64": {
+      "version": "Swift version 6.4 (swift-6.4-RELEASE)\nTarget: x86_64-unknown-linux-gnu",
+      "archive_sha256": "bce85ea80f1471b85f39993f9285dbc798ec8e1eac5f677e24b2ac693856f9f8",
+      "url": "https://download.swift.org/swift-6.4.0-release/ubuntu2204/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-ubuntu22.04.tar.gz",
+      "files": {
+        "usr/bin/swift": "874ab2c8b207488445640d20bb09ca00a912853617dddd571660020c90c38dd0",
+        "usr/bin/swift-frontend": "c647c9cbda2746d5d25cd1eaadd95c56874ab725ec943f2fbe4b256f6a04ef3a",
+        "usr/lib/swift/linux/libBlocksRuntime.so": "b10109872f9ca1cfa7cda975a3ee6af78b7d41cfd415d7a951f99c6d7f95c52b",
+        "usr/lib/swift/linux/libFoundation.so": "28db6fd6739b4368764cf355f503e8a61c714b6fd85875d9a92e65822796a5f4",
+        "usr/lib/swift/linux/libFoundationEssentials.so": "899c045febfe40cfacef16d6ca1131107ae770542ec7c117810800e6f88ba223",
+        "usr/lib/swift/linux/libFoundationInternationalization.so": "02dd230435eed963be6ec1fda894128cf190c426eb6a27bd3f21c0f4e340dc2a",
+        "usr/lib/swift/linux/lib_FoundationICU.so": "c82f0744ca21fa2812acc1e85c72d8e118efec28618a802bc2d6b032e0348734",
+        "usr/lib/swift/linux/libdispatch.so": "2b5077a1e2d85ab284d1f345f9f606e7e529dc175d83dd7aefb5ffef479c4aee",
+        "usr/lib/swift/linux/libswiftCore.so": "be484af1b4c2d3d3cb4c1bdb5256a1ef5a4df079e78695ecab8cbe9e9114b05e",
+        "usr/lib/swift/linux/libswiftDispatch.so": "548cccc5cb96da76e2b5bb85a9058554b4bdb2a8860ba4acfda33b50b166c5e3",
+        "usr/lib/swift/linux/libswiftGlibc.so": "89b355e83ed4364cab0d1dfd5093234c33318c456568921f548485fe69069301",
+        "usr/lib/swift/linux/libswiftObservation.so": "c743a834126b754a0fd05188988bf2fc79d949a0547cb0af8be261b6dbab8599",
+        "usr/lib/swift/linux/libswiftSynchronization.so": "2ac9112dd3c89440174de50a731df6d4e480ed9bee093b78a3e5e2ca8ad21215",
+        "usr/lib/swift/linux/libswift_Builtin_float.so": "9dee715c754378bbadaade495f6c6140d503c8f4c55f4ae08343d272ee19bfe5",
+        "usr/lib/swift/linux/libswift_Concurrency.so": "276ae593ef45dc9afec9362137cc6f2e5cd71b4fd83a75661d3b1c3dc198d299",
+        "usr/lib/swift/linux/libswift_RegexParser.so": "da144047de562f7fdef4b6b4e27d5c198c2530f3de6897d0def7f4d1be5dc9a8",
+        "usr/lib/swift/linux/libswift_StringProcessing.so": "d84391b6c94039af6915bec4b87f5c8efdc5e6861f68b5f53c79672410b4b4aa"
+      }
+    }
+  }
+}

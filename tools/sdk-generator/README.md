@@ -15,6 +15,7 @@ tools/sdk-generator/
     dart/               Dart producer, pinned package and installed controls
     php/                PHP producer, offline Composer install and client controls
     cpp/                C++ producer and native message controls; installation pending
+    swift/              Swift producer and source consumer; installation pending
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -22,7 +23,7 @@ Add a backend directory when it contains executable tooling; keep generated SDK
 source and package artifacts in their language package or requested output path.
 Do not check tool downloads, caches or generation output into this directory.
 
-Java, .NET, Ruby, Dart, PHP and C++ use the same layout within each backend:
+Java, .NET, Ruby, Dart, PHP, C++ and Swift use the same layout within each backend:
 
 ```text
 <backend>/

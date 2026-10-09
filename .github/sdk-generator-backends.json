@@ -5,5 +5,6 @@
   { "name": "ruby", "shared": ["authority"] },
   { "name": "dart", "shared": ["authority", "archive"] },
   { "name": "php", "shared": ["authority", "archive"] },
-  { "name": "cpp", "shared": ["authority"] }
+  { "name": "cpp", "shared": ["authority"] },
+  { "name": "swift", "shared": ["authority"] }
 ]
