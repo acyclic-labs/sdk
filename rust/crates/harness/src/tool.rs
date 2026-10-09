@@ -71,8 +71,10 @@ impl ToolDefinition {
 /// The value schema is a child schema; local references resolve from the complete envelope.
 #[must_use]
 pub fn json_projection_schema(value_schema: Value) -> Value {
-    serde_json::json!({"type":"object","properties":{"kind":{"const":"json"},"value":value_schema},
-        "required":["kind","value"],"additionalProperties":false})
+    let mut schema = serde_json::json!({"type":"object","properties":{"kind":{"const":"json"}},
+        "required":["kind","value"],"additionalProperties":false});
+    schema["properties"]["value"] = value_schema;
+    schema
 }
 
 /// One admitted invocation.
@@ -209,7 +211,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
 
 /// Replaceable mapping from tool results into model-visible context.
 pub trait ToolProjection: acyclic_stream::ProviderPlatform {
-    /// Produces the complete serialized ToolResultContent envelope without effects.
+    /// Produces the complete serialized `ToolResultContent` envelope without effects.
     /// The independently pinned projection schema validates this full envelope.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 }

@@ -2234,7 +2234,7 @@ async fn stock_restart_with_publication_fault(
             max_steps: 1,
         };
         assert!(matches!(execution.execute(TurnInput {
-            input: ModelContent::Part(ModelContentPart::File { file: input_file, policy: FileProjectionPolicy::Native(acyclic_harness::model::NativeMediaPolicy { intent: acyclic_harness::model::NativeMediaIntent::Image { detail: acyclic_harness::model::ImageDetail::Auto }, maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES, maximum_work: 4096, configuration: None }) }),
+            input: ModelContent::Part(ModelContentPart::File { file: input_file, policy: FileProjectionPolicy::Native(Box::new(acyclic_harness::model::NativeMediaPolicy { intent: acyclic_harness::model::NativeMediaIntent::Image { detail: acyclic_harness::model::ImageDetail::Auto }, maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES, maximum_work: 4096, configuration: None })) }),
             ..turn.clone()
         }).await, Err(Error::Unauthorized(message)) if message == "attenuated task cannot read model content"));
         assert!(

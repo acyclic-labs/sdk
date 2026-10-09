@@ -57,6 +57,18 @@ export interface PiProjectedRequest {
 
 /** Safe default projection; custom Pi bridges can still supply their own. */
 export async function projectPiRequest(request: ModelRequest, options: FileProjectionOptions = {}): Promise<PiProjectedRequest> {
+  for (const message of request.messages) {
+    const parts = Array.isArray(message.content) ? message.content : [message.content];
+    for (const part of parts) {
+      if (typeof part !== "object" || part === null) continue;
+      const data = part.kind === "tool_result" && part.content?.kind === "parts" ? part.content.parts : [part];
+      for (const item of data) {
+        if (item.kind === "file" && item.policy !== "reference" && item.policy !== "bounded_full") {
+          throw new TypeError("unsupported native media policy for Pi adapter");
+        }
+      }
+    }
+  }
   const messages: PiProjectedMessage[] = [];
   for (const message of request.messages) {
     const parts = typeof message.content === "string" ? [{ kind: "text", text: message.content }]
@@ -73,9 +85,7 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
           break;
         case "file": {
           const projected = await projectModelFile(part as Extract<ModelContentPart, { kind: "file" }>, options);
-          content.push(projected.kind === "image"
-            ? { type: "image", mediaType: projected.mediaType, bytes: projected.bytes }
-            : { type: "text", text: projected.text });
+          content.push({ type: "text", text: projected.text });
           break;
         }
         case "tool_call":
@@ -86,7 +96,19 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
         case "tool_result":
           if (message.role !== "tool" || typeof part.callId !== "string" || !part.callId
             || typeof part.name !== "string" || !part.name) throw new TypeError("invalid Pi tool result");
-          content.push({ type: "tool_result", callId: part.callId, name: part.name, value: part.value });
+          if (part.content?.kind === "json") {
+            content.push({ type: "tool_result", callId: part.callId, name: part.name, value: part.content.value });
+          } else if (part.content?.kind === "parts") {
+            const data: PiTextOrImage[] = [];
+            for (const item of part.content.parts) {
+              if (item.kind === "text") data.push({ type: "text", text: item.text });
+              else if (item.kind === "file") {
+                const projected = await projectModelFile(item, options);
+                data.push({ type: "text", text: projected.text });
+              } else throw new TypeError("unsupported Pi tool result data");
+            }
+            content.push({ type: "tool_result", callId: part.callId, name: part.name, value: data });
+          } else throw new TypeError("invalid Pi tool result projection");
           break;
         default: throw new TypeError("unsupported Pi content part");
       }
@@ -118,7 +140,7 @@ function projectedMessage(role: ModelRequest["messages"][number]["role"], conten
 
 export type PiDefaultBridge<Metadata = unknown> = Omit<PiBridge<PiProjectedRequest, PiEvent<Metadata>, Metadata>, "project"> & FileProjectionOptions;
 
-/** Pi adapter with the shared bounded text/image/reference defaults. */
+/** Pi adapter with the shared bounded text/reference defaults. */
 export function piDefaultProvider<Metadata = unknown>(bridge: PiDefaultBridge<Metadata>): ModelProvider {
   return piProvider({
     project: request => projectPiRequest(request, bridge),

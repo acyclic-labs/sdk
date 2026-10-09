@@ -326,7 +326,7 @@ pub enum FileProjectionPolicy {
     /// Verified, bounded text bytes.
     BoundedFull,
     /// Explicit bounded provider-native intent, verified at the adapter boundary.
-    Native(NativeMediaPolicy),
+    Native(Box<NativeMediaPolicy>),
 }
 /// Data in a tool result cannot contain another call or result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -545,10 +545,10 @@ impl FileProjectionPolicy {
 
     fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
         files.push(file);
-        if let Self::Native(policy) = self {
-            if let Some(binding) = &policy.configuration {
-                files.push(&binding.configuration.content);
-            }
+        if let Self::Native(policy) = self
+            && let Some(binding) = &policy.configuration
+        {
+            files.push(&binding.configuration.content);
         }
     }
 }
@@ -576,10 +576,7 @@ impl ToolResultContent {
                         })?;
                         if matches!(
                             policy,
-                            FileProjectionPolicy::Native(NativeMediaPolicy {
-                                configuration: Some(_),
-                                ..
-                            })
+                            FileProjectionPolicy::Native(policy) if policy.configuration.is_some()
                         ) {
                             references = references.checked_add(1).ok_or_else(|| {
                                 Error::Invalid("tool result reference count overflow".into())
@@ -1121,7 +1118,7 @@ mod tests {
         };
         let file = ModelContentPart::File {
             file: media.clone(),
-            policy: FileProjectionPolicy::Native(policy.clone()),
+            policy: FileProjectionPolicy::Native(Box::new(policy.clone())),
         };
         let result = ModelContentPart::ToolResult {
             call_id: "native-call".into(),
@@ -1133,7 +1130,7 @@ mod tests {
                     },
                     ModelDataPart::File {
                         file: media.clone(),
-                        policy: FileProjectionPolicy::Native(policy.clone()),
+                        policy: FileProjectionPolicy::Native(Box::new(policy)),
                     },
                     ModelDataPart::Text {
                         text: "after".into(),
@@ -1262,14 +1259,14 @@ mod tests {
         let mut original = request()?;
         original.messages[0].content = ModelContent::Part(ModelContentPart::File {
             file: media,
-            policy: FileProjectionPolicy::Native(NativeMediaPolicy {
+            policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
                 intent: NativeMediaIntent::Image {
                     detail: ImageDetail::Low,
                 },
                 maximum_bytes: 64,
                 maximum_work: 64,
                 configuration: None,
-            }),
+            })),
         });
         let prepared = PreparedModelRequest::prepare(original.clone(), Limits::default())?;
         if let ModelContent::Part(ModelContentPart::File {

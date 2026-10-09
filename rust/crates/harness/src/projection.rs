@@ -337,14 +337,14 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
         // This projection explicitly selects native image intent without conversion.
         // The selected adapter must enforce its finite work budget.
         let native_image = || {
-            FileProjectionPolicy::Native(crate::model::NativeMediaPolicy {
+            FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
                 intent: crate::model::NativeMediaIntent::Image {
                     detail: crate::model::ImageDetail::Auto,
                 },
                 maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
                 maximum_work: maximum_render_bytes,
                 configuration: None,
-            })
+            }))
         };
         let primary_policy = match message.content.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image(),
