@@ -3815,6 +3815,12 @@ pub struct TaskContext {
     model_steps: Arc<AtomicUsize>,
 }
 
+enum ContentPublication<'a> {
+    PathBound,
+    OperationBound,
+    Replacement(&'a FileRef),
+}
+
 impl TaskContext {
     #[cfg(feature = "filesystem")]
     pub(crate) fn with_owned_interactions(
@@ -4280,7 +4286,29 @@ impl TaskContext {
             bytes,
             media_type,
             display_name,
-            None,
+            ContentPublication::PathBound,
+        )
+        .await
+    }
+
+    /// Publishes one exact file contract per operation through its original writer.
+    /// A changed path, body or metadata cannot reuse an existing operation receipt.
+    pub async fn stage_file_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+    ) -> Result<FileRef> {
+        self.stage_bound_file(
+            self.harness.content.as_ref(),
+            operation_id,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            ContentPublication::OperationBound,
         )
         .await
     }
@@ -4302,7 +4330,7 @@ impl TaskContext {
             bytes,
             media_type,
             display_name,
-            None,
+            ContentPublication::PathBound,
         )
         .await
     }
@@ -4328,13 +4356,13 @@ impl TaskContext {
             bytes,
             source.descriptor().media_type(),
             source.display_name(),
-            Some(source),
+            ContentPublication::Replacement(source),
         )
         .await
     }
     #[allow(
         clippy::too_many_arguments,
-        reason = "one owner-bound publication path retains its binding, identity, bytes, metadata and optional source precondition"
+        reason = "one owner-bound publication path retains its binding, identity, bytes, metadata and receipt mode"
     )]
     async fn stage_bound_file(
         &self,
@@ -4344,7 +4372,7 @@ impl TaskContext {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        source: Option<&FileRef>,
+        publication: ContentPublication<'_>,
     ) -> Result<FileRef> {
         if bytes.len() as u64 > self.scope.limits.file_bytes
             || path.len() > self.scope.limits.path_bytes
@@ -4366,18 +4394,26 @@ impl TaskContext {
                 "task scope cannot write this volume".into(),
             ));
         }
-        let file = if let Some(source) = source {
-            if source.volume() != writer.volume() || source.path() != path {
-                return Err(Error::Unauthorized(
-                    "source differs from the owner-bound destination".into(),
-                ));
+        let file = match publication {
+            ContentPublication::Replacement(source) => {
+                if source.volume() != writer.volume() || source.path() != path {
+                    return Err(Error::Unauthorized(
+                        "source differs from the owner-bound destination".into(),
+                    ));
+                }
+                content.reader.verify(source).await?;
+                writer.stage_at(operation_id, source, bytes).await?
             }
-            content.reader.verify(source).await?;
-            writer.stage_at(operation_id, source, bytes).await?
-        } else {
-            writer
-                .stage(operation_id, path, bytes, media_type, display_name)
-                .await?
+            ContentPublication::OperationBound => {
+                writer
+                    .stage_once(operation_id, path, bytes, media_type, display_name)
+                    .await?
+            }
+            ContentPublication::PathBound => {
+                writer
+                    .stage(operation_id, path, bytes, media_type, display_name)
+                    .await?
+            }
         };
         self.scope.limits.validate_file(&file)?;
         if file.volume() != writer.volume()

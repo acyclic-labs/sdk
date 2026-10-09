@@ -49,6 +49,21 @@ where
         &self.volume
     }
 
+    fn stage_once<'a>(
+        &'a self,
+        operation_id: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            let retry = IdempotencyKey::new(format!("filesystem-single-file:{operation_id}"))?;
+            self.stage_with_retry(path, bytes, media_type, display_name, &retry)
+                .await
+        })
+    }
+
     fn stage_at<'a>(
         &'a self,
         operation_id: OperationId,

@@ -983,6 +983,23 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         media_type: &'a str,
         display_name: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>>;
+    /// Publishes one complete file contract per operation, including its path.
+    /// Unsupported publishers reject without invoking ordinary staging.
+    fn stage_once<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _bytes: &'a [u8],
+        _media_type: &'a str,
+        _display_name: &'a str,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "operation-bound file publication is unavailable".into(),
+            ))
+        })
+    }
+
     /// Publishes replacement bytes only at the immutable source generation.
     /// Unsupported publishers must reject rather than fall back to `stage`.
     fn stage_at<'a>(

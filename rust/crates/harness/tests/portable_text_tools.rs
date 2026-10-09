@@ -379,6 +379,33 @@ struct OrdinaryPublisher {
     calls: AtomicUsize,
 }
 
+#[tokio::test]
+async fn single_file_publication_never_falls_back_to_ordinary_staging() -> Result<()> {
+    let ordinary = OrdinaryPublisher {
+        volume: VolumeRef::new(
+            ProviderRef::new("once", "filesystem", "2")?,
+            "workspace",
+            VolumeClass::Project,
+            VolumeOwner::Agent(AgentId::new()),
+        )?,
+        calls: AtomicUsize::new(0),
+    };
+    assert!(matches!(
+        ordinary
+            .stage_once(
+                OperationId::new(),
+                "one.txt",
+                b"one",
+                "text/plain",
+                "one.txt"
+            )
+            .await,
+        Err(Error::Unsupported(_))
+    ));
+    assert_eq!(ordinary.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 impl ContentPublisher for OrdinaryPublisher {
     fn volume(&self) -> &VolumeRef {
         &self.volume

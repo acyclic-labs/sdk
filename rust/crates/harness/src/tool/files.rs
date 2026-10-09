@@ -130,6 +130,15 @@ impl FileTool {
             Self::Read => {
                 let input: ReadInput = decode(invocation.arguments)?;
                 public_path(input.file.path())?;
+                let maximum = task
+                    .scope()
+                    .limits()
+                    .render_bytes
+                    .min(task.scope().limits().file_bytes);
+                super::edit::validate_edit_bound(maximum)?;
+                if input.file.descriptor().byte_length() > maximum {
+                    return Err(Error::Invalid("file exceeds text rendering bound".into()));
+                }
                 let bytes = task.read_file(&input.file).await?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?;
@@ -139,7 +148,7 @@ impl FileTool {
                 let input: WriteInput = decode(invocation.arguments)?;
                 public_path(&input.path)?;
                 let file = task
-                    .stage_file(
+                    .stage_file_once(
                         invocation.operation_id,
                         &input.path,
                         input.text.as_bytes(),
