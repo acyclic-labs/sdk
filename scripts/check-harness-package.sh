@@ -129,6 +129,10 @@ for name in "${dependency_names[@]}"; do
   tar -xf "$package_target/package/$name-$harness_version.crate" -C "$work/crates"
 done
 tar -xf "$harness_crate" -C "$work/crates"
+# Cargo archives normalize source timestamps. The stable extraction directory
+# can otherwise make changed source older than a previous compiled test and
+# reuse that binary. Refresh extracted inputs before Cargo checks freshness.
+find "$work/crates" -type f -exec touch -- {} +
 mkdir -p "$work/crates/.cargo"
 install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
 printf '[patch.crates-io]\n' >"$work/crates/.cargo/config.toml"
