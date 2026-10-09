@@ -2,9 +2,16 @@
   "name": "acyclic-agent-host-qualification",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Exact external host inputs for Acyclic qualification",
+  "scripts": {
+    "test:pi-context": "node --experimental-strip-types --test pi-context.test.ts",
+    "test:pi-bootstrap": "node --experimental-strip-types --test pi-bootstrap.test.ts",
+    "test:pi-installation": "node --experimental-strip-types --test pi-installation.test.ts"
+  },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.278",
+    "@earendil-works/pi-coding-agent": "1.1.0",
     "@openai/codex": "0.155.1"
   }
 }

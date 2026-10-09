@@ -12,8 +12,11 @@ pub(crate) fn install_command(arguments: &[String]) -> Result<(), String> {
             ("cursor", "cursor"),
             ("copilot", "copilot"),
             ("opencode", "opencode"),
+            ("pi", "pi"),
         ] {
-            if executable_on_path(binary) {
+            if executable_on_path(binary)
+                || cfg!(windows) && binary == "pi" && executable_on_path("pi.cmd")
+            {
                 install_host(target, false)?;
                 installed += 1;
             }
@@ -192,7 +195,7 @@ pub(crate) fn install_host(host: &str, project: bool) -> Result<(), String> {
     if project
         && !matches!(
             host,
-            "codex" | "claude-code" | "cursor" | "opencode" | "vscode"
+            "codex" | "claude-code" | "cursor" | "opencode" | "vscode" | "pi"
         )
     {
         return Err(format!("'{host}' has no project-scoped adapter"));
@@ -201,6 +204,19 @@ pub(crate) fn install_host(host: &str, project: bool) -> Result<(), String> {
         return install_codex_plugin();
     }
     let executable = current_executable()?;
+    if host == "pi" {
+        let settings = pi_settings_path(project)?;
+        install_pi_at(
+            &settings,
+            &default_data_directory().join("pi-extension"),
+            &executable,
+        )?;
+        println!("installed Pi extension at {}", settings.display());
+        println!(
+            "capability: diagnostics only; recursive workspace execution is not yet qualified"
+        );
+        return Ok(());
+    }
     if host == "claude-code" {
         let path = install_claude_hooks(&executable, project)?;
         println!(
@@ -249,6 +265,16 @@ pub(crate) fn install_host(host: &str, project: bool) -> Result<(), String> {
 }
 
 pub(crate) fn uninstall_host(host: &str) -> Result<(), String> {
+    if host == "pi" {
+        for project in [false, true] {
+            let settings = pi_settings_path(project)?;
+            if read_mcp_ownership(&mcp_ownership_path(&settings, "pi-extension"))?.is_some() {
+                remove_owned_json(&settings, "pi-extension", "Pi settings")?;
+            }
+        }
+        println!("removed Acyclic-owned Pi configuration; retained pinned extension assets");
+        return Ok(());
+    }
     if host == "codex" {
         let manifest_root = plugin_root()?;
         let ownership_path = codex_ownership_path();

@@ -48,7 +48,11 @@ impl Executor for CustomExecutor {
 
 struct MockModel;
 impl ModelProvider for MockModel {
-    fn generate<'a>(&'a self, _: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        _: PreparedModelRequest,
+        _dispatch: acyclic_harness::model::ModelDispatch,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         Box::pin(stream::iter([Ok(ModelEvent::Completed {
             metadata: Value::Null,
         })]))

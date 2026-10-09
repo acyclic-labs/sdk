@@ -25,6 +25,11 @@ const qualificationDefinition = path =>
   path.startsWith(".github/actions/");
 const unrelatedGithub = path => path.startsWith(".github/") && !qualificationDefinition(path);
 const standaloneProjects = path => path.startsWith("arena/") || path.startsWith("examples/");
+// This stdlib-only Go module has its own focused CI and is not read by Cargo,
+// TypeScript generation or native/WASM builds.
+const languageGenerator = path =>
+  path.startsWith("tools/sdk-generator/backends/go/") ||
+  path === "tools/sdk-generator/README.md";
 
 export const qualificationEventKinds = Object.freeze({
   pullRequest: "pull_request",
@@ -66,6 +71,7 @@ export const ignored = {
     documentation(path) ||
     unrelatedGithub(path) ||
     standaloneProjects(path) ||
+    languageGenerator(path) ||
     (path.startsWith("typescript/") && path !== "typescript/packages/filesystem/package.json") ||
     path.startsWith("languages/") ||
     path.startsWith("ffi/") ||
@@ -79,7 +85,7 @@ export const ignored = {
     /^rust\/crates\/[^/]+\/(tests|benches)\//.test(path) ||
     ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix)),
   // Rust plus the TypeScript workspace.
-  product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path),
+  product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path) || languageGenerator(path),
   // Repository-wide metadata, boundary, and license checks.
   repository: path => documentation(path),
   policy: path => documentation(path),

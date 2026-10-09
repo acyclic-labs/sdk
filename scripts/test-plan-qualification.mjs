@@ -31,6 +31,7 @@ const tree = [
   blob("README.md"),
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
+  blob("tools/sdk-generator/backends/go/generate.go"),
 ];
 const changed = (path, object = "b".repeat(40)) =>
   tree.map(entry => (entry.endsWith(`\t${path}`) ? blob(path, object) : entry));
@@ -87,6 +88,12 @@ test("the filesystem package manifest reaches native binding lanes", () => {
 test("unrelated workflows reach only policy and repository lanes", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed(".github/workflows/publish-npm.yml"));
+  assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
+});
+
+test("isolated language generator changes reuse Rust and TypeScript builds", () => {
+  const before = laneKeys(lanes, tree);
+  const after = laneKeys(lanes, changed("tools/sdk-generator/backends/go/generate.go"));
   assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
 });
 

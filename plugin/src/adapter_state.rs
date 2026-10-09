@@ -5,7 +5,7 @@ use super::*;
 /// Bounds a watcher fence; a late notification forces a sound rescan.
 pub(crate) const WATCH_FENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) const MAXIMUM_ADAPTER_STATE_BYTES: u64 = 4 * 1024 * 1024;
-pub(crate) const ADAPTER_STATE_VERSION: u32 = 4;
+pub(crate) const ADAPTER_STATE_VERSION: u32 = 1;
 pub(crate) const MAXIMUM_ADAPTER_ROOTS: usize = 256;
 pub(crate) const MAXIMUM_ADAPTER_ROUTES: usize = 4_096;
 pub(crate) const MAXIMUM_ADAPTER_TURNS: usize = 16_384;
@@ -409,7 +409,7 @@ pub(crate) fn validate_state_bounds(state: &AdapterState) -> Result<(), String> 
     }) {
         return Err("adapter discard queue exceeds its structural bound".to_owned());
     }
-    Ok(())
+    validate_pi_bindings(state)
 }
 
 pub(crate) fn remove_tree_checked(root: &Path, target: &Path) -> Result<(), String> {

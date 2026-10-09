@@ -75,6 +75,11 @@ jobs:
             throw 'Client-ProjFS could not be enabled without a reboot'
           }
 
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+
       - name: Install locked host binaries
         shell: bash
         env:
@@ -99,7 +104,18 @@ jobs:
 
       - name: Build host scenario
         shell: bash
-        run: cargo test -p acyclic-plugin --test e2e --no-run
+        run: cargo test -p acyclic-plugin --test e2e --no-run --locked
+
+      - name: Run Pi installed diagnostics and native context qualification
+        shell: bash
+        run: |
+          suffix=""
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
+          ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" \
+            node --experimental-strip-types --test \
+              plugin/tests/hosts/pi-context.test.ts \
+              plugin/tests/hosts/pi-bootstrap.test.ts \
+              plugin/tests/hosts/pi-installation.test.ts
 
       - name: Run codex scenario
         shell: bash
@@ -157,7 +173,7 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
-      - name: Require both hosts on all three platforms
+      - name: Require host qualification on all three platforms
         env:
           RESULT: ${{ needs.qualify.result }}
         run: test "$RESULT" = success
