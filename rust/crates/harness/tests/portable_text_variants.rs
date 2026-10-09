@@ -43,10 +43,10 @@ impl ContentResidencyVerifier for ReaderSpy {
         Box::pin(async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
             let mut bytes = self.inner.read(file).await?;
-            if self.corrupt.load(Ordering::SeqCst) {
-                if let Some(first) = bytes.first_mut() {
-                    *first ^= 1;
-                }
+            if self.corrupt.load(Ordering::SeqCst)
+                && let Some(first) = bytes.first_mut()
+            {
+                *first ^= 1;
             }
             Ok(bytes)
         })
