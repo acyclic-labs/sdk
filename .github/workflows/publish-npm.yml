@@ -72,6 +72,8 @@ jobs:
 
       - name: Install exact Rust toolchain
         uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Install maintained NAPI assembly dependencies
         env:
@@ -81,6 +83,8 @@ jobs:
           set -euo pipefail
           source scripts/ensure-bun.sh
           bun install --frozen-lockfile
+          # Inventory generation uses the maintained Rust generator offline.
+          cargo fetch --locked
 
       - name: Download exact successful qualification artifact
         env:
