@@ -13,6 +13,11 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packagedSourceCopies } from "./generated-bindings.mjs";
+
+// check-generated reads both sides of every packaged copy, including crates
+// whose executable sources the TypeScript lane otherwise never compiles.
+const generatedSourceInputs = new Set(packagedSourceCopies.flat());
 
 // Bump to invalidate every recorded marker at once.
 const SCHEMA = "sdk-qualification-v2";
@@ -105,10 +110,10 @@ export const ignored = {
   // contracts and conformance servers compile: every Rust crate except those
   // no package reads, and no Rust integration tests.
   typescript: path =>
-    ignored.product(path) ||
+    !generatedSourceInputs.has(path) && (ignored.product(path) ||
     /^rust\/crates\/(conformance|harness-codex|machines-daytona|sdk-docs)\//.test(path) ||
     /^rust\/crates\/[^/]+\/(tests|benches)\//.test(path) ||
-    ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix)),
+    ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix))),
   // Rust plus the TypeScript workspace.
   product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path) || languageGenerator(path),
   // Repository-wide metadata, boundary, and license checks.
