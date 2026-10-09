@@ -81,6 +81,11 @@ actor = Acyclic::Actors::V1::CreateActorRequest.new(code_sha256: bytes, home_reg
 worker = Acyclic::Workers::V1::PublishVersionRequest.new(javascript_module: bytes, expected_sha256: bytes, idempotency_key: 'test')
 append = Acyclic::Stream::V2::AppendRequest.new(path: 'test/path', records: [bytes, ''.b], if_tail: 2**64 - 1, idempotency_key: bytes)
 read = Acyclic::Stream::V2::ReadRequest.new(path: 'test/path', from: 2**64 - 1, limit: 2**32 - 1)
+check(actor.code_sha256 == bytes, 'actor bytes changed during construction')
+check(worker.javascript_module == bytes && worker.expected_sha256 == bytes, 'worker bytes changed during construction')
+check(append.records.to_a == [bytes, ''.b] && append.idempotency_key == bytes, 'stream bytes changed during construction')
+check(append.if_tail == 2**64 - 1 && read.from == 2**64 - 1, 'uint64 maximum changed during construction')
+check(read.limit == 2**32 - 1, 'uint32 maximum changed during construction')
 [actor, worker, append, read].each { |message| check(message.class.decode(message.class.encode(message)) == message, 'wire round trip changed') }
 absent = Acyclic::Stream::V2::AppendRequest.new
 explicit = Acyclic::Stream::V2::AppendRequest.new(if_tail: 0)
