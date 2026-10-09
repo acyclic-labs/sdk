@@ -61,8 +61,8 @@ admit a new session but cannot resubmit the old uncertain call.
 G owns credential/OAuth flows, resources, prompts, sampling, elicitation and
 server request routing. This client advertises no callback capabilities and
 rejects server requests requiring such a router. Ordinary notifications do not
-cause an implicit reload. A typed callback seam and retained notification policy
-still need coordination with G before F qualification.
+cause an implicit reload. G's future routing uses its own ordinary model and
+interaction admission; F's client does not advertise those capabilities.
 
 PR5's landed native request uses null stdin and bounded one-shot output capture.
 An approved MCP stdio exchange needs a small extension of that existing admitted
@@ -92,8 +92,9 @@ private stdout. The codec decodes raw JSON; Harness then hydrates it using its
 existing unbounded-depth JSON contract. A retained scan offset visits incomplete
 prefix bytes once. Development controls exercise 192-level JSON, split BOM/CRLF,
 and malformed private input, with an unguarded library log as a negative control.
-End-to-end model-tool/native binding, native MCP fault/restart controls and
-final-source qualification remain open.
+Native MCP tool-journal binding, receipt fault/restart and actual host-death
+development controls are implemented. The stock model-loop join and final-source
+qualification remain open.
 
 ## Simplification audit
 
@@ -102,6 +103,7 @@ final-source qualification remain open.
 | Registry selected value is `Option<revision>` | Distinguishes ambiguous replacement from explicit withdrawal while retaining admitted versions |
 | Catalog clone before publication | A failed batch cannot partially alter the next model-visible catalog |
 | Catalog digest in the existing registry | Empty/hidden visibility must still reject stale complete-catalog and policy replacement |
+| Scoped complete-catalog approval digest | Agent-selected registration must pin the exact catalog, policies, predecessor and allowances through the existing approval journal |
 | Separate remote schema and canonical result envelope | MCP structured output differs from ordered multimodal content |
 | Library SSE parser with pre-parser byte bound | Established framing implementation handles split UTF-8/CRLF; no unbounded hydration before admission bounds |
 | Shared `rmcp` JSON-RPC boundary | HTTP and stdio enforce the same response identity and notification contracts |
@@ -124,14 +126,14 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 
 | Invariant | Production path | Assumptions | Required evidence | Status |
 | --- | --- | --- | --- | --- |
-| Atomic reload and retained revision | `McpCatalog::install`, `ToolRegistry` | Host retains installed catalog/configuration identity | Exhaustive replacement subsets; stale/malformed/duplicate controls; actual in-flight call | Pending |
-| No authority by discovery | Catalog search, executor authorization | Ordinary runtime owns signed scope/task admission | Missing/wrong grant; admitted executor integration | Pending |
-| Scoped transport context | Existing `ToolExecutor` context methods forward to `McpToolTransport` | Context-aware provider validates its execution authority | Live task identity/grant controls and durable HTTP disk-reopen matrix | Development controls pass; native model-tool binding and final qualification open |
-| Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
-| No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
-| Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
+| Atomic reload and retained revision | `McpCatalog::install`, `ToolRegistry` | Host retains installed catalog/configuration identity | Exhaustive replacement subsets; stale/malformed/duplicate controls; actual in-flight call | 64 membership and 64 visibility transitions plus in-flight development controls pass; final qualification open |
+| No authority by discovery | Catalog search, executor authorization | Ordinary runtime owns signed scope/task admission | Missing/wrong grant; admitted executor integration | Development controls pass, including separate install/call grants; final qualification open |
+| Scoped transport context | Existing `ToolExecutor` context methods forward to `McpToolTransport` | Context-aware provider validates its execution authority | Live task identity/grant controls and durable HTTP disk-reopen matrix | HTTP and native tool-journal development controls pass; stock model-loop join and final qualification open |
+| Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Native/WASM development controls pass; final qualification open |
+| No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Seven disk-reopen fault cases pass; final platform qualification open |
+| Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Native and portable real HTTP development controls pass; Chromium and final qualification open |
 | Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults, six disk-reopen cases, actual host-death and native tool-journal controls pass; stock model-loop join and final platform gates open |
-| Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Pending |
+| Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Fresh WASM and ten Node controls pass; Chromium page authored, unrun; pinned package and installed artifacts open |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
 These are engineering acceptance gates, not an unrestricted proof. Bounded
@@ -571,3 +573,41 @@ pass without new suppressions. Formatting and whitespace checks pass. Cargo
 checks ran sequentially with one job; the WASM check followed fresh headroom of
 27% CPU and 31,906 MiB free memory. These results do not qualify final platform,
 browser or installed package behavior.
+
+### Chromium MCP fixture preparation
+
+`test/browser-mcp.html` runs the same public portable HTTP consumer concurrently
+in the page, a separate tab and a module worker, with distinct peer sessions.
+The local peer supplies JSON and SSE initialization, explicit readiness, two
+discovery pages and a full-width integer result. The consumer validates the
+complete catalog through Rust, exposes one selected schema and discovers the
+hidden schema without changing exposure. Each peer then applies a request whose
+observation is incomplete; reconciliation returns no receipt and makes no POST.
+
+The page retains only test host binding observations across a real reload,
+reconstructs the transports and independently checks the peer's request/apply
+counters. The expected total is 18 POSTs and six applies across three clients,
+with no reconciliation POST. This is transport/session reload coverage, not a
+durable task-journal claim. The B/I-owned task runtime remains the integration
+owner for that separate gate. The peer is bounded to 16 clients and rejects
+ambient cookies/authorization, foreign sessions, protocol versions and repeated
+IDs before another apply. These are test-peer guards, not server idempotency
+guarantees provided by MCP.
+
+After the pinned workspace installation/package build and a shared-host grant,
+run `node typescript/packages/harness/test/mcp-http-fixture.mjs`. The wrapper
+starts only its loopback peer and invokes the existing Filesystem Chromium
+driver for this page; it adds no browser driver or process supervisor. The
+driver's ordinary deadline, diagnostics and cleanup remain in force. `CHROME`
+may select the approved browser executable. Browser execution is **unrun** at
+this checkpoint, and neither a syntactically valid page nor its Node consumer
+completes that gate.
+
+Development verification rebuilt the established WASM release artifact with one
+Cargo job after 8% CPU/40,651 MiB free-memory headroom. All ten MCP Node/WASM
+controls pass. The new real-HTTP consumer exercises concurrent isolated JSON/SSE
+sessions and reconstruction with no reconciliation POST. Independent negative
+controls verify the peer's session/protocol/credential/identity guards preserve
+the apply counters. This Node receipt qualifies the shared consumer and peer;
+Chromium tab/worker/reload execution, pinned package/installed artifacts and
+final-source platform/full-CI qualification remain open.
