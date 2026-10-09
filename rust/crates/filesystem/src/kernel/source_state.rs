@@ -8,7 +8,7 @@ use thiserror::Error;
 
 const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
 const ID_DOMAIN: &[u8] = b"acyclic-fs-source-authority-v1\0";
-const VERSION: u16 = 2;
+const VERSION: u16 = 1;
 
 /// Durable source advancement policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,19 +104,7 @@ pub(crate) fn decode_source_fact(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<SourceFact, SourceFactError> {
-    let version_offset = DOMAIN.len();
-    let version_bytes = bytes
-        .get(version_offset..version_offset.saturating_add(2))
-        .ok_or_else(|| invariant("source fact has no schema version"))?;
-    let version = u16::from_le_bytes(
-        version_bytes
-            .try_into()
-            .map_err(|_| invariant("source fact schema version is malformed"))?,
-    );
-    if version != VERSION {
-        return Err(invariant("unsupported source fact schema version").into());
-    }
-    let mut decoder = Decoder::new(bytes, DOMAIN, version, maximum_payload_bytes)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes)?;
     let value = SourceFact {
         volume_id: VolumeId::from_bytes(decoder.fixed()?),
         root_identity: decoder.fixed()?,
@@ -213,6 +201,15 @@ mod tests {
         };
         let encoded = encode_source_fact(value)?;
         assert_eq!(decode_source_fact(&encoded, 4096)?, value);
+        for version in [0_u16, 2, u16::MAX] {
+            let mut obsolete = encoded.clone();
+            obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                decode_source_fact(&obsolete, 4096),
+                Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion(actual)))
+                    if actual == version
+            ));
+        }
         assert_ne!(
             source_authority_id(volume_id).into_bytes(),
             volume_id.into_bytes()

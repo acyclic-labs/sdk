@@ -475,6 +475,18 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
         payload: FilePayload::InlineRegular(InlineFileData::new(b"x")?),
     }]);
     let encoded = encode_file_table_page(&page, 1)?;
+    for version in [0_u16, 2, u16::MAX] {
+        let mut obsolete = encoded.clone();
+        obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
+        for result in [
+            file_table_page_decode_shape(&obsolete, DecodeLimits::default()).map(|_| ()),
+            decode_file_table_page(&obsolete, DecodeLimits::default()).map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion(actual)) if actual == version)
+            );
+        }
+    }
     let tight = DecodeLimits {
         maximum_page_items: 0,
         ..DecodeLimits::default()

@@ -14,7 +14,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-const JOURNAL_VERSION: u32 = 2;
+const JOURNAL_VERSION: u32 = 1;
 
 /// One declarative pathwise checkout edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2214,6 +2214,50 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn obsolete_journal_versions_reject_recovery_without_effects() {
+        for version in [0, 2, u32::MAX] {
+            let operation_id = OperationId::new();
+            let journal = MaterializationJournal {
+                version,
+                revision: 1,
+                plan: MaterializationPlan {
+                    operation_id,
+                    from: GenerationId::new(Digest::from_bytes([1; 32])),
+                    to: GenerationId::new(Digest::from_bytes([2; 32])),
+                    edits: vec![MaterializationEdit::Install {
+                        path: "file".into(),
+                        image: vec![9],
+                    }],
+                },
+                preimages: vec![MaterializationPreimage { image: vec![0] }],
+                phase: MaterializationPhase::Prepared,
+                applied: 0,
+                restored: 0,
+            };
+            let store = MemoryMaterializationJournalStore::default();
+            store
+                .compare_and_swap(operation_id, 0, journal.clone())
+                .await
+                .expect("seed obsolete journal");
+            let materializer = JournaledMaterializer::new(store, Backend::default());
+            assert!(matches!(
+                materializer
+                    .recover(operation_id, MaterializationRecovery::Complete)
+                    .await,
+                Err(MaterializationError::IncompatibleJournal)
+            ));
+            assert!(materializer.backend.0.lock().expect("backend").is_empty());
+            assert_eq!(
+                materializer
+                    .store
+                    .load(operation_id)
+                    .await
+                    .expect("retained journal"),
+                Some(journal)
+            );
+        }
+    }
     #[tokio::test]
     async fn apply_and_rollback_are_journaled_and_idempotent() {
         let operation_id = OperationId::new();

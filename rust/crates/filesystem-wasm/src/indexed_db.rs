@@ -35,7 +35,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
-const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 1;
 const OBJECTS: &str = "objects";
 const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
@@ -105,11 +105,11 @@ pub struct IndexedDbObjectStore {
 }
 
 impl IndexedDbObjectStore {
-    /// Opens or upgrades one browser-local filesystem database.
+    /// Opens the sole v1 browser-local filesystem database.
     ///
     /// # Errors
     ///
-    /// Rejects empty options and any blocked or failed `IndexedDB` upgrade.
+    /// Rejects empty options, obsolete databases and any blocked or failed open.
     pub async fn open(
         database_name: &str,
         maximum_object_bytes: u64,
@@ -2623,8 +2623,39 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
+    async fn obsolete_database_version_is_rejected_without_deletion() -> Result<(), JsValue> {
+        const NAME: &str = "acyclic-fs-obsolete-schema-rejection";
+        Database::delete_by_name(NAME)
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        let old = Database::open(NAME)
+            .with_version(4)
+            .await
+            .map_err(js_error)?;
+        old.close();
+        assert!(IndexedDbObjectStore::open(NAME, 1_024).await.is_err());
+        // Opening the exact prior version still succeeds: v1 admission did not
+        // delete or replace the rejected database.
+        let retained = Database::open(NAME)
+            .with_version(4)
+            .with_on_upgrade_needed(|_, _| {
+                Err(indexed_db_futures::error::Error::from(js_sys::Error::new(
+                    "rejected database must not be recreated",
+                )))
+            })
+            .await
+            .map_err(js_error)?;
+        retained.close();
+        Database::delete_by_name(NAME)
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        Ok(())
+    }
+    #[wasm_bindgen_test]
     async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result<(), JsValue> {
-        const DATABASE_NAME: &str = "acyclic-fs-object-conformance-v2";
+        const DATABASE_NAME: &str = "acyclic-fs-object-conformance-v1";
         Database::delete_by_name(DATABASE_NAME)
             .map_err(js_error)?
             .await
@@ -2812,7 +2843,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Result<(), JsValue>
     {
-        const DATABASE_NAME: &str = "acyclic-fs-authority-conformance-v2";
+        const DATABASE_NAME: &str = "acyclic-fs-authority-conformance-v1";
         let store = open_clean_authority(DATABASE_NAME).await?;
         let authority_id = AuthorityId::from_bytes([7; 16]);
         let cancellation = CancellationToken::new();
@@ -2912,7 +2943,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Result<(), JsValue>
     {
-        const DATABASE_NAME: &str = "acyclic-fs-authority-reservation-v3";
+        const DATABASE_NAME: &str = "acyclic-fs-authority-reservation-v1";
         let store = open_clean_authority(DATABASE_NAME).await?;
         let authority_id = AuthorityId::from_bytes([31; 16]);
         let cancellation = CancellationToken::new();
@@ -3018,7 +3049,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn indexed_db_authority_serializes_competing_connections() -> Result<(), JsValue> {
-        const DATABASE_NAME: &str = "acyclic-fs-authority-race-v2";
+        const DATABASE_NAME: &str = "acyclic-fs-authority-race-v1";
         let creator = open_clean_authority(DATABASE_NAME).await?;
         let authority_id = AuthorityId::from_bytes([21; 16]);
         AsyncAuthorityStore::create_authority(

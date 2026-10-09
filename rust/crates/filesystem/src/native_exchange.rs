@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use acyclic_native_runtime::durable_rename;
 
-const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 3;
+const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 1;
 
 /// Durable whole-tree exchange phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn future_journal_version_fails_closed_without_mutation() {
+    fn non_v1_journal_versions_fail_closed_without_mutation() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let live = temporary.path().join("live");
         let prepared = temporary.path().join("prepared");
@@ -1056,39 +1056,44 @@ mod tests {
         std::fs::write(live.join("old"), b"old").expect("old file");
         std::fs::write(prepared.join("new"), b"new").expect("new file");
         let journal_path = temporary.path().join("exchange.json");
-        let journal = NativeExchangeJournal {
-            version: NATIVE_EXCHANGE_JOURNAL_VERSION + 1,
-            operation: crate::IdempotencyKey::from_bytes([10; 16]),
-            recovery: Vec::new(),
-            live: live.clone(),
-            prepared: prepared.clone(),
-            carried: Vec::new(),
-            roots: [
-                root_identity(&live).expect("live identity"),
-                root_identity(&prepared).expect("prepared identity"),
-            ],
-            phase: NativeExchangePhase::Carrying,
-        };
-        std::fs::write(
-            &journal_path,
-            serde_json::to_vec(&journal).expect("encode future journal"),
-        )
-        .expect("write future journal");
-
-        assert!(matches!(
-            publish_native_exchange(
+        for obsolete_version in [0, 2, 3, u32::MAX] {
+            let journal = NativeExchangeJournal {
+                version: obsolete_version,
+                operation: crate::IdempotencyKey::from_bytes([10; 16]),
+                recovery: Vec::new(),
+                live: live.clone(),
+                prepared: prepared.clone(),
+                carried: Vec::new(),
+                roots: [
+                    root_identity(&live).expect("live identity"),
+                    root_identity(&prepared).expect("prepared identity"),
+                ],
+                phase: NativeExchangePhase::Carrying,
+            };
+            std::fs::write(
                 &journal_path,
-                &live,
-                &prepared,
-                crate::IdempotencyKey::from_bytes([11; 16]),
-                Vec::new(),
-            ),
-            Err(NativeExchangeError::UnsupportedJournalVersion(version))
-                if version == NATIVE_EXCHANGE_JOURNAL_VERSION + 1
-        ));
-        assert_eq!(std::fs::read(live.join("old")).expect("old"), b"old");
-        assert_eq!(std::fs::read(prepared.join("new")).expect("new"), b"new");
-        assert!(journal_path.exists());
+                serde_json::to_vec(&journal).expect("encode future journal"),
+            )
+            .expect("write future journal");
+
+            assert!(matches!(
+                publish_native_exchange(
+                    &journal_path,
+                    &live,
+                    &prepared,
+                    crate::IdempotencyKey::from_bytes([11; 16]),
+                    Vec::new(),
+                ),
+                Err(NativeExchangeError::UnsupportedJournalVersion(version))
+                    if version == obsolete_version
+            ));
+            assert_eq!(std::fs::read(live.join("old")).expect("old"), b"old");
+            assert_eq!(std::fs::read(prepared.join("new")).expect("new"), b"new");
+            assert_eq!(
+                std::fs::read(&journal_path).expect("unchanged journal"),
+                serde_json::to_vec(&journal).expect("original bytes")
+            );
+        }
     }
 
     #[cfg(windows)]

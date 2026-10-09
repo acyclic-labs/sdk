@@ -17,7 +17,7 @@ use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSFIL";
-const VERSION: u16 = 2;
+const VERSION: u16 = 1;
 const RECORD_DOMAIN: &[u8; 8] = b"ACYFSREC";
 const RECORD_VERSION: u16 = 1;
 
