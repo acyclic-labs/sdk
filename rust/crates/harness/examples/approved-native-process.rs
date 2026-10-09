@@ -175,7 +175,7 @@ struct Evidence<A, O> {
 
 struct Recovery<P> {
     owner: Arc<TaskJournalOwner<P>>,
-    effects: ConversationEffectHost<P>,
+    effects: Arc<ConversationEffectHost<P>>,
     content: Arc<dyn ContentResidencyVerifier>,
 }
 
@@ -257,28 +257,31 @@ where
     let command = OperationId::from_bytes([4; 16]);
     let approval = InteractionId::from_bytes([5; 16]);
     let issuer = issuer();
-    let scope = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
-            "operation:declare".into(),
-            "operation:observe".into(),
-            "operation:cancel".into(),
-            "task:spawn:example.native@1".into(),
-            source.capability(VolumeOperation::Read)?,
-            destination.capability(VolumeOperation::Read)?,
-            destination.capability(VolumeOperation::Write)?,
-            results_volume.capability(VolumeOperation::Read)?,
-            results_volume.capability(VolumeOperation::Write)?,
-            "effect:plan".into(),
-            "effect:run".into(),
-            "effect:provider:example.native".into(),
-            "interaction:open".into(),
-            "interaction:resolve".into(),
-            format!("interaction:respond:{approval}"),
-            "conversation:bind".into(),
-        ]),
-    );
+    let mut grants = vec![
+        "operation:declare".into(),
+        "operation:observe".into(),
+        "operation:cancel".into(),
+        "task:spawn:example.native@1".into(),
+        source.capability(VolumeOperation::Read)?,
+        destination.capability(VolumeOperation::Read)?,
+        destination.capability(VolumeOperation::Write)?,
+        results_volume.capability(VolumeOperation::Read)?,
+        results_volume.capability(VolumeOperation::Write)?,
+        "effect:plan".into(),
+        "effect:run".into(),
+        "effect:provider:example.native".into(),
+        "interaction:open".into(),
+        "interaction:resolve".into(),
+        format!("interaction:respond:{approval}"),
+        "conversation:bind".into(),
+    ];
+    if mcp {
+        grants.extend([
+            "mcp:call:example".into(),
+            "tool:call:mcp.example.echo".into(),
+        ]);
+    }
+    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new(grants));
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
@@ -436,14 +439,13 @@ where
         request: request_ref,
         result_schema,
     };
-    let approvals = Arc::new(FilesystemExecutionJournal::new(
+    let approvals = execution_journal(
         stream.clone(),
         files.clone(),
-        results_volume.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        1_000_000,
-    )?);
+        &results_volume,
+        &issuer,
+        &scope,
+    )?;
     approvals
         .open_interaction(
             approval,
@@ -484,7 +486,7 @@ where
     );
     let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
     registry.register(process.clone())?;
-    let effects = ConversationEffectHost::new(
+    let effects = Arc::new(ConversationEffectHost::new(
         stream.clone(),
         issuer.verifier().audience().clone(),
         issuer.clone(),
@@ -492,7 +494,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
-    )?;
+    )?);
     let mut restart = Restart {
         task: task_id,
         fence: LeaseFence::from(&lease.reservation),
@@ -511,6 +513,29 @@ where
         let mut file = std::fs::File::create(path)?;
         file.write_all(&serde_json::to_vec(&restart)?)?;
         file.sync_all()?;
+    }
+    if mcp && receipt_fault.is_none() && restart_path.is_none() {
+        model_tool::run(
+            model_tool::Approved {
+                recovery: Recovery {
+                    owner: owner.clone(),
+                    effects: effects.clone(),
+                    content: content.clone(),
+                },
+                task: task_id,
+                command,
+                plan: plan.clone(),
+                request: request.clone(),
+            },
+            runtime
+                .harness()
+                .durable_context(task_id, OperationId::from_bytes(task_id.into_bytes()))
+                .await?,
+            approvals.clone(),
+            false,
+            !lost_response,
+        )
+        .await?;
     }
     let first = effects.run_task_effect(&owner, command, plan).await;
     let status = verify_first_result(
@@ -571,6 +596,36 @@ where
         .await?;
     verify_recovered_status(&recovered_status, seed.first.as_ref(), receipt_fault)?;
     let mcp = seed.request.mcp_stdio.is_some();
+    if mcp && receipt_fault.is_none() && seed.first.is_some() {
+        let journal = execution_journal(
+            stream.clone(),
+            files.clone(),
+            &seed.results_volume,
+            &issuer,
+            &seed.scope,
+        )?;
+        model_tool::run(
+            model_tool::Approved {
+                recovery: Recovery {
+                    owner: owner.clone(),
+                    effects: effects.clone(),
+                    content: content.clone(),
+                },
+                task: seed.task,
+                command: seed.command,
+                plan: seed.plan.clone(),
+                request: seed.request.clone(),
+            },
+            runtime
+                .harness()
+                .durable_context(seed.task, OperationId::from_bytes(seed.task.into_bytes()))
+                .await?,
+            journal,
+            true,
+            !lost_response,
+        )
+        .await?;
+    }
     if matches!(recovered_status, EffectStatus::Succeeded { .. }) {
         verify_stored_result(
             content.as_ref(),
@@ -639,7 +694,7 @@ where
     );
     let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
     registry.register(recovered)?;
-    let effects = ConversationEffectHost::new(
+    let effects = Arc::new(ConversationEffectHost::new(
         stream,
         issuer.verifier().audience().clone(),
         issuer.clone(),
@@ -647,12 +702,34 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
-    )?;
+    )?);
     Ok(Recovery {
         owner,
         effects,
         content,
     })
+}
+
+fn execution_journal<P, A, O>(
+    stream: StreamClient<P>,
+    files: Arc<Files<A, O>>,
+    volume: &VolumeRef,
+    issuer: &AuthorityIssuer,
+    scope: &Scope,
+) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    Ok(Arc::new(FilesystemExecutionJournal::new(
+        stream,
+        files,
+        volume.clone(),
+        issuer.verifier(),
+        scope.clone(),
+        1_000_000,
+    )?))
 }
 
 fn recovered_authority<P, A, O>(
@@ -683,14 +760,7 @@ where
             scope,
             1_000_000,
         )?),
-        approvals: Arc::new(FilesystemExecutionJournal::new(
-            stream,
-            files,
-            volume.clone(),
-            issuer.verifier(),
-            scope.clone(),
-            1_000_000,
-        )?),
+        approvals: execution_journal(stream, files, volume, issuer, scope)?,
     })
 }
 
@@ -882,6 +952,9 @@ fn verify_mcp_result(
 #[cfg(test)]
 #[path = "approved-native-process/faults.rs"]
 mod faults;
+
+#[path = "approved-native-process/model_tool.rs"]
+mod model_tool;
 
 fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use bytes::BytesMut;

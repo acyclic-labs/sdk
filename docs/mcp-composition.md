@@ -122,7 +122,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Implementation and tests added; qualification pending |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Pending |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Pending |
-| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults, six disk-reopen cases and actual host-death control pass; model-tool binding and final platform gates open |
+| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults, six disk-reopen cases, actual host-death and native tool-journal controls pass; stock model-loop join and final platform gates open |
 | Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Pending |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
@@ -426,3 +426,55 @@ This closes the context-loss seam through the existing registry and tool journal
 The approved native transport still needs a model-tool consumer using the owning
 task/effect path. Final platform, formal, Chromium, installed-artifact and full-CI
 gates, owner review and actual-main landing remain open.
+
+### Approved native MCP tool-journal development checkpoint
+
+The standalone public consumer now installs its exactly approved MCP invocation
+through `McpCatalog` into the ordinary `ToolRegistry`, then calls
+`DurableToolRunner::run_with_context`. Its context comes from the actual admitted
+`FilesystemTaskRuntime` task. Only the MCP fixture receives the server and tool
+call grants. The host transport requires that task, protocol operation and call
+identity and the exact approved tool name/arguments. A changed-argument control
+must return `Unauthorized` before dispatch.
+
+The transport delegates dispatch and reconciliation to the existing
+`ConversationEffectHost` and retained `TaskJournalOwner`. The already assembled
+`NativeProcessProvider` validates the original lease, native request and exact
+approval. The transport decodes the stored native receipt through
+`NativeProcessRequest::mcp_response`, preserving Unicode and the full-width
+integer through the tool journal and its identity projection. Its operation-only
+entry points reject missing task context. The shared execution-journal factory
+serves both native approval and tool records; no second registry, journal state
+machine, process launcher or retry engine was added.
+
+For successful calls, two invocations of the durable runner cause one transport
+dispatch and no reconciliation. After old task/effect/transport/journal owners
+drop and the physical output is removed, reconstructed native provider, catalog,
+transport and tool-journal owners replay the same result with zero transport
+calls. Memory-backed reassembly retains its backing stores. The local-disk cases
+additionally reopen the filesystem and stream providers.
+
+For an applied call whose peer withholds its response, the bounded native capture
+stores its timeout/cleanup receipt but the MCP tool outcome remains indeterminate.
+Two initial runner calls require one dispatch and one reconciliation. Two calls
+after memory or complete disk reopen require zero dispatches and two
+reconciliations. A physical peer log independently remains exactly one call and
+the removed output never reappears. The reopened SDK destination remains
+unpublished. The original four receipt cuts and actual host-death controller
+continue to exercise the native effect boundary directly.
+
+The final example source passes both positive consumers, five memory fault
+controls, six disk cases and actual host death on Windows. Strict
+library/test/example Clippy passes without a new suppression. The public
+consumer also compiles with only `native-execution`, with no native HTTP or local
+filesystem feature required. Jobs ran sequentially with one Cargo job after
+fresh adequate headroom; terminal results and absence of owned compiler and
+host/peer processes were verified. These are development controls, not shared
+platform or performance qualification.
+
+This host sample binds one preapproved invocation; it does not supply a general
+per-server native admission policy. The stock model-loop context binding is owned
+by B/I and its joined qualification remains pending. Model-request integration,
+fault cuts spanning both tool and native journals, full final-source platform,
+formal, Chromium, installed-artifact and full-CI gates, owner review and actual
+main landing remain open.
