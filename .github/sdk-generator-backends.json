@@ -7,5 +7,5 @@
   { "name": "php", "shared": ["authority", "archive"] },
   { "name": "cpp", "shared": ["authority"] },
   { "name": "swift", "shared": ["authority", "archive"] },
-  { "name": "elixir", "shared": ["authority"] }
+  { "name": "elixir", "shared": ["authority", "archive"] }
 ]

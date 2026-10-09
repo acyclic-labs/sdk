@@ -46,8 +46,8 @@ README for installed qualification commands.
 
 `.github/sdk-generator-backends.json` registers executable backends for focused
 CI and qualification input scoping. Routine CI runs only affected offline checks;
-shared-reader changes check its consumers, and archive-reader changes check Go,
-Dart, PHP and Swift. Backend README-only changes need no focused test run, while package
+shared-reader and archive-reader changes check their registered consumers.
+Backend README-only changes need no focused test run, while package
 templates remain checked. Unknown backend directories retain full qualification
 inputs until explicitly registered.
 

@@ -42,6 +42,18 @@ the actually executed control source.
 
 These are installed message and transport-metadata controls. They do not execute
 native RPC calls or qualify network transport, Rust-backed RPC, remaining
-families/platforms or the embedded runtime. The maintained producer's real CLI
-invocation passes and emits the same 14 payload files as the archive-installed
-native prototype. The reusable installed qualifier remains to be qualified.
+families/platforms or the embedded runtime. Two independent maintained CLI
+invocations emit identical receipts and the same 14 payload files as the archive-installed native prototype.
+
+`src/package.mjs` admits a gzip/tar package using its external SHA256, generation
+receipt and accepted authority. It verifies the complete payload inventory,
+producer/tool/runtime pins, maintained templates and packaged Rust inputs before
+returning bytes. It rejects links, traversal, duplicate/unlisted entries and
+changed payloads. Admission passes against the actual native prototype archive.
+The reusable installed qualifier remains to be qualified.
+
+```sh
+node tools/sdk-generator/backends/elixir/src/package.mjs \
+  --package /package.tar.gz --sha256 <external-sha256> \
+  --receipt /generation-receipt.json --authority /accepted-export
+```
