@@ -17,6 +17,7 @@ provider reconciliation own admission and effects.
 | A selected context has explicit bounds. | Selection, rendering, whole-tool-batch checks and each stage validate the admitted limits. Sources and stage inputs use separate allowances. | Oversized mandatory content fails explicitly. Selection must not retain a tool result without its call or split a completed tool batch. |
 | Immutable context imports preserve metadata and authority. | `PinnedContextStage::capture` validates the exact canonical context file, its descriptor, bounds and all referenced content through the supplied reader. Its contract binds the file reference. New admissions verify access again. | The reader must already carry the receiving authority. Construction grants no access and performs no model operation. |
 | An admitted summary remains tied to its source. | Summary and response purposes share the existing execution journal while retaining distinct attempt identities. Summary source and prepared request are pinned before dispatch; retry reconciles the original attempt. | The model provider owns reconciliation and immutable staging. An uncertain attempt is not regenerated as a fresh request. |
+| Mandatory native data retains its complete exchange. | Compaction uses the shared typed `ModelContent::contains_native_media` traversal, including native data inside tool results, then closes the ordered call/result graph. | Explicit native byte/work/intent limits remain separate from token accounting. A consumer may explicitly replace the retention policy. |
 | Default compaction uses actual model accounting. | `ThresholdCompaction` defaults to a 16,384-token response reserve and 20,000 recent tokens. The selected provider supplies capacity and request-bound additive token upper bounds. Consumers may replace the policy or disable it. | There is no model-name capacity catalog or SDK tokenizer. Missing accounting, impossible capacities and mandatory-budget overflow fail explicitly. |
 | Compaction cannot substitute a retained projection. | The canonical checkpoint envelope binds original source, retained context, compaction proof, operation and covered logical history. Publication verifies the admitted settled summary before exposing the checkpoint. | Full canonical history is retained. Checkpoint imports verify original-owner publication, scope grants, event cut and bounded tail before model admission. |
 | Checkpoint continuation does not rerun settled work. | Native canonical conversation execution reuses the committed retained projection and admitted response artifacts. Subsequent stages receive a fresh delta; a covered historical current-input marker is cleared. | The continuation must bind the exact original operation and checkpoint. Reconciliation and lost-ack recovery remain in existing owner journals. |
@@ -73,7 +74,13 @@ a fresh reader succeeding after that failure. This bounds index proof reads,
 not whole reducer residency or full-prefix fork capture. Automatic receiving-task
 setup and restart/browser evidence remain separate work. `PreparedSummaryFork` authorizes no workspace allocation, model
 dispatch or child activation. Native typed tool-result and file-policy contracts
-must be supplied by their owning producer before their consumers can qualify.
+reuse the released model/tool producer. Summary, checkpoint and response reads
+share its effective-scope and original-option validation before body IO; the
+replaced partial validators are removed. Retained tool projections return the
+already validated typed envelope rather than decoding it a second time. The
+native retention fixture covers both call-message and tool-result media across
+one to three calls, validates the actual prepared request before and after
+compaction, and rejects a budget that would split the exchange.
 
 The full composition goal remains open until all required owned work is qualified
 and merged into `main`; a first focused landing is not full goal completion.

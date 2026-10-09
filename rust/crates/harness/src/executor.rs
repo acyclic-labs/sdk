@@ -793,22 +793,6 @@ impl StockExecutor {
         executor
     }
 
-    async fn verify_model_request_content(
-        &self,
-        journal: &dyn ExecutionJournal,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<()> {
-        for message in &request.request().messages {
-            message.content.validate_limits(self.limits)?;
-        }
-        for message in &request.request().messages {
-            for reference in message.content.file_refs() {
-                journal.verify_input_file(reference).await?;
-            }
-        }
-        Ok(())
-    }
-
     async fn validate_summary_capacity(
         &self,
         executor: &Self,
@@ -998,8 +982,7 @@ impl StockExecutor {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: invocation.call_id.clone(),
                         name: invocation.name,
-                        content: serde_json::from_value(projection)
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        content: projection,
                     }),
                 },
             ]);
@@ -2704,7 +2687,7 @@ pub(crate) async fn completed_tool_projection(
     step: u32,
     expected: &ToolInvocation,
     tools: &[crate::tool::ToolDefinition],
-) -> Result<Value> {
+) -> Result<crate::model::ToolResultContent> {
     let invocation = records
         .iter()
         .find_map(|record| match &record.event {
@@ -2740,8 +2723,7 @@ pub(crate) async fn completed_tool_projection(
     let result = load_json::<ToolResult>(journal, result).await?;
     let projection = load_json::<Value>(journal, projection).await?;
     validate_value(&definition.output_schema, &result.value, "tool output")?;
-    definition.validate_projection(&projection)?;
-    Ok(projection)
+    definition.validate_projection(&projection)
 }
 
 pub(crate) async fn stage_json<T: Serialize>(
@@ -3200,9 +3182,13 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         limits.attachments,
     )
     .await?;
-    for message in &selected.messages {
-        verify_model_content_scoped(journal, &message.content, limits, Some(scope)).await?;
-    }
+    verify_model_contents_scoped(
+        journal,
+        selected.messages.iter().map(|message| &message.content),
+        limits,
+        Some(scope),
+    )
+    .await?;
     let retained = crate::context::place_messages(
         retained,
         selected.messages,
@@ -3302,9 +3288,6 @@ async fn load_canonical_checkpoint_scoped(
     envelope.validate_projection(&source, &retained, &proof, limits)?;
     // Publication authenticates the checkpoint; a new admission must still
     // hold current owner-mediated read grants for every retained payload.
-    for message in &retained.messages {
-        validate_model_content_scope(&message.content, limits, scope)?;
-    }
     for file in retained.metadata.values() {
         limits.validate_file(file)?;
         if let Some(scope) = scope
@@ -3315,9 +3298,13 @@ async fn load_canonical_checkpoint_scoped(
             ));
         }
     }
-    for message in &retained.messages {
-        verify_model_content_scoped(journal, &message.content, limits, scope).await?;
-    }
+    verify_model_contents_scoped(
+        journal,
+        retained.messages.iter().map(|message| &message.content),
+        limits,
+        scope,
+    )
+    .await?;
     for file in retained.metadata.values() {
         journal.verify_input_file(file).await?;
     }
@@ -3339,37 +3326,6 @@ fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits) -> Re
         return Err(Error::Invalid(
             "checkpoint JSON exceeds effective render limit".into(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_model_content_scope(
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    content.validate_limits(limits)?;
-    if let Some(scope) = scope {
-        for file in content.file_refs() {
-            if !crate::runtime::read_granted(scope.grants(), file)? {
-                return Err(Error::Unauthorized(
-                    "attenuated task cannot read model content".into(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn verify_model_content_scoped(
-    journal: &dyn ExecutionJournal,
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    validate_model_content_scope(content, limits, scope)?;
-    for file in content.file_refs() {
-        journal.verify_input_file(file).await?;
     }
     Ok(())
 }
@@ -6362,7 +6318,11 @@ mod tests {
             )
             .await;
             if accepted {
-                assert_eq!(retained?, projected);
+                assert_eq!(
+                    serde_json::to_value(retained?)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    projected
+                );
             } else {
                 assert!(retained.is_err());
             }
