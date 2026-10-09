@@ -6,14 +6,14 @@
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:d568a12b4d07dcafef8502caf61bcfa3e2bc514357d45a5291b4542e0d6b59de",
-      "descriptorDigest": "sha256:5101d71f7e3c2b818c017c74f435288c1a31f8cf077b821d2bc904f803912084"
+      "schemaDigest": "sha256:f99c6f229f83e63a65652333c494be23fcd8a04947e9a47994273f6688b1726a",
+      "descriptorDigest": "sha256:7b6b7baa55620f2ae246bac634d8151680d3c5109539f351ea8e86d9ab5d188e"
     },
     "workers": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:052964b593d1f624e8e71d9eed789044f52ba73f204487f15b82369a07576646",
-      "descriptorDigest": "sha256:87331c4392ff746ece715c25ff99bf0a2c84e6b213f33ae557de9f6cc511e317"
+      "schemaDigest": "sha256:9ab74cc1f0dff8a2bbc15b4487f943512877308ed16c2ab0be7d355b6a0c9f5a",
+      "descriptorDigest": "sha256:5f66b4d6943de85d417e1550fb476d2b3d59c898159d54ad551346b97be9f845"
     },
     "harness": {
       "version": "0.2.0",
