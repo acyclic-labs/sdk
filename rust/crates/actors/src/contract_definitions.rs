@@ -25,7 +25,7 @@
         ServiceErrorProto), enums(SubscriptionState, ActorState, ErrorCode), services(ActorsService))]
 pub struct ActorsFile;
 
-#[acyclic_contract_derive::service]
+#[acyclic_contract_derive::service(file = ActorsFile)]
 pub enum ActorsService {
     CreateActor { request: CreateActorRequestProto, response: CreateActorResponseProto },
     UpdateActor { request: UpdateActorRequestProto, response: UpdateActorResponseProto },

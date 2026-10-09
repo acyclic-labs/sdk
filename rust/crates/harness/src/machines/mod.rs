@@ -473,6 +473,7 @@ mod tests {
         };
         let process = ResourceRevision::Process(checkpoint);
         let seed = ForkSeed {
+            summary: None,
             operation_id: OperationId::from_bytes([3; 16]),
             parent,
             parent_revision: 0,
@@ -546,6 +547,7 @@ mod tests {
             child_agent: seed.child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: seed.child_private_volume.clone(),
                 inherited_through_sequence: 0,

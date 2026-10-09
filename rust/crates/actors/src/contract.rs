@@ -157,20 +157,20 @@ mod fallible_producer_tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[acyclic_contract_derive::message(error = IngressError, package = FallibleFile::PACKAGE)]
+    #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
     pub struct Ingress {
         #[wire(string, tag = 1, from = parse_actor_id)]
         actor_id: String,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[acyclic_contract_derive::message(error = IngressError, package = FallibleFile::PACKAGE)]
+    #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
     pub struct Child {
         #[wire(string, tag = 1)]
         value: String,
     }
 
-    #[acyclic_contract_derive::oneof(error = IngressError)]
+    #[acyclic_contract_derive::oneof(error = IngressError, file = FallibleFile)]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Selector {
         #[wire(tag = 1)]
@@ -180,7 +180,7 @@ mod fallible_producer_tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    #[acyclic_contract_derive::message(error = IngressError, package = FallibleFile::PACKAGE)]
+    #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
     pub struct Envelope {
         #[wire(message, tag = 3)]
         child: Option<Child>,

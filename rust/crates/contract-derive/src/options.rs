@@ -1,10 +1,10 @@
-use syn::{Expr, LitInt, LitStr, Path, Type, meta::ParseNestedMeta};
+use syn::{LitInt, LitStr, Path, Type, meta::ParseNestedMeta};
 
 #[derive(Default)]
 pub struct Options {
     seen: std::collections::BTreeSet<String>,
     pub error: Option<Path>,
-    pub package: Option<Expr>,
+    pub file: Option<Path>,
     pub post: Option<Path>,
     pub name: Option<LitStr>,
     pub unknown: Option<Path>,
@@ -33,8 +33,8 @@ impl Options {
         self.claim(meta)?;
         if meta.path.is_ident("error") {
             self.error = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("package") {
-            self.package = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("file") {
+            self.file = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("post") {
             self.post = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("name") {
@@ -164,29 +164,15 @@ pub fn tag(
     Ok(())
 }
 
-/// Emit the shared compile-time family invariant without runtime validation.
-pub fn package_check(
-    expected: &proc_macro2::TokenStream,
-    actual: proc_macro2::TokenStream,
-    optional: bool,
+/// Require exact file ownership and sealed inventory membership at compile time.
+pub fn owner_check(
+    file: &Path,
+    ty: &proc_macro2::TokenStream,
+    member: bool,
 ) -> proc_macro2::TokenStream {
-    let actual = if optional {
-        quote::quote!(match #actual { Some(package) => package, None => #expected })
-    } else {
-        actual
-    };
+    let membership = member.then(|| quote::quote!(const _: () = #file::require_member::<#ty>();));
     quote::quote! {
-        #[allow(clippy::panic, clippy::indexing_slicing, reason = "This const rejects foreign packages; equal lengths and the loop bound guard both byte indices.")]
-        const _: () = {
-            let expected = (#expected).as_bytes();
-            let actual = (#actual).as_bytes();
-            let mut same = expected.len() == actual.len();
-            let mut index = 0;
-            while same && index < expected.len() {
-                same = expected[index] == actual[index];
-                index += 1;
-            }
-            assert!(same, "wire package disagrees with first-party family");
-        };
+        const _: #file = <#ty>::FILE;
+        #membership
     }
 }

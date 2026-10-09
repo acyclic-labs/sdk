@@ -2477,6 +2477,84 @@ export declare type ForkSelection = Message<"acyclic.harness.v2.ForkSelection"> 
 export declare const ForkSelectionSchema: GenMessage<ForkSelection>;
 
 /**
+ * @generated from message acyclic.harness.v2.HistoryReadLimits
+ */
+export declare type HistoryReadLimits = Message<"acyclic.harness.v2.HistoryReadLimits"> & {
+  /**
+   * @generated from field: uint32 maximum_events = 1;
+   */
+  maximumEvents: number;
+
+  /**
+   * @generated from field: uint64 maximum_bytes = 2;
+   */
+  maximumBytes: bigint;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.HistoryReadLimits.
+ * Use `create(HistoryReadLimitsSchema)` to create a new message.
+ */
+export declare const HistoryReadLimitsSchema: GenMessage<HistoryReadLimits>;
+
+/**
+ * @generated from message acyclic.harness.v2.SummaryForkSelection
+ */
+export declare type SummaryForkSelection = Message<"acyclic.harness.v2.SummaryForkSelection"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.FileRef checkpoint = 1;
+   */
+  checkpoint?: FileRef | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.RuntimeLimits limits = 2;
+   */
+  limits?: RuntimeLimits | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.HistoryReadLimits history_limits = 3;
+   */
+  historyLimits?: HistoryReadLimits | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.SummaryForkSelection.
+ * Use `create(SummaryForkSelectionSchema)` to create a new message.
+ */
+export declare const SummaryForkSelectionSchema: GenMessage<SummaryForkSelection>;
+
+/**
+ * @generated from message acyclic.harness.v2.SummaryForkCapture
+ */
+export declare type SummaryForkCapture = Message<"acyclic.harness.v2.SummaryForkCapture"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.SummaryForkSelection selection = 1;
+   */
+  selection?: SummaryForkSelection | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.FileRef context = 2;
+   */
+  context?: FileRef | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.FileRef payloads = 3;
+   */
+  payloads: FileRef[];
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.FileRef references = 4;
+   */
+  references: FileRef[];
+};
+
+/**
+ * Describes the message acyclic.harness.v2.SummaryForkCapture.
+ * Use `create(SummaryForkCaptureSchema)` to create a new message.
+ */
+export declare const SummaryForkCaptureSchema: GenMessage<SummaryForkCapture>;
+
+/**
  * @generated from message acyclic.harness.v2.ForkPreparation
  */
 export declare type ForkPreparation = Message<"acyclic.harness.v2.ForkPreparation"> & {
@@ -2509,6 +2587,11 @@ export declare type ForkPreparation = Message<"acyclic.harness.v2.ForkPreparatio
    * @generated from field: uint32 maximum_inherited_references = 6;
    */
   maximumInheritedReferences: number;
+
+  /**
+   * @generated from field: acyclic.harness.v2.SummaryForkSelection summary = 7;
+   */
+  summary?: SummaryForkSelection | undefined;
 };
 
 /**
@@ -2661,6 +2744,11 @@ export declare type ForkReport = Message<"acyclic.harness.v2.ForkReport"> & {
    * @generated from field: acyclic.harness.v2.GenerationRef child_private_generation = 9;
    */
   childPrivateGeneration?: GenerationRef | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.SummaryForkCapture summary = 10;
+   */
+  summary?: SummaryForkCapture | undefined;
 };
 
 /**
@@ -2752,6 +2840,11 @@ export declare type ForkSeed = Message<"acyclic.harness.v2.ForkSeed"> & {
    * @generated from field: acyclic.harness.v2.GenerationRef child_private_generation = 16;
    */
   childPrivateGeneration?: GenerationRef | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.SummaryForkCapture summary = 17;
+   */
+  summary?: SummaryForkCapture | undefined;
 };
 
 /**

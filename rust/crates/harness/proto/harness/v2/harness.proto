@@ -676,6 +676,24 @@ message ForkSelection {
   ResourceRevision revision = 2;
 }
 
+message HistoryReadLimits {
+  uint32 maximum_events = 1;
+  uint64 maximum_bytes = 2;
+}
+
+message SummaryForkSelection {
+  FileRef checkpoint = 1;
+  RuntimeLimits limits = 2;
+  HistoryReadLimits history_limits = 3;
+}
+
+message SummaryForkCapture {
+  SummaryForkSelection selection = 1;
+  FileRef context = 2;
+  repeated FileRef payloads = 3;
+  repeated FileRef references = 4;
+}
+
 message ForkPreparation {
   VolumeRef child_project_volume = 1;
   VolumeRef child_private_volume = 2;
@@ -683,6 +701,7 @@ message ForkPreparation {
   uint64 maximum_inherited_messages = 4;
   uint64 maximum_inherited_bytes = 5;
   uint32 maximum_inherited_references = 6;
+  SummaryForkSelection summary = 7;
 }
 
 message ForkRequest {
@@ -716,6 +735,7 @@ message ForkReport {
   repeated FileRef attachment_manifests = 7;
   uint64 inherited_through_sequence = 8;
   GenerationRef child_private_generation = 9;
+  SummaryForkCapture summary = 10;
 }
 
 message ForkSeed {
@@ -735,6 +755,7 @@ message ForkSeed {
   repeated FileRef attachment_manifests = 14;
   uint64 inherited_through_sequence = 15;
   GenerationRef child_private_generation = 16;
+  SummaryForkCapture summary = 17;
 }
 
 // One parent-authorized Filesystem join. The notice is admitted atomically

@@ -17,7 +17,7 @@ import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.j
 import type { Attachment, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, ReferencedAttachments, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
-import type { ResourceRef } from "./fork.js";
+import type { ForkHistoryPolicy, ForkRequest, ResourceRef } from "./fork.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
 import { NativeContracts } from "./native-contracts.js";
 import { aggregateKindToWire, decodeAggregateKind } from "./enums.js";
@@ -43,6 +43,7 @@ export * from "./runtime.js";
 export * from "./openai.js";
 export * from "./projection.js";
 export * from "./memory-conversation.js";
+export * from "./browser-history.js";
 
 declare const brand: unique symbol;
 type Id<Name extends string> = string & { readonly [brand]: Name };
@@ -135,7 +136,10 @@ export interface Snapshot {
   readonly authority: Authority;
   readonly revision: bigint;
   readonly events: readonly unknown[];
+  /** Opaque Rust projection; authenticated together with the event cache. */
+  readonly projection: unknown;
   readonly state_digest: readonly number[];
+  readonly attestation: readonly number[];
 }
 
 export type ApplyResult<Event = unknown> =
@@ -309,6 +313,13 @@ export class Harness {
     volume: VolumeRef<Class, Family>,
   ): VolumeRef<Class, Family> {
     return this.#contracts.validate("volume_ref", volume);
+  }
+
+  /** Selects the exact logical parent boundary before any fork preparation.
+   * The default inherits logical history; fresh history is explicitly selected.
+   * Providers, child volumes, grants and finite bounds remain caller supplied. */
+  prepareForkRequest(request: ForkRequest, policy: ForkHistoryPolicy | null = null): ForkRequest {
+    return this.#core.prepareForkRequest(request, policy) as ForkRequest;
   }
 
   /** Returns a detached provider-owned resource address admitted by Rust. */
@@ -509,6 +520,20 @@ export class Harness {
   }
 
   /** Returns a versioned integrity-checked snapshot. */
+  /** Read the authoritative command position without serializing history. */
+  head(): readonly [authority: Authority, revision: bigint] {
+    return this.#core.head() as readonly [Authority, bigint];
+  }
+
+  /** Reads one admitted selection without serializing the retained event history. */
+  contextSelectionForOperation(operationId: OperationId): Readonly<{
+    conversation_revision: bigint;
+    message_ids: readonly ConversationMessageId[];
+    checkpoint?: FileRef;
+  }> | null {
+    return this.#core.contextSelectionForOperation(operationId);
+  }
+
   snapshot(): Snapshot {
     return this.#core.snapshot() as Snapshot;
   }

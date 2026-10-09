@@ -6,6 +6,7 @@ use acyclic_harness::{
         ConversationMessage, ConversationState, FileDescriptor, FileRef, Limits, MessageKind,
         ReferencedAttachments, VolumeClass, VolumeOwner, VolumeRef,
     },
+    projection::bounded_model_context_selection,
     resources::ProviderRef,
     turn::prepare_turn,
 };
@@ -55,7 +56,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         context_messages: 2,
         ..Limits::default()
     };
-    let Err(error) = prepare_turn(
+    let error = prepare_turn(
         &reopened,
         operation,
         content.clone(),
@@ -64,12 +65,13 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         None,
         false,
         true,
-    ) else {
-        return Err(acyclic_harness::Error::Invalid(
-            "orphan result was admitted".into(),
-        ));
-    };
-    assert!(error.to_string().contains("splits a tool exchange"));
+    )
+    .expect_err("default turn admitted history beyond its explicit bound");
+    assert!(
+        error
+            .to_string()
+            .contains("canonical history delta exceeds context limit")
+    );
     assert_eq!(
         serde_json::to_vec(&reopened)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
@@ -93,6 +95,19 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         vec![call, result, selected.user_id]
     );
     assert!(selected.append_user);
+    // Explicit suffix selection still rejects an orphan result independently
+    // of the default planner's earlier whole-history overflow rejection.
+    let mut candidate = reopened.clone();
+    candidate.append(selected.user_message.clone().ok_or_else(|| {
+        acyclic_harness::Error::Invalid("new turn omitted its user message".into())
+    })?)?;
+    let orphan = bounded_model_context_selection(&candidate, selected.user_id, 2)
+        .expect_err("explicit suffix admitted an orphan tool result");
+    assert!(orphan.to_string().contains("splits a tool exchange"));
+    assert_eq!(
+        bounded_model_context_selection(&candidate, selected.user_id, 3)?.message_ids,
+        selected.selection.message_ids
+    );
     assert_eq!(
         serde_json::to_vec(&reopened)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,

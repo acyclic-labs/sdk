@@ -4,48 +4,79 @@ use syn::parse_macro_input;
 mod enumeration;
 mod message;
 mod options;
+mod registration;
 
-/// Derive a prost shadow and fallible semantic ingress.
+/// Derive a registered prost shadow and fallible semantic ingress.
 ///
 /// Oneof tags have one authority: its cases.
 /// ```compile_fail
-/// use acyclic_contract_derive::{message, oneof};
-/// #[oneof(error = core::convert::Infallible)]
+/// use acyclic_contract_derive::{file, message, oneof};
+/// use core::convert::Infallible;
+/// #[oneof(error = Infallible, file = File)]
 /// enum Case { #[wire(tag = 1)] Flag(bool) }
-/// #[message(error = core::convert::Infallible, package = "acyclic.test.v1")]
+/// #[message(error = Infallible, file = File)]
 /// struct Invalid { #[wire(oneof = "1", tag = 27)] choice: Option<Case> }
+/// #[file(family = "test", messages(InvalidProto))]
+/// struct File;
 /// ```
-/// Nested references must belong to the enclosing first-party package.
+///
+/// Nested references must belong to the exact enclosing file.
 /// ```compile_fail
-/// use acyclic_contract_derive::message;
+/// use acyclic_contract_derive::{file, message};
 /// use core::convert::Infallible;
-/// #[message(error = Infallible, package = "acyclic.foreign.v1")]
+/// #[message(error = Infallible, file = ForeignFile)]
 /// struct Foreign { #[wire(tag = 1)] number: u64 }
-/// #[message(error = Infallible, package = "acyclic.local.v1")]
+/// #[message(error = Infallible, file = LocalFile)]
 /// struct Local { #[wire(message, tag = 1)] child: Option<Foreign> }
+/// #[file(family = "foreign", messages(ForeignProto))] struct ForeignFile;
+/// #[file(family = "local", messages(LocalProto))] struct LocalFile;
 /// ```
-/// Oneof nesting carries the same package requirement.
+///
+/// Inline oneofs carry the same exact owner requirement.
 /// ```compile_fail
-/// use acyclic_contract_derive::{message, oneof};
+/// use acyclic_contract_derive::{file, message, oneof};
 /// use core::convert::Infallible;
-/// #[message(error = Infallible, package = "acyclic.foreign.v1")]
-/// struct Foreign { #[wire(tag = 1)] number: u64 }
-/// #[oneof(error = Infallible)]
-/// enum Choice { #[wire(message, tag = 1)] Child(Foreign) }
-/// #[message(error = Infallible, package = "acyclic.local.v1")]
+/// #[message(error = Infallible, file = File)]
 /// struct Local { #[wire(oneof = "1")] child: Option<Choice> }
+/// #[oneof(error = Infallible, file = OtherFile)]
+/// enum Choice { #[wire(tag = 1)] Flag(bool) }
+/// #[message(error = Infallible, file = OtherFile)] struct Other {}
+/// #[file(family = "test", messages(LocalProto))] struct File;
+/// #[file(family = "test", messages(OtherProto))] struct OtherFile;
 /// ```
-/// A nominal enum reference must use its unique file owner's package.
+///
+/// A nominal enum must use its unique file owner.
 /// ```compile_fail
 /// use acyclic_contract_derive::{enumeration, file, message};
-/// #[derive(Default)]
-/// enum Error { #[default] Missing, Unknown(i32) }
+/// #[derive(Default)] enum Error { #[default] Missing, Unknown(i32) }
 /// #[enumeration(error = Error, unknown = Error::Unknown)]
 /// enum State { Unspecified = 0, Ready = 1 }
-/// #[file(family = "foreign", enums(State))]
-/// struct Foreign;
-/// #[message(error = Error, package = "acyclic.local.v1")]
+/// #[file(family = "foreign", enums(State))] struct Foreign;
+/// #[message(error = Error, file = LocalFile)]
 /// struct Local { #[wire(enumeration = State, tag = 1)] state: State }
+/// #[file(family = "local", messages(LocalProto))] struct LocalFile;
+/// ```
+///
+/// Identical protobuf names cannot impersonate a registered Rust type.
+/// ```compile_fail
+/// use acyclic_contract_derive::{file, message};
+/// use core::convert::Infallible;
+/// #[message(error = Infallible, file = File, name = "Record")]
+/// struct Registered { #[wire(tag = 1)] text: String }
+/// #[message(error = Infallible, file = File, name = "Record")]
+/// struct Shadow { #[wire(tag = 1)] different: u64 }
+/// #[message(error = Infallible, file = File)]
+/// struct Parent { #[wire(message, tag = 1)] child: Option<Shadow> }
+/// #[file(family = "test", messages(RegisteredProto, ParentProto))] struct File;
+/// ```
+///
+/// An unused declaration still requires inventory membership.
+/// ```compile_fail
+/// use acyclic_contract_derive::{file, message};
+/// use core::convert::Infallible;
+/// #[message(error = Infallible, file = File)] struct Registered {}
+/// #[message(error = Infallible, file = File)] struct Absent {}
+/// #[file(family = "test", messages(RegisteredProto))] struct File;
 /// ```
 #[proc_macro_attribute]
 pub fn message(args: TokenStream, item: TokenStream) -> TokenStream {
@@ -71,22 +102,33 @@ pub fn enumeration(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Derive present-payload wire cases and fallible semantic ingress.
-/// Nested cases cannot mix first-party packages.
+///
+/// Enum-valued cases are outside the supported oneof grammar.
 /// ```compile_fail
-/// use acyclic_contract_derive::{message, oneof};
+/// use acyclic_contract_derive::{enumeration, file, oneof};
 /// use core::convert::Infallible;
-/// #[message(error = Infallible, package = "acyclic.a.v1")]
-/// struct A { #[wire(tag = 1)] number: u64 }
-/// #[message(error = Infallible, package = "acyclic.b.v1")]
-/// struct B { #[wire(tag = 1)] number: u64 }
-/// #[oneof(error = Infallible)]
+/// #[enumeration] enum State { Ready = 0 }
+/// #[oneof(error = Infallible, file = File)]
+/// enum Choice { #[wire(enumeration = State, tag = 1)] State(State) }
+/// #[file(family = "test", enums(State))] struct File;
+/// ```
+///
+/// Nested cases cannot mix file owners, even when package strings are identical.
+/// ```compile_fail
+/// use acyclic_contract_derive::{file, message, oneof};
+/// use core::convert::Infallible;
+/// #[message(error = Infallible, file = AFile)] struct A { #[wire(tag = 1)] number: u64 }
+/// #[message(error = Infallible, file = BFile)] struct B { #[wire(tag = 1)] number: u64 }
+/// #[oneof(error = Infallible, file = AFile)]
 /// enum Choice { #[wire(message, tag = 1)] A(A), #[wire(message, tag = 2)] B(B) }
+/// #[file(family = "test", messages(AProto))] struct AFile;
+/// #[file(family = "test", messages(BProto))] struct BFile;
 /// ```
 #[proc_macro_attribute]
 pub fn oneof(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut options = options::Options::default();
     let parser = syn::meta::parser(|meta| {
-        if !meta.path.is_ident("error") {
+        if !meta.path.is_ident("error") && !meta.path.is_ident("file") {
             return Err(meta.error("unknown oneof option"));
         }
         options.message(&meta)
@@ -98,29 +140,44 @@ pub fn oneof(args: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-mod registration;
-/// Register a canonical protobuf file from first-party semantic declarations.
-/// A registered service cannot silently refer to another family's messages.
+/// Register the sole authoritative file inventory and its sealed membership.
+///
+/// Registering a service under another file is rejected.
 /// ```compile_fail
 /// use acyclic_contract_derive::{file, message, service};
 /// use core::convert::Infallible;
-/// #[message(error = Infallible, package = "acyclic.foreign.v1")]
-/// struct Foreign { #[wire(tag = 1)] number: u64 }
-/// #[service]
-/// enum Service { Call { request: ForeignProto, response: ForeignProto } }
-/// #[file(family = "local", services(Service))]
-/// struct Local;
+/// #[message(error = Infallible, file = A)] struct Body {}
+/// #[service(file = A)] enum Service { Call { request: BodyProto, response: BodyProto } }
+/// #[file(family = "test", messages(BodyProto), services(Service))] struct A;
+/// #[file(family = "test", services(Service))] struct B;
 /// ```
+///
 /// An enum has one file owner.
 /// ```compile_fail
 /// use acyclic_contract_derive::{enumeration, file};
 /// enum Error { Unknown(i32) }
-/// #[enumeration(error = Error, unknown = Error::Unknown)]
-/// enum State { Unspecified = 0 }
-/// #[file(family = "a", enums(State))]
-/// struct A;
-/// #[file(family = "b", enums(State))]
-/// struct B;
+/// #[enumeration(error = Error, unknown = Error::Unknown)] enum State { Unspecified = 0 }
+/// #[file(family = "test", enums(State))] struct A;
+/// #[file(family = "test", enums(State))] struct B;
+/// ```
+///
+/// Duplicate inventory entries cannot create multiple membership implementations.
+/// ```compile_fail
+/// use acyclic_contract_derive::{file, message};
+/// #[message(error = core::convert::Infallible, file = File)] struct Body {}
+/// #[file(family = "test", messages(BodyProto, BodyProto))] struct File;
+/// ```
+///
+/// Consumers cannot forge the private membership trait.
+/// ```compile_fail
+/// use acyclic_contract_derive::{file, message};
+/// mod owned {
+///     use super::*;
+///     #[message(error = core::convert::Infallible, file = File)] pub struct Body {}
+///     #[file(family = "test", messages(BodyProto))] pub struct File;
+/// }
+/// struct Shadow;
+/// impl owned::__file_members::Member for Shadow {}
 /// ```
 #[proc_macro_attribute]
 pub fn file(args: TokenStream, item: TokenStream) -> TokenStream {
@@ -129,42 +186,46 @@ pub fn file(args: TokenStream, item: TokenStream) -> TokenStream {
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
-/// Derive service schema from compiler-linked request and response types.
+
+/// Derive registered service schema from exact request and response types.
 ///
 /// Each method has exactly one request and one response.
 /// ```compile_fail
-/// #[derive(Clone, PartialEq, prost::Message)]
-/// struct Body {}
-/// impl prost::Name for Body {
-///     const NAME: &'static str = "Body";
-///     const PACKAGE: &'static str = "acyclic.test.v1";
-/// }
-/// #[acyclic_contract_derive::service]
-/// enum Invalid { Call { request: Body, request: Body, response: Body } }
+/// use acyclic_contract_derive::{file, message, service};
+/// #[message(error = core::convert::Infallible, file = File)] struct Body {}
+/// #[service(file = File)]
+/// enum Invalid { Call { request: BodyProto, request: BodyProto, response: BodyProto } }
+/// #[file(family = "test", messages(BodyProto), services(Invalid))] struct File;
 /// ```
-/// Request and response types share one first-party package.
+///
+/// Streaming request and response types belong to the exact service file.
 /// ```compile_fail
-/// use acyclic_contract_derive::{message, service};
+/// use acyclic_contract_derive::{file, message, service};
 /// use core::convert::Infallible;
-/// #[message(error = Infallible, package = "acyclic.a.v1")]
-/// struct A { #[wire(tag = 1)] number: u64 }
-/// #[message(error = Infallible, package = "acyclic.b.v1")]
-/// struct B { #[wire(tag = 1)] number: u64 }
-/// #[service]
-/// enum Service { Call { request: AProto, response: BProto } }
+/// #[message(error = Infallible, file = AFile)] struct A {}
+/// #[message(error = Infallible, file = BFile)] struct B {}
+/// #[service(file = AFile)]
+/// enum Service { #[wire(client_streaming, server_streaming)] Call { request: AProto, response: BProto } }
+/// #[file(family = "test", messages(AProto), services(Service))] struct AFile;
+/// #[file(family = "test", messages(BProto))] struct BFile;
 /// ```
 #[proc_macro_attribute]
 pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
-    if !args.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "service takes no declaration options",
-        )
-        .into_compile_error()
-        .into();
-    }
+    let mut options = options::Options::default();
+    let parser = syn::meta::parser(|meta| {
+        if !meta.path.is_ident("file") {
+            return Err(meta.error("unknown service option"));
+        }
+        options.message(&meta)
+    });
+    parse_macro_input!(args with parser);
     let item = parse_macro_input!(item as syn::ItemEnum);
-    registration::service(item)
+    let Some(file) = options.file else {
+        return syn::Error::new_spanned(&item.ident, "service file owner is required")
+            .into_compile_error()
+            .into();
+    };
+    registration::service(item, &file)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

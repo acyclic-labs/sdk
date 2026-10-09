@@ -3,6 +3,15 @@ import { DEFAULT_LIMITS, Harness, MemoryConversation, NativeContracts, parseIden
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "../src/conversation-page-contract.js";
+import { exerciseCheckpoint } from "./checkpoint-consumer.mjs";
+
+test("authenticated Rust checkpoint restores state and exact retries through WASM", async () => {
+  const options = { authority: { kind: "task" as const, id: "checkpoint-consumer" },
+    issuerId: "checkpoint-consumer", issuerKey: new Uint8Array(32).fill(23) };
+  const harness = await Harness.create(options);
+  try { await exerciseCheckpoint(Harness, harness, options, await NativeContracts.create()); }
+  finally { harness.free(); }
+});
 
 test("WASM turn planner emits a fresh selection and rejects stale retry state", async () => {
   const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
@@ -262,4 +271,30 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
   } finally {
     harness.free();
   }
+});
+
+
+test("default WASM turn planner preserves full history or rejects its bound", async () => {
+  const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
+  const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
+  const historicalUser = "04040404-0404-0404-0404-040404040404" as ConversationMessageId;
+  const host = await MemoryConversation.create({ agent });
+  const contracts = await NativeContracts.create();
+  try {
+    const content = await host.stage("turns/planner/complete.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
+    const common = { content, attachments: { kind: "inline" as const, items: [] }, tool_call_id: null, extensions: {} };
+    const conversation = { agent, messages: [
+      { ...common, id: historicalUser, sequence: 1n, kind: "user" as const, reply_to: null },
+      { ...common, id: "05050505-0505-0505-0505-050505050505" as ConversationMessageId,
+        sequence: 2n, kind: "assistant" as const, reply_to: historicalUser },
+    ] };
+    expect(() => contracts.prepareConversationTurn(conversation, operation, content,
+      { kind: "inline", items: [] }, { ...DEFAULT_LIMITS, context_messages: 2 }, null, false, true)).toThrow();
+    const prepared = contracts.prepareConversationTurn(conversation, operation, content,
+      { kind: "inline", items: [] }, { ...DEFAULT_LIMITS, context_messages: 3 }, null, false, true);
+    expect(prepared.selection.message_ids).toHaveLength(3);
+    expect(prepared.selection.message_ids[0]).toBe(historicalUser);
+    expect(prepared.append_user).toBe(true);
+    expect(conversation.messages).toHaveLength(2);
+  } finally { host.free(); }
 });

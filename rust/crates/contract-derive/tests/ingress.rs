@@ -18,7 +18,7 @@ fn nonempty(value: String) -> Result<String, Admission> {
     }
 }
 
-#[message(error = Admission, package = "acyclic.test.v1", post = Record::admit)]
+#[message(error = Admission, file = TestFile, post = Record::admit)]
 #[derive(Debug, PartialEq)]
 struct Record {
     #[wire(tag = 1, from = nonempty)]
@@ -100,7 +100,7 @@ impl From<std::convert::Infallible> for Admission {
     }
 }
 
-#[message(error = Admission, package = "acyclic.test.v1")]
+#[message(error = Admission, file = TestFile)]
 #[derive(Debug, PartialEq)]
 struct Envelope {
     #[wire(tag = 1, message)]
@@ -196,7 +196,7 @@ impl From<CurrentHead> for bool {
     }
 }
 
-#[acyclic_contract_derive::oneof(error = Admission)]
+#[acyclic_contract_derive::oneof(error = Admission, file = TestFile)]
 #[derive(Debug, PartialEq)]
 enum Choice {
     #[wire(tag = 1)]
@@ -209,7 +209,7 @@ enum Choice {
     Record(Record),
 }
 
-#[message(error = Admission, package = "acyclic.test.v1")]
+#[message(error = Admission, file = TestFile)]
 #[derive(Debug, PartialEq)]
 struct Selector {
     #[wire(oneof = "1,2,3,4")]
@@ -263,7 +263,7 @@ enum State {
     Ready = 1,
 }
 
-#[message(error = Admission, package = "acyclic.test.v1")]
+#[message(error = Admission, file = TestFile)]
 #[derive(Debug, PartialEq)]
 struct StateView {
     #[wire(tag = 1, enumeration = State)]
@@ -297,7 +297,7 @@ fn unknown_enums_remain_raw_until_explicit_fallible_ingress() -> Result<(), pros
     Ok(())
 }
 
-#[acyclic_contract_derive::service]
+#[acyclic_contract_derive::service(file = TestFile)]
 enum SessionService {
     Unary {
         request: RecordProto,

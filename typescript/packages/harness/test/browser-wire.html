@@ -44,6 +44,10 @@ try {
       if (!rejected) throw new Error("canonical JSON normalized an unpaired UTF-16 string or key");
     }
   }
+  const { exerciseCheckpoint } = await import("./checkpoint-consumer.mjs");
+  await exerciseCheckpoint(Harness, harness, options, contracts);
+  const { exerciseBrowserHistory } = await import("./browser-history-consumer.mjs");
+  await exerciseBrowserHistory();
   const provider = { namespace: "browser", family: "filesystem", version: "2" };
   const skillSource = {
     root: { volume: { provider, id: "skills", class: "session_shared", owner: { kind: "session", id: "test" } }, directory: "" },
@@ -114,7 +118,7 @@ try {
   harness.free();
   document.body.dataset.result = "passed";
 } catch (error) {
-  document.body.dataset.result = `failed: ${error.message}`;
+  document.body.dataset.result = `failed: ${error?.stack ?? String(error)}`;
 }
 </script>
 </body>

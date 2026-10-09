@@ -47,7 +47,7 @@ mod generated {
     )]
     pub struct WorkersFile;
     /// Public Workers v1 operations over the Rust-owned contract.
-    #[acyclic_contract_derive::service]
+    #[acyclic_contract_derive::service(file = WorkersFile)]
     pub enum WorkersService {
         /// Publish exact module bytes under their expected immutable digest.
         PublishVersion {

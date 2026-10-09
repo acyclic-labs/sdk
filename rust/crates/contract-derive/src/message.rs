@@ -69,10 +69,15 @@ impl Field {
             "bool" => syn::parse_quote!(bool),
             _ => return Err(syn::Error::new_spanned(&ty, "unsupported wire kind")),
         };
-        if variant && (optional.is_some() || repeated.is_some() || options.oneof.is_some()) {
+        if variant
+            && (optional.is_some()
+                || repeated.is_some()
+                || options.oneof.is_some()
+                || options.enumeration.is_some())
+        {
             return Err(syn::Error::new_spanned(
                 &ty,
-                "oneof variants require one present payload",
+                "oneof variants require one present primitive or message payload; enum cases are unsupported",
             ));
         }
         let shape = if repeated.is_some() {
@@ -222,9 +227,9 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
     let error = options
         .error
         .ok_or_else(|| syn::Error::new_spanned(&input.ident, "contract error type is required"))?;
-    let package = options
-        .package
-        .ok_or_else(|| syn::Error::new_spanned(&input.ident, "contract package is required"))?;
+    let file = options
+        .file
+        .ok_or_else(|| syn::Error::new_spanned(&input.ident, "contract file owner is required"))?;
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &input.generics,
@@ -263,39 +268,33 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
         .iter()
         .map(Field::oneof_check)
         .collect::<Result<Vec<_>, _>>()?;
-    let package_checks = fields
-        .iter()
-        .filter_map(|field| {
-            let optional = field.kind == "oneof";
-            let actual = if let Some(enumeration) = &field.options.enumeration {
-                Ok(quote!(#enumeration::PACKAGE))
-            } else if field.kind == "message" || optional {
-                options::shadow(&field.ty).map(|ty| {
-                    if optional {
-                        quote!(<#ty>::MESSAGE_PACKAGE)
-                    } else {
-                        quote!(<#ty as ::prost::Name>::PACKAGE)
-                    }
-                })
-            } else {
-                return None;
-            };
-            Some(actual.map(|actual| options::package_check(&quote!(#package), actual, optional)))
-        })
-        .collect::<syn::Result<Vec<_>>>()?;
+    let mut owner_checks = vec![options::owner_check(&file, &quote!(#wire), true)];
+    for field in &fields {
+        let ty = if let Some(enumeration) = &field.options.enumeration {
+            quote!(#enumeration)
+        } else if field.kind == "message" || field.kind == "oneof" {
+            let ty = options::shadow(&field.ty)?;
+            quote!(#ty)
+        } else {
+            continue;
+        };
+        owner_checks.push(options::owner_check(&file, &ty, field.kind != "oneof"));
+    }
     let post = options.post.map(|post| quote!(#post(&result)?;));
     Ok(quote! {
         #input
         #(#oneof_checks)*
-        #(#package_checks)*
+        #(#owner_checks)*
         #[doc = "Wire shadow derived from the semantic declaration."]
         #[derive(Clone, PartialEq, ::prost::Message)]
         #visibility struct #wire { #(#declarations,)* }
         impl #wire {
+            #[doc = "The unique compiler-linked file owner."]
+            pub const FILE: #file = #file;
             #[doc = "Protobuf declaration derived from the semantic fields."]
             pub fn schema() -> String { let mut schema = format!("message {} {{\n", #wire_name); #(#schema)* schema.push_str("}\n"); schema }
         }
-        impl ::prost::Name for #wire { const NAME: &'static str = #wire_name; const PACKAGE: &'static str = #package; }
+        impl ::prost::Name for #wire { const NAME: &'static str = #wire_name; const PACKAGE: &'static str = #file::PACKAGE; }
         impl ::core::convert::TryFrom<#wire> for #name {
             type Error = #error;
             fn try_from(value: #wire) -> Result<Self, Self::Error> { let result = Self { #(#ingress,)* }; #post Ok(result) }
@@ -319,7 +318,10 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
     let mut egress = Vec::new();
     let mut schema = Vec::new();
     let mut tags = std::collections::BTreeSet::new();
-    let mut packages = Vec::new();
+    let file = options
+        .file
+        .ok_or_else(|| syn::Error::new_spanned(name, "oneof file owner is required"))?;
+    let mut owner_checks = Vec::new();
     for variant in &mut input.variants {
         let syn::Fields::Unnamed(payload) = &variant.fields else {
             return Err(syn::Error::new_spanned(
@@ -349,7 +351,7 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
         let ident = &variant.ident;
         let ty = &field.wire;
         if field.kind == "message" {
-            packages.push(quote!(<#ty as ::prost::Name>::PACKAGE));
+            owner_checks.push(options::owner_check(&file, &quote!(#ty), true));
         }
         let kind = syn::Ident::new(&field.kind, ident.span());
         declarations
@@ -369,28 +371,16 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
         );
     }
     let tags: Vec<u32> = tags.into_iter().collect();
-    let package = packages
-        .first()
-        .map_or_else(|| quote!(None), |package| quote!(Some(#package)));
-    let package_checks = packages
-        .first()
-        .map(|first| {
-            packages
-                .iter()
-                .skip(1)
-                .map(|actual| options::package_check(first, actual.clone(), false))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+
     Ok(quote! {
         #input
         #[doc = "Oneof wire shadow derived from the semantic cases."]
         #[derive(Clone, PartialEq, ::prost::Oneof)]
         #visibility enum #wire { #(#declarations,)* }
-        #(#package_checks)*
+        #(#owner_checks)*
         impl #wire {
-            #[doc = "The package of nested cases; primitive-only oneofs have no package requirement."]
-            pub const MESSAGE_PACKAGE: Option<&'static str> = #package;
+            #[doc = "The unique compiler-linked file owner."]
+            pub const FILE: #file = #file;
             #[doc = "The sole authoritative oneof tag inventory."]
             pub const TAGS: &'static [u32] = &[#(#tags),*];
             #[doc = "Protobuf oneof declaration derived from its semantic cases."]

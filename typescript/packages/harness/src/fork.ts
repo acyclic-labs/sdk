@@ -1,5 +1,7 @@
 /** Parent-controlled, provider-neutral fork values. Rust owns durable admission. */
-import type { FileRef, ProviderRef, VolumeRef } from "./conversation.js";
+export type { ForkHistoryPolicy } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { FileRef, Limits, ProviderRef, VolumeRef } from "./conversation.js";
+import type { HistoryReadLimits } from "./browser-history.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
@@ -77,7 +79,23 @@ export interface ForkRequest {
   readonly boundary: AttestedBoundary | null;
 }
 
+/** Immutable parent checkpoint and explicit bounded verification work. */
+export interface SummaryForkSelection {
+  readonly checkpoint: FileRef;
+  readonly limits: Limits;
+  readonly history_limits: HistoryReadLimits;
+}
+
+/** Child-owned canonical projection and exact immutable payload inventory. */
+export interface SummaryForkCapture {
+  readonly selection: SummaryForkSelection;
+  readonly context: FileRef<"agent_private", "filesystem">;
+  readonly payloads: readonly FileRef<"agent_private", "filesystem">[];
+  readonly references: readonly FileRef[];
+}
+
 export interface ForkPreparation {
+  readonly summary?: SummaryForkSelection | null;
   readonly child_project_volume: VolumeRef<"project", "filesystem">;
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
   readonly inherited_through_sequence: bigint;
@@ -130,6 +148,7 @@ export interface ForkOmission {
 }
 
 export interface ForkReport {
+  readonly summary?: SummaryForkCapture | null;
   readonly request: ForkRequest;
   readonly captures: readonly Capture[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
@@ -143,6 +162,7 @@ export interface ForkReport {
 }
 
 export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"> {
+  readonly summary?: SummaryForkCapture | null;
   readonly resources: readonly CapturedResource[];
   readonly omissions: readonly ForkOmission[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;

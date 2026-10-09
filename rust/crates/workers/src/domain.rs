@@ -86,7 +86,7 @@ fn encode_errorcode(value: ErrorCode) -> i32 {
 /// Semantic Source cases preserving the published oneof.
 pub mod payload {
     use super::*;
-    #[acyclic_contract_derive::oneof(error = DomainError)]
+    #[acyclic_contract_derive::oneof(error = DomainError, file = WorkersFile)]
     #[derive(Clone, Debug, Eq, PartialEq, TS)]
     #[ts(
         export_to = "workers/Source.ts",
@@ -107,7 +107,7 @@ pub mod payload {
 /// Semantic Target cases preserving the published oneof.
 pub mod job_target {
     use super::*;
-    #[acyclic_contract_derive::oneof(error = DomainError)]
+    #[acyclic_contract_derive::oneof(error = DomainError, file = WorkersFile)]
     #[derive(Clone, Debug, Eq, PartialEq, TS)]
     #[ts(
         export_to = "workers/Target.ts",
@@ -126,7 +126,7 @@ pub mod job_target {
 }
 
 /// A digest identifies exact immutable JavaScript module bytes.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CodeVersion.ts", rename_all = "camelCase")]
@@ -142,7 +142,7 @@ pub struct CodeVersion {
 }
 
 /// A deployment alias may change; revision increases on every selection.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Deployment.ts", rename_all = "camelCase")]
@@ -161,7 +161,7 @@ pub struct Deployment {
 }
 
 /// Publish exact module bytes with their expected SHA-256 and idempotency key.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE, post = PublishVersionRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = PublishVersionRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
@@ -217,7 +217,7 @@ impl PublishVersionRequest {
 }
 
 /// The immutable version accepted by module publication.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
@@ -232,7 +232,7 @@ pub struct PublishVersionResponse {
 }
 
 /// Select an immutable version for a deployment alias using revision preconditions.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE, post = SelectDeploymentRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SelectDeploymentRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
@@ -300,7 +300,7 @@ impl SelectDeploymentRequest {
 }
 
 /// The deployment selected by the alias mutation.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
@@ -316,7 +316,7 @@ pub struct SelectDeploymentResponse {
 
 /// Logical S3 object selected and privately retained at durable job acceptance.
 /// Retries read the same retained bytes even if this public key is replaced.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/ObjectRef.ts", rename_all = "camelCase")]
@@ -330,7 +330,7 @@ pub struct ObjectRef {
 }
 
 /// Durable job input selected from inline bytes or a retained logical object.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Payload.ts", rename_all = "camelCase")]
@@ -342,7 +342,7 @@ pub struct Payload {
 
 /// Exact accepted job output, bounded by `JobLimits.output_bytes`. Storage and
 /// retention are service-owned; no replaceable public Object pointer is exposed.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobResult.ts", rename_all = "camelCase")]
@@ -354,7 +354,7 @@ pub struct JobResult {
 }
 
 /// Resource budgets applied to the accepted durable job.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobLimits.ts", rename_all = "camelCase")]
@@ -374,7 +374,7 @@ pub struct JobLimits {
 }
 
 /// Bounded attempts and retry delay for the accepted durable job.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/RetryPolicy.ts", rename_all = "camelCase")]
@@ -389,7 +389,7 @@ pub struct RetryPolicy {
 }
 
 /// Resolve a deployment alias or select an exact immutable version at job acceptance.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobTarget.ts", rename_all = "camelCase")]
@@ -401,7 +401,7 @@ pub struct JobTarget {
 
 /// Accepted input is delivered to `default.run`, never to `default.fetch`.
 /// The same job ID and input recur on retry; attempt numbering starts at one.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE, post = SubmitJobRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SubmitJobRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobRequest.ts", rename_all = "camelCase")]
@@ -472,7 +472,7 @@ impl SubmitJobRequest {
 }
 
 /// The durable job observation returned at acceptance.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobResponse.ts", rename_all = "camelCase")]
@@ -484,7 +484,7 @@ pub struct SubmitJobResponse {
 }
 
 /// Current execution state, resolved version and result of a durable job.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobObservation.ts", rename_all = "camelCase")]
@@ -515,7 +515,7 @@ pub struct JobObservation {
 }
 
 /// Inspect the current observation of an accepted durable job.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobRequest.ts", rename_all = "camelCase")]
@@ -526,7 +526,7 @@ pub struct InspectJobRequest {
 }
 
 /// The durable job observation returned by inspection.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobResponse.ts", rename_all = "camelCase")]
@@ -538,7 +538,7 @@ pub struct InspectJobResponse {
 }
 
 /// Request cancellation of an accepted job with an idempotency key.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobRequest.ts", rename_all = "camelCase")]
@@ -552,7 +552,7 @@ pub struct CancelJobRequest {
 }
 
 /// The durable job observation returned after requesting cancellation.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobResponse.ts", rename_all = "camelCase")]
@@ -564,7 +564,7 @@ pub struct CancelJobResponse {
 }
 
 /// A name and value carried by the ordinary HTTP invocation.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Header.ts", rename_all = "camelCase")]
@@ -578,7 +578,7 @@ pub struct Header {
 }
 
 /// Invocation is ordinary HTTP work, not durable job acceptance.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
@@ -606,7 +606,7 @@ pub struct InvokeVersionRequest {
 }
 
 /// Resolve a deployment alias for an ordinary HTTP invocation.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
@@ -633,7 +633,7 @@ pub struct InvokeDeploymentRequest {
 }
 
 /// HTTP response and the immutable version resolved for the invocation.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InvokeResponse.ts", rename_all = "camelCase")]
@@ -659,7 +659,7 @@ pub struct InvokeResponse {
 }
 
 /// Workers service rejection with its known code and original message.
-#[acyclic_contract_derive::message(error = DomainError, package = WorkersFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Error.ts", rename_all = "camelCase")]

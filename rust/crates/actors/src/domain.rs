@@ -227,7 +227,7 @@ impl From<CodeSha256> for Vec<u8> {
 }
 
 /// A lossless invocation header.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Header.ts")]
@@ -256,7 +256,7 @@ impl Header {
 }
 
 /// Resource binding admitted by the canonical create/update validators.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE, post = Binding::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
@@ -322,7 +322,7 @@ impl Binding {
 
 
 /// Positive limits admitted by the canonical create/update validators.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
@@ -375,7 +375,7 @@ impl ActorLimits {
 /// The published subscription-start message owns its oneof declaration.
 /// Contract derivation generates the wire shadow and fallible ingress from this semantic
 /// declaration, preserving cursor zero and the current-head boolean payload.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
@@ -442,7 +442,7 @@ pub mod subscription_start {
 
 
     /// The semantic oneof for [`super::SubscriptionStart`].
-    #[acyclic_contract_derive::oneof(error = DomainError)]
+    #[acyclic_contract_derive::oneof(error = DomainError, file = ActorsFile)]
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
     #[ts(tag = "case", content = "value", rename_all = "camelCase")]
     pub enum Start {
@@ -498,7 +498,7 @@ impl SubscriptionStart {
 
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE, post = SubscriptionSpec::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
@@ -649,7 +649,7 @@ pub enum ErrorCode {
 
 
 /// A service error with a typed known code and lossless message.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE, name = "Error")]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, name = "Error")]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
@@ -689,7 +689,7 @@ impl ServiceError {
 
 
 /// Lossless semantic view of a subscription observation.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionObservation.ts")]
@@ -760,7 +760,7 @@ impl SubscriptionObservation {
 
 
 /// Lossless semantic view of a server Actor observation.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorObservation.ts")]
@@ -821,7 +821,7 @@ impl ActorObservation {
 
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
-	        #[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+	        #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
         #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
@@ -853,7 +853,7 @@ actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
 actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 
 /// Create request after the canonical admission validator has run.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE, post = CreateActorRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = CreateActorRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CreateActorRequest.ts")]
@@ -930,7 +930,7 @@ impl CreateActorRequest {
 
 
 /// Update request after the canonical admission validator has run.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE, post = UpdateActorRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = UpdateActorRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/UpdateActorRequest.ts")]
@@ -1008,7 +1008,7 @@ impl UpdateActorRequest {
 
 /// Inspect currently has no additional wire validator; only the semantic
 /// Actor identity rule is applied by this conversion.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/InspectActorRequest.ts")]
@@ -1033,7 +1033,7 @@ impl InspectActorRequest {
 
 
 /// Add subscription request after the canonical admission validator has run.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE, post = AddSubscriptionRequest::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = AddSubscriptionRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/AddSubscriptionRequest.ts")]
@@ -1087,7 +1087,7 @@ impl AddSubscriptionRequest {
 
 /// Removal has no canonical validator yet, so subscription and idempotency
 /// strings remain unbranded and are carried exactly as received.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
@@ -1128,7 +1128,7 @@ impl RemoveSubscriptionRequest {
 
 
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
@@ -1170,7 +1170,7 @@ impl ResumeSubscriptionRequest {
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 /// applied and the idempotency key remains an ordinary string.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CheckpointActorRequest.ts")]
@@ -1206,7 +1206,7 @@ impl CheckpointActorRequest {
 
 /// Typed invocation request. Method, URL, headers, and body preserve the
 /// existing wire contract without adding new validation rules.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorRequest.ts")]
@@ -1265,7 +1265,7 @@ impl InvokeActorRequest {
 
 
 /// Typed invocation response with byte-preserving body and headers.
-#[acyclic_contract_derive::message(error = DomainError, package = ActorsFile::PACKAGE)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]

@@ -5,8 +5,8 @@
 //! captured refs visible; project merge remains a separate Filesystem action.
 
 use crate::conversation::{
-    ContentResidencyVerifier, ConversationMessage, FileRef, VolumeClass, VolumeOperation,
-    VolumeOwner, VolumeRef, decode_complete_attachment_manifest,
+    ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    decode_complete_attachment_manifest,
 };
 use crate::core::Authority;
 use crate::resources::{
@@ -32,6 +32,9 @@ pub const MAX_FORK_REFERENCE_BYTES: u64 = u64::MAX;
 /// Largest sequence representable by the contract.
 pub const MAX_FORK_INHERITED_MESSAGES: u64 = u64::MAX;
 
+mod summary;
+pub use summary::*;
+
 type DirectManifestReads = BTreeSet<(String, AgentId)>;
 type ManifestMemberGrants = BTreeMap<String, BTreeMap<String, BTreeSet<AgentId>>>;
 
@@ -53,24 +56,29 @@ pub struct InheritedConversationPrefix {
     pub through_sequence: u64,
     /// Readers bound to this preparation retry identity; grants live in the seed.
     pub attached_agents: Vec<AgentId>,
-    /// Digest of the ordered messages at this exact parent revision.
+    /// Version 3 domain-separated chain of canonical per-message digests.
+    /// The empty prefix is zero; order, metadata and immutable refs are included.
     pub message_digest: [u8; 32],
 }
 
 impl InheritedConversationPrefix {
-    /// Binds one contiguous parent prefix without retaining its message list.
-    /// Reader grants remain in the authoritative fork seed.
+    /// Binds one contiguous bound parent prefix without retaining its message list.
+    /// A full-cut fingerprint is already maintained by the conversation; an
+    /// explicit earlier cut hashes records individually. Reader grants remain
+    /// in the authoritative fork seed. This descriptor grants no authority.
     pub fn select(
         parent: Authority,
         parent_revision: u64,
-        parent_agent: AgentId,
         through_sequence: u64,
         attached_agents: &[AgentId],
-        messages: &[ConversationMessage],
+        conversation: &crate::conversation::ConversationState,
     ) -> Result<Self> {
+        let parent_agent = conversation
+            .agent
+            .ok_or_else(|| Error::Invalid("inherited prefix parent is unbound".into()))?;
         let count = usize::try_from(through_sequence)
             .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
-        if count > messages.len() {
+        if count > conversation.messages().len() {
             return Err(Error::Invalid(
                 "inherited prefix exceeds parent history".into(),
             ));
@@ -86,17 +94,15 @@ impl InheritedConversationPrefix {
                 "inherited attached agents are invalid".into(),
             ));
         }
-        let selected = messages
-            .get(..count)
-            .ok_or_else(|| Error::Invalid("inherited prefix exceeds parent history".into()))?;
+        let message_digest = conversation.history_prefix_digest(through_sequence)?;
         Ok(Self {
-            format_version: 2,
+            format_version: 3,
             parent,
             parent_revision,
             parent_agent,
             through_sequence,
             attached_agents: attached_agents.to_vec(),
-            message_digest: crate::contract::canonical_json_digest(&selected)?,
+            message_digest,
         })
     }
 
@@ -631,34 +637,40 @@ impl ForkSeedVerifier for StreamHistoryForkVerifier {
 /// One exact retained resource revision selected for a child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "reference", rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ResourceRevision {
     /// Immutable Stream history prefix.
-    History(StreamRef),
+    History(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] StreamRef),
     /// Immutable project workspace generation.
     Project {
         /// Project volume selected for the child.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
         volume: VolumeRef,
         /// Exact immutable generation in that volume.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
         generation: GenerationRef,
     },
     /// Direct parent's pinned scratch. Empty paths select an empty initial view;
     /// every selected path includes its namespace subtree, preserving lineage.
     PrivateVolume {
         /// Parent or captured child scratch identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
         volume: VolumeRef,
         /// Immutable source or child generation.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
         generation: GenerationRef,
         /// Explicit scratch paths, excluding reserved runtime state.
+        #[cfg_attr(feature = "wasm", tsify(type = "readonly string[]"))]
         paths: Vec<String>,
     },
     /// Selected model context revision.
-    Context(ContextRef),
+    Context(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] ContextRef),
     /// Qualified process checkpoint.
-    Process(CheckpointRef),
+    Process(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] CheckpointRef),
     /// Immutable retained artifact.
-    Artifact(ArtifactRef),
+    Artifact(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] ArtifactRef),
     /// Session-shared volume reference.
-    SharedVolume(VolumeRef),
+    SharedVolume(#[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))] VolumeRef),
     /// Namespaced extension state with pinned implementation version.
     Extension {
         /// Namespaced state identity.
@@ -666,8 +678,10 @@ pub enum ResourceRevision {
         /// Immutable extension implementation version.
         version: u32,
         /// Digest of the exact extension implementation selected by the parent.
+        #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
         implementation_digest: [u8; 32],
         /// Provider-owned retained state reference.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
         reference: ResourceRef,
     },
 }
@@ -757,6 +771,7 @@ impl ResourceRevision {
 /// Required or optional exact resource selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkSelection {
     /// Required selections must capture successfully before publication.
     pub required: bool,
@@ -767,10 +782,13 @@ pub struct ForkSelection {
 /// Provider evidence of a consistent boundary across selected resources.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct AttestedBoundary {
     /// Provider qualified to attest this boundary.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmProviderRefWire"))]
     pub provider: ProviderRef,
     /// Opaque bounded proof, interpreted only by that provider.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub evidence: Vec<u8>,
 }
 
@@ -788,25 +806,47 @@ impl AttestedBoundary {
 /// Idempotent request to capture selected resources for a new child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkRequest {
     /// Stable identity used for preparation and publication reconciliation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Publishing parent aggregate.
     pub parent: Authority,
     /// Exact parent revision before publication.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub parent_revision: u64,
     /// Fresh child aggregate.
     pub child: Authority,
     /// Fresh child agent identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub child_agent: AgentId,
     /// Additional agents allowed to attach to the child environment as readers.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly string[]"))]
     pub attached_agents: Vec<AgentId>,
     /// Exact child allocation and bounded inherited prefix chosen before preparation.
     pub preparation: ForkPreparation,
     /// Ordered required and optional resource selections.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly ForkSelection[]"))]
     pub selections: Vec<ForkSelection>,
     /// Present only when one provider attests a common capture boundary.
     pub boundary: Option<AttestedBoundary>,
+}
+
+/// Selection of authoritative logical history before a fork is admitted.
+/// Model representation and compaction remain separate context policies.
+/// Selecting a mode supplies no providers, grants, child volumes or budgets.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum ForkHistoryPolicy {
+    /// Pins the direct parent's entire logical history at the requested revision.
+    #[default]
+    Fork,
+    /// Explicitly starts without inherited conversation messages.
+    Fresh,
+    /// Keeps the full logical parent cut with an explicitly selected checkpoint projection.
+    Summary(Box<SummaryForkSelection>),
 }
 
 /// Immutable provider allocation and context bounds for one fork operation.
@@ -814,23 +854,39 @@ pub struct ForkRequest {
 /// inherited prefix under the same operation identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkPreparation {
     /// Fresh project workspace derived from the selected project generation.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub child_project_volume: VolumeRef,
     /// Fresh private workspace owned by the child agent.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub child_private_volume: VolumeRef,
     /// Inclusive final parent conversation sequence; zero selects none.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub inherited_through_sequence: u64,
     /// Deployment limit, no greater than the protocol ceiling.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub maximum_inherited_messages: u64,
     /// Maximum bytes in the child-owned inherited-context file.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub maximum_inherited_bytes: u64,
     /// Maximum retained references in the inherited prefix.
     pub maximum_inherited_references: u32,
+    /// Optional immutable Summary projection selected before fork admission.
+    pub summary: Option<SummaryForkSelection>,
 }
 
 impl ForkPreparation {
     fn validate(&self, child_agent: AgentId) -> Result<()> {
+        if let Some(selection) = &self.summary {
+            selection.validate()?;
+            if self.inherited_through_sequence == 0 {
+                return Err(Error::Invalid(
+                    "summary fork requires a nonempty logical parent cut".into(),
+                ));
+            }
+        }
         self.child_project_volume.validate()?;
         self.child_private_volume.validate()?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
@@ -893,6 +949,39 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
 }
 
 impl ForkRequest {
+    /// Resolves the context policy against the exact parent before preparation.
+    /// The returned request is the immutable retry/admission input. This method
+    /// never reads providers or rewrites a previously admitted request.
+    pub fn with_history_policy(
+        mut self,
+        parent: &crate::core::Reducer,
+        policy: ForkHistoryPolicy,
+    ) -> Result<Self> {
+        if &self.parent != parent.authority() || self.parent_revision != parent.revision() {
+            return Err(Error::Conflict(
+                "fork context policy requires the exact requested parent revision".into(),
+            ));
+        }
+        let conversation = parent.conversation().ok_or_else(|| {
+            Error::Invalid("fork context policy requires a parent conversation".into())
+        })?;
+        if conversation.agent.is_none() {
+            return Err(Error::Invalid(
+                "fork context policy requires a bound parent agent".into(),
+            ));
+        }
+        let full_cut = conversation.messages().last().map_or(0, |m| m.sequence);
+        let (through_sequence, summary) = match policy {
+            ForkHistoryPolicy::Fork => (full_cut, None),
+            ForkHistoryPolicy::Fresh => (0, None),
+            ForkHistoryPolicy::Summary(selection) => (full_cut, Some(*selection)),
+        };
+        self.preparation.inherited_through_sequence = through_sequence;
+        self.preparation.summary = summary;
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Checks identities, resource selections and optional attestation metadata.
     pub fn validate(&self) -> Result<()> {
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
@@ -1177,6 +1266,8 @@ pub struct ForkReport {
     pub child_private_generation: GenerationRef,
     /// Bounded parent context materialized as child-owned files.
     pub inherited_context: Vec<FileRef>,
+    /// Exact optional Summary capture; its selection and files are seed-bound.
+    pub summary: Option<SummaryForkCapture>,
     /// Inclusive conversation message sequence inherited by the child; zero selects none.
     pub inherited_through_sequence: u64,
     /// Explicit child-bound access to selected session-shared volumes.
@@ -1192,6 +1283,16 @@ impl ForkReport {
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        if self.summary.as_ref().map(|capture| &capture.selection)
+            != self.request.preparation.summary.as_ref()
+        {
+            return Err(Error::Invalid(
+                "fork report changed its summary selection".into(),
+            ));
+        }
+        if let Some(summary) = &self.summary {
+            summary.validate(&self.child_private_volume)?;
+        }
         if self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
             || self.shared_grants.len() as u64 > MAX_FORK_REFERENCES as u64
             || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
@@ -1319,6 +1420,7 @@ impl ForkReport {
             child_private_volume: self.child_private_volume,
             child_private_generation: self.child_private_generation,
             inherited_context: self.inherited_context,
+            summary: self.summary,
             inherited_through_sequence: self.inherited_through_sequence,
             shared_grants: self.shared_grants,
             reference_grants: self.reference_grants,
@@ -1356,6 +1458,8 @@ pub struct ForkSeed {
     pub child_private_generation: GenerationRef,
     /// Child-owned inherited conversation files.
     pub inherited_context: Vec<FileRef>,
+    /// Exact optional Summary capture; its selection and files are seed-bound.
+    pub summary: Option<SummaryForkCapture>,
     /// Inclusive bounded parent conversation prefix; zero selects no messages.
     pub inherited_through_sequence: u64,
     /// Explicit child-bound access to selected session-shared volumes.
@@ -1616,17 +1720,35 @@ impl ForkSeed {
     }
 
     fn validate_inherited_context(&self) -> Result<()> {
-        if (self.inherited_through_sequence == 0 && !self.inherited_context.is_empty())
-            || (self.inherited_through_sequence > 0
-                && (self.inherited_context.len() != 1
-                    || self.inherited_context.first().is_none_or(|file| {
-                        file.path() != ".system/inherited-conversation/prefix.json"
-                            || file.descriptor().media_type()
-                                != "application/vnd.acyclic.harness.inherited-conversation+json"
-                    })))
-        {
+        if let Some(summary) = &self.summary {
+            summary.validate(&self.child_private_volume)?;
+            if self.inherited_through_sequence == 0 {
+                return Err(Error::Invalid(
+                    "summary fork has no inherited logical history".into(),
+                ));
+            }
+        }
+        let mut expected = Vec::new();
+        if self.inherited_through_sequence > 0 {
+            let prefix = self
+                .inherited_context
+                .first()
+                .filter(|file| {
+                    file.path() == ".system/inherited-conversation/prefix.json"
+                        && file.descriptor().media_type()
+                            == "application/vnd.acyclic.harness.inherited-conversation+json"
+                })
+                .ok_or_else(|| {
+                    Error::Invalid("inherited context omitted its selected prefix".into())
+                })?;
+            expected.push(prefix);
+        }
+        if let Some(summary) = &self.summary {
+            expected.extend(summary.inherited_files());
+        }
+        if expected != self.inherited_context.iter().collect::<Vec<_>>() {
             return Err(Error::Invalid(
-                "inherited context does not match its selected prefix".into(),
+                "inherited context does not match its selected capture".into(),
             ));
         }
         let mut inherited_paths = BTreeSet::new();
@@ -1727,6 +1849,8 @@ mod tests {
                 AgentId::from_bytes(bytes)
             })
             .collect::<Vec<_>>();
+        let mut conversation = crate::conversation::ConversationState::default();
+        conversation.bind(AgentId::from_bytes([255; 16]))?;
         assert!(
             InheritedConversationPrefix::select(
                 Authority {
@@ -1734,10 +1858,9 @@ mod tests {
                     id: "parent".into()
                 },
                 0,
-                AgentId::from_bytes([255; 16]),
                 0,
                 &readers,
-                &[],
+                &conversation,
             )
             .is_ok()
         );
@@ -2002,6 +2125,7 @@ mod tests {
             Some("3".into()),
         )?);
         let mut seed = ForkSeed {
+            summary: None,
             operation_id: OperationId::from_bytes([1; 16]),
             parent,
             parent_revision: 3,
@@ -2214,6 +2338,7 @@ mod tests {
             VolumeOwner::Session("session".into()),
         )?);
         let report = ForkReport {
+            summary: None,
             request: ForkRequest {
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
@@ -2222,6 +2347,7 @@ mod tests {
                 child_agent: seed.child_agent,
                 attached_agents: Vec::new(),
                 preparation: ForkPreparation {
+                    summary: None,
                     child_project_volume: match &project_resource.revision {
                         ResourceRevision::Project { volume, .. } => volume.clone(),
                         _ => unreachable!("fixture includes the child project"),
