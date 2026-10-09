@@ -633,8 +633,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
     /// The default is 1024 events. Older identities are resolved through the atomic operation index.
     pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
-        self.reducer.set_resident_event_limit(maximum)?;
+        self.set_resident_event_limit(maximum)?;
         Ok(self)
+    }
+
+    /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
+    /// Canonical history and live projections remain authoritative; older retry
+    /// identities and selections are resolved through the existing atomic index.
+    pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
+        self.reducer.set_resident_event_limit(maximum)
     }
 
     /// Installs the provider boundary that verifies every message file before admission.
@@ -1837,7 +1844,13 @@ mod tests {
             }
             writer.execute(next).await?;
         }
-        assert_eq!(writer.reducer().events().len(), 1);
+        let archived = writer.reducer().archived_through_revision();
+        assert_eq!(archived, writer.reducer().revision() - 1);
+        assert_eq!(writer.reducer().events_after(archived, 2)?.len(), 1);
+        assert!(matches!(
+            writer.reducer().events_after(0, 2),
+            Err(Error::Unsupported(_))
+        ));
         let selection_operation = OperationId::from_bytes([98; 16]);
         let selection = crate::conversation::ModelContextSelection {
             conversation_revision: 10_000,

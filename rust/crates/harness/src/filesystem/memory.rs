@@ -2174,7 +2174,7 @@ mod tests {
             )
             .await?;
         assert_eq!(replayed, output);
-        let aggregate = storage.open_conversation(bundle.limits()).await?;
+        let mut aggregate = storage.open_conversation(bundle.limits()).await?;
         assert_eq!(
             aggregate
                 .reducer()
@@ -2189,7 +2189,7 @@ mod tests {
             .context_selection_for_operation(operation_id)
             .await?
             .ok_or_else(|| Error::Invalid("original context selection missing".into()))?;
-        let aggregate = aggregate.with_resident_event_limit(1)?;
+        aggregate.set_resident_event_limit(1)?;
         assert_eq!(aggregate.reducer().resident_context_selections().count(), 0);
         assert!(
             aggregate
