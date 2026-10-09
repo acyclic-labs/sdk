@@ -93,7 +93,24 @@ impl ThresholdCompaction {
         context: &Context,
         count: &ModelTokenCount,
     ) -> Result<(usize, usize)> {
-        let mut through = self.recent_start(count)?;
+        self.projection_budget_with_message_limit(context, count, usize::MAX)
+    }
+
+    /// Applies a hard retained-message allowance alongside the recent token budget.
+    /// The summary occupies one position. Mandatory messages and complete tool
+    /// exchanges remain verbatim; an impossible allowance fails explicitly.
+    pub fn projection_budget_with_message_limit(
+        &self,
+        context: &Context,
+        count: &ModelTokenCount,
+        maximum_messages: usize,
+    ) -> Result<(usize, usize)> {
+        let recent_messages = maximum_messages.checked_sub(1).ok_or_else(|| {
+            Error::Invalid("compaction requires a summary message allowance".into())
+        })?;
+        let mut through = self
+            .recent_start(count)?
+            .max(context.messages.len().saturating_sub(recent_messages));
         if count.message_tokens.len() != context.messages.len() || through == 0 {
             return Err(Error::Invalid(
                 "no older source fits the compaction policy".into(),
@@ -116,23 +133,70 @@ impl ThresholdCompaction {
         if let Some(first) = pending.values().min() {
             through = *first;
         }
-        if through == 0 {
+        if through == 0 && maximum_messages == usize::MAX {
             return Err(Error::Invalid(
                 "tool exchange leaves no complete older compaction source".into(),
             ));
+        }
+        if through == 0
+            || super::mandatory_positions(context, through, &self.retention).len()
+                >= maximum_messages
+        {
+            through = bounded_source_cut(context, through, &self.retention, maximum_messages)?;
         }
         let mandatory = super::mandatory_positions(context, through, &self.retention);
         let maximum = mandatory
             .len()
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("compaction projection count overflows".into()))?;
-        if maximum > context.messages.len() {
+        if maximum > context.messages.len() || maximum > maximum_messages {
             return Err(Error::Invalid(
                 "mandatory content leaves no compaction source".into(),
             ));
         }
         Ok((through, maximum))
     }
+}
+
+// Mandatory closure shrinks monotonically as the covered prefix advances.
+// Enumerate complete exchange boundaries once, then search them without a
+// quadratic scan over all possible message cuts. The current final message
+// remains outside the summary source.
+fn bounded_source_cut(
+    context: &Context,
+    minimum: usize,
+    retention: &CompactionRetention,
+    maximum_messages: usize,
+) -> Result<usize> {
+    let mut pending = std::collections::BTreeSet::new();
+    let mut cuts = Vec::new();
+    for (position, message) in context
+        .messages
+        .iter()
+        .take(context.messages.len().saturating_sub(1))
+        .enumerate()
+    {
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    pending.insert(call_id);
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    pending.remove(call_id);
+                }
+                _ => {}
+            }
+        }
+        if pending.is_empty() && position + 1 >= minimum {
+            cuts.push(position + 1);
+        }
+    }
+    let position = cuts.partition_point(|cut| {
+        super::mandatory_positions(context, *cut, retention).len() >= maximum_messages
+    });
+    cuts.get(position)
+        .copied()
+        .ok_or_else(|| Error::Invalid("mandatory content leaves no compaction source".into()))
 }
 
 /// Replaceable primitive policy. Custom context transformations can disable
@@ -155,5 +219,69 @@ pub enum CompactionPolicy {
 impl Default for CompactionPolicy {
     fn default() -> Self {
         Self::Threshold(ThresholdCompaction::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ModelContent, ModelMessage, ModelRole, ToolResultContent};
+
+    #[test]
+    fn count_pressure_preserves_instructions_and_complete_exchanges() -> Result<()> {
+        let mut context = Context {
+            messages: (0..8)
+                .map(|index| ModelMessage {
+                    role: if index == 0 {
+                        ModelRole::System
+                    } else {
+                        ModelRole::User
+                    },
+                    content: ModelContent::Text(format!("message {index}")),
+                })
+                .collect(),
+            current_input_index: Some(7),
+            ..Context::default()
+        };
+        let count = ModelTokenCount {
+            request_digest: [0; 32],
+            fixed_tokens: 1,
+            message_tokens: vec![1; 8],
+        };
+        let policy = ThresholdCompaction::default();
+        assert_eq!(
+            policy.projection_budget_with_message_limit(&context, &count, 6)?,
+            (4, 6)
+        );
+        context.messages[3] = ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::ToolCall {
+                call_id: "call".into(),
+                name: "tool".into(),
+                arguments: serde_json::Value::Null,
+            }),
+        };
+        context.messages[4] = ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "call".into(),
+                name: "tool".into(),
+                content: ToolResultContent::Json {
+                    value: serde_json::Value::Null,
+                },
+            }),
+        };
+        assert_eq!(
+            policy.projection_budget_with_message_limit(&context, &count, 6)?,
+            (5, 5)
+        );
+        assert!(
+            policy
+                .projection_budget_with_message_limit(&context, &count, 2)
+                .is_err()
+        );
+        // Explicit token-only callers retain their original no-pressure behavior.
+        assert!(policy.projection_budget(&context, &count).is_err());
+        Ok(())
     }
 }
