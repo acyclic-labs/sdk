@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
@@ -142,13 +143,14 @@ const adapter = connectNodeAdapter({ routes(router) {
   router.service(StreamService, implementation);
 } });
 const server = createSecureServer({ key: tls.key, cert: tls.certificate }, adapter);
-await new Promise(resolve => server.listen(0, "localhost", resolve));
+const closeServer = ownFixtureServer(server);
 try {
+  await new Promise(resolve => server.listen(0, "localhost", resolve));
   for (const runtime of [process.execPath, "bun"]) await new Promise((resolve, reject) => {
     const child = spawn(runtime, [file, "--client"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(JSON.stringify({ endpoint: `https://localhost:${server.address().port}`, token: "conformance", caCertificate: tls.certificate }));
     child.on("error", reject);
     child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Stream provider conformance exited ${code}`)));
   });
-} finally { await new Promise(resolve => server.close(resolve)); memory.free(); }
+} finally { await closeServer(); memory.free(); }
 

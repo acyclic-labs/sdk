@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createSecureServer } from "node:http2";
@@ -235,17 +236,18 @@ const wasmServer = createServer((request, response) => {
   wasmRequests.push(request.url);
   adapter(request, response);
 });
-await new Promise(resolve => server.listen(0, "localhost", resolve));
-await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
-await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
-const options = {
-  endpoint: `https://localhost:${server.address().port}`,
-  actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
-  httpEndpoint: `http://localhost:${httpServer.address().port}`,
-  token: "conformance",
-  caCertificate: identity.certificate,
-};
+const closeServers = [httpServer, server, wasmServer].map(ownFixtureServer);
 try {
+  await new Promise(resolve => server.listen(0, "localhost", resolve));
+  await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
+  await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
+  const options = {
+    endpoint: `https://localhost:${server.address().port}`,
+    actorsWasmEndpoint: `http://localhost:${wasmServer.address().port}`,
+    httpEndpoint: `http://localhost:${httpServer.address().port}`,
+    token: "conformance",
+    caCertificate: identity.certificate,
+  };
   for (const runtime of [process.execPath, "bun"]) {
     await new Promise((resolve, reject) => {
       const child = spawn(runtime, [file, "--client"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
@@ -269,7 +271,5 @@ try {
   }
   for (const [method, calls] of httpSeen) assert.equal(calls, 1, method);
 } finally {
-  await new Promise(resolve => httpServer.close(resolve));
-  await new Promise(resolve => server.close(resolve));
-  await new Promise(resolve => wasmServer.close(resolve));
+  await Promise.all(closeServers.map(close => close()));
 }

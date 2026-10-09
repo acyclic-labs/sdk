@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
@@ -169,9 +170,10 @@ if (process.argv.includes("--client")) {
     }
   } });
   const server = createSecureServer({ key: identity.key, cert: identity.certificate }, adapter);
-  await new Promise(resolve => server.listen(0, "localhost", resolve));
-  const options = { endpoint: `https://localhost:${server.address().port}`, token: "fixture", caCertificate: identity.certificate };
+  const closeServer = ownFixtureServer(server);
   try {
+    await new Promise(resolve => server.listen(0, "localhost", resolve));
+    const options = { endpoint: `https://localhost:${server.address().port}`, token: "fixture", caCertificate: identity.certificate };
     for (const runtime of [process.execPath, "bun"]) {
       memory = new ObjectsV1Memory(64n * 1024n * 1024n, 10000);
       seen.clear();
@@ -192,5 +194,5 @@ if (process.argv.includes("--client")) {
         ]);
       } finally { clearTimeout(timer); }
     }
-  } finally { await new Promise(resolve => server.close(resolve)); }
+  } finally { await closeServer(); }
 }

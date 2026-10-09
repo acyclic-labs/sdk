@@ -1,3 +1,4 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import { lifecycle } from "./v1-lifecycle.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -66,9 +67,12 @@ async function fixture() {
       response.end(encode_objects_v1_json("ErrorDetail", toBinary(wire.ErrorDetailSchema, make("ErrorDetail", { code })), 1024));
     }
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  return { endpoint: `http://127.0.0.1:${server.address().port}`, seen, close: () => new Promise(resolve => server.close(resolve)) };
+  const close = ownFixtureServer(server);
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    return { endpoint: `http://127.0.0.1:${server.address().port}`, seen, close };
+  } catch (error) { await close(); throw error; }
 }
 
 test("Objects v1 Rust WASM provider covers every operation and atomic retry semantics", async () => {

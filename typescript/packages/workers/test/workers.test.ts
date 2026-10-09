@@ -1,6 +1,7 @@
+import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import { describe, expect, test } from "bun:test";
 import { once } from "node:events";
-import { createSecureServer, type ServerHttp2Session, type ServerHttp2Stream } from "node:http2";
+import { createSecureServer, type ServerHttp2Stream } from "node:http2";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -12,9 +13,8 @@ import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
 async function withPeer(run: (endpoint: string, seen: string[], caCertificate: string) => Promise<void>) {
   const identity = JSON.parse(execFileSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: fileURLToPath(new URL("../../../../", import.meta.url)), encoding: "utf8" }));
   const server = createSecureServer({ key: identity.key, cert: identity.certificate });
-  const sessions = new Set<ServerHttp2Session>();
+  const closeServer = ownFixtureServer(server);
   const seen: string[] = [];
-  server.on("session", session => { sessions.add(session); session.on("close", () => sessions.delete(session)); });
   server.on("stream", (stream: ServerHttp2Stream, headers) => {
     const chunks: Buffer[] = [];
     stream.on("data", chunk => chunks.push(Buffer.from(chunk)));
@@ -38,12 +38,13 @@ async function withPeer(run: (endpoint: string, seen: string[], caCertificate: s
       stream.end(frame);
     });
   });
-  server.listen(0, "localhost");
-  await once(server, "listening");
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("local peer address missing");
-  try { await run(`https://localhost:${address.port}`, seen, identity.certificate); }
-  finally { for (const session of sessions) session.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  try {
+    server.listen(0, "localhost");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("local peer address missing");
+    await run(`https://localhost:${address.port}`, seen, identity.certificate);
+  } finally { await closeServer(); }
 }
 
 describe("Workers Rust-backed transport", () => {
