@@ -2184,7 +2184,25 @@ mod tests {
                 .len(),
             2
         );
-        assert_eq!(aggregate.reducer().context_selections().len(), 1);
+        assert_eq!(aggregate.reducer().resident_context_selections().count(), 1);
+        let expected_selection = aggregate
+            .context_selection_for_operation(operation_id)
+            .await?
+            .ok_or_else(|| Error::Invalid("original context selection missing".into()))?;
+        let aggregate = aggregate.with_resident_event_limit(1)?;
+        assert_eq!(aggregate.reducer().resident_context_selections().count(), 0);
+        assert!(
+            aggregate
+                .reducer()
+                .context_selection_for_operation(operation_id)
+                .is_none()
+        );
+        assert_eq!(
+            aggregate
+                .context_selection_for_operation(operation_id)
+                .await?,
+            Some(expected_selection)
+        );
         drop(aggregate);
         storage.run_prompt(&bundle, "follow-up").await?;
         assert_eq!(

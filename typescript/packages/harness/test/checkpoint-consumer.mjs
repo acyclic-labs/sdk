@@ -20,7 +20,13 @@ export async function exerciseCheckpoint(Harness, harness, options, contracts) {
   if (!contracts.canonicalEqual(harness.head(), [snapshot.authority, snapshot.revision])) {
     throw new Error("command head disagrees with the checkpoint");
   }
-  if (snapshot.format_version !== 3) throw new Error("checkpoint format was not updated");
+  if (snapshot.format_version !== 5) throw new Error("checkpoint format was not updated");
+  for (const format_version of [2, 3, 4]) {
+    let rejected = false;
+    try { (await Harness.restore({ ...snapshot, format_version }, options)).free(); }
+    catch (error) { rejected = error.code === ErrorCode.UNSUPPORTED; }
+    if (!rejected) throw new Error("obsolete checkpoint format was accepted");
+  }
   const restored = await Harness.restore(snapshot, options);
   try {
     if (!contracts.canonicalEqual(restored.snapshot(), snapshot)

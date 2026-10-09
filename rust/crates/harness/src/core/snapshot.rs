@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     EffectId, Error, Result,
-    conversation::{ConversationState, FileRef, ModelContextSelection},
+    conversation::{ConversationState, FileRef},
     fork::ForkSeed,
     interaction::{InteractionResolution, InteractionTicket},
 };
@@ -47,7 +47,6 @@ struct Projection {
     forks: Vec<(Authority, ForkSeed)>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
-    context_selections: Vec<ModelContextSelection>,
     latest_context_checkpoint: Option<FileRef>,
     interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
     // Rebuild the retry map from the authenticated cache, without applying
@@ -70,13 +69,12 @@ impl Reducer {
             forks: self.forks.clone().into_iter().collect(),
             published_merges: self.published_merges.clone(),
             conversation: self.conversation.clone(),
-            context_selections: self.context_selections.clone(),
             latest_context_checkpoint: self.latest_context_checkpoint.clone(),
             interactions: self.interactions.clone(),
             bindings: registry_bindings(&self.schemas)?,
         };
         let mut snapshot = Snapshot {
-            format_version: 4,
+            format_version: 5,
             authority: self.authority.clone(),
             revision: self.revision,
             events: self.events.iter().cloned().collect(),
@@ -122,7 +120,6 @@ impl Reducer {
             forks: projection.forks.into_iter().collect(),
             published_merges: projection.published_merges,
             conversation: projection.conversation,
-            context_selections: projection.context_selections,
             latest_context_checkpoint: projection.latest_context_checkpoint,
             interactions: projection.interactions,
         })
@@ -141,7 +138,7 @@ impl Snapshot {
     }
 
     fn verify(&self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry) -> Result<()> {
-        if self.format_version != 4 {
+        if self.format_version != 5 {
             return Err(Error::Unsupported(format!(
                 "snapshot format {}",
                 self.format_version
@@ -204,7 +201,7 @@ impl AuthorityVerifier {
             snapshot.state_digest,
         ))?;
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v4/reducer-checkpoint\0");
+        hasher.update(b"harness/v5/reducer-checkpoint\0");
         hasher.update(&(canonical.len() as u64).to_le_bytes());
         hasher.update(&canonical);
         Ok(*hasher.finalize().as_bytes())

@@ -1472,7 +1472,6 @@ pub struct Reducer {
     forks: BTreeMap<Authority, ForkSeed>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
-    context_selections: Vec<ModelContextSelection>,
     latest_context_checkpoint: Option<FileRef>,
     interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
 }
@@ -1503,7 +1502,6 @@ impl Reducer {
             forks: BTreeMap::new(),
             published_merges: BTreeSet::new(),
             conversation: ConversationState::default(),
-            context_selections: Vec::new(),
             latest_context_checkpoint: None,
             interactions: BTreeMap::new(),
         }
@@ -1686,10 +1684,13 @@ impl Reducer {
         (self.authority.kind == AggregateKind::Conversation).then_some(&self.conversation)
     }
 
-    /// Returns revision-pinned model context selections in admission order.
-    #[must_use]
-    pub fn context_selections(&self) -> &[ModelContextSelection] {
-        &self.context_selections
+    /// Enumerates context selections in the resident event suffix, in admission order.
+    /// Older selections must be resolved through the authoritative Stream operation index.
+    pub fn resident_context_selections(&self) -> impl Iterator<Item = &ModelContextSelection> {
+        self.events.iter().filter_map(|event| match &event.payload {
+            EventPayload::ModelContextSelected { selection } => Some(selection),
+            _ => None,
+        })
     }
 
     /// Latest owner-published canonical base, maintained by selection replay.
@@ -2910,7 +2911,6 @@ impl Reducer {
                 if let Some(checkpoint) = &selection.checkpoint {
                     self.latest_context_checkpoint = Some(checkpoint.clone());
                 }
-                self.context_selections.push(selection.clone());
             }
             EventPayload::InteractionOpened { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
@@ -5234,7 +5234,10 @@ resolve_interaction interaction_resolved interaction:resolve";
                 selection: selection.clone(),
             },
         ))?;
-        assert_eq!(reducer.context_selections(), &[selection]);
+        assert_eq!(
+            reducer.resident_context_selections().collect::<Vec<_>>(),
+            vec![&selection]
+        );
         assert!(matches!(
             reducer.plan(&command(
                 operation(4),
@@ -5249,9 +5252,38 @@ resolve_interaction interaction_resolved interaction:resolve";
             )),
             Err(Error::Conflict(_))
         ));
-        let restored = Reducer::restore(reducer.snapshot()?, verifier, schemas())?;
+        let restored = Reducer::restore(reducer.snapshot()?, verifier.clone(), schemas())?;
         assert_eq!(restored.conversation(), reducer.conversation());
-        assert_eq!(restored.context_selections(), reducer.context_selections());
+        assert_eq!(
+            restored.resident_context_selections().collect::<Vec<_>>(),
+            reducer.resident_context_selections().collect::<Vec<_>>()
+        );
+        reducer.set_resident_event_limit(1)?;
+        for identity in 5..=68 {
+            reducer.apply(command(
+                operation(identity),
+                reducer.revision(),
+                Action::SelectModelContext {
+                    selection: selection.clone(),
+                },
+            ))?;
+            assert_eq!(reducer.resident_context_selections().count(), 1);
+        }
+        assert!(
+            reducer
+                .context_selection_for_operation(operation(3))
+                .is_none()
+        );
+        assert_eq!(
+            reducer.context_selection_for_operation(operation(68)),
+            Some(&selection)
+        );
+        let restored = Reducer::restore(reducer.snapshot()?, verifier, schemas())?;
+        assert_eq!(restored.resident_context_selections().count(), 1);
+        assert_eq!(
+            restored.context_selection_for_operation(operation(68)),
+            Some(&selection)
+        );
         Ok(())
     }
 }
