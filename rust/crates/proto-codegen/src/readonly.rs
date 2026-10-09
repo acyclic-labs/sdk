@@ -82,7 +82,8 @@ export function canonicalSemantic(value: unknown): unknown {
   if (value instanceof Uint8Array) return value.slice();
   if (Array.isArray(value)) return Object.freeze(value.map(canonicalSemantic));
   const entries = Object.entries(value);
-  if (entries.length === 1 && entries[0][0] === "case" && entries[0][1] === undefined) return undefined;
+  const only = entries.length === 1 ? entries[0] : undefined;
+  if (only?.[0] === "case" && only[1] === undefined) return undefined;
   return Object.freeze(Object.fromEntries(entries.filter(([key, item]) => key !== "$typeName" && key !== "$unknown" && item !== undefined)
     .map(([key, item]) => [key, canonicalSemantic(item)]).filter(([, item]) => item !== undefined)));
 }

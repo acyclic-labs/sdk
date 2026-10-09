@@ -8,6 +8,9 @@ import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest
 import { nativeFamily } from "./native-family.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const args = process.argv.slice(2);
+if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Error("usage: check-generated.mjs [--source-only]");
+const sourceOnly = args.includes("--source-only");
 for (const key of ["actors", "workers", "stream"]) {
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
@@ -256,7 +259,7 @@ try {
       throw new Error(`packaged ${name} TypeScript file set drift`);
     }
   }
-  for (const wasmPackage of wasmPackages) {
+  for (const wasmPackage of sourceOnly ? [] : wasmPackages) {
     await checkWasmPackage(wasmPackage);
   }
 } finally {
