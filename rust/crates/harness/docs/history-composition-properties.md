@@ -11,6 +11,7 @@ provider reconciliation own admission and effects.
 | --- | --- | --- |
 | A history traversal excludes later appends. | `HistoryReader::pin` captures an authority and event cut. `read_page` advances only within that cut, charging event and encoded-byte allowances. | The provider retains committed immutable events. A page allowance bounds one read, not total archival traversal. |
 | A cold lookup authenticates its result. | Operation, message-ID and message-sequence locators are published atomically with the canonical event and aggregate-tail condition. Reads verify the locator, event, authority, attestation and common atomic commit. | An unattested locator alone never authorizes an operation or message. Existing stores without these indexes require explicit handling; no migration fallback scans lifetime history. |
+| A cold logical-message head has constant read work. | Binding and every ordinary or merge-notice append publish a head locator in the existing atomic event commit. `latest_conversation_message` pins its tail and verifies the locator and original event through the shared atomic-proof checker. | Two protocol-bounded record reads, with a combined explicit byte allowance, independent of retained history. Concurrent later appends are excluded. Missing head state for a nonempty aggregate fails rather than reporting empty history. This observation is separate from an older archival cursor. |
 | Resident event eviction preserves retry identity. | `StreamAggregate` keeps a configurable event suffix and resolves evicted operations through the atomic locator. Its indexed planner follows that authenticated lookup. | Conversation messages and other reducer metadata are still lifetime-sized. This is a bounded event cache, not a constant-memory aggregate. |
 | A snapshot cannot manufacture state. | The original issuer authenticates the snapshot's complete projection, cut and digest. Restore checks the original authority and schema registry before applying a canonical suffix. | Trust rests on the existing issuer key and provider integrity. Snapshot size remains proportional to its projection. |
 | A selected context has explicit bounds. | Selection, rendering, whole-tool-batch checks and each stage validate the admitted limits. Sources and stage inputs use separate allowances. | Oversized mandatory content fails explicitly. Selection must not retain a tool result without its call or split a completed tool batch. |
@@ -25,7 +26,9 @@ provider reconciliation own admission and effects.
 
 The native library tests exercise authenticated snapshot restoration, malformed
 history and locator rejection, atomic publication and lost acknowledgements,
-bounded pages, eviction, cold indexed lookup, whole tool exchanges, source and
+bounded pages, eviction, cold indexed lookup, constant two-record head reads at
+1, 1,000 and 10,000 retained messages, a real atomic append racing a pinned head
+read, forged separate-commit head locators, whole tool exchanges, source and
 projection substitution, summary uncertainty and accounting bounds.
 
 `tests/context_continuation.rs` exercises the real Filesystem execution journal:

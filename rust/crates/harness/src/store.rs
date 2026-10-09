@@ -1854,6 +1854,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        let agent = crate::AgentId::from_bytes([8; 16]);
+        let file = content()?;
+        let scope = issuer().root_for_agent(
+            agent,
+            "head-writer",
+            Capabilities::new([
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                file.read_capability()?,
+            ]),
+        );
+        let bind = Command {
+            operation_id: OperationId::from_bytes([101; 16]),
+            idempotency_key: IdempotencyKey::new("head-bind")?,
+            expected_revision: 0,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::BindConversation { agent },
+        };
+        writer.execute(bind.clone()).await?;
+        let reader = writer.history_reader()?;
+        assert!(reader.latest_conversation_message(65_536).await?.is_none());
+        let message = crate::conversation::ConversationMessage {
+            id: uuid::Uuid::from_u128(1),
+            sequence: 1,
+            kind: crate::conversation::MessageKind::User,
+            content: file,
+            attachments: Vec::new().into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: Default::default(),
+        };
+        let command = Command {
+            operation_id: OperationId::from_bytes([102; 16]),
+            idempotency_key: IdempotencyKey::new("head-racing-user")?,
+            expected_revision: 1,
+            scope,
+            causal_parent: None,
+            action: Action::AppendConversationMessage {
+                message: Box::new(message.clone()),
+            },
+        };
+        let (ApplyResult::Applied { event } | ApplyResult::Replayed { event }) =
+            writer.reducer().plan(&command)?;
+        let publication = operations::IndexedPublication::new(
+            &authority(),
+            &event,
+            encode_event(&authority(), &event)?,
+        )?;
+        *provider
+            .message_head_race
+            .lock()
+            .map_err(|_| Error::Storage("head race lock".into()))? = Some(
+            publication
+                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?)
+                .await?,
+        );
+        // The first lookup captured the empty head before this actual atomic
+        // append. The next lookup sees the newly committed message.
+        assert!(reader.latest_conversation_message(65_536).await?.is_none());
+        assert_eq!(
+            reader.latest_conversation_message(65_536).await?,
+            Some(message)
+        );
+        drop(writer);
+        let reopened =
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+        assert_eq!(
+            reopened
+                .reducer()
+                .conversation()
+                .map(|state| state.messages().len()),
+            Some(1)
+        );
+        for fault in [1, 2, 3, 4] {
+            provider.history_read_fault.store(fault, Ordering::SeqCst);
+            assert!(reader.latest_conversation_message(65_536).await.is_err());
+        }
+        let head = client.stream("harness/v2/conversation-heads/conversations/conversation-1")?;
+        let records = head.read(1, 1).await?.try_collect::<Vec<_>>().await?;
+        let mut forged: Value = crate::executor::decode_json(
+            &records
+                .first()
+                .ok_or_else(|| Error::Storage("head record missing".into()))?
+                .value,
+        )?;
+        forged["sequence"] = json!(2);
+        head.append(crate::contract::canonical_json_bytes(&forged)?)
+            .await?;
+        assert!(matches!(reader.latest_conversation_message(65_536).await,
+            Err(Error::Storage(detail)) if detail.contains("atomic canonical event")));
+
+        // A separately appended canonical binding has no atomic head proof.
+        // Missing derived state must not be reported as an empty conversation.
+        let incomplete = StreamClient::new(Arc::new(MemoryStream::default()));
+        let reducer = Reducer::new(authority(), issuer().verifier(), schemas());
+        let (ApplyResult::Applied { event } | ApplyResult::Replayed { event }) =
+            reducer.plan(&bind)?;
+        incomplete
+            .stream(authority().stream_path()?)?
+            .append(encode_event(&authority(), &event)?)
+            .await?;
+        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier())?;
+        assert!(matches!(
+            incomplete_reader.latest_conversation_message(65_536).await,
+            Err(Error::Storage(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction() -> Result<()>
     {
         use std::sync::atomic::Ordering;
@@ -1888,6 +2006,7 @@ mod tests {
             .await?;
         let reader = writer.history_reader()?;
         let empty = reader.pin(0).await?;
+        assert!(reader.latest_conversation_message(65_536).await?.is_none());
         let message = |sequence| crate::conversation::ConversationMessage {
             id: uuid::Uuid::from_u128(u128::from(sequence)),
             sequence,
@@ -1916,6 +2035,20 @@ mod tests {
                 first_command = Some(next.clone());
             }
             writer.execute(next).await?;
+            if matches!(sequence, 1 | 1_000 | 10_000) {
+                // A fresh reader has no reducer or cached history. The same
+                // two reads suffice while retained history grows by 10,000x.
+                let cold = HistoryReader::new(&client, &authority(), issuer().verifier())?;
+                provider.forbid_writes.store(true, Ordering::SeqCst);
+                provider.observation_reads.store(0, Ordering::SeqCst);
+                assert_eq!(
+                    cold.latest_conversation_message(65_536).await?,
+                    Some(message(sequence))
+                );
+                assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+                assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+                provider.forbid_writes.store(false, Ordering::SeqCst);
+            }
         }
         let archived = writer.reducer().archived_through_revision();
         assert_eq!(archived, writer.reducer().revision() - 1);
@@ -2005,6 +2138,23 @@ mod tests {
             .append(crate::contract::canonical_json_bytes(&forged_sequence)?)
             .await?;
         provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert_eq!(
+            reader.latest_conversation_message(65_536).await?,
+            Some(future.clone())
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader.latest_conversation_message(0).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            reader.latest_conversation_message(1).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 1);
         let range_limits = HistoryReadLimits {
             maximum_events: 3,
             maximum_bytes: 65_536,

@@ -388,6 +388,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     assert_eq!(notice.sequence, 2);
     assert_eq!(notice.kind, MessageKind::Merge);
     assert_eq!(conversation.message(notice_id), Some(&notice));
+    assert_eq!(
+        history.latest_conversation_message(65_536).await?,
+        Some(notice)
+    );
     let messages = history
         .conversation_range(
             &cut,

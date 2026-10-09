@@ -103,6 +103,21 @@ impl WasmBrowserHistoryReader {
         )
     }
 
+    /// Reads the same atomic logical-message head without constructing a reducer.
+    #[wasm_bindgen(js_name = latestConversationMessage)]
+    pub async fn latest_conversation_message(
+        &self,
+        maximum_bytes: u64,
+    ) -> Result<JsValue, JsValue> {
+        to_js(
+            &self
+                .inner
+                .latest_conversation_message(maximum_bytes)
+                .await
+                .map_err(js_error)?,
+        )
+    }
+
     /// Resolves the existing atomically published operation location and event.
     #[wasm_bindgen(js_name = operationEvent)]
     pub async fn operation_event(&self, operation: JsValue) -> Result<JsValue, JsValue> {

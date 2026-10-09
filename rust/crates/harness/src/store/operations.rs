@@ -44,6 +44,21 @@ fn message_path(authority: &Authority, message: uuid::Uuid) -> Result<StreamPath
     ))?)
 }
 
+fn message_head_path(authority: &Authority) -> Result<StreamPath> {
+    if authority.kind != crate::core::AggregateKind::Conversation {
+        return Err(Error::Invalid(
+            "message head requires a conversation".into(),
+        ));
+    }
+    let path = authority.stream_path()?;
+    let suffix = path
+        .strip_prefix("harness/v2/")
+        .ok_or_else(|| Error::Invalid("message head authority path is invalid".into()))?;
+    Ok(StreamPath::new(format!(
+        "harness/v2/conversation-heads/{suffix}"
+    ))?)
+}
+
 fn message_sequence_path(authority: &Authority, sequence: u64) -> Result<StreamPath> {
     if sequence == 0 || authority.kind != crate::core::AggregateKind::Conversation {
         return Err(Error::Invalid(
@@ -75,7 +90,7 @@ pub(crate) struct IndexedPublication {
     pub(crate) path: StreamPath,
     pub(crate) expected_tail: u64,
     pub(crate) bytes: Bytes,
-    indexes: Vec<(StreamPath, Bytes)>,
+    indexes: Vec<(StreamPath, u64, Bytes)>,
 }
 
 impl IndexedPublication {
@@ -92,8 +107,23 @@ impl IndexedPublication {
         };
         let mut indexes = vec![(
             operation_path(authority, event.operation_id)?,
+            0,
             Bytes::from(crate::contract::canonical_json_bytes(&location)?),
         )];
+        if matches!(
+            event.payload,
+            crate::core::EventPayload::ConversationBound { .. }
+        ) {
+            indexes.push((
+                message_head_path(authority)?,
+                0,
+                Bytes::from(crate::contract::canonical_json_bytes(&MessageLocation {
+                    location: location.clone(),
+                    message_id: uuid::Uuid::nil(),
+                    sequence: 0,
+                })?),
+            ));
+        }
         let message = match &event.payload {
             crate::core::EventPayload::ConversationMessageAppended { message } => {
                 Some(message.as_ref())
@@ -110,10 +140,21 @@ impl IndexedPublication {
                 })?);
             indexes.push((
                 message_path(authority, message.id)?,
+                0,
                 message_location.clone(),
             ));
             indexes.push((
                 message_sequence_path(authority, message.sequence)?,
+                0,
+                message_location.clone(),
+            ));
+            // One locator per logical message, in the same atomic commit as
+            // the canonical event and immutable ID/sequence indexes. Its tail
+            // is one plus the logical message count, including the initial
+            // binding marker, independent of subsequent non-message events.
+            indexes.push((
+                message_head_path(authority)?,
+                message.sequence,
                 message_location,
             ));
         }
@@ -127,10 +168,15 @@ impl IndexedPublication {
     }
 
     pub(crate) fn add_index(&self, request: &mut CommitRequest) {
-        for (path, bytes) in &self.indexes {
-            request
-                .conditions
-                .push(CommitCondition::Absent { path: path.clone() });
+        for (path, tail, bytes) in &self.indexes {
+            request.conditions.push(if *tail == 0 {
+                CommitCondition::Absent { path: path.clone() }
+            } else {
+                CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: *tail,
+                }
+            });
             request.mutations.push(CommitMutation::Append {
                 path: path.clone(),
                 records: vec![bytes.clone()],
@@ -174,7 +220,11 @@ impl IndexedPublication {
             ));
         }
         for (path, tail, bytes) in std::iter::once((&self.path, self.expected_tail, &self.bytes))
-            .chain(self.indexes.iter().map(|(path, bytes)| (path, 0, bytes)))
+            .chain(
+                self.indexes
+                    .iter()
+                    .map(|(path, tail, bytes)| (path, *tail, bytes)),
+            )
         {
             let append = envelope
                 .mutations
@@ -394,12 +444,39 @@ async fn find_message_at_locator<P: StreamProvider>(
     if client.stream(path.as_str())?.tail().await? != 1 {
         return Err(Error::Storage("message location is not immutable".into()));
     }
+    verify_message_locator(
+        client,
+        authority,
+        verifier,
+        index,
+        expected_id,
+        expected_sequence,
+        through_revision,
+        maximum_bytes,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared verification binds one atomic locator to its exact identity and read boundary"
+)]
+async fn verify_message_locator<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    index: Record,
+    expected_id: Option<uuid::Uuid>,
+    expected_sequence: Option<u64>,
+    through_revision: u64,
+    maximum_bytes: u64,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     let location: MessageLocation = crate::executor::decode_json(&index.value)?;
     if &location.location.authority != authority
         || expected_id.is_some_and(|id| location.message_id != id)
         || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
         || location.location.revision == 0
-        || location.sequence == 0
+        || (location.sequence == 0 && expected_sequence != Some(0))
     {
         return Err(Error::Storage(
             "message location identity is invalid".into(),
@@ -423,6 +500,19 @@ async fn find_message_at_locator<P: StreamProvider>(
             "message location differs from its atomic canonical event".into(),
         ));
     }
+    if location.sequence == 0 {
+        return if location.message_id.is_nil()
+            && matches!(
+                event.payload,
+                crate::core::EventPayload::ConversationBound { .. }
+            ) {
+            Ok((None, consumed_bytes))
+        } else {
+            Err(Error::Storage(
+                "empty message head differs from its canonical binding".into(),
+            ))
+        };
+    }
     let message = match event.payload {
         crate::core::EventPayload::ConversationMessageAppended { message } => *message,
         crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
@@ -441,4 +531,55 @@ async fn find_message_at_locator<P: StreamProvider>(
         (event.revision <= through_revision).then_some(message),
         consumed_bytes,
     ))
+}
+
+/// Captures one logical message head without a reducer or retained-history scan.
+/// The head locator and canonical record share the existing publication commit.
+pub(crate) async fn latest_message<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    maximum_bytes: u64,
+) -> Result<Option<crate::conversation::ConversationMessage>> {
+    verifier.verify_audience(authority)?;
+    if maximum_bytes == 0 {
+        return Err(Error::Invalid(
+            "message lookup byte bound must be positive".into(),
+        ));
+    }
+    let path = message_head_path(authority)?;
+    let through = match client.stream(path.as_str())?.tail().await {
+        Ok(0) => return Err(Error::Storage("message head is empty".into())),
+        Ok(through) => through,
+        Err(acyclic_stream::StreamError::NotFound) => {
+            return match client.stream(authority.stream_path()?)?.tail().await {
+                Ok(0) | Err(acyclic_stream::StreamError::NotFound) => Ok(None),
+                Ok(_) => Err(Error::Storage(
+                    "message head is absent for a nonempty aggregate".into(),
+                )),
+                Err(error) => Err(error.into()),
+            };
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let index = one_record(client, &path, through - 1)
+        .await?
+        .ok_or_else(|| {
+            Error::Storage("message head is missing before its committed tail".into())
+        })?;
+    if index.value.len() as u64 > maximum_bytes {
+        return Err(Error::Invalid("message lookup exceeds byte bound".into()));
+    }
+    verify_message_locator(
+        client,
+        authority,
+        verifier,
+        index,
+        None,
+        Some(through - 1),
+        u64::MAX,
+        maximum_bytes,
+    )
+    .await
+    .map(|(message, _)| message)
 }

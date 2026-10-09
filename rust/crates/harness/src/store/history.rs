@@ -173,6 +173,24 @@ impl<P: StreamProvider> HistoryReader<P> {
         .await
     }
 
+    /// Captures the latest canonical message using one head locator and one
+    /// owner-attested event. The byte allowance covers both encoded records.
+    /// The head is pinned before reading; a concurrent later append is excluded.
+    /// This is a new head observation, not a continuation of an older cursor.
+    /// Empty conversations return `None`; missing/corrupt indexed records fail.
+    pub async fn latest_conversation_message(
+        &self,
+        maximum_bytes: u64,
+    ) -> Result<Option<crate::conversation::ConversationMessage>> {
+        super::operations::latest_message(
+            &self.client,
+            self.verifier.audience(),
+            &self.verifier,
+            maximum_bytes,
+        )
+        .await
+    }
+
     /// Resolves one message at the pinned boundary using its atomic locator.
     /// Reads at most one locator and one canonical record; no history scan or
     /// reducer hydration occurs. The byte budget includes both encoded records.

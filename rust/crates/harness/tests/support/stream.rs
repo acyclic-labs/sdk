@@ -31,6 +31,7 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub execution_tail: std::sync::atomic::AtomicU64,
     pub execution_faults: std::sync::atomic::AtomicUsize,
     pub history_read_fault: std::sync::atomic::AtomicU8,
+    pub message_head_race: std::sync::Mutex<Option<acyclic_stream::CommitRequest>>,
     pub aggregate_commit_fault: std::sync::atomic::AtomicU8,
     pub aggregate_commits: std::sync::atomic::AtomicUsize,
     pub hide_aggregate_read: std::sync::atomic::AtomicBool,
@@ -54,6 +55,7 @@ impl<P> LostSessionAck<P> {
             execution_tail: Default::default(),
             execution_faults: Default::default(),
             history_read_fault: Default::default(),
+            message_head_race: Default::default(),
             aggregate_commit_fault: Default::default(),
             aggregate_commits: Default::default(),
             hide_aggregate_read: Default::default(),
@@ -196,6 +198,21 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             return Err(StreamError::Unavailable);
+        }
+        let head_race = if request
+            .path
+            .as_str()
+            .starts_with("harness/v2/conversation-heads/")
+        {
+            self.message_head_race
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take()
+        } else {
+            None
+        };
+        if let Some(commit) = head_race {
+            self.inner.commit(commit).await?;
         }
         let fault = self
             .history_read_fault
