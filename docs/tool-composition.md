@@ -174,7 +174,25 @@ The browser runtime feature remains dependent on I's qualified main landing.
 B's full cold-open, compaction and Summary integration also remains open. The
 schema generator's resolved dependencies are locked.
 
-Fresh generated WASM/declarations, combined native/browser/adversarial tests,
-installed-artifact checks, the final simplification review, required exact-head
-CI and an owned main merge with verified landing remain open. No full D goal
-completion is claimed.
+The owned continuation regenerated full-D Harness WASM/declarations from Rust,
+including nullable native configuration and readonly projected parts, and built
+the actual Objects WASM dependency. The file-tool fixture is produced by the
+native executable and repository renderer. Current Harness/Pi package builds,
+both type-contract suites, and all 269 source tests pass. Production snapshot
+`454479f33` passes all 13 named portable/native/replay integration tests. The
+focused tool/schema suite passed 23 tests on production-equivalent `2e3d3d3b6`;
+the following change only consumes an owned definition in the fixture example.
+Strict full-D lint is still finishing; these are qualified subsets, not a pass
+for the default LocalHarness context path or the complete goal.
+
+PR319 head `0cd892ed834acbefdeac5834e46478d5814bc553` independently passed
+required SDK Qualification run 37963332851, Linux 326 tests and strict lint,
+Windows 304 tests, WASM build/strict lint, 267 source tests and type checks,
+and 51 fresh installed-package tests plus consumer types/exports. Mac native
+semantic qualification still awaits the existing ivar Tailscale authentication;
+no transfer, Mac pass, merge or landing is claimed.
+
+The default portable consumer adaptation, browser and full context/compaction
+integration, combined final platform/adversarial and installed-artifact checks,
+final simplification review, required exact-head CI and owned main landing
+remain open. No full D goal completion is claimed.
