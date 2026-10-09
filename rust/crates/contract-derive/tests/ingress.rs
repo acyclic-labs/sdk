@@ -337,19 +337,7 @@ fn real_protoc_accepts_compiler_linked_schema_and_all_stream_shapes()
     let first = std::fs::read(&proto)?;
     TestFile::render(root.path())?;
     assert_eq!(std::fs::read(&proto)?, first);
-    let output = root.path().join("test.bin");
-    let result = std::process::Command::new(protoc_bin_vendored::protoc_bin_path()?)
-        .arg(format!("--proto_path={}", root.path().display()))
-        .arg(format!("--descriptor_set_out={}", output.display()))
-        .arg(&proto)
-        .output()?;
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let bytes = std::fs::read(output)?;
-    let set = prost_types::FileDescriptorSet::decode(bytes.as_slice())?;
+    let set = compile_schema(root.path(), &proto)?;
     assert_eq!(set.file.len(), 1);
     let file = set.file.first().ok_or("missing file descriptor")?;
     assert_eq!(file.package.as_deref(), Some(TestFile::PACKAGE));
@@ -389,4 +377,103 @@ fn real_protoc_accepts_compiler_linked_schema_and_all_stream_shapes()
         vec![Some(1), Some(2), Some(3), Some(4)]
     );
     Ok(())
+}
+
+fn compile_schema(
+    root: &std::path::Path,
+    proto: &std::path::Path,
+) -> Result<prost_types::FileDescriptorSet, Box<dyn std::error::Error>> {
+    let output = root.join("descriptor.bin");
+    let result = std::process::Command::new(protoc_bin_vendored::protoc_bin_path()?)
+        .arg(format!("--proto_path={}", root.display()))
+        .arg(format!("--descriptor_set_out={}", output.display()))
+        .arg(proto)
+        .output()?;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let bytes = std::fs::read(output)?;
+    Ok(prost_types::FileDescriptorSet::decode(bytes.as_slice())?)
+}
+
+#[allow(
+    non_camel_case_types,
+    reason = "Rust keyword regressions require raw identifier declarations."
+)]
+mod raw_identifiers {
+    use super::*;
+    #[acyclic_contract_derive::enumeration(error = Admission, unknown = Admission::Unknown)]
+    enum r#loop {
+        r#type = 0,
+        Ready = 1,
+    }
+    #[acyclic_contract_derive::oneof(error = Admission, file = RawFile)]
+    enum Choice {
+        #[wire(tag = 2)]
+        r#fn(String),
+    }
+    #[message(error = Admission, file = RawFile)]
+    struct r#match {
+        #[wire(tag = 1)]
+        r#type: String,
+        #[wire(oneof = "2")]
+        r#match: Option<Choice>,
+        #[wire(enumeration, tag = 3)]
+        r#loop: r#loop,
+    }
+    #[acyclic_contract_derive::service(file = RawFile)]
+    enum r#trait {
+        r#loop {
+            request: matchProto,
+            response: matchProto,
+        },
+    }
+    #[acyclic_contract_derive::file(
+        family = "raw",
+        messages(matchProto),
+        enums(r#loop),
+        services(r#trait)
+    )]
+    struct RawFile;
+    #[test]
+    fn raw_identifiers_share_schema_names_and_exact_wire() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        RawFile::render(root.path())?;
+        let proto = root.path().join("raw/v1/raw.proto");
+        let schema = std::fs::read_to_string(&proto)?;
+        let descriptor = compile_schema(root.path(), &proto)?;
+        assert!(!schema.contains("r#"));
+        for expected in [
+            "message match",
+            "string type = 1",
+            "oneof match",
+            "string fn = 2",
+            "enum loop",
+            "LOOP_TYPE = 0",
+            "loop loop = 3",
+            "service trait",
+            "rpc loop(match) returns (match)",
+        ] {
+            assert!(schema.contains(expected), "{expected}");
+        }
+        assert_eq!(
+            descriptor
+                .file
+                .first()
+                .and_then(|file| file.package.as_deref()),
+            Some(RawFile::PACKAGE)
+        );
+        let bytes = vec![10, 1, b'a', 18, 1, b'b', 24, 1];
+        let raw = matchProto::decode(bytes.as_slice())?;
+        let admitted = r#match::try_from(raw).map_err(|error| format!("{error:?}"))?;
+        assert_eq!(admitted.r#type, "a");
+        assert!(matches!(admitted.r#match, Some(Choice::r#fn(ref value)) if value == "b"));
+        assert_eq!(admitted.r#loop, r#loop::Ready);
+        let encoded: matchProto = admitted.into();
+        assert_eq!(encoded.encode_to_vec(), bytes);
+        Ok(())
+    }
 }

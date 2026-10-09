@@ -179,7 +179,7 @@ impl Field {
     }
 
     fn schema(&self) -> syn::Result<TokenStream> {
-        let ident = self.ident.to_string();
+        let ident = options::identifier(&self.ident);
         if self.kind == "oneof" {
             let ty = options::shadow(&self.ty)?;
             return Ok(quote!(schema.push_str(&<#ty>::schema(#ident));));
@@ -243,7 +243,7 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
     let visibility = &input.vis;
     let wire_name = options
         .name
-        .map_or_else(|| name.to_string(), |name| name.value());
+        .map_or_else(|| options::identifier(name), |name| name.value());
     let mut seen = std::collections::BTreeSet::new();
     let fields: Vec<Field> = input
         .fields
@@ -362,7 +362,7 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
         let (from, into) = field.conversions(&error, &quote!(value));
         ingress.push(quote!(#wire::#ident(value) => Self::#ident(#from)));
         egress.push(quote!(#name::#ident(value) => Self::#ident(#into)));
-        let field_name = ident.to_string().to_snake_case();
+        let field_name = options::identifier(ident).to_snake_case();
         let kind = if field.kind == "message" {
             quote!(<#ty as ::prost::Name>::NAME)
         } else {

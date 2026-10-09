@@ -78,7 +78,10 @@ impl File {
         let messages = self.messages;
         let enums = self.enums;
         let services = self.services;
-        let members = format_ident!("__{}_members", name.to_string().to_snake_case());
+        let members = format_ident!(
+            "__{}_members",
+            crate::options::identifier(name).to_snake_case()
+        );
         let checks = messages
             .iter()
             .chain(services.iter())
@@ -135,14 +138,14 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
         ));
     }
     let name = &input.ident;
-    let name_text = name.to_string();
+    let name_text = crate::options::identifier(name);
     let attrs = &input.attrs;
     let visibility = &input.vis;
     let mut methods = Vec::new();
     let mut checks = vec![crate::options::owner_check(file, &quote!(#name), true)];
     let mut method_names = std::collections::BTreeSet::new();
     for variant in &mut input.variants {
-        if !method_names.insert(variant.ident.to_string()) {
+        if !method_names.insert(crate::options::identifier(&variant.ident)) {
             return Err(syn::Error::new_spanned(variant, "duplicate service method"));
         }
         let mut client_stream = "";
@@ -202,7 +205,7 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
             .ok_or_else(|| syn::Error::new_spanned(&variant.ident, "response type is required"))?;
         checks.push(crate::options::owner_check(file, &quote!(#request), true));
         checks.push(crate::options::owner_check(file, &quote!(#response), true));
-        let method = variant.ident.to_string();
+        let method = crate::options::identifier(&variant.ident);
         methods.push(quote!(schema.push_str(&format!("  rpc {}({}{}) returns ({}{});\n", #method, #client_stream, <#request as ::prost::Name>::NAME, #server_stream, <#response as ::prost::Name>::NAME));));
     }
     if methods.is_empty() {

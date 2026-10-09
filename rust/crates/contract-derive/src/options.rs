@@ -1,3 +1,4 @@
+use syn::ext::IdentExt;
 use syn::{LitInt, LitStr, Path, Type, meta::ParseNestedMeta};
 
 #[derive(Default)]
@@ -180,4 +181,9 @@ pub fn owner_check(
         const _: #file = <#ty>::FILE;
         #membership
     }
+}
+
+/// Map a Rust identifier to its literal protobuf name, without raw-token syntax.
+pub fn identifier(ident: &syn::Ident) -> String {
+    ident.unraw().to_string()
 }

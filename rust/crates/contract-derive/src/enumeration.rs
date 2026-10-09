@@ -19,7 +19,7 @@ pub fn expand(input: &syn::ItemEnum, options: Options) -> syn::Result<TokenStrea
     let name = &input.ident;
     let wire_name = options
         .name
-        .map_or_else(|| name.to_string(), |name| name.value());
+        .map_or_else(|| crate::options::identifier(name), |name| name.value());
     let mut schema = format!("enum {wire_name} {{\n");
     let mut seen = std::collections::BTreeSet::new();
     let mut cases = Vec::new();
@@ -61,7 +61,7 @@ pub fn expand(input: &syn::ItemEnum, options: Options) -> syn::Result<TokenStrea
         schema.push_str(&format!(
             "  {}_{} = {value};\n",
             wire_name.to_shouty_snake_case(),
-            ident.to_string().to_shouty_snake_case()
+            crate::options::identifier(ident).to_shouty_snake_case()
         ));
     }
     let default =
