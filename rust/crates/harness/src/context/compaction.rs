@@ -1,71 +1,11 @@
-//! Primitive threshold configuration and provider-owned token accounting.
+//! Primitive threshold compaction using provider-owned token accounting.
 
-use super::{CompactionRetention, Context};
+use super::{CompactionRetention, Context, ModelContextCapacity, ModelTokenCount};
 use crate::{
     Error, Result,
-    model::{ModelContentPart, PreparedModelRequest},
+    model::ModelContentPart,
 };
 use serde::{Deserialize, Serialize};
-
-/// Actual context and output capacities of one immutable selected model.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct ModelContextCapacity {
-    /// Maximum tokens in the provider's complete input plus generated output.
-    pub context_tokens: u32,
-    /// Maximum generated tokens supported by the selected model.
-    pub output_tokens: u32,
-}
-
-impl ModelContextCapacity {
-    /// Rejects impossible provider advertisements.
-    pub fn validate(self) -> Result<()> {
-        if self.context_tokens == 0
-            || self.output_tokens == 0
-            || self.output_tokens > self.context_tokens
-        {
-            return Err(Error::Invalid("selected model capacity is invalid".into()));
-        }
-        Ok(())
-    }
-}
-
-/// Provider-owned additive upper bounds for an exact prepared request.
-/// Counters must include structured content, native media and provider framing.
-/// The SDK supplies no tokenizer or model-name capacity catalog.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct ModelTokenCount {
-    /// Binds every count to the exact canonical model request.
-    pub request_digest: [u8; 32],
-    /// Upper bound for tools, options and request framing independent of messages.
-    pub fixed_tokens: u32,
-    /// Ordered per-message upper bounds, including message-specific framing.
-    /// The provider must make these safe for ordered subsequences of this request.
-    pub message_tokens: Vec<u32>,
-}
-
-impl ModelTokenCount {
-    /// Verifies request identity and dimensions, returning the full input bound.
-    pub fn validate(&self, request: &PreparedModelRequest) -> Result<u64> {
-        if self.request_digest != request.manifest().request_digest
-            || self.message_tokens.len() != request.request().messages.len()
-        {
-            return Err(Error::Invalid(
-                "token count does not bind the prepared request".into(),
-            ));
-        }
-        self.message_tokens
-            .iter()
-            .try_fold(u64::from(self.fixed_tokens), |total, count| {
-                total
-                    .checked_add(u64::from(*count))
-                    .ok_or_else(|| Error::Invalid("token count exceeds portable arithmetic".into()))
-            })
-    }
-}
 
 /// Ordinary configurable threshold compaction; no model-family heuristic.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
