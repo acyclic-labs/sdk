@@ -22,6 +22,7 @@ fn build_preview(root: PathBuf, rustdoc_json: PathBuf) -> Result<DocsData, Error
         repository_root: root,
         rustdoc_files: vec![rustdoc_json.clone()],
         package_metadata: vec![sdk_docs::PackageMetadata {
+            rustdoc_source_root: None,
             rustdoc_file: rustdoc_json,
             package_name: "example-package".into(),
             crate_name: "example".into(),

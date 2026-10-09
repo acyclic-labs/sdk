@@ -1,8 +1,7 @@
 use cargo_metadata::{Metadata, Package, TargetKind};
 use sdk_docs::rustdoc_profiles::{
-    api_owner_for_package, execute_profile_with_cargo, extract_owned_api_for_crate,
-    observe_rustdoc, project_into_docs, validate_rustdoc_version, ApiOwnerKind, ProfileId,
-    ProfileSpec,
+    api_owner_for_package, extract_owned_api_for_crate, observe_rustdoc, project_into_docs,
+    validate_rustdoc_version, ApiOwnerKind, ProfileId, ProfileSpec,
 };
 use sdk_docs::{
     build_data, merge_profile_catalog, rustdoc_digest, scenarios, write_bundle, write_bundle_files,
@@ -584,6 +583,16 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         );
         rustdoc_files.push(receipt.clone());
         package_metadata.push(PackageMetadata {
+            rustdoc_source_root: (historical_plan.is_none()
+                && !metadata.workspace_members.contains(&package.id))
+            .then(|| {
+                package
+                    .manifest_path
+                    .parent()
+                    .unwrap()
+                    .to_path_buf()
+                    .into_std_path_buf()
+            }),
             rustdoc_file: receipt.clone(),
             package_name: package.name.to_string(),
             crate_name,
@@ -739,6 +748,16 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             repository_root: root.clone(),
             rustdoc_files: vec![receipt.clone()],
             package_metadata: vec![PackageMetadata {
+                rustdoc_source_root: (historical_plan.is_none()
+                    && !metadata.workspace_members.contains(&package.id))
+                .then(|| {
+                    package
+                        .manifest_path
+                        .parent()
+                        .unwrap()
+                        .to_path_buf()
+                        .into_std_path_buf()
+                }),
                 rustdoc_file: receipt.clone(),
                 package_name: package.name.to_string(),
                 crate_name: observation.crate_name,
@@ -1253,8 +1272,61 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
 }
 
 fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Metadata, CliError> {
-    sdk_docs::rustdoc_profiles::load_metadata_with_cargo(root.join("Cargo.toml"), cargo_path)
-        .map_err(profile_error)
+    let mut metadata =
+        sdk_docs::rustdoc_profiles::load_metadata_with_cargo(root.join("Cargo.toml"), cargo_path)
+            .map_err(profile_error)?;
+    let missing = published_packages(root)?
+        .into_iter()
+        .filter(|name| {
+            !metadata
+                .packages
+                .iter()
+                .any(|package| package.name.as_ref() == name)
+        })
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(metadata);
+    }
+
+    // Workspace metadata deliberately excludes dependencies. Explicitly published
+    // vendored path owners may also be excluded from the workspace, so resolve
+    // the locked graph, retaining only those exact local published owners.
+    // Registry dependencies must never become documentation owners implicitly.
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+    if let Some(cargo) = cargo_path {
+        command.cargo_path(cargo);
+    }
+    let resolved = command
+        .manifest_path(root.join("Cargo.toml"))
+        .other_options(vec!["--locked".to_owned()])
+        .exec()
+        .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
+    let canonical_root = root.canonicalize().map_err(io_error)?;
+    for name in missing {
+        let candidates = resolved
+            .packages
+            .iter()
+            .filter(|package| package.name.as_ref() == name && package.source.is_none())
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return Err(CliError(format!(
+                "published owner `{name}` must resolve to exactly one local Cargo package"
+            )));
+        }
+        let package = candidates[0];
+        let manifest = package.manifest_path.canonicalize().map_err(io_error)?;
+        if !manifest.starts_with(&canonical_root) {
+            return Err(CliError(format!(
+                "published owner `{name}` has a manifest outside the captured source root"
+            )));
+        }
+        metadata.packages.push(package.clone());
+    }
+    metadata
+        .packages
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(metadata)
 }
 
 fn documentation_cargo(root: &Path, historical: bool) -> Result<PathBuf, CliError> {
@@ -1517,6 +1589,28 @@ fn execute_default_profiles(
         if !published.contains(package.name.as_ref()) && !owned_binding {
             continue;
         }
+        let excluded_owner = !metadata.workspace_members.contains(&package.id);
+        let manifest = if excluded_owner {
+            package.manifest_path.clone().into_std_path_buf()
+        } else {
+            root.join("Cargo.toml")
+        };
+        // Excluded packages may retain their own complete standalone lock,
+        // including feature/dev dependencies absent from the workspace graph.
+        let owner_lock = manifest.with_file_name("Cargo.lock");
+        let selected_lock = if excluded_owner && owner_lock.is_file() {
+            owner_lock
+        } else {
+            root.join("Cargo.lock")
+        }
+        .canonicalize()
+        .map_err(io_error)?;
+        let context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
+            cargo_path: Some(cargo_path),
+            lock_selection: excluded_owner.then_some(
+                sdk_docs::rustdoc_profiles::LockSelection::SourceAdjacent(&selected_lock),
+            ),
+        };
         let Some(target) = package.targets.iter().find(|target| {
             target.kind.iter().any(|kind| {
                 matches!(
@@ -1544,14 +1638,14 @@ fn execute_default_profiles(
                 let receipt = rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")));
                 let rustdoc_target =
                     sdk_docs::rustdoc_profiles::RustdocTarget::Binary(target.name.clone());
-                sdk_docs::rustdoc_profiles::execute_target_profile_with_cargo(
-                    root.join("Cargo.toml"),
+                sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+                    &manifest,
                     metadata,
                     &profile,
                     &BTreeSet::from([host.clone()]),
                     &target_dir,
                     &receipt,
-                    Some(cargo_path),
+                    context,
                     &rustdoc_target,
                 )
                 .map_err(profile_error)?;
@@ -1598,14 +1692,15 @@ fn execute_default_profiles(
             if let Some(parent) = receipt.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
             }
-            execute_profile_with_cargo(
-                root.join("Cargo.toml"),
+            sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+                &manifest,
                 metadata,
                 &profile,
                 &targets,
                 &target_dir,
                 &receipt,
-                Some(cargo_path),
+                context,
+                &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
             )
             .map_err(profile_error)?;
             retain_profile_generated_sources(root, &receipt)?;
@@ -3004,6 +3099,7 @@ mod tests {
                 repository_root: root.clone(),
                 rustdoc_files: vec![receipt.clone()],
                 package_metadata: vec![PackageMetadata {
+                    rustdoc_source_root: None,
                     rustdoc_file: receipt.clone(),
                     package_name: package.name.to_string(),
                     crate_name: observation.crate_name,

@@ -375,6 +375,7 @@ pub(super) fn validate_release_identity(data: &DocsData) -> Result<(), Error> {
 
 pub(super) fn binary_family(
     root: &Path,
+    rustdoc_source_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     krate: &Crate,
     binary: &BinaryInput,
@@ -401,13 +402,13 @@ pub(super) fn binary_family(
         .span
         .as_ref()
         .ok_or_else(|| Error::Invalid("binary Rustdoc root source span is missing".into()))?;
-    let original = source_span_at_root(root, &HashMap::new(), span)?;
+    let original = source_span_from_base(root, rustdoc_source_root, &HashMap::new(), span)?;
     if original.path != normalize_path(relative_source) {
         return Err(Error::Invalid(
             "binary Rustdoc span differs from Cargo target source".into(),
         ));
     }
-    let projected = source_span_at_root(root, generated_sources, span)?;
+    let projected = source_span_from_base(root, rustdoc_source_root, generated_sources, span)?;
     let mut guides = Vec::new();
     if let Some(markdown) = item.docs.as_ref().filter(|value| !value.trim().is_empty()) {
         guides.push(Guide {
@@ -486,6 +487,7 @@ mod tests {
             repository_root: root.into(),
             rustdoc_files: vec![receipt.clone()],
             package_metadata: vec![PackageMetadata {
+                rustdoc_source_root: None,
                 rustdoc_file: receipt.clone(),
                 package_name: "demo-cli".into(),
                 crate_name: "cli".into(),

@@ -2295,10 +2295,36 @@ fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog()
 }
 
 #[test]
-fn proc_macro_owner_with_custom_library_name_has_executed_api_and_drift() {
+fn excluded_published_path_owners_have_executed_api_and_drift() {
     let fixture = feature_profile_fixture();
-    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
-    let original = fs::read_to_string(&manifest).unwrap();
+    let manifest = fixture.root.join("rust/vendor/macros/Cargo.toml");
+    fs::create_dir_all(manifest.parent().unwrap().join("src")).unwrap();
+    let demo_manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
+    let original = fs::read_to_string(&demo_manifest)
+        .unwrap()
+        .replace("name = \"demo\"", "name = \"demo-macros\"");
+    fs::write(
+        &demo_manifest,
+        format!("{}\n[dependencies]\ndemo-macros = {{ path = \"../../vendor/macros\" }}\ndemo-helper = {{ path = \"../../vendor/helper\" }}\n", fs::read_to_string(&demo_manifest).unwrap()),
+    ).unwrap();
+    fs::write(fixture.root.join("Cargo.toml"), "[workspace]\nmembers = [\"rust/crates/demo\"]\nexclude = [\"rust/vendor/macros\", \"rust/vendor/helper\", \"rust/vendor/macro-dev-helper\"]\nresolver = \"2\"\n").unwrap();
+    fs::create_dir_all(fixture.root.join("rust/vendor/helper/src")).unwrap();
+    fs::write(
+        fixture.root.join("rust/vendor/helper/Cargo.toml"),
+        "[package]\nname = \"demo-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("rust/vendor/helper/src/lib.rs"),
+        "/// Published excluded library API.\npub struct ExcludedOwnedApi;\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("release/cargo-crates.json"),
+        "[\"demo\",\"demo-macros\",\"demo-helper\"]\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("Cargo.lock"), "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = [\"demo-helper\", \"demo-macros\"]\n\n[[package]]\nname = \"demo-helper\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"demo-macros\"\nversion = \"1.0.0\"\n").unwrap();
     fs::write(
         &manifest,
         original.replace(
@@ -2307,8 +2333,18 @@ fn proc_macro_owner_with_custom_library_name_has_executed_api_and_drift() {
         ),
     )
     .unwrap();
+    let macro_manifest = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{macro_manifest}\n[dev-dependencies]\nmacro-dev-helper = {{ path = \"../macro-dev-helper\" }}\n")).unwrap();
+    fs::create_dir_all(fixture.root.join("rust/vendor/macro-dev-helper/src")).unwrap();
+    fs::write(fixture.root.join("rust/vendor/macro-dev-helper/Cargo.toml"), "[package]\nname = \"macro-dev-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\npublish = false\n").unwrap();
     fs::write(
-        fixture.root.join("rust/crates/demo/src/lib.rs"),
+        fixture.root.join("rust/vendor/macro-dev-helper/src/lib.rs"),
+        "pub struct DevOnly;\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("rust/vendor/macros/Cargo.lock"), "version = 3\n\n[[package]]\nname = \"demo-macros\"\nversion = \"1.0.0\"\ndependencies = [\"macro-dev-helper\"]\n\n[[package]]\nname = \"macro-dev-helper\"\nversion = \"1.0.0\"\n").unwrap();
+    fs::write(
+        fixture.root.join("rust/vendor/macros/src/lib.rs"),
         r#"//! Public procedural macro documentation.
 extern crate proc_macro;
 use proc_macro::TokenStream;
@@ -2330,6 +2366,14 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
         &["commit", "--quiet", "-m", "procedural macro owner fixture"],
     );
 
+    let workspace_only =
+        sdk_docs::rustdoc_profiles::load_metadata(fixture.root.join("Cargo.toml")).unwrap();
+    assert!(!workspace_only
+        .packages
+        .iter()
+        .any(|package| matches!(package.name.as_ref(), "demo-macros" | "demo-helper")));
+    let locked_bytes = fs::read(fixture.root.join("Cargo.lock")).unwrap();
+    let macro_locked_bytes = fs::read(fixture.root.join("rust/vendor/macros/Cargo.lock")).unwrap();
     let generated = run_generate_execute_profiles(&fixture);
     assert!(generated.status.success(), "{}", output_message(&generated));
     assert!(fixture.rustdoc.join("renamed_macro_target.json").is_file());
@@ -2353,8 +2397,50 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
             "the actual procedural macro API {expected} must have executed profile coverage"
         );
     }
+    assert!(availability["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["path"] == "demo_helper::ExcludedOwnedApi"));
+    let data: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .output
+                .join("preview/feature-profile-catalog/sdk-docs-data.v1.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    for (path, source) in [
+        (
+            "renamed_macro_target::demo_macro",
+            "rust/vendor/macros/src/lib.rs",
+        ),
+        (
+            "demo_helper::ExcludedOwnedApi",
+            "rust/vendor/helper/src/lib.rs",
+        ),
+    ] {
+        let item = data["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|family| family["items"].as_array().unwrap())
+            .find(|item| item["path"] == path)
+            .unwrap();
+        assert_eq!(item["source"]["path"], source);
+    }
     let drift = run_drift_execute_profiles(&fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
+    assert_eq!(
+        fs::read(fixture.root.join("Cargo.lock")).unwrap(),
+        locked_bytes
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("rust/vendor/macros/Cargo.lock")).unwrap(),
+        macro_locked_bytes
+    );
+    assert!(!fixture.root.join("rust/vendor/helper/Cargo.lock").exists());
     let _ = fs::remove_dir_all(fixture.root);
     let _ = fs::remove_dir_all(fixture.output);
 }

@@ -257,6 +257,9 @@ pub struct BuildInput {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageMetadata {
+    /// Base of relative Rustdoc filenames for an explicitly selected owner
+    /// manifest. It must remain within the captured repository/package root.
+    pub rustdoc_source_root: Option<PathBuf>,
     pub rustdoc_file: PathBuf,
     pub package_name: String,
     pub crate_name: String,
@@ -464,10 +467,35 @@ fn build_data_inner(
         }) {
             historical::validate_relative_package_spans(&family_root, &krate)?;
         }
-        let family = if let Some(binary) = binary {
-            historical::binary_family(&family_root, &generated_sources, &krate, binary)?
+        let rustdoc_source_root = if let Some(source_root) = &metadata.rustdoc_source_root {
+            reject_reparse_ancestors(source_root)?;
+            let source_root = source_root.canonicalize()?;
+            let relative = source_root.strip_prefix(&family_root).map_err(|_| {
+                Error::Invalid("Rustdoc owner source root escapes the captured source root".into())
+            })?;
+            input_digest.update(normalize_path(relative).as_bytes());
+            input_digest.update([0]);
+            source_root
         } else {
-            build_family(&family_root, &generated_sources, path, &bytes, &krate)?
+            family_root.clone()
+        };
+        let family = if let Some(binary) = binary {
+            historical::binary_family(
+                &family_root,
+                &rustdoc_source_root,
+                &generated_sources,
+                &krate,
+                binary,
+            )?
+        } else {
+            build_family(
+                &family_root,
+                &rustdoc_source_root,
+                &generated_sources,
+                path,
+                &bytes,
+                &krate,
+            )?
         };
         if family.crate_name != metadata.crate_name {
             return Err(Error::Invalid(format!(
@@ -1275,6 +1303,7 @@ fn merge_version_index(
 
 fn build_family(
     repository_root: &Path,
+    rustdoc_source_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     json_path: &Path,
     raw_json: &[u8],
@@ -1386,7 +1415,14 @@ fn build_family(
             source: item
                 .span
                 .as_ref()
-                .map(|span| source_span_at_root(repository_root, generated_sources, span))
+                .map(|span| {
+                    source_span_from_base(
+                        repository_root,
+                        rustdoc_source_root,
+                        generated_sources,
+                        span,
+                    )
+                })
                 .transpose()?,
             reexport,
             reexport_target,
@@ -1983,6 +2019,19 @@ fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {
         .strip_prefix("sha256:")
         .unwrap_or(expected)
         .eq_ignore_ascii_case(&sha256_hex(bytes))
+}
+
+fn source_span_from_base(
+    repository_root: &Path,
+    rustdoc_source_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    span: &rustdoc_types::Span,
+) -> Result<SourceSpan, Error> {
+    let mut scoped_span = span.clone();
+    if !scoped_span.filename.is_absolute() {
+        scoped_span.filename = rustdoc_source_root.join(&scoped_span.filename);
+    }
+    source_span_at_root(repository_root, generated_sources, &scoped_span)
 }
 
 fn source_span_at_root(
@@ -3256,6 +3305,7 @@ mod tests {
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path.clone()],
             package_metadata: vec![PackageMetadata {
+                rustdoc_source_root: None,
                 rustdoc_file: rustdoc_path.clone(),
                 package_name: "demo".into(),
                 crate_name: "demo".into(),
@@ -3991,6 +4041,7 @@ mod tests {
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path.clone()],
             package_metadata: vec![PackageMetadata {
+                rustdoc_source_root: None,
                 rustdoc_file: rustdoc_path.clone(),
                 package_name: "demo".into(),
                 crate_name: "demo".into(),
@@ -4019,6 +4070,12 @@ mod tests {
         let preview = build_data(&preview_input).expect("preview fixture should build");
         assert_eq!(preview.version, "feature-preview");
         assert_eq!(preview.packages.entries[0].version, "1.0.0");
+        let mut escaped_source_root = input.clone();
+        escaped_source_root.package_metadata[0].rustdoc_source_root =
+            Some(root.parent().unwrap().to_path_buf());
+        let error = build_data(&escaped_source_root)
+            .expect_err("an explicit owner source root must stay inside captured source");
+        assert!(error.to_string().contains("source root escapes"));
         let mut mismatched_metadata = input.clone();
         mismatched_metadata.package_metadata[0].crate_name = "different-crate".into();
         let error =
