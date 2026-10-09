@@ -4,7 +4,7 @@ set -eu
 : "${SWIFT_HOME:?}" "${PROTOBUF_SOURCE:?}" "${GRPC_PROTOBUF_SOURCE:?}" "${GRPC_SOURCE:?}" "${COLLECTIONS_SOURCE:?}" "${BUILD_ROOT:?}"
 verify_revision() {
   test "$(git -C "$1" rev-parse HEAD)" = "$2"
-  test -z "$(git -C "$1" status --porcelain --untracked-files=no)"
+  test -z "$(git -C "$1" status --porcelain --untracked-files=all)"
 }
 verify_revision "$PROTOBUF_SOURCE" 55d7a1cc5666b85c13464aea1c4b4a90feccb4c8
 verify_revision "$GRPC_PROTOBUF_SOURCE" 176c5a434fd76f6f479848d1a8f7d44967534168
