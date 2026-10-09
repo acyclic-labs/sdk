@@ -150,12 +150,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    /// Verifies options against the original authenticated admission and linked code.
-    /// This is read authority, so it remains valid during original-fence settlement.
-    pub(crate) async fn verify_native_configuration(
+    pub(crate) fn validate_native_configuration(
         &self,
         binding: &crate::model::NativeConfigurationBinding,
-    ) -> Result<()> {
+    ) -> Result<(&SchemaRegistry, [u8; 32])> {
         let (schemas, expected) = binding.verify_original(
             self.extensions.as_ref(),
             self.extension_schemas.as_ref(),
@@ -168,7 +166,21 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "native options exceed render byte limit".into(),
             ));
         }
-        let bytes = self.host.reader.read(file).await?;
+        Ok((schemas, expected))
+    }
+
+    /// Verifies options against the original authenticated admission and linked code.
+    /// This is read authority, so it remains valid during original-fence settlement.
+    pub(crate) async fn verify_native_configuration(
+        &self,
+        binding: &crate::model::NativeConfigurationBinding,
+    ) -> Result<()> {
+        let (schemas, expected) = self.validate_native_configuration(binding)?;
+        let bytes = self
+            .host
+            .reader
+            .read(&binding.configuration.content)
+            .await?;
         schemas.verify_configuration_binding(
             &binding.configuration,
             expected,

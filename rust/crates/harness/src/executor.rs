@@ -1413,10 +1413,19 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         request: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
-        for message in &request.request().messages {
-            self.verify_model_content(journal, &message.content).await?;
-        }
-        Ok(())
+        verify_model_contents_scoped(
+            journal,
+            request
+                .request()
+                .messages
+                .iter()
+                .map(|message| &message.content),
+            self.limits,
+            self.task_context
+                .as_ref()
+                .map(|(context, _)| context.scope()),
+        )
+        .await
     }
 
     async fn validate_turn_input(
@@ -1431,13 +1440,21 @@ impl StockExecutor {
             ));
         }
         input.input.validate_user_input()?;
-        input.input.validate_limits(self.limits)?;
+        let scope = self
+            .task_context
+            .as_ref()
+            .map(|(context, _)| context.scope());
+        validate_model_content_scope(&input.input, self.limits, scope)?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
             if selected.messages.len() > self.limits.context_messages {
                 return Err(Error::Invalid(
                     "selected context exceeds configured message limit".into(),
                 ));
+            }
+            // Reject all structural and attenuated read claims before journal IO.
+            for message in &selected.messages {
+                validate_model_content_scope(&message.content, self.limits, scope)?;
             }
             journal
                 .verify_selected_context(input.operation_id, selected)
@@ -1715,8 +1732,22 @@ async fn verify_model_content_scoped(
     limits: Limits,
     scope: Option<&RuntimeScope>,
 ) -> Result<()> {
-    validate_model_content_scope(content, limits, scope)?;
-    journal.verify_model_content(content).await
+    verify_model_contents_scoped(journal, std::iter::once(content), limits, scope).await
+}
+
+async fn verify_model_contents_scoped<'a>(
+    journal: &dyn ExecutionJournal,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<()> {
+    for content in contents.clone() {
+        validate_model_content_scope(content, limits, scope)?;
+    }
+    for content in contents {
+        journal.verify_model_content(content).await?;
+    }
+    Ok(())
 }
 
 fn validate_model_content_scope(
@@ -1726,6 +1757,7 @@ fn validate_model_content_scope(
 ) -> Result<()> {
     content.validate_limits(limits)?;
     if let Some(scope) = scope {
+        content.validate_limits(scope.limits())?;
         for file in content.file_refs() {
             if !crate::runtime::read_granted(scope.grants(), file)? {
                 return Err(Error::Unauthorized(
@@ -3805,6 +3837,62 @@ mod tests {
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
         verify_model_content_scoped(&journal, &content, Limits::default(), Some(&allowed)).await?;
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn later_model_references_fail_preflight_before_earlier_content_reads() -> Result<()> {
+        let journal = ModelReadSpy::default();
+        let first = journal
+            .stage(OperationId::new(), "first".into(), vec![1, 2], "image/png")
+            .await?;
+        let second = journal
+            .stage(OperationId::new(), "second".into(), vec![3; 8], "image/png")
+            .await?;
+        let contents = [first.clone(), second.clone()].map(|file| {
+            ModelContent::Part(ModelContentPart::File {
+                file,
+                policy: crate::model::FileProjectionPolicy::Reference,
+            })
+        });
+        let first_only = RuntimeScope::new(
+            Capabilities::new([first.read_capability()?]),
+            Limits::default(),
+        )?;
+        assert!(matches!(
+            verify_model_contents_scoped(
+                &journal,
+                contents.iter(),
+                Limits::default(),
+                Some(&first_only)
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        let grants = Capabilities::new([first.read_capability()?, second.read_capability()?]);
+        let narrow = RuntimeScope::new(
+            grants.clone(),
+            Limits {
+                file_bytes: 4,
+                ..Limits::default()
+            },
+        )?;
+        assert!(matches!(
+            verify_model_contents_scoped(
+                &journal,
+                contents.iter(),
+                Limits::default(),
+                Some(&narrow)
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        let allowed = RuntimeScope::new(grants, Limits::default())?;
+        verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&allowed))
+            .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
         Ok(())
     }
