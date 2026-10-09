@@ -4,13 +4,10 @@ import { join, resolve } from "node:path";
 import { generateTypeDef } from "@napi-rs/cli";
 
 export async function render(_, root) {
-  // acyclic-stream is a cdylib, whose library Cargo names without a
-  // per-configuration hash. Building the binding beside the feature-less
-  // contract build would evict its stream library and recompile stream, fs
-  // and the binding on every run, so share the native binding build's target
-  // directory instead. napi-derive rewrites the stable declaration folder
-  // whenever each crate recompiles. Both the binding and its filesystem
-  // dependency emit declarations; force either crate whose output is missing.
+  // Typechecking runs napi-derive without linking native libraries. Keep its
+  // Cargo state beside the native binding build. Both the binding and its
+  // filesystem dependency emit declarations; force either crate whose output
+  // is missing.
   const target = `${resolve(root, process.env.CARGO_TARGET_DIR ?? "target")}-napi`;
   const typeDefDir = join(target, "napi-type-def");
   mkdirSync(typeDefDir, { recursive: true });
@@ -22,7 +19,7 @@ export async function render(_, root) {
   // command also publishes native binaries/loaders through filesystem locks;
   // those artifacts are qualified separately and are not inputs to this check.
   const generated = spawnSync(process.env.ACYCLIC_CARGO_BIN || "cargo", [
-    "build", "--locked", "--manifest-path", "rust/crates/filesystem-napi/Cargo.toml", "--target-dir", target,
+    "check", "--locked", "--manifest-path", "rust/crates/filesystem-napi/Cargo.toml", "--target-dir", target,
   ], { cwd: root, stdio: "inherit", env: {
     ...process.env,
     NAPI_TYPE_DEF_TMP_FOLDER: typeDefDir,

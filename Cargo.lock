@@ -284,6 +284,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-conformance",
+ "acyclic-native-runtime",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [

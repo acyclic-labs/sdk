@@ -254,12 +254,88 @@ enum WasmModelRole {
     Tool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
 enum WasmFileProjectionPolicy {
     Reference,
     BoundedFull,
-    Native,
+    Native(Box<WasmNativeMediaPolicyWire>),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[serde(rename_all = "snake_case")]
+enum WasmImageDetail {
+    Auto,
+    Low,
+    High,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WasmNativeMediaIntent {
+    Image {
+        detail: WasmImageDetail,
+    },
+    Audio {
+        #[tsify(type = "number")]
+        maximum_duration_ms: u64,
+    },
+    Video {
+        #[tsify(type = "number")]
+        maximum_duration_ms: u64,
+        maximum_frames: u32,
+    },
+    Document {
+        maximum_pages: u32,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
+#[serde(deny_unknown_fields)]
+struct WasmNativeConfigurationBindingWire {
+    #[tsify(type = "WasmEventReferenceWire")]
+    source: crate::core::EventReference,
+    #[tsify(type = "WasmExtensionConfigurationWire")]
+    configuration: ExtensionConfiguration,
+    #[tsify(type = "readonly number[]")]
+    implementation_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
+#[serde(deny_unknown_fields)]
+struct WasmNativeMediaPolicyWire {
+    intent: WasmNativeMediaIntent,
+    #[tsify(type = "number")]
+    maximum_bytes: u64,
+    #[tsify(type = "number")]
+    maximum_work: u64,
+    #[tsify(type = "WasmNativeConfigurationBindingWire | null")]
+    configuration: Option<WasmNativeConfigurationBindingWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WasmModelDataPart {
+    Text {
+        text: String,
+    },
+    File {
+        #[tsify(type = "WasmFileRefWire")]
+        file: FileRef,
+        policy: WasmFileProjectionPolicy,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WasmToolResultContent {
+    Json {
+        #[tsify(type = "WasmModelJsonValue")]
+        value: serde_json::Value,
+    },
+    Parts {
+        parts: Vec<WasmModelDataPart>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
@@ -284,8 +360,7 @@ enum WasmModelContentPart {
         #[serde(rename = "call_id", alias = "callId")]
         call_id: String,
         name: String,
-        #[tsify(type = "WasmModelJsonValue")]
-        value: serde_json::Value,
+        content: WasmToolResultContent,
     },
 }
 
@@ -338,6 +413,8 @@ struct WasmModelToolDefinitionWire {
     input_schema: serde_json::Value,
     #[tsify(type = "WasmModelJsonSchema")]
     output_schema: serde_json::Value,
+    #[tsify(type = "WasmModelJsonSchema")]
+    projection_schema: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
@@ -731,11 +808,15 @@ export interface WasmModelLimitsInput {
     readonly tool_calls_per_step: number | bigint;
     readonly context_messages: number | bigint;
 }
+export type WasmModelToolResultContentInput =
+    | Readonly<{ kind: "json"; value: unknown }>
+    | (Omit<Extract<WasmToolResultContent, { kind: "parts" }>, "parts">
+        & Readonly<{ parts: readonly WasmModelDataPart[] }>);
 type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
     Part extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
         : Part extends { readonly kind: "tool_result"; readonly call_id: string }
-            ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+            ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
             : Part;
 export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
 export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
@@ -2478,6 +2559,7 @@ struct WasmToolDefinitionInput {
     description: String,
     input_schema: serde_json::Value,
     output_schema: serde_json::Value,
+    projection_schema: serde_json::Value,
 }
 
 impl From<WasmToolDefinitionInput> for ToolDefinition {
@@ -2488,6 +2570,7 @@ impl From<WasmToolDefinitionInput> for ToolDefinition {
             description: value.description,
             input_schema: value.input_schema,
             output_schema: value.output_schema,
+            projection_schema: value.projection_schema,
         }
     }
 }
@@ -2538,6 +2621,61 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Validates the explicit result envelope without granting file or option authority.
+#[wasm_bindgen(js_name = validateToolProjection)]
+pub fn validate_tool_projection(
+    #[wasm_bindgen(unchecked_param_type = "WasmToolDefinitionInput")] definition: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelToolResultContentInput")] projection: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let projection: serde_json::Value = from_js(projection)?;
+    let limits: Limits = from_js(limits)?;
+    definition
+        .validate_projection(&projection)
+        .and_then(|content| content.validate_limits(limits))
+        .map_err(js_error)
+}
+
+/// Wraps a consumer's JSON value schema in the complete typed projection envelope.
+#[wasm_bindgen(js_name = jsonToolProjectionSchema, unchecked_return_type = "WasmToolJsonSchema")]
+pub fn json_tool_projection_schema(
+    #[wasm_bindgen(unchecked_param_type = "WasmToolJsonSchema")] value_schema: JsValue,
+) -> Result<JsValue, JsValue> {
+    let schema = crate::tool::json_projection_schema(from_js(value_schema)?);
+    crate::contract::compile_json_schema(&schema, "tool projection").map_err(js_error)?;
+    schema
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Complete declarative inventory, without granting file or option authority.
+#[derive(Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+struct WasmModelContentInventoryWire<'a> {
+    #[tsify(type = "readonly WasmFileRefWire[]")]
+    files: Vec<&'a FileRef>,
+    #[tsify(type = "readonly WasmNativeConfigurationBindingWire[]")]
+    native_configurations: Vec<&'a crate::model::NativeConfigurationBinding>,
+}
+
+/// Returns all media/options refs and original-admission claims without IO.
+#[wasm_bindgen(js_name = modelContentInventory, unchecked_return_type = "WasmModelContentInventoryWire")]
+pub fn model_content_inventory(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<JsValue, JsValue> {
+    let content: ModelContent = from_js(content)?;
+    content
+        .validate_limits(from_js(limits)?)
+        .map_err(js_error)?;
+    to_js_admitted(&WasmModelContentInventoryWire {
+        files: content.file_refs(),
+        native_configurations: content.native_configurations(),
+    })
 }
 
 /// Public facade input for the shared request constructor.
@@ -2678,8 +2816,77 @@ fn context_part_to_js(
     part: &JsValue,
     native: &crate::model::ModelContentPart,
 ) -> Result<(), JsValue> {
-    if let crate::model::ModelContentPart::File { file, .. } = native {
-        js_sys::Reflect::set(part, &JsValue::from_str("file"), &to_js_admitted(file)?)?;
+    match native {
+        crate::model::ModelContentPart::File { file, policy } => {
+            model_file_part_to_js(part, file, policy)?;
+        }
+        crate::model::ModelContentPart::ToolResult {
+            content: crate::model::ToolResultContent::Parts { parts },
+            ..
+        } => {
+            let content = js_sys::Reflect::get(part, &JsValue::from_str("content"))?;
+            let values = js_sys::Reflect::get(&content, &JsValue::from_str("parts"))?;
+            for (index, data) in parts.iter().enumerate() {
+                if let crate::model::ModelDataPart::File { file, policy } = data {
+                    let index = u32::try_from(index).map_err(|_| {
+                        JsValue::from_str("model data index exceeds portable bound")
+                    })?;
+                    let value =
+                        js_sys::Reflect::get(&values, &JsValue::from_f64(f64::from(index)))?;
+                    model_file_part_to_js(&value, file, policy)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+// Normalize only typed portable quantities. Opaque JSON and full-width original
+// admission/event identities retain their existing serialization contracts.
+fn model_file_part_to_js(
+    part: &JsValue,
+    file: &FileRef,
+    policy: &crate::model::FileProjectionPolicy,
+) -> Result<(), JsValue> {
+    js_sys::Reflect::set(part, &JsValue::from_str("file"), &to_js_admitted(file)?)?;
+    if let crate::model::FileProjectionPolicy::Native(policy) = policy {
+        let projected = js_sys::Reflect::get(part, &JsValue::from_str("policy"))?;
+        let native = js_sys::Reflect::get(&projected, &JsValue::from_str("native"))?;
+        for (name, value) in [
+            ("maximum_bytes", policy.maximum_bytes),
+            ("maximum_work", policy.maximum_work),
+        ] {
+            js_sys::Reflect::set(&native, &JsValue::from_str(name), &exact_js_number(value)?)?;
+        }
+        let duration = match &policy.intent {
+            crate::model::NativeMediaIntent::Audio {
+                maximum_duration_ms,
+            }
+            | crate::model::NativeMediaIntent::Video {
+                maximum_duration_ms,
+                ..
+            } => Some(*maximum_duration_ms),
+            _ => None,
+        };
+        if let Some(duration) = duration {
+            let intent = js_sys::Reflect::get(&native, &JsValue::from_str("intent"))?;
+            js_sys::Reflect::set(
+                &intent,
+                &JsValue::from_str("maximum_duration_ms"),
+                &exact_js_number(duration)?,
+            )?;
+        }
+        if let Some(binding) = &policy.configuration {
+            let configuration = js_sys::Reflect::get(&native, &JsValue::from_str("configuration"))?;
+            let options =
+                js_sys::Reflect::get(&configuration, &JsValue::from_str("configuration"))?;
+            js_sys::Reflect::set(
+                &options,
+                &JsValue::from_str("content"),
+                &to_js_admitted(&binding.configuration.content)?,
+            )?;
+        }
     }
     Ok(())
 }

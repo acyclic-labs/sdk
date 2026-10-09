@@ -5,11 +5,9 @@ import { projectModelFile } from "./projection.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { HttpFetcher } from "./wire-transport.js";
 
-export type OpenAiFilePolicy = "reference" | "bounded_full" | "native";
+export type OpenAiFilePolicy = Extract<ModelContentPart, { kind: "file" }>["policy"];
 export type OpenAiContentPart = ModelContentPart;
-type OpenAiProjectedPart =
-  | Readonly<{ type: "text"; text: string }>
-  | Readonly<{ type: "image_url"; image_url: Readonly<{ url: string }> }>;
+type OpenAiProjectedPart = Readonly<{ type: "text"; text: string }>;
 
 export interface OpenAiCompatibleOptions {
   readonly baseUrl: string;
@@ -63,6 +61,21 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const contracts = await NativeContracts.create();
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+    // This adapter has no bounded native-media implementation. Reject the whole
+    // request before resolving any supported files; callers can select another adapter.
+    for (const message of request.messages) {
+      const parts = Array.isArray(message.content) ? message.content : [message.content];
+      for (const part of parts) {
+        const data = isRecord(part) && part.kind === "tool_result" && isRecord(part.content)
+          && part.content.kind === "parts" && Array.isArray(part.content.parts) ? part.content.parts : [part];
+        for (const item of data) {
+          if (isRecord(item) && item.kind === "file"
+            && item.policy !== "reference" && item.policy !== "bounded_full") {
+            throw new TypeError("unsupported native media policy for OpenAI-compatible adapter");
+          }
+        }
+      }
+    }
     const messages = await Promise.all(request.messages.map(async message => {
       if (!["system", "user", "assistant", "tool"].includes(message.role)) {
         throw new TypeError("unsupported model message role");
@@ -78,7 +91,14 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         if (message.role !== "tool" || typeof message.content.callId !== "string" || !message.content.callId) {
           throw new TypeError("invalid tool result message");
         }
-        return { role: "tool", tool_call_id: message.content.callId, content: decoder.decode(contracts.encodeCanonicalJson(message.content.value)) };
+        const content = message.content.content;
+        if (!isRecord(content)) throw new TypeError("invalid tool result envelope");
+        if (content.kind === "json") {
+          return { role: "tool", tool_call_id: message.content.callId,
+            content: decoder.decode(contracts.encodeCanonicalJson(content.value)) };
+        }
+        if (content.kind !== "parts" || !Array.isArray(content.parts)) throw new TypeError("invalid tool result envelope");
+        return { role: "tool", tool_call_id: message.content.callId, content: await this.#projectContent(content.parts) };
       }
       return { role: message.role, content: await this.#projectContent(message.content) };
     }));
@@ -201,22 +221,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         ...(this.#verifyFile === undefined ? {} : { verifyFile: this.#verifyFile }),
         maxResolvedBytes: this.#maxResolvedBytes,
       });
-      if (file.kind === "image") {
-        projected.push({ type: "image_url", image_url: { url: `data:${file.mediaType};base64,${base64(file.bytes)}` } });
-      } else {
-        projected.push({ type: "text", text: file.text });
-      }
+      projected.push({ type: "text", text: file.text });
     }
     return projected;
   }
-}
-
-function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 32_768) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
-  }
-  return btoa(binary);
 }
 
 async function* sse(body: ReadableStream<Uint8Array>, maxEventBytes: number): AsyncIterable<string> {

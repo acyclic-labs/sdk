@@ -5,7 +5,7 @@ use crate::{
     agent_loop::{AgentInput, AgentLoop, AgentRunOutput},
     context::ContextPipeline,
     conversation::Limits,
-    core::{ExtensionAdmission, Reducer},
+    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer},
     durable_tool::{ResumableTool, ResumableToolRegistry},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
     extension::{ExtensionRuntime, NativeExtensionBundle},
@@ -202,6 +202,7 @@ pub struct HarnessBuilder {
     limits: Limits,
     bound_scope: Option<RuntimeScope>,
     extensions: Option<ExtensionAdmission>,
+    original_extensions: Option<OriginalExtensionBinding>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
 }
 
@@ -220,6 +221,7 @@ impl HarnessBuilder {
         self.capabilities = value.scope.grants().iter().map(str::to_owned).collect();
         self.limits = value.scope.limits();
         self.extensions = value.scope.extensions().cloned();
+        self.original_extensions = None;
         self.extension_runtime = value.scope.extension_runtime();
         self.bound_scope = Some(value.scope.clone());
         self.bindings = value;
@@ -426,7 +428,17 @@ impl HarnessBuilder {
     /// Captures an authenticated agent's committed extension selection for
     /// this bundle and every task admitted through it.
     pub fn extensions_from(mut self, agent: &Reducer) -> Result<Self> {
-        self.extensions = agent.extension_admission()?;
+        if self.original_extensions.is_some() {
+            return Err(Error::Unauthorized(
+                "builder already captured its original extension selection".into(),
+            ));
+        }
+        let original = agent.original_extension_binding()?;
+        if let Some(bound) = self.bound_scope.take() {
+            self.bound_scope = Some(bound.with_original_extensions(original.clone())?);
+        }
+        self.extensions = original.admission().cloned();
+        self.original_extensions = Some(original);
         Ok(self)
     }
 
@@ -470,8 +482,12 @@ impl HarnessBuilder {
             }
             bound.narrow(capabilities.clone(), self.limits)?
         } else {
-            RuntimeScope::new(capabilities.clone(), self.limits)?
-                .with_replayed_extensions(self.extensions)?
+            let root = RuntimeScope::new(capabilities.clone(), self.limits)?;
+            if let Some(original) = self.original_extensions {
+                root.with_original_extensions(original)?
+            } else {
+                root.with_replayed_extensions(self.extensions)?
+            }
         };
         let scope = if let Some(runtime) = self.extension_runtime {
             scope.with_extension_runtime(runtime)?
@@ -876,8 +892,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
+    #[tokio::test]
+    async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
         assert!(HarnessBuilder::new().build().is_err());
         let model = Model::new("example", "model", "1", Value::Null)?;
         struct Provider;
@@ -908,6 +924,67 @@ mod tests {
         let stock_executor = bundle
             .executor()
             .ok_or_else(|| Error::Storage("stock executor missing".into()))?;
+        let authority = crate::core::Authority {
+            kind: crate::core::AggregateKind::Agent,
+            id: "builder-original-registry".into(),
+        };
+        let issuer =
+            crate::core::AuthorityIssuer::new("builder-owner", [81; 32], authority.clone());
+        let mut schemas = crate::core::SchemaRegistry::new();
+        schemas.register_configured(
+            "example.builder",
+            1,
+            json!({"type":"object"}),
+            [82; 32],
+            crate::core::ExtensionForkPolicy::Inherit,
+            [],
+            None,
+        )?;
+        let agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
+        let inspect = TaskDefinition::live("example.registry", "1", move |context, (): ()| {
+            let expected = schemas.clone();
+            async move {
+                let original = context
+                    .scope()
+                    .extension_schema_registry()
+                    .ok_or_else(|| Error::Storage("builder lost original registry".into()))?;
+                Ok(original == expected && context.scope().grants().contains("model:generate"))
+            }
+        })?;
+        let captured = HarnessBuilder::new()
+            .executor(Arc::clone(&stock_executor))
+            .journal(Arc::new(UnusedJournal))
+            .task(inspect)?
+            .extensions_from(&agent)?
+            .grant("model:generate")
+            .grant("task:spawn:example.registry@1")
+            .build()?;
+        let inspect = captured.runtime().task::<(), bool>("example.registry")?;
+        assert!(matches!(
+            captured
+                .runtime()
+                .spawn(&inspect, ())
+                .await?
+                .result()
+                .await?,
+            crate::Outcome::Succeeded(true)
+        ));
+        assert!(captured.capabilities().contains("model:generate"));
+        assert!(
+            HarnessBuilder::new()
+                .extensions_from(&agent)?
+                .extensions_from(&agent)
+                .is_err()
+        );
+        let mut pinned = Bindings::local();
+        pinned.scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?
+            .with_extensions_from(&agent)?;
+        assert!(
+            HarnessBuilder::new()
+                .bindings(pinned)
+                .extensions_from(&agent)
+                .is_err()
+        );
         HarnessBuilder::new()
             .model(model, Arc::new(Provider))
             .journal(Arc::new(UnusedJournal))
@@ -988,7 +1065,7 @@ mod tests {
         fn definition(&self, name: &str, description: &str) -> Result<ToolDefinition> {
             Ok(ToolDefinition {
                 name: self.definition_name.unwrap_or(name).into(),
-                revision: "1".into(),
+                revision: "2".into(),
                 description: description.into(),
                 input_schema: json!({"type": "object", "properties": {
                     "request": {"type": "string"}
@@ -996,6 +1073,11 @@ mod tests {
                 output_schema: json!({"type": "object", "properties": {
                     "tool": {"type": "string"}
                 }, "required": ["tool"], "additionalProperties": false}),
+                projection_schema: crate::tool::json_projection_schema(
+                    json!({"type": "object", "properties": {
+                    "tool": {"type": "string"}, "result":{"type":"object","properties":{"tool":{"type":"string"}},"required":["tool"],"additionalProperties":false}
+                }, "required": ["tool","result"], "additionalProperties": false}),
+                ),
             })
         }
 
@@ -1021,7 +1103,7 @@ mod tests {
         }
 
         fn project(&self, tool: &str, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(json!({"tool": tool, "result": result.value}))
+            Ok(json!({"kind":"json","value":{"tool": tool, "result": result.value}}))
         }
     }
 
@@ -1044,9 +1126,11 @@ mod tests {
             };
             let result = tool.executor.execute(invocation.clone()).await?;
             assert_eq!(result.value, json!({"tool": name}));
+            tool.definition
+                .validate_projection(&tool.projection.project(&invocation, &result)?)?;
             assert_eq!(
                 tool.projection.project(&invocation, &result)?,
-                json!({"tool": name, "result": {"tool": name}})
+                json!({"kind":"json","value":{"tool": name, "result": {"tool": name}}})
             );
         }
         Ok(())

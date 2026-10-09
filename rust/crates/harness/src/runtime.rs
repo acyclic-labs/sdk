@@ -9,7 +9,7 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, Reducer, Scope},
+    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
     durable_tool::{ResumableToolRegistry, ResumableToolSession},
     executor::ModelEventAdmission,
     extension::{ExtensionLeases, ExtensionRuntime},
@@ -18,10 +18,7 @@ use crate::{
         InteractionTicket, ResolutionReceipt,
     },
     live::{TaskGroup, TaskHandle},
-    model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
-        ModelRequest,
-    },
+    model::{Model, ModelEvent, ModelMessage, ModelProvider, ModelRequest},
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},
     scheduler::InboxItem,
@@ -1644,6 +1641,7 @@ pub struct RuntimeScope {
     extensions: Option<ExtensionAdmission>,
     extensions_sealed: bool,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
+    extension_schemas: Option<SchemaRegistry>,
 }
 
 impl RuntimeScope {
@@ -1657,6 +1655,7 @@ impl RuntimeScope {
             extensions: None,
             extensions_sealed: false,
             extension_runtime: None,
+            extension_schemas: None,
         })
     }
 
@@ -1684,6 +1683,7 @@ impl RuntimeScope {
             extensions: self.extensions.clone(),
             extensions_sealed: true,
             extension_runtime: self.extension_runtime.clone(),
+            extension_schemas: self.extension_schemas.clone(),
         })
     }
 
@@ -1708,21 +1708,29 @@ impl RuntimeScope {
 
     /// Pins one committed agent selection for this scope and all descendants.
     /// Calling this on an already pinned scope cannot retarget it.
-    pub fn with_extensions_from(mut self, agent: &Reducer) -> Result<Self> {
+    pub fn with_extensions_from(self, agent: &Reducer) -> Result<Self> {
+        self.with_original_extensions(agent.original_extension_binding()?)
+    }
+
+    pub(crate) fn with_original_extensions(
+        mut self,
+        original: OriginalExtensionBinding,
+    ) -> Result<Self> {
         if self.extensions_sealed {
             return Err(Error::Unauthorized(
                 "descendant scope cannot change extension selection".into(),
             ));
         }
-        let selection = agent.extension_admission()?;
+        let (selection, schemas) = original.into_parts();
         if self.extensions.is_some() && self.extensions != selection {
             return Err(Error::Conflict(
                 "runtime scope extension selection is already pinned".into(),
             ));
         }
         self.extensions = selection;
+        self.extension_schemas = Some(schemas);
         if let Some(runtime) = &self.extension_runtime {
-            runtime.validate_admission(self.extensions.as_ref())?;
+            self.validate_extension_runtime(runtime)?;
         }
         self.extensions_sealed = true;
         Ok(self)
@@ -1736,9 +1744,36 @@ impl RuntimeScope {
 
     /// Binds process-local executable implementations for this scope.
     pub fn with_extension_runtime(mut self, runtime: Arc<ExtensionRuntime>) -> Result<Self> {
-        runtime.validate_admission(self.extensions.as_ref())?;
+        self.validate_extension_runtime(&runtime)?;
+        if let Some(original) = &self.extension_runtime
+            && original.selected() != runtime.selected()
+        {
+            return Err(Error::Conflict(
+                "runtime scope cannot retarget linked extension implementations".into(),
+            ));
+        }
         self.extension_runtime = Some(runtime);
         Ok(self)
+    }
+
+    fn validate_extension_runtime(&self, runtime: &ExtensionRuntime) -> Result<()> {
+        runtime.validate_admission(self.extensions.as_ref())?;
+        if let Some(schemas) = &self.extension_schemas {
+            for identity in runtime.selected() {
+                if schemas.implementation_digest(&identity.name, identity.version)?
+                    != identity.digest
+                {
+                    return Err(Error::Conflict(
+                        "linked implementation differs from original admission registry".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn extension_schema_registry(&self) -> Option<SchemaRegistry> {
+        self.extension_schemas.clone()
     }
 
     /// Returns the executable extension selection attached to this scope.
@@ -1760,9 +1795,14 @@ impl RuntimeScope {
         if let Some(extensions) = &extensions {
             extensions.validate()?;
         }
+        if self.extensions_sealed && self.extensions != extensions {
+            return Err(Error::Conflict(
+                "replay cannot retarget original extension admission".into(),
+            ));
+        }
         self.extensions = extensions;
         if let Some(runtime) = &self.extension_runtime {
-            runtime.validate_admission(self.extensions.as_ref())?;
+            self.validate_extension_runtime(runtime)?;
         }
         self.extensions_sealed = true;
         Ok(self)
@@ -3675,7 +3715,8 @@ impl AgentHarness {
         let scope = self
             .scope
             .narrow(admitted.grants, admitted.limits)?
-            .with_run_limits(run_limits)?;
+            .with_run_limits(run_limits)?
+            .with_replayed_extensions(admitted.extensions)?;
         let group = self.live.child(scope.concurrency_bound(self.concurrency));
         let descendants = group.child(scope.concurrency_bound(self.concurrency));
         Ok(TaskContext {
@@ -3894,25 +3935,57 @@ impl TaskContext {
     }
 
     async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
+        let limits = self.scope.limits();
+        let mut files = Vec::new();
+        let mut configurations = Vec::new();
+        // Finish structural limits and authority checks for the entire request
+        // before resolving even its first body.
         for message in messages {
-            let parts = match &message.content {
-                ModelContent::Text(_) => continue,
-                ModelContent::Part(part) => std::slice::from_ref(part),
-                ModelContent::Parts(parts) => parts.as_slice(),
-            };
-            for part in parts {
-                if let ModelContentPart::File { file, .. } = part {
-                    if !read_granted(self.scope.grants(), file)? {
-                        return Err(Error::Unauthorized(
-                            "task scope cannot project this file".into(),
-                        ));
-                    }
-                    let content =
-                        self.harness.content.as_ref().ok_or_else(|| {
-                            Error::Unsupported("content reader is not bound".into())
-                        })?;
-                    content.reader.verify(file).await?;
+            message.content.validate_limits(limits)?;
+            for file in message.content.file_refs() {
+                limits.validate_file(file)?;
+                if !read_granted(self.scope.grants(), file)? {
+                    return Err(Error::Unauthorized(
+                        "task scope cannot project this file".into(),
+                    ));
                 }
+                files.push(file);
+            }
+            configurations.extend(message.content.native_configurations());
+        }
+        let proofs = configurations
+            .iter()
+            .map(|binding| {
+                binding.verify_original(
+                    self.scope.extensions.as_ref(),
+                    self.scope.extension_schemas.as_ref(),
+                    self.scope.extension_runtime.as_deref(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if files.is_empty() {
+            return Ok(());
+        }
+        let content = self
+            .harness
+            .content
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
+        for (binding, (schemas, expected)) in configurations.iter().zip(proofs) {
+            let bytes = content.reader.read(&binding.configuration.content).await?;
+            schemas.verify_configuration_binding(
+                &binding.configuration,
+                expected,
+                &bytes,
+                limits,
+            )?;
+        }
+        for file in files {
+            if !configurations
+                .iter()
+                .any(|binding| &binding.configuration.content == file)
+            {
+                content.reader.verify(file).await?;
             }
         }
         Ok(())
@@ -3937,6 +4010,10 @@ impl TaskContext {
 
     /// Runs one bounded, provider-neutral model request from live task code.
     /// Durable tasks must use a resumable recorded effect instead of hidden I/O.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep authorization, token admission and bounded streaming in execution order"
+    )]
     pub async fn model_events(
         &self,
         messages: Vec<ModelMessage>,
@@ -3963,7 +4040,6 @@ impl TaskContext {
                 "model output token bound must be positive".into(),
             ));
         }
-        self.verify_model_files(&messages).await?;
         let tools = self
             .harness
             .tools
@@ -3982,12 +4058,6 @@ impl TaskContext {
             .map_or(self.scope.limits().model_steps, |bound| {
                 bound.min(self.scope.limits().model_steps)
             });
-        let step = self
-            .model_steps
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                (used < step_bound).then_some(used + 1)
-            })
-            .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
         let request = ModelRequest {
             model: binding.model.clone(),
             messages,
@@ -3995,6 +4065,40 @@ impl TaskContext {
             max_output_tokens,
         };
         let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
+        self.verify_model_files(&request.request().messages).await?;
+        let capacity = binding.provider.context_capacity(&binding.model)?;
+        capacity.validate()?;
+        let output_tokens = max_output_tokens.unwrap_or(capacity.output_tokens);
+        if output_tokens > capacity.output_tokens {
+            return Err(Error::Invalid(
+                "model output budget exceeds selected capacity".into(),
+            ));
+        }
+        let request = if max_output_tokens.is_none() {
+            let mut bounded = request.request().clone();
+            bounded.max_output_tokens = Some(output_tokens);
+            crate::model::PreparedModelRequest::prepare(bounded, self.scope.limits())?
+        } else {
+            request
+        };
+        let input_tokens = binding
+            .provider
+            .count_tokens(&request)?
+            .validate(&request)?;
+        if input_tokens
+            .checked_add(u64::from(output_tokens))
+            .is_none_or(|total| total > u64::from(capacity.context_tokens))
+        {
+            return Err(Error::Invalid(
+                "model request exceeds selected token capacity".into(),
+            ));
+        }
+        let step = self
+            .model_steps
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < step_bound).then_some(used + 1)
+            })
+            .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
@@ -6023,6 +6127,7 @@ impl std::ops::Deref for ToolContext {
 mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
+    use crate::model::{ModelContent, ModelContentPart};
     use crate::resources::ProviderRef;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6581,6 +6686,28 @@ mod tests {
     }
 
     impl ModelProvider for CompletedModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            // This fixture defines one token as one canonical request byte.
+            // The complete request is charged as fixed framing; it is not a
+            // tokenizer estimate for any real provider or native media.
+            Ok(crate::context::ModelTokenCount {
+                request_digest: request.manifest().request_digest,
+                fixed_tokens: u32::try_from(request.bytes().len())
+                    .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
+                message_tokens: vec![0; request.request().messages.len()],
+            })
+        }
+
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -6704,7 +6831,16 @@ mod tests {
                         role: crate::model::ModelRole::User,
                         content: ModelContent::Part(ModelContentPart::File {
                             file: foreign,
-                            policy: crate::model::FileProjectionPolicy::Native,
+                            policy: crate::model::FileProjectionPolicy::Native(Box::new(
+                                crate::model::NativeMediaPolicy {
+                                    intent: crate::model::NativeMediaIntent::Image {
+                                        detail: crate::model::ImageDetail::Auto
+                                    },
+                                    maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+                                    maximum_work: 4096,
+                                    configuration: None
+                                }
+                            )),
                         }),
                     }],
                     None
@@ -6818,6 +6954,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
+            projection_schema: crate::tool::json_projection_schema(serde_json::json!({})),
         };
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),
@@ -7868,6 +8005,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({}),
+            projection_schema: crate::tool::json_projection_schema(serde_json::json!({})),
         };
         let invocation = ToolInvocation::for_model_call(
             OperationId::from_bytes([40; 16]),

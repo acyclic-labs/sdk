@@ -130,7 +130,7 @@ const wrongHistoryProvider: ResourceRevision = { kind: "history", reference: { k
 // @ts-expect-error parent-controlled forks use conversation authorities
 const wrongAuthority: Authority<"conversation"> = { kind: "agent", id: "agent" };
 // @ts-expect-error execution handlers are not part of model-visible tool schemas
-const executableModelSchema: ModelToolDefinition = { name: "tool", revision: "1", description: "tool", inputSchema: {}, outputSchema: {}, handler: () => 1 };
+const executableModelSchema: ModelToolDefinition = { name: "tool", revision: "1", description: "tool", inputSchema: {}, outputSchema: {}, projectionSchema: {}, handler: () => 1 };
 // @ts-expect-error an offline retry command cannot contain inline message text
 const inlineOutboxBody: ClientCommand = { operationId: "op" as OperationId, authority: { kind: "conversation", id: "conversation" }, kind: "message.append", payload: { text: "secret" }, offlineSafe: true };
 // @ts-expect-error offline metadata cannot persist an arbitrary credential-bearing string

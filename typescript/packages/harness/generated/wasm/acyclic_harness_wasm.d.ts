@@ -207,11 +207,15 @@ export interface WasmModelLimitsInput {
     readonly tool_calls_per_step: number | bigint;
     readonly context_messages: number | bigint;
 }
+export type WasmModelToolResultContentInput =
+| Readonly<{ kind: "json"; value: unknown }>
+| (Omit<Extract<WasmToolResultContent, { kind: "parts" }>, "parts">
+& Readonly<{ parts: readonly WasmModelDataPart[] }>);
 type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
 Part extends { readonly kind: "tool_call"; readonly call_id: string }
     ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
     : Part extends { readonly kind: "tool_result"; readonly call_id: string }
-    ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+    ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
     : Part;
 export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
 export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
@@ -355,6 +359,11 @@ export interface McpCatalog {
      */
     discovery: McpDiscoveryPolicy;
     /**
+     * Host-selected schema for complete model-facing result envelopes.
+     * Pinned independently of remote canonical outputs with this catalog revision.
+     */
+    projection_schema: Value;
+    /**
      * Complete bounded catalog, not a partially fetched `tools/list` page.
      */
     tools: McpToolDefinition[];
@@ -386,6 +395,14 @@ export interface McpToolResult {
  * Durable orchestration behavior represented as data.
  */
 export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
+
+/**
+ * Complete declarative inventory, without granting file or option authority.
+ */
+export interface WasmModelContentInventoryWire {
+    files: readonly WasmFileRefWire[];
+    nativeConfigurations: readonly WasmNativeConfigurationBindingWire[];
+}
 
 /**
  * Exact portable HTTP input. Credentials belong to the bound provider.
@@ -1172,6 +1189,20 @@ export interface WasmModelToolDefinitionWire {
     description: string;
     input_schema: WasmModelJsonSchema;
     output_schema: WasmModelJsonSchema;
+    projection_schema: WasmModelJsonSchema;
+}
+
+export interface WasmNativeConfigurationBindingWire {
+    source: WasmEventReferenceWire;
+    configuration: WasmExtensionConfigurationWire;
+    implementation_digest: readonly number[];
+}
+
+export interface WasmNativeMediaPolicyWire {
+    intent: WasmNativeMediaIntent;
+    maximum_bytes: number;
+    maximum_work: number;
+    configuration: WasmNativeConfigurationBindingWire | null;
 }
 
 export interface WasmTaskAdmissionInput {
@@ -1247,16 +1278,23 @@ export type WasmBrowserAdmission = { kind: "accepted"; task_id: string } | { kin
 export type WasmBrowserRecoveredWork = { kind: "idle" } | { kind: "claimed"; lease: WorkLease } | { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError };
 
 export type WasmBrowserWork = { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError } | { kind: "suspended"; task_id: string; revision: bigint } | { kind: "completed"; task_id: string } | { kind: "yielded"; lease: WorkLease } | { kind: "reconciling"; lease: WorkLease };
+export type WasmFileProjectionPolicy = "reference" | "bounded_full" | { native: WasmNativeMediaPolicyWire };
 
-export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
+export type WasmImageDetail = "auto" | "low" | "high";
 
 export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
 
-export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
+export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: WasmToolResultContent };
+
+export type WasmModelDataPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy };
 
 export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 
 export type WasmModelRole = "system" | "user" | "assistant" | "tool";
+
+export type WasmNativeMediaIntent = { kind: "image"; detail: WasmImageDetail } | { kind: "audio"; maximum_duration_ms: number } | { kind: "video"; maximum_duration_ms: number; maximum_frames: number } | { kind: "document"; maximum_pages: number };
+
+export type WasmToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: WasmModelDataPart[] };
 
 
 /**
@@ -1807,6 +1845,11 @@ export function forkSeedFromReport(report: any): any;
 export function is_stream_error_code(value: string): boolean;
 
 /**
+ * Wraps a consumer's JSON value schema in the complete typed projection envelope.
+ */
+export function jsonToolProjectionSchema(value_schema: WasmToolJsonSchema): WasmToolJsonSchema;
+
+/**
  * Projects the host-selected schema exposure through the ordinary model wire.
  */
 export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
@@ -1824,6 +1867,11 @@ export function nativeProcessApprovalDigest(task: string, command: string, reque
  * provider. Validation failures are thrown as stable error codes.
  */
 export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
+
+/**
+ * Returns all media/options refs and original-admission claims without IO.
+ */
+export function modelContentInventory(content: WasmModelContentInput, limits: WasmModelLimitsInput): WasmModelContentInventoryWire;
 
 /**
  * Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
@@ -2042,6 +2090,11 @@ export function validateToolDefinition(definition: any): void;
 export function validateToolInvocation(definition: any, invocation: any): void;
 
 /**
+ * Validates the explicit result envelope without granting file or option authority.
+ */
+export function validateToolProjection(definition: WasmToolDefinitionInput, projection: WasmModelToolResultContentInput, limits: WasmModelLimitsInput): void;
+
+/**
  * Validates one successful tool result against its registered definition.
  */
 export function validateToolResult(definition: any, result: any): void;
@@ -2144,8 +2197,10 @@ export interface InitOutput {
     readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
     readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
     readonly nativeProcessApprovalDigest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly modelContentInventory: (a: any, b: any) => [number, number, number];
     readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
@@ -2172,6 +2227,7 @@ export interface InitOutput {
     readonly validateTaskRequirements: (a: any) => [number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
+    readonly validateToolProjection: (a: any, b: any, c: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly validateToolValue: (a: any, b: any) => [number, number, number];
     readonly validateUserInput: (a: any) => [number, number];

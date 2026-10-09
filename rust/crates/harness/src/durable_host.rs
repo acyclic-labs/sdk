@@ -138,6 +138,9 @@ pub struct TaskJournalOwner<P> {
     output_schema: Value,
     input_grants: crate::Capabilities,
     input_limits: crate::conversation::Limits,
+    extensions: Option<crate::core::ExtensionAdmission>,
+    extension_schemas: Option<crate::core::SchemaRegistry>,
+    extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
 }
 
 #[cfg(feature = "filesystem")]
@@ -154,6 +157,45 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_native_configuration(
+        &self,
+        binding: &crate::model::NativeConfigurationBinding,
+    ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
+        let (schemas, expected) = binding.verify_original(
+            self.extensions.as_ref(),
+            self.extension_schemas.as_ref(),
+            self.extension_runtime.as_deref(),
+        )?;
+        let file = &binding.configuration.content;
+        self.validate_input_file(file)?;
+        if file.descriptor().byte_length() > self.input_limits.render_bytes {
+            return Err(Error::Invalid(
+                "native options exceed render byte limit".into(),
+            ));
+        }
+        Ok((schemas, expected))
+    }
+
+    /// Verifies options against the original authenticated admission and linked code.
+    /// This is read authority, so it remains valid during original-fence settlement.
+    pub(crate) async fn verify_native_configuration(
+        &self,
+        binding: &crate::model::NativeConfigurationBinding,
+    ) -> Result<()> {
+        let (schemas, expected) = self.validate_native_configuration(binding)?;
+        let bytes = self
+            .host
+            .reader
+            .read(&binding.configuration.content)
+            .await?;
+        schemas.verify_configuration_binding(
+            &binding.configuration,
+            expected,
+            &bytes,
+            self.input_limits,
+        )
     }
 
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -1168,6 +1210,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             output_schema: admission.output_schema,
             input_grants: admission.grants,
             input_limits: admission.limits,
+            extensions: admission.extensions,
+            extension_schemas: self.root_scope.extension_schema_registry(),
+            extension_runtime: self.root_scope.extension_runtime(),
         };
         owner.verify(true).await?;
         Ok(owner)

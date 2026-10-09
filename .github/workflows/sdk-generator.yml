@@ -5,6 +5,9 @@ on:
     paths:
       - 'tools/sdk-generator/**'
       - '.github/workflows/sdk-generator.yml'
+      - '.github/sdk-generator-backends.json'
+      - 'scripts/plan-qualification.mjs'
+      - 'scripts/test-plan-qualification.mjs'
       - 'scripts/archive-utils.mjs'
   workflow_dispatch:
 
@@ -37,18 +40,12 @@ jobs:
           node --input-type=module <<'JS'
           import { execFileSync } from 'node:child_process';
           import { appendFileSync } from 'node:fs';
+          import { selectGeneratorBackends } from './scripts/plan-qualification.mjs';
           const changed = process.env.GITHUB_EVENT_NAME === 'pull_request'
             ? execFileSync('git', ['diff', '--name-only', '-z', 'HEAD^', 'HEAD'], { encoding: 'utf8' }).split('\0')
             : ['.github/workflows/sdk-generator.yml'];
-          const workflow = changed.includes('.github/workflows/sdk-generator.yml');
-          for (const backend of ['go', 'java', 'dotnet', 'ruby']) {
-            const affected = workflow || changed.some(path =>
-              (path.startsWith(`tools/sdk-generator/backends/${backend}/`)
-                && path !== `tools/sdk-generator/backends/${backend}/README.md`)
-              || (backend === 'go' ? path === 'scripts/archive-utils.mjs'
-                : path.startsWith('tools/sdk-generator/shared/')));
-            appendFileSync(process.env.GITHUB_OUTPUT, `${backend}=${affected}\n`);
-          }
+          const affected = selectGeneratorBackends(changed);
+          appendFileSync(process.env.GITHUB_OUTPUT, `go=${affected.includes('go')}\nnode_backends=${JSON.stringify(affected.filter(name => name !== 'go'))}\n`);
           JS
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.scope.outputs.go == 'true'
@@ -64,12 +61,22 @@ jobs:
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
           node --test tests/qualify.test.mjs
-      - name: Check Java and JVM staging
-        if: steps.scope.outputs.java == 'true'
-        run: node --test --test-concurrency=1 tools/sdk-generator/backends/java/tests/*.test.mjs
-      - name: Check .NET staging
-        if: steps.scope.outputs.dotnet == 'true'
-        run: node --test --test-concurrency=1 tools/sdk-generator/backends/dotnet/tests/*.test.mjs
-      - name: Check Ruby staging
-        if: steps.scope.outputs.ruby == 'true'
-        run: node --test --test-concurrency=1 tools/sdk-generator/backends/ruby/tests/*.test.mjs
+      - name: Check affected backend staging
+        if: steps.scope.outputs.node_backends != '[]'
+        env:
+          AFFECTED_NODE_BACKENDS: ${{ steps.scope.outputs.node_backends }}
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { readdirSync } from 'node:fs';
+          import { languageGeneratorBackends } from './scripts/plan-qualification.mjs';
+          const paths = [];
+          for (const backend of JSON.parse(process.env.AFFECTED_NODE_BACKENDS)) {
+            if (!languageGeneratorBackends.includes(backend) || backend === 'go') throw new Error('unregistered Node backend');
+            const root = `tools/sdk-generator/backends/${backend}/tests`;
+            const tests = readdirSync(root).filter(name => name.endsWith('.test.mjs')).sort();
+            if (!tests.length) throw new Error(`no focused controls for ${backend}`);
+            paths.push(...tests.map(name => `${root}/${name}`));
+          }
+          execFileSync(process.execPath, ['--test', '--test-concurrency=1', ...paths], { stdio: 'inherit' });
+          JS

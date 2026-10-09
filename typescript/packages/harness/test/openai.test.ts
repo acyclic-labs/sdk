@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { OpenAiCompatibleProvider, descriptorFor, type FileRef, type ModelEvent, type ModelRequest } from "../src/index.js";
+import { OpenAiCompatibleProvider, jsonToolProjection, descriptorFor, type FileRef, type ModelEvent, type ModelRequest } from "../src/index.js";
 
 test("OpenAI-compatible endpoint admission is unambiguous and credential-free", async () => {
   for (const baseUrl of [
@@ -37,7 +37,7 @@ test("OpenAI-compatible streams project content, tools, and completion", async (
   const request: ModelRequest = {
     model: { provider: "openai-compatible", name: "owned", revision: "r1", options: { stream: false } },
     messages: [{ role: "user", content: "hello" }],
-    tools: [{ name: "echo", revision: "1", description: "Echo", inputSchema: { type: "object" }, outputSchema: {} }],
+    tools: [{ name: "echo", revision: "1", description: "Echo", inputSchema: { type: "object" }, outputSchema: {}, projectionSchema: (await jsonToolProjection({})).schema }],
   };
   const events = [];
   for await (const event of provider.generate(request)) events.push(event);
@@ -138,35 +138,32 @@ test("OpenAI-compatible streams reject malformed tool calls before completion", 
   }
 });
 
-test("OpenAI-compatible projection verifies native images and keeps refs out of provider JSON", async () => {
+test("OpenAI-compatible adapter rejects unimplemented native media before any reads", async () => {
   const bytes = new Uint8Array([137, 80, 78, 71]);
   const file: FileRef = {
     volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "images", class: "project", owner: { kind: "project", id: "project" } },
     path: "image.png", version: "one", descriptor: await descriptorFor(bytes, "image/png"), display_name: "image.png",
   };
-  let submitted: Record<string, unknown> | undefined;
-  const provider = new OpenAiCompatibleProvider({
-    baseUrl: "https://example.test/v1",
-    resolveFile: async () => bytes,
-    fetcher: async (_, init) => {
-      submitted = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return new Response("data: [DONE]\n\n");
-    },
-  });
-  const request: ModelRequest = {
-    model: { provider: "openai-compatible", name: "owned", revision: "r1", options: {} },
-    messages: [{ role: "user", content: [{ kind: "text", text: "inspect" }, { kind: "file", file, policy: "native" }] }],
-    tools: [],
-  };
-  for await (const _ of provider.generate(request)) { /* consume */ }
-  const messages = submitted?.messages as Array<{ content: Array<Record<string, unknown>> }>;
-  expect(messages[0]?.content[0]).toEqual({ type: "text", text: "inspect" });
-  expect(messages[0]?.content[1]).toEqual({ type: "image_url", image_url: { url: "data:image/png;base64,iVBORw==" } });
-  expect(JSON.stringify(submitted)).not.toContain("byte_length");
-
-  const corrupt = new OpenAiCompatibleProvider({ baseUrl: "https://example.test/v1", resolveFile: async () => new Uint8Array([0]), fetcher: async () => { throw new Error("must not send"); } });
-  const consume = async () => { for await (const _ of corrupt.generate(request)) { /* consume */ } };
-  await expect(consume()).rejects.toThrow("file content does not match its descriptor");
+  let reads = 0;
+  const provider = new OpenAiCompatibleProvider({ baseUrl: "https://example.test/v1",
+    resolveFile: async () => { reads++; return bytes; },
+    fetcher: async () => { throw new Error("must not send"); } });
+  for (const toolResult of [false, true]) {
+    const native = { kind: "file" as const, file, policy: { native: {
+      intent: { kind: "image" as const, detail: "auto" as const }, maximum_bytes: 4,
+      maximum_work: 4, configuration: null,
+    } } };
+    const request: ModelRequest = {
+      model: { provider: "openai-compatible", name: "owned", revision: "r1", options: {} },
+      messages: [{ role: "user", content: { kind: "file", file, policy: "bounded_full" } },
+        { role: toolResult ? "tool" : "user", content: toolResult
+          ? { kind: "tool_result", callId: "image", name: "image", content: { kind: "parts", parts: [native] } }
+          : native }], tools: [],
+    };
+    const consume = async () => { for await (const _ of provider.generate(request)) { /* consume */ } };
+    await expect(consume()).rejects.toThrow("unsupported native media policy");
+    expect(reads).toBe(0);
+  }
 });
 
 test("OpenAI-compatible projection rejects unsupported files before provider dispatch", async () => {
@@ -178,10 +175,10 @@ test("OpenAI-compatible projection rejects unsupported files before provider dis
   const provider = new OpenAiCompatibleProvider({ baseUrl: "https://example.test/v1", resolveFile: async () => bytes, fetcher: async () => { throw new Error("must not send"); } });
   const request: ModelRequest = {
     model: { provider: "openai-compatible", name: "owned", revision: "r1", options: {} },
-    messages: [{ role: "user", content: { kind: "file", file, policy: "native" } }], tools: [],
+    messages: [{ role: "user", content: { kind: "file", file, policy: { native: { intent: { kind: "image", detail: "auto" }, maximum_bytes: 1, maximum_work: 1, configuration: null } } } }], tools: [],
   };
   const consume = async () => { for await (const _ of provider.generate(request)) { /* consume */ } };
-  await expect(consume()).rejects.toThrow("unsupported file content");
+  await expect(consume()).rejects.toThrow("unsupported native media policy");
 });
 
 test("OpenAI-compatible projection preserves tool call/result linkage", async () => {
@@ -197,7 +194,7 @@ test("OpenAI-compatible projection preserves tool call/result linkage", async ()
     model: { provider: "openai-compatible", name: "owned", revision: "r1", options: {} },
     messages: [
       { role: "assistant", content: { kind: "tool_call", callId: "call-1", name: "lookup", arguments: { q: "test" } } },
-      { role: "tool", content: { kind: "tool_result", callId: "call-1", name: "lookup", value: { count: 2 } } },
+      { role: "tool", content: { kind: "tool_result", callId: "call-1", name: "lookup", content: { kind: "json", value: { count: 2 } } } },
     ],
     tools: [],
   };
@@ -206,4 +203,22 @@ test("OpenAI-compatible projection preserves tool call/result linkage", async ()
     { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: '{"q":"test"}' } }] },
     { role: "tool", tool_call_id: "call-1", content: '{"count":2}' },
   ]);
+});
+
+
+test("OpenAI-compatible tool data parts preserve ordered text projections", async () => {
+  let submitted: Record<string, unknown> | undefined;
+  const provider = new OpenAiCompatibleProvider({ baseUrl: "https://example.test/v1",
+    fetcher: async (_, init) => {
+      submitted = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response("data: [DONE]\n\n");
+    } });
+  for await (const _ of provider.generate({
+    model: { provider: "openai-compatible", name: "owned", revision: "r1", options: {} },
+    messages: [{ role: "tool", content: { kind: "tool_result", callId: "ordered", name: "read",
+      content: { kind: "parts", parts: [{ kind: "text", text: "first" }, { kind: "text", text: "second" }] } } }],
+    tools: [],
+  })) { /* consume */ }
+  expect(submitted?.messages).toEqual([{ role: "tool", tool_call_id: "ordered",
+    content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] }]);
 });
