@@ -14,7 +14,7 @@ replacement needs an immutable source handoff and matching installed packages.
 
 | Cohort | Targets | Historical evidence and limits |
 | --- | --- | --- |
-| Python/Go | Python, Go | `research/acceptance/python-go/current-installed-method-matrix-20261004.json` records Stream and Machines coverage; Actors and Inference remain partial. `go/qualification-matrix.md` distinguishes protobuf-over-HTTP fixture probes from local gRPC cancellation. |
+| Go transport | Go | The historical installed-method matrix dated 2026-10-04 records Stream and Machines coverage; Actors and Inference remain partial. `go/qualification-matrix.md` distinguishes protobuf-over-HTTP fixture probes from local gRPC cancellation. |
 | JVM/.NET | Java, Kotlin, Scala, C# | `research/acceptance/jvm-dotnet/current-producer-receipt-20261004.json` records reproducible installed JAR/NuGet artifacts. This does not qualify embedded Rust bindings. Kotlin `qualify-final-producer.ps1` explicitly retains the maintained-binding/type-table cutover gap. |
 | Native | Swift, C++, Objective-C | Swift's historical Windows transport guard does not exclude its Linux/macOS target. Embedded consumer sources and historical execution notes require matching accepted runtime artifacts. |
 | Remaining core | Ruby, PHP, Dart | `research/acceptance/ruby-php-dart/qualification/current-source-qualification-20261004.receipt.json` and `installed-runtime-availability.receipt.json` contain bounded package/runtime evidence. The retained native shutdown failure and PHP generator availability gap prevent a clean completion claim. |
@@ -36,16 +36,16 @@ remains the generation authority.
 | `research/additional-languages/haskell-grapesy-prototype/README.md` | `6fc9f9b8797084b7f0a018c48db464eb8ec2b472b26463b99531167eaad18959` |
 | `docs/research/embedded-bindings.md` | `6878fc9b54d69cf9b464f05a1c701b27f00f1c64fb653af5980a89c9a109745d` |
 
-Historical embedded notes record executed C/Python consumers, while the audited
+Historical embedded notes record executed foreign consumers, while the audited
 test programs themselves are source files. Neither is current qualification of
 the pending foundation ABI. UniFFI pins differ between the older embedded
-comparison (0.32.2) and the Actors Python typing patch (0.31.0); select the
+comparison (0.32.2) and the Actors typing patch (0.31.0); select the
 accepted foundation pin rather than combining their generated surfaces.
 
 ## Maintenance reduction gates
 
 Kotlin's duplicate type/operation tables can be removed after Rust metadata
-generates the accepted maintained binding. The Python UniFFI typing patch needs
+generates the accepted maintained binding. The historical UniFFI typing patch needs
 its positive and negative controls retained until an equivalent maintained
 replacement passes. Generated Ruby/PHP/Dart policy snapshots are not themselves
 authored implementations; audit the emitter and adapters before counting any
