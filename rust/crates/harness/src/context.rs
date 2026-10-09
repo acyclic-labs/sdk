@@ -28,6 +28,8 @@ mod discovery;
 pub use discovery::*;
 mod compaction;
 pub use compaction::*;
+mod snapshot;
+pub use snapshot::*;
 
 /// Durable output of an ordinary admitted summary model operation.
 /// The operation's execution journal retains its exact request and observations.
@@ -1376,32 +1378,14 @@ impl ContextPipeline {
     /// The caller establishes source provenance; the active input belongs to the delta.
     pub fn continue_base(mut retained: Context, delta: Context, limits: Limits) -> Result<Context> {
         validate_projected_context(&retained, limits)?;
-        validate_projected_context(&delta, limits)?;
-        let prefix = u32::try_from(retained.messages.len()).map_err(|_| {
-            crate::Error::Invalid("base message count exceeds portable index".into())
-        })?;
-        let current_input_index = Some(
-            delta
-                .current_input_index
-                .and_then(|index| prefix.checked_add(index))
-                .ok_or_else(|| {
-                    crate::Error::Invalid("continued base has no bounded current input".into())
-                })?,
-        );
-        BorrowedContext {
-            messages: ContextMessages {
-                first: &retained.messages,
-                user: None,
-                second: &delta.messages,
-            },
-            metadata: &retained.metadata,
-            current_input_index,
+        if delta.current_input_index.is_none() {
+            return Err(crate::Error::Invalid(
+                "continued base has no current input".into(),
+            ));
         }
-        .validate_bounds(limits)?;
-        retained.current_input_index = current_input_index;
-        retained.messages.extend(delta.messages);
-        validate_projected_context(&retained, limits)?;
-        Ok(retained)
+        // The retained parent's old active input is historical in this admission.
+        retained.current_input_index = None;
+        selection::place_context(retained, delta, ContextPlacement::Append, limits)
     }
 
     /// Bounds the initial view and every intermediate projection, without truncation.

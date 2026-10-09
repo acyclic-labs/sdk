@@ -267,47 +267,174 @@ pub fn apply_context_projection(
 }
 
 pub(crate) fn place_messages(
-    mut context: Context,
-    mut messages: Vec<ModelMessage>,
+    context: Context,
+    messages: Vec<ModelMessage>,
     placement: ContextPlacement,
     limits: Limits,
 ) -> Result<Context> {
-    validate_projected_context(&context, limits)?;
-    super::validate_source_messages(&messages, limits)?;
-    let current_input_index = match (placement, context.current_input_index) {
-        (ContextPlacement::Prepend, Some(index)) => Some(
-            u32::try_from(messages.len())
+    place_context(
+        context,
+        Context {
+            messages,
+            ..Context::default()
+        },
+        placement,
+        limits,
+    )
+}
+
+pub(super) fn place_context(
+    context: Context,
+    contribution: Context,
+    placement: ContextPlacement,
+    limits: Limits,
+) -> Result<Context> {
+    let marker = preflight_context_composition(&context, &contribution, placement, limits)?;
+    Ok(compose_context(context, contribution, placement, marker))
+}
+
+pub(super) fn place_snapshot(
+    context: Context,
+    snapshot: &Context,
+    placement: ContextPlacement,
+    limits: Limits,
+) -> Result<Context> {
+    let marker = preflight_context_composition(&context, snapshot, placement, limits)?;
+    // Clone only after the complete message/metadata composition fits.
+    Ok(compose_context(
+        context,
+        snapshot.clone(),
+        placement,
+        marker,
+    ))
+}
+
+struct JoinedMetadata<'a>(
+    &'a std::collections::BTreeMap<String, FileRef>,
+    &'a std::collections::BTreeMap<String, FileRef>,
+);
+
+impl Serialize for JoinedMetadata<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(None)?;
+        for (name, file) in self.0.iter().chain(self.1) {
+            map.serialize_entry(name, file)?;
+        }
+        map.end()
+    }
+}
+
+fn preflight_context_composition(
+    context: &Context,
+    contribution: &Context,
+    placement: ContextPlacement,
+    limits: Limits,
+) -> Result<Option<u32>> {
+    validate_projected_context(context, limits)?;
+    validate_projected_context(contribution, limits)?;
+    if context
+        .messages
+        .len()
+        .checked_add(contribution.messages.len())
+        .is_none_or(|count| count > limits.context_messages)
+        || context
+            .metadata
+            .len()
+            .checked_add(contribution.metadata.len())
+            .is_none_or(|count| count > limits.attachments)
+    {
+        return Err(Error::Invalid(
+            "context composition exceeds declared count bounds".into(),
+        ));
+    }
+    if contribution
+        .metadata
+        .keys()
+        .any(|name| context.metadata.contains_key(name))
+    {
+        return Err(Error::Conflict(
+            "context composition repeats a metadata key".into(),
+        ));
+    }
+    let current_input_index = match (
+        context.current_input_index,
+        contribution.current_input_index,
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Invalid(
+                "context composition has two active inputs".into(),
+            ));
+        }
+        (Some(index), None) if placement == ContextPlacement::Prepend => Some(
+            u32::try_from(contribution.messages.len())
                 .ok()
                 .and_then(|count| index.checked_add(count))
                 .ok_or_else(|| {
                     Error::Invalid("current input index exceeds portable count".into())
                 })?,
         ),
-        (_, marker) => marker,
+        (None, Some(index)) if placement == ContextPlacement::Append => Some(
+            u32::try_from(context.messages.len())
+                .ok()
+                .and_then(|count| index.checked_add(count))
+                .ok_or_else(|| {
+                    Error::Invalid("current input index exceeds portable count".into())
+                })?,
+        ),
+        (Some(index), None) | (None, Some(index)) => Some(index),
+        (None, None) => None,
     };
     let (first, second) = match placement {
-        ContextPlacement::Prepend => (messages.as_slice(), context.messages.as_slice()),
-        ContextPlacement::Append => (context.messages.as_slice(), messages.as_slice()),
+        ContextPlacement::Prepend => (
+            contribution.messages.as_slice(),
+            context.messages.as_slice(),
+        ),
+        ContextPlacement::Append => (
+            context.messages.as_slice(),
+            contribution.messages.as_slice(),
+        ),
     };
-    super::BorrowedContext {
-        messages: super::ContextMessages {
-            first,
-            user: None,
-            second,
-        },
-        metadata: &context.metadata,
-        current_input_index,
+    #[derive(Serialize)]
+    struct JoinedContext<'a> {
+        messages: super::ContextMessages<'a>,
+        metadata: JoinedMetadata<'a>,
+        current_input_index: Option<u32>,
     }
-    .validate_bounds(limits)?;
-    context.current_input_index = current_input_index;
+    crate::contract::validate_json_byte_bound(
+        &JoinedContext {
+            messages: super::ContextMessages {
+                first,
+                user: None,
+                second,
+            },
+            metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
+            current_input_index,
+        },
+        limits.render_bytes,
+    )?;
+    Ok(current_input_index)
+}
+
+fn compose_context(
+    mut context: Context,
+    mut contribution: Context,
+    placement: ContextPlacement,
+    marker: Option<u32>,
+) -> Context {
+    context.current_input_index = marker;
+    context.metadata.extend(contribution.metadata);
     match placement {
         ContextPlacement::Prepend => {
-            messages.append(&mut context.messages);
-            context.messages = messages;
+            contribution.messages.append(&mut context.messages);
+            context.messages = contribution.messages;
         }
-        ContextPlacement::Append => context.messages.append(&mut messages),
+        ContextPlacement::Append => context.messages.append(&mut contribution.messages),
     }
-    Ok(context)
+    context
 }
 
 /// Validates finite projected context bounds, never silently omitting mandatory data.
