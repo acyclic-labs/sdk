@@ -1,6 +1,6 @@
 //! Versioned canonical browser-authority records and ordered keys.
 
-use acyclic_fs::{
+use crate::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, Sequence, authority_commit_digest,
 };
 use bytes::Bytes;

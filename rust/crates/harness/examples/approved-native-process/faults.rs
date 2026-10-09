@@ -115,32 +115,36 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
     ] {
         let stream = Arc::new(ReceiptFaultStream::<MemoryStream>::default());
         *stream.fault.lock().await = Some((kind, lost_reply));
-        super::run_on(
-            Some(McpStdioMethod::CallTool),
-            StreamClient::new(stream.clone()),
-            Some((kind, lost_reply)),
-            false,
-        )
+        super::in_heap(|| {
+            super::run_on(
+                Some(McpStdioMethod::CallTool),
+                StreamClient::new(stream.clone()),
+                Some((kind, lost_reply)),
+                false,
+            )
+        })
         .await?;
         if stream.fault.lock().await.is_some() {
             return Err("native receipt fault was not exercised".into());
         }
         println!("MCP {kind} receipt fault (lost acknowledgement: {lost_reply}) passed");
     }
-    super::run_on(
-        Some(McpStdioMethod::CallTool),
-        StreamClient::new(Arc::new(MemoryStream::default())),
-        None,
-        true,
-    )
+    super::in_heap(|| {
+        super::run_on(
+            Some(McpStdioMethod::CallTool),
+            StreamClient::new(Arc::new(MemoryStream::default())),
+            None,
+            true,
+        )
+    })
     .await?;
     println!(
         "MCP applied call with lost response, bounded cleanup and receipt-only recovery passed"
     );
     #[cfg(feature = "filesystem-local")]
     {
-        disk_restart().await?;
-        host_death().await?;
+        super::in_heap(disk_restart).await?;
+        super::in_heap(host_death).await?;
     }
     Ok(())
 }
@@ -173,14 +177,16 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
             hide_next_inspection: Default::default(),
         });
         let weak_stream = Arc::downgrade(&stream);
-        let evidence = super::prepare_on(
-            Some(method),
-            StreamClient::new(stream.clone()),
-            filesystem,
-            receipt_fault,
-            lost_response,
-            None,
-        )
+        let evidence = super::in_heap(|| {
+            super::prepare_on(
+                Some(method),
+                StreamClient::new(stream.clone()),
+                filesystem,
+                receipt_fault,
+                lost_response,
+                None,
+            )
+        })
         .await?;
         if stream.fault.lock().await.is_some() {
             return Err("disk-backed native receipt fault was not exercised".into());
@@ -200,13 +206,15 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )
             .await?,
         );
-        super::recover_on(
-            StreamClient::new(stream),
-            filesystem,
-            &evidence.restart,
-            receipt_fault,
-            lost_response,
-        )
+        super::in_heap(|| {
+            super::recover_on(
+                StreamClient::new(stream),
+                filesystem,
+                &evidence.restart,
+                receipt_fault,
+                lost_response,
+            )
+        })
         .await?;
         println!(
             "MCP {method:?} disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
@@ -224,14 +232,17 @@ pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::
     let stream = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default()).await?,
     );
-    let _ = super::prepare_on(
-        Some(McpStdioMethod::CallTool),
-        StreamClient::new(stream),
-        filesystem,
-        None,
-        true,
-        Some(&storage.join("restart.json")),
-    )
+    let restart_path = storage.join("restart.json");
+    let _ = super::in_heap(|| {
+        super::prepare_on(
+            Some(McpStdioMethod::CallTool),
+            StreamClient::new(stream),
+            filesystem,
+            None,
+            true,
+            Some(&restart_path),
+        )
+    })
     .await?;
     Err("host-death controller failed to terminate the host".into())
 }
@@ -270,7 +281,8 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .await?,
     ));
     let before = launch_only(&stream, &seed).await?;
-    super::recover_on(stream.clone(), filesystem.clone(), &seed, None, true).await?;
+    super::in_heap(|| super::recover_on(stream.clone(), filesystem.clone(), &seed, None, true))
+        .await?;
     if launch_only(&stream, &seed).await? != before {
         return Err("host-death recovery changed the launch-only native receipt".into());
     }

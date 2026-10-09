@@ -11,6 +11,9 @@
 )]
 #![doc = include_str!("../README.md")]
 
+#[cfg(feature = "browser")]
+pub mod browser;
+
 /// Generated public gRPC schema and client/server bindings.
 #[allow(
     missing_docs,

@@ -142,12 +142,14 @@ where
 }
 
 async fn run(mcp: Option<McpStdioMethod>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    run_on(
-        mcp,
-        StreamClient::new(Arc::new(MemoryStream::default())),
-        None,
-        false,
-    )
+    in_heap(|| {
+        run_on(
+            mcp,
+            StreamClient::new(Arc::new(MemoryStream::default())),
+            None,
+            false,
+        )
+    })
     .await
 }
 
@@ -197,14 +199,16 @@ async fn run_on<P: StreamProvider>(
     lost_response: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let filesystem = Fs::memory();
-    let evidence = prepare_on(
-        mcp,
-        stream.clone(),
-        filesystem.clone(),
-        receipt_fault,
-        lost_response,
-        None,
-    )
+    let evidence = in_heap(|| {
+        prepare_on(
+            mcp,
+            stream.clone(),
+            filesystem.clone(),
+            receipt_fault,
+            lost_response,
+            None,
+        )
+    })
     .await?;
     if evidence.files.upgrade().is_some() {
         return Err("initial filesystem host remained live during recovery".into());
@@ -212,13 +216,15 @@ async fn run_on<P: StreamProvider>(
     if std::fs::canonicalize(evidence.directory.path())? != evidence.restart.request.cwd {
         return Err("restart metadata changed the owned native directory".into());
     }
-    recover_on(
-        stream,
-        filesystem,
-        &evidence.restart,
-        receipt_fault,
-        lost_response,
-    )
+    in_heap(|| {
+        recover_on(
+            stream,
+            filesystem,
+            &evidence.restart,
+            receipt_fault,
+            lost_response,
+        )
+    })
     .await
 }
 
@@ -308,13 +314,15 @@ where
             &IdempotencyKey::new("example-source")?,
         )
         .await?;
-    let runtime = runtime(
-        stream.clone(),
-        files.clone(),
-        results_volume.clone(),
-        &issuer,
-        &scope,
-    )
+    let runtime = in_heap(|| {
+        runtime(
+            stream.clone(),
+            files.clone(),
+            results_volume.clone(),
+            &issuer,
+            &scope,
+        )
+    })
     .await?;
     let WorkPull::Claimed(lease) = runtime
         .task_host()
@@ -385,16 +393,19 @@ where
             publication: PublicationPermit::Unrestricted,
         });
     }
+    let work_per_volume = serde_json::from_value(allowances)?;
     let view = Arc::new(
-        NativeVolumeView::prepare(
-            &owner,
-            NativeViewOptions {
-                root: directory.path().to_path_buf(),
-                maximum_volumes: 2,
-                work_per_volume: serde_json::from_value(allowances)?,
-            },
-            bindings,
-        )
+        in_heap(|| {
+            NativeVolumeView::prepare(
+                &owner,
+                NativeViewOptions {
+                    root: directory.path().to_path_buf(),
+                    maximum_volumes: 2,
+                    work_per_volume,
+                },
+                bindings,
+            )
+        })
         .await?,
     );
     let mut request = native_request(mcp, lost_response, view.manifest().clone())?;
@@ -515,27 +526,30 @@ where
         file.sync_all()?;
     }
     if mcp == Some(McpStdioMethod::CallTool) && restart_path.is_none() {
-        model_tool::run(
-            model_tool::Approved {
-                recovery: Recovery {
-                    owner: owner.clone(),
-                    effects: effects.clone(),
-                    content: content.clone(),
+        in_heap(|| async {
+            model_tool::run(
+                model_tool::Approved {
+                    recovery: Recovery {
+                        owner: owner.clone(),
+                        effects: effects.clone(),
+                        content: content.clone(),
+                    },
+                    task: task_id,
+                    command,
+                    plan: plan.clone(),
+                    request: request.clone(),
                 },
-                task: task_id,
-                command,
-                plan: plan.clone(),
-                request: request.clone(),
-            },
-            runtime
-                .harness()
-                .durable_context(task_id, OperationId::from_bytes(task_id.into_bytes()))
-                .await?,
-            approvals.clone(),
-            false,
-            !lost_response && receipt_fault.is_none(),
-            receipt_fault.is_some(),
-        )
+                runtime
+                    .harness()
+                    .durable_context(task_id, OperationId::from_bytes(task_id.into_bytes()))
+                    .await?,
+                approvals.clone(),
+                false,
+                !lost_response && receipt_fault.is_none(),
+                receipt_fault.is_some(),
+            )
+            .await
+        })
         .await?;
     }
     let status = if mcp == Some(McpStdioMethod::CallTool) && receipt_fault.is_some() {
@@ -585,13 +599,15 @@ where
         filesystem,
         seed.destination.provider().clone(),
     )?);
-    let runtime = runtime(
-        stream.clone(),
-        files.clone(),
-        seed.results_volume.clone(),
-        &issuer,
-        &seed.scope,
-    )
+    let runtime = in_heap(|| {
+        runtime(
+            stream.clone(),
+            files.clone(),
+            seed.results_volume.clone(),
+            &issuer,
+            &seed.scope,
+        )
+    })
     .await?;
     let Recovery {
         owner,
@@ -617,27 +633,30 @@ where
             &issuer,
             &seed.scope,
         )?;
-        model_tool::run(
-            model_tool::Approved {
-                recovery: Recovery {
-                    owner: owner.clone(),
-                    effects: effects.clone(),
-                    content: content.clone(),
+        in_heap(|| async {
+            model_tool::run(
+                model_tool::Approved {
+                    recovery: Recovery {
+                        owner: owner.clone(),
+                        effects: effects.clone(),
+                        content: content.clone(),
+                    },
+                    task: seed.task,
+                    command: seed.command,
+                    plan: seed.plan.clone(),
+                    request: seed.request.clone(),
                 },
-                task: seed.task,
-                command: seed.command,
-                plan: seed.plan.clone(),
-                request: seed.request.clone(),
-            },
-            runtime
-                .harness()
-                .durable_context(seed.task, OperationId::from_bytes(seed.task.into_bytes()))
-                .await?,
-            journal,
-            true,
-            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
-            receipt_fault.is_some(),
-        )
+                runtime
+                    .harness()
+                    .durable_context(seed.task, OperationId::from_bytes(seed.task.into_bytes()))
+                    .await?,
+                journal,
+                true,
+                matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
+                receipt_fault.is_some(),
+            )
+            .await
+        })
         .await?;
     }
     if matches!(recovered_status, EffectStatus::Succeeded { .. }) {
@@ -1102,7 +1121,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(all(test, feature = "filesystem-local"))]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
-        return faults::host_child().await;
+        return in_heap(faults::host_child).await;
     }
     if std::env::args()
         .any(|arg| arg == "--mcp-native-child" || arg == "--mcp-native-lost-response")
@@ -1115,11 +1134,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if cfg!(test) {
-        run(None).await?;
-        run(Some(McpStdioMethod::CallTool)).await?;
-        run(Some(McpStdioMethod::ListTools)).await?;
+        in_heap(|| run(None)).await?;
+        in_heap(|| run(Some(McpStdioMethod::CallTool))).await?;
+        in_heap(|| run(Some(McpStdioMethod::ListTools))).await?;
         #[cfg(test)]
-        faults::run().await?;
+        in_heap(faults::run).await?;
         Ok(())
     } else {
         let method = if std::env::args().any(|arg| arg == "--mcp-discovery") {
@@ -1129,6 +1148,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         };
-        run(method).await
+        in_heap(|| run(method)).await
     }
+}
+
+// Build large workflow futures in a separate frame before polling them.
+// Construction returns before polling, so their stack frames do not accumulate.
+#[inline(never)]
+fn in_heap<F: std::future::Future>(create: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(create())
 }

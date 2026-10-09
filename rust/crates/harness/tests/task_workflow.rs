@@ -15,15 +15,15 @@ use acyclic_harness::core::{
 };
 use acyclic_harness::distributed::{DistributedCoordinator, SchedulerPayloadStore, Worker};
 use acyclic_harness::durable_host::CoordinatorTaskHost;
-use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
+use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
-    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime,
-    MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
-    MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND,
-    TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
-    TaskCommandHost, TaskCommandProgress, TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt,
-    TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
+    FilesystemContentVerifier, FilesystemHost, FilesystemInteractionHost,
+    FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, MAIL_RECEIVE_TASK_COMMAND_KIND,
+    MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand,
+    MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
+    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost,
+    TaskCommandProgress, TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
+    TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -1873,8 +1873,17 @@ async fn worker_restart_with_options(
             }
         }
         if with_timer {
-            let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
-            assert_eq!(timers.bounds().await?.tail, 72);
+            let mut retained_timers = 0;
+            for index in std::iter::once(99_u8)
+                .chain(100..170_u8)
+                .chain(std::iter::once(26_u8))
+            {
+                let timer_operation = OperationId::from_bytes([index; 16]);
+                let timer = stream.stream(format!("harness/v2/timers/{task}/{timer_operation}"))?;
+                assert_eq!(timer.bounds().await?.tail, 1);
+                retained_timers += 1;
+            }
+            assert_eq!(retained_timers, 72);
             if let Some(old) = &old_lease {
                 assert!(
                     runtime
@@ -1964,12 +1973,7 @@ use fault_stream::{ExecutionFaultMode, LostSessionAck};
 
 #[tokio::test]
 async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<()> {
-    stock_restart_with_publication_fault(None, false, false).await
-}
-
-#[tokio::test]
-async fn pre_context_stock_turn_reconciles_after_provider_reopen() -> Result<()> {
-    stock_restart_with_publication_fault(None, false, true).await
+    stock_restart_with_publication_fault(None, false).await
 }
 
 #[tokio::test]
@@ -1979,7 +1983,7 @@ async fn stock_model_publication_faults_reconcile_after_provider_reopen() -> Res
         ExecutionFaultMode::AfterVisible,
         ExecutionFaultMode::AfterHidden,
     ] {
-        stock_restart_with_publication_fault(Some(mode), false, false).await?;
+        stock_restart_with_publication_fault(Some(mode), false).await?;
     }
     Ok(())
 }
@@ -1992,7 +1996,7 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
         ExecutionFaultMode::AfterVisible,
         ExecutionFaultMode::AfterHidden,
     ] {
-        stock_restart_with_publication_fault(Some(mode), true, false).await?;
+        stock_restart_with_publication_fault(Some(mode), true).await?;
     }
     Ok(())
 }
@@ -2004,7 +2008,6 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
 async fn stock_restart_with_publication_fault(
     fault: Option<ExecutionFaultMode>,
     cancel_after_failure: bool,
-    pre_context: bool,
 ) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));

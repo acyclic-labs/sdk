@@ -409,7 +409,7 @@ case "$lane" in
     # compiles or omits, so lint each browser build as it ships.
     cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \
       --all-targets --all-features --locked -- -D warnings
-    cargo clippy -p acyclic-harness --features wasm \
+    cargo clippy -p acyclic-harness --features browser \
       --target wasm32-unknown-unknown --locked -- -D warnings
     cargo clippy -p acyclic-machines-wasm -p acyclic-inference-wasm -p acyclic-objects-wasm \
       --target wasm32-unknown-unknown --all-targets --all-features --locked -- -D warnings
@@ -424,6 +424,13 @@ case "$lane" in
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
+    # The owning Filesystem provider retains its existing IndexedDB tests;
+    # Harness live tasks exercise the shared browser executor without Tokio.
+    CHROMEDRIVER="$(command -v chromedriver)" \
+      cargo test -p acyclic-fs --no-default-features --features browser --target wasm32-unknown-unknown --lib --locked
+    CHROMEDRIVER="$(command -v chromedriver)" \
+      cargo test -p acyclic-harness --features browser --target wasm32-unknown-unknown \
+        --test browser_runtime --locked
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     # The shipped browser package end to end in headless Chrome: one tab, then

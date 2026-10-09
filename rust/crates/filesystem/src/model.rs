@@ -429,5 +429,6 @@ pub enum CheckoutModeError {
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/model.rs"]
 mod tests;

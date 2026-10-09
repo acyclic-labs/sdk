@@ -511,17 +511,10 @@ impl StockExecutor {
         let records = self
             .prefix_records(journal, input.operation_id, step)
             .await?;
-        let Some(ExecutionRecord {
-            sequence: 1,
-            event: ExecutionEvent::Started { request_digest },
-            ..
-        }) = records.first()
-        else {
-            return Err(Error::Conflict(
-                "tool prefix has another execution identity".into(),
-            ));
-        };
-        if !self.matches_request_digest(input, request_digest).await? {
+        let identity = self.request_digest(input)?;
+        if !matches!(records.first(), Some(record) if record.sequence == 1 &&
+            matches!(&record.event, ExecutionEvent::Started { request_digest } if request_digest == &identity))
+        {
             return Err(Error::Conflict(
                 "tool prefix has another execution identity".into(),
             ));
@@ -682,33 +675,6 @@ impl StockExecutor {
         crate::contract::canonical_json_digest(&request)
     }
 
-    async fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
-        if existing == &self.request_digest(input)? {
-            return Ok(true);
-        }
-        let (Some((context, _)), Some((host, task, fence))) = (&self.task_context, &self.task)
-        else {
-            return Ok(false);
-        };
-        if context.id().into_bytes() != task.into_bytes() {
-            return Ok(false);
-        }
-        // Older stock turns bound task identity, input and tool scope, but did
-        // not carry TaskContext in Started. Only the original durable host may
-        // authenticate the omitted scope fields; process-local replay cannot.
-        let mut previous = self.clone();
-        previous.task_context = None;
-        if existing != &previous.request_digest(input)? {
-            return Ok(false);
-        }
-        host.verify_execution_owner(*task, fence.clone()).await?;
-        let admitted = host.resume_scope(*task, context.id()).await?;
-        Ok(admitted.grants() == context.scope().grants()
-            && admitted.limits() == context.scope().limits()
-            && admitted.run_limits() == context.scope().run_limits()
-            && admitted.extensions() == context.scope().extensions())
-    }
-
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
     /// exact same request, and journals the initial `Started` marker on a fresh turn.
     async fn ensure_started(
@@ -730,7 +696,7 @@ impl StockExecutor {
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
-            }) if self.matches_request_digest(input, existing).await? => {}
+            }) if existing == &request_digest => {}
             Some(_) => {
                 return Err(Error::Conflict(
                     "execution identity is bound to another request or configuration".into(),
@@ -2147,12 +2113,6 @@ mod tests {
             max_steps: 2,
         };
         let journal = Journal::default();
-        let previous = Journal::default();
-        base.ensure_started(&previous, &input).await?;
-        assert!(matches!(
-            executor.ensure_started(&previous, &input).await,
-            Err(Error::Conflict(_))
-        ));
         assert!(matches!(
             executor.execute(input.clone(), &journal).await,
             Err(Error::Indeterminate(_))

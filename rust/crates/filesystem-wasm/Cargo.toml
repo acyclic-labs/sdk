@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["memory", "typescript"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["memory", "typescript", "browser"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 blake3.workspace = true
