@@ -276,11 +276,10 @@ impl DurableToolRunner {
             attachments: self.limits.attachments.min(scope.limits().attachments),
             ..self.limits
         };
-        if crate::contract::canonical_json_bytes(&invocation)?.len() as u64 > content_limit {
-            return Err(Error::Invalid(
-                "tool invocation exceeds admitted file limit".into(),
-            ));
-        }
+        // Bound the borrowed typed input before canonical Value/buffer allocation.
+        // ToolInvocation uses ordinary compact JSON; sorting object keys does not
+        // change its byte count. Identity hashing below remains canonical.
+        crate::contract::validate_json_byte_bound(&invocation, content_limit)?;
         context
             .task()
             .authorize_tool(&definition, &invocation)

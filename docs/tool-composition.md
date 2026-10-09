@@ -286,3 +286,23 @@ tool.definition.validate()?;
 
 This reuses the admitted registry's existing definition/executor/projection seam;
 there is no second result ledger, attachment mechanism or provider policy.
+
+### Original source authority before durable replay
+
+The portable file executors now implement the existing `ToolExecutor::authorize`
+gate, which the current durable runner invokes before reading replay records.
+Read, exact edit and patch check the original source reference's public path,
+original task bounds and read grant there. Exact whole-file reads also enforce
+their original rendering ceiling. Scoped invocation JSON is counted before
+cloning the source reference. Execution calls the same gate, including direct
+contextual executor calls; this preserves the source check when no runner is
+involved. The default file definition revision is `portable-4`, and patch is
+`portable-patch-3`; no old-definition alias is installed.
+
+Write preflight checks the scoped destination path and input ceiling. The
+original `TaskContext` publisher remains responsible for its exact destination
+volume, write capability, stale generation and retained publication receipt.
+This change introduces no storage binding, freshness check, cancellation check
+or second receipt path. Authored pre-replay gate fixtures are not evidence of an
+executed durable replay; that regression and actual default-path recovery remain
+part of shared runtime qualification.

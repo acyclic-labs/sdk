@@ -1,7 +1,11 @@
 //! Individually assembled portable file tools using owner-bound task providers.
 
 use super::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
-use crate::{Error, Result, conversation::FileRef, runtime::ToolContext};
+use crate::{
+    Error, Result,
+    conversation::FileRef,
+    runtime::{RuntimeScope, ToolContext},
+};
 use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -98,8 +102,8 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
     let definition = ToolDefinition {
         name: name.into(),
         revision: match adapter {
-            FileTool::Patch { .. } => "portable-patch-2",
-            _ => "portable-3",
+            FileTool::Patch { .. } => "portable-patch-3",
+            _ => "portable-4",
         }
         .into(),
         description: description.into(),
@@ -206,19 +210,10 @@ impl FileTool {
             ));
         }
         let task = context.task();
+        self.authorize(Some(task.scope()), &invocation)?;
         let value = match self {
             Self::Read => {
                 let input: ReadFileInput = decode(invocation.arguments)?;
-                public_path(input.file.path())?;
-                let maximum = task
-                    .scope()
-                    .limits()
-                    .render_bytes
-                    .min(task.scope().limits().file_bytes);
-                super::edit::validate_edit_bound(maximum)?;
-                if input.file.descriptor().byte_length() > maximum {
-                    return Err(Error::Invalid("file exceeds text rendering bound".into()));
-                }
                 let bytes = task.read_file(&input.file).await?;
                 let text = String::from_utf8(bytes)
                     .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?;
@@ -226,7 +221,6 @@ impl FileTool {
             }
             Self::Write => {
                 let input: WriteFileInput = decode(invocation.arguments)?;
-                public_path(&input.path)?;
                 let file = task
                     .stage_file_once(
                         invocation.operation_id,
@@ -244,7 +238,6 @@ impl FileTool {
                 maximum_hunks,
             } => {
                 let input: PatchFileInput = decode(invocation.arguments)?;
-                public_path(input.file.path())?;
                 let limits = super::patch::PatchLimits {
                     maximum_bytes: task.scope().limits().file_bytes,
                     maximum_work: *maximum_work,
@@ -270,7 +263,6 @@ impl FileTool {
             }
             Self::Edit => {
                 let input: EditFileInput = decode(invocation.arguments)?;
-                public_path(input.file.path())?;
                 let maximum = task.scope().limits().file_bytes;
                 super::edit::validate_edit_bound(maximum)?;
                 let bytes = task.read_file(&input.file).await?;
@@ -290,6 +282,52 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
+    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
+        invocation.validate()?;
+        let scope = scope.ok_or_else(|| {
+            Error::Unauthorized("file tool requires original runtime scope".into())
+        })?;
+        crate::contract::validate_json_byte_bound(
+            &invocation.arguments,
+            scope.limits().file_bytes,
+        )?;
+        if let Self::Write = self {
+            // The original TaskContext publisher owns the destination volume and
+            // checks its exact write grant; the template does not capture a writer.
+            let path = invocation
+                .arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::Invalid("file write requires a destination path".into()))?;
+            public_path(path)?;
+            if path.len() > scope.limits().path_bytes {
+                return Err(Error::Invalid(
+                    "file path exceeds original task bound".into(),
+                ));
+            }
+        } else {
+            let value = invocation.arguments.get("file").ok_or_else(|| {
+                Error::Invalid("file tool requires an original source reference".into())
+            })?;
+            let file: FileRef = decode(value.clone())?;
+            public_path(file.path())?;
+            scope.limits().validate_file(&file)?;
+            if !crate::runtime::read_granted(scope.grants(), &file)? {
+                return Err(Error::Unauthorized(
+                    "file tool requires original source read grant".into(),
+                ));
+            }
+            if let Self::Read = self {
+                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
+                super::edit::validate_edit_bound(maximum)?;
+                if file.descriptor().byte_length() > maximum {
+                    return Err(Error::Invalid("file exceeds text rendering bound".into()));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async {
             Err(Error::Unsupported(
@@ -398,5 +436,121 @@ impl ToolProjection for FileTool {
                     .project(invocation, result)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AgentId, Capabilities, OperationId,
+        conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
+
+    fn file() -> Result<FileRef> {
+        FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("file-preflight", "filesystem", "1")?,
+                "private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
+            )?,
+            "source.txt",
+            "generation-1",
+            FileDescriptor::from_bytes(b"exact", "text/plain")?,
+            "source.txt",
+        )
+    }
+
+    #[test]
+    fn source_authority_is_checked_by_the_pre_replay_executor_gate() -> Result<()> {
+        let file = file()?;
+        let missing = RuntimeScope::new(Capabilities::default(), Limits::default())?;
+        let granted = RuntimeScope::new(
+            Capabilities::new([file.read_capability()?]),
+            Limits::default(),
+        )?;
+        for (tool, arguments) in [
+            (
+                read_file()?,
+                serde_json::to_value(ReadFileInput { file: file.clone() })
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            ),
+            (
+                edit_file()?,
+                serde_json::to_value(EditFileInput {
+                    file: file.clone(),
+                    old_text: "exact".into(),
+                    new_text: "changed".into(),
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            ),
+            (
+                patch_file(4096, 16)?,
+                serde_json::to_value(PatchFileInput {
+                    file: file.clone(),
+                    diff: "@@\n-exact\n+changed\n".into(),
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            ),
+        ] {
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "preflight".into(),
+                name: tool.definition.name.clone(),
+                arguments,
+            };
+            assert!(matches!(
+                tool.executor.authorize(None, &invocation),
+                Err(Error::Unauthorized(_))
+            ));
+            assert!(matches!(
+                tool.executor.authorize(Some(&missing), &invocation),
+                Err(Error::Unauthorized(_))
+            ));
+            tool.executor.authorize(Some(&granted), &invocation)?;
+        }
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read".into(),
+            name: "acyclic.read_file".into(),
+            arguments: json!({"file":file}),
+        };
+        let narrow = RuntimeScope::new(
+            Capabilities::new([file.read_capability()?]),
+            Limits {
+                render_bytes: 4,
+                ..Limits::default()
+            },
+        )?;
+        assert!(matches!(
+            read_file()?.executor.authorize(Some(&narrow), &invocation),
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch() -> Result<()> {
+        let tool = write_file()?;
+        let scope = RuntimeScope::new(Capabilities::default(), Limits::default())?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "write".into(),
+            name: tool.definition.name.clone(),
+            arguments: json!({"path":"../escape.txt","text":"body","media_type":"text/plain","display_name":"body"}),
+        };
+        assert!(matches!(
+            tool.executor.authorize(None, &invocation),
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
+        assert_eq!(tool.definition.revision, "portable-4");
+        assert_eq!(
+            patch_file(4096, 16)?.definition.revision,
+            "portable-patch-3"
+        );
+        Ok(())
     }
 }
