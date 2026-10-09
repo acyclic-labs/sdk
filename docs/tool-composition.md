@@ -228,3 +228,23 @@ contracts, all 269 Harness/Pi source tests and 51 fresh installed-package tests,
 consumer types and metadata/export validation. The local workspace dependencies
 were restored with the unchanged frozen lockfile; no manifests or lockfiles
 changed. These artifact passes do not waive the default-context failure above.
+
+### Qualified B foundation integration (PR323)
+
+D now integrates actual main `93853ede4b7a7ac0ac6c8c81b82da342a2b5e317`,
+which contains B's qualified indexed history, admitted context selection,
+checkpoints, explicit fork policies and bounded four-record Summary foundation.
+Both independent memory-storage test blocks are retained; the combined WASM
+surface is regenerated from actual Rust rather than selecting one declaration
+side of the merge.
+
+This foundation does not supply the original admitted `TaskContext` to
+`LocalHarness.run -> MemoryHarnessStorage.run_conversation -> HarnessBundle.run`.
+That public default path still calls the executor without original task context;
+its portable file-tool regression remains required and must not be replaced by
+the separate durable-task adapter. I's original-context/browser/resource producer
+handoffs and B's bounded default cold hydration/lifetime work remain open.
+PR324's earlier required SDK run `37975596996` failed at this exact default-path
+gate (1,485 passed / one failed before fail-fast); its TypeScript and policy lanes
+passed. Final combined qualification and a fresh exact-head required SDK success
+are still required before D merges into main.

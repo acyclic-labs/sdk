@@ -90,15 +90,23 @@ pub struct LocalHarness {
 impl LocalHarness {
     /// Starts a fresh local agent with the standard bounded runtime defaults.
     pub async fn new(model: Model, provider: Arc<dyn ModelProvider>) -> Result<Self> {
-        Self::with_limits(AgentId::new(), Limits::default(), model, provider).await
+        Self::with_limits(
+            AgentId::new(),
+            Limits::default(),
+            model,
+            provider,
+            crate::context::CompactionPolicy::default(),
+        )
+        .await
     }
 
-    /// Starts a named local agent with explicit admission and rendering bounds.
+    /// Starts a named local agent with explicit limits and compaction policy.
     pub async fn with_limits(
         agent: AgentId,
         limits: Limits,
         model: Model,
         provider: Arc<dyn ModelProvider>,
+        compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
         limits.validate()?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
@@ -115,11 +123,12 @@ impl LocalHarness {
                 "tool:call:acyclic.edit_file".into(),
                 "tool:call:acyclic.list_files".into(),
             ],
+            compaction,
         )
     }
 
     /// Starts a local agent with an explicitly selected, versioned tool set and
-    /// matching capability grants. Merely registering a tool does not authorize
+    /// matching capability grants and compaction policy. Merely registering a tool does not authorize
     /// its execution; callers must grant `tool:call:<name>` deliberately.
     pub async fn with_tools(
         agent: AgentId,
@@ -128,10 +137,19 @@ impl LocalHarness {
         provider: Arc<dyn ModelProvider>,
         tools: ToolRegistry,
         capabilities: impl IntoIterator<Item = String>,
+        compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
         limits.validate()?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        Self::from_storage(storage, limits, model, provider, tools, capabilities)
+        Self::from_storage(
+            storage,
+            limits,
+            model,
+            provider,
+            tools,
+            capabilities,
+            compaction,
+        )
     }
 
     fn from_storage(
@@ -141,12 +159,14 @@ impl LocalHarness {
         provider: Arc<dyn ModelProvider>,
         tools: ToolRegistry,
         capabilities: impl IntoIterator<Item = String>,
+        compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
         let mut builder = storage
             .builder()
             .model(model, provider)
             .grant(capability::MODEL_GENERATE)
             .tools(tools)
+            .compaction(compaction)
             .limits(limits);
         for capability in capabilities {
             builder = builder.grant(capability);
@@ -641,16 +661,26 @@ impl MemoryHarnessStorage {
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
         let existing_selection = aggregate
-            .reducer()
             .context_selection_for_operation(operation_id)
-            .cloned();
-        let legacy_user_id = Uuid::from_bytes(user_operation.into_bytes());
-        let user_id_override = state
-            .messages
-            .iter()
-            .any(|message| message.id == legacy_user_id)
-            .then_some(legacy_user_id);
-        let preparation = crate::turn::prepare_turn_with_user_id(
+            .await?;
+        let checkpoint_reference = aggregate.reducer().latest_context_checkpoint().cloned();
+        let checkpoint = if existing_selection.is_none() {
+            match &checkpoint_reference {
+                Some(reference) => Some(
+                    crate::executor::load_canonical_checkpoint(
+                        self.journal.as_ref(),
+                        reference,
+                        limits,
+                    )
+                    .await?
+                    .0,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let preparation = crate::turn::prepare_turn_with_checkpoint(
             state,
             operation_id,
             content,
@@ -659,7 +689,7 @@ impl MemoryHarnessStorage {
             existing_selection,
             false,
             true,
-            user_id_override,
+            checkpoint.as_ref().zip(checkpoint_reference),
         )?;
         let user_id = preparation.user_id;
         if let Some(message) = preparation.user_message.clone() {
@@ -711,12 +741,17 @@ impl MemoryHarnessStorage {
             limits.attachments,
         )
         .await?;
+        // The execution journal verifies selection through this same projection.
+        // Release its guard before entering the executor.
+        drop(aggregate);
         let output = bundle
             .run(TurnInput::from_selected_context(
                 operation_id,
                 selected,
                 max_steps,
             )?)
+            .await?;
+        self.publish_canonical_checkpoint(operation_id, limits)
             .await?;
         self.append_assistant(operation_id, user_id, &output, limits)
             .await?;
@@ -757,16 +792,53 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    async fn open_conversation(&self, limits: Limits) -> Result<StreamAggregate<MemoryStream>> {
-        StreamAggregate::open(
-            &self.stream,
-            self.conversation.clone(),
-            self.issuer.verifier(),
-            SchemaRegistry::new(),
+    async fn publish_canonical_checkpoint(
+        &self,
+        operation_id: OperationId,
+        limits: Limits,
+    ) -> Result<()> {
+        let Some(reference) = crate::executor::canonical_checkpoint_for_operation(
+            self.journal.as_ref(),
+            operation_id,
+            limits,
         )
         .await?
-        .with_content_verifier(self.content_verifier.clone())
-        .with_limits(limits)
+        else {
+            return Ok(());
+        };
+        let (envelope, _) =
+            crate::executor::load_canonical_checkpoint(self.journal.as_ref(), &reference, limits)
+                .await?;
+        let mut selection = envelope.selection;
+        selection.checkpoint = Some(reference);
+        let mut aggregate = self.open_conversation(limits).await?;
+        let publication = derived_operation_id(operation_id, b"conversation-checkpoint");
+        if let Some(committed) = aggregate
+            .context_selection_for_operation(publication)
+            .await?
+        {
+            return if committed == selection {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "canonical checkpoint publication changed on retry".into(),
+                ))
+            };
+        }
+        self.append_conversation(
+            &mut aggregate,
+            publication,
+            "checkpoint",
+            Action::SelectModelContext { selection },
+        )
+        .await
+    }
+
+    async fn open_conversation(
+        &self,
+        limits: Limits,
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<MemoryStream>>> {
+        self.journal.conversation_projection(limits).await
     }
 
     async fn append_conversation(
@@ -1240,7 +1312,49 @@ mod tests {
 
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
+    fn synthetic_token_count(
+        request: &crate::model::PreparedModelRequest,
+    ) -> Result<crate::context::ModelTokenCount> {
+        // These test providers use UTF-8 bytes as token units, including framing.
+        let message_tokens = request
+            .request()
+            .messages
+            .iter()
+            .map(|message| {
+                let bytes = message.content.file_refs().iter().try_fold(
+                    crate::contract::canonical_json_bytes(message)?.len() as u64,
+                    |total, file| {
+                        total
+                            .checked_add(file.descriptor().byte_length())
+                            .ok_or_else(|| Error::Invalid("synthetic token count overflows".into()))
+                    },
+                )?;
+                u32::try_from(bytes)
+                    .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.manifest().request_digest,
+            fixed_tokens: u32::try_from(fixed)
+                .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+            message_tokens,
+        })
+    }
+
     impl ModelProvider for TextModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            synthetic_token_count(request)
+        }
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -1306,6 +1420,63 @@ mod tests {
             runtime.spawn(&task, ()).await?.result().await?,
             Outcome::Succeeded(())
         );
+        Ok(())
+    }
+
+    struct ModelWithoutAccounting(TextModel);
+
+    impl ModelProvider for ModelWithoutAccounting {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+            dispatch: crate::model::ModelDispatch,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            self.0.generate(request, dispatch)
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            attempt: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(attempt)
+        }
+    }
+
+    #[tokio::test]
+    async fn local_convenience_consumers_replace_or_disable_compaction() -> Result<()> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let policy =
+            crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
+                response_reserve_tokens: 1_024,
+                recent_tokens: 2_048,
+                ..crate::context::ThresholdCompaction::default()
+            });
+        let local = LocalHarness::with_limits(
+            AgentId::new(),
+            Limits::default(),
+            Model::new("test", "text", "1", Value::Null)?,
+            Arc::new(TextModel(requests.clone())),
+            policy,
+        )
+        .await?;
+        assert_eq!(local.run("replacement").await?.text, "local response");
+        let disabled = LocalHarness::with_tools(
+            AgentId::new(),
+            Limits::default(),
+            Model::new("test", "text", "1", Value::Null)?,
+            Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))),
+            ToolRegistry::new(),
+            Vec::<String>::new(),
+            crate::context::CompactionPolicy::Disabled,
+        )
+        .await?;
+        assert_eq!(disabled.run("disabled").await?.text, "local response");
+        let requests = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].max_output_tokens, Some(1_024));
+        assert_eq!(requests[1].max_output_tokens, None);
         Ok(())
     }
 
@@ -1608,6 +1779,18 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            synthetic_token_count(request)
+        }
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -1746,6 +1929,7 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let bundle = storage
             .builder()
+            .compaction(crate::context::CompactionPolicy::Disabled)
             .model(
                 Model::new("test", "text", "1", Value::Null)?,
                 Arc::new(TextModel(requests.clone())),
@@ -1872,6 +2056,7 @@ mod tests {
             first_user.id,
             crate::turn::canonical_user_message_id(operation_id)
         );
+        drop(first_aggregate);
         let replayed = storage
             .run_conversation(
                 &bundle,
@@ -1885,7 +2070,7 @@ mod tests {
             )
             .await?;
         assert_eq!(replayed, output);
-        let aggregate = storage.open_conversation(bundle.limits()).await?;
+        let mut aggregate = storage.open_conversation(bundle.limits()).await?;
         assert_eq!(
             aggregate
                 .reducer()
@@ -1895,7 +2080,26 @@ mod tests {
                 .len(),
             2
         );
-        assert_eq!(aggregate.reducer().context_selections().len(), 1);
+        assert_eq!(aggregate.reducer().resident_context_selections().count(), 1);
+        let expected_selection = aggregate
+            .context_selection_for_operation(operation_id)
+            .await?
+            .ok_or_else(|| Error::Invalid("original context selection missing".into()))?;
+        aggregate.set_resident_event_limit(1)?;
+        assert_eq!(aggregate.reducer().resident_context_selections().count(), 0);
+        assert!(
+            aggregate
+                .reducer()
+                .context_selection_for_operation(operation_id)
+                .is_none()
+        );
+        assert_eq!(
+            aggregate
+                .context_selection_for_operation(operation_id)
+                .await?,
+            Some(expected_selection)
+        );
+        drop(aggregate);
         storage.run_prompt(&bundle, "follow-up").await?;
         assert_eq!(
             storage
@@ -1958,6 +2162,7 @@ mod tests {
         )?;
         let bundle = storage
             .builder()
+            .compaction(crate::context::CompactionPolicy::Disabled)
             .tasks(tasks)
             .model(
                 Model::new("test", "text", "1", Value::Null)?,
@@ -1974,3 +2179,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "memory_summary_tests.rs"]
+mod summary_tests;

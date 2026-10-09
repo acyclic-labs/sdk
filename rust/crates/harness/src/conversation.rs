@@ -11,10 +11,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 /// Borrowed asynchronous result returned by content-provider extension hooks.
@@ -1484,13 +1481,13 @@ pub struct ConversationState {
     #[serde(skip)]
     by_id: BTreeMap<Uuid, usize>,
     #[serde(skip)]
-    latest_user: Option<Uuid>,
-    #[serde(skip)]
-    settled_turns: BTreeSet<Uuid>,
+    pending_user: Option<Uuid>,
     #[serde(skip)]
     outcomes: BTreeMap<Uuid, usize>,
     #[serde(skip)]
     model_positions: Vec<usize>,
+    #[serde(skip)]
+    history_digest: [u8; 32],
 }
 
 #[derive(Deserialize)]
@@ -1506,6 +1503,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
     fn try_from(wire: ConversationStateWire) -> Result<Self> {
         let mut by_id = BTreeMap::new();
         let mut previous = 0;
+        let mut history_digest = [0; 32];
         for (position, message) in wire.messages.iter().enumerate() {
             message.validate()?;
             if message.sequence <= previous || by_id.insert(message.id, position).is_some() {
@@ -1514,11 +1512,20 @@ impl TryFrom<ConversationStateWire> for ConversationState {
                 ));
             }
             previous = message.sequence;
+            history_digest = advance_history_digest(history_digest, message)?;
         }
+        let pending_user = wire
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.kind == MessageKind::User)
+            .map(|message| message.id);
         let mut state = Self {
             agent: wire.agent,
             messages: wire.messages,
             by_id,
+            pending_user,
+            history_digest,
             ..Self::default()
         };
         for position in 0..state.messages.len() {
@@ -1536,6 +1543,10 @@ pub struct ModelContextSelection {
     pub conversation_revision: u64,
     /// Ordered, unique message identities; omitted history is deliberate.
     pub message_ids: Vec<Uuid>,
+    /// Immutable canonical checkpoint covering history before this selection's delta.
+    /// Its typed payload and publication must be resolved by the owning journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<FileRef>,
 }
 
 impl ModelContextSelection {
@@ -1545,6 +1556,9 @@ impl ModelContextSelection {
             return Err(Error::Conflict(
                 "model context selection has a stale conversation revision".into(),
             ));
+        }
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.validate()?;
         }
         let mut previous_sequence = 0;
         for id in &self.message_ids {
@@ -1564,6 +1578,37 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
+    /// Fingerprints an exact dense logical prefix. The current head is already
+    /// maintained by append/decode; an explicit older prefix hashes one record
+    /// at a time without constructing a whole-history JSON value or byte buffer.
+    pub(crate) fn history_prefix_digest(&self, through_sequence: u64) -> Result<[u8; 32]> {
+        if self.messages.last().map_or(0, |message| message.sequence) != self.messages.len() as u64
+            || through_sequence > self.messages.len() as u64
+        {
+            return Err(Error::Invalid(
+                "history fingerprint requires a dense logical prefix".into(),
+            ));
+        }
+        if through_sequence == self.messages.len() as u64 {
+            return Ok(self.history_digest);
+        }
+        let count = usize::try_from(through_sequence)
+            .map_err(|_| Error::Invalid("history prefix exceeds platform bounds".into()))?;
+        self.messages
+            .iter()
+            .take(count)
+            .try_fold([0; 32], advance_history_digest)
+    }
+
+    /// Rebuilds only a bounded, already attested selection for byte projection.
+    /// This unbound sparse view cannot authorize append or stand in for history.
+    pub(crate) fn selected_view(messages: Vec<ConversationMessage>) -> Result<Self> {
+        Self::try_from(ConversationStateWire {
+            agent: None,
+            messages,
+        })
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "only append-after-push and decode's in-bounds enumeration call this private indexer"
@@ -1580,14 +1625,13 @@ impl ConversationState {
         ) {
             self.model_positions.push(position);
         }
-        if message.kind == MessageKind::User {
-            self.latest_user = Some(message.id);
-        }
         let outcome = message.kind == MessageKind::System
             && message.extensions.contains_key("acyclic.turn.outcome");
         if let Some(parent) = message.reply_to {
-            if message.kind == MessageKind::Assistant || outcome {
-                self.settled_turns.insert(parent);
+            if (message.kind == MessageKind::Assistant || outcome)
+                && self.pending_user == Some(parent)
+            {
+                self.pending_user = None;
             }
             if outcome {
                 self.outcomes.entry(parent).or_insert(position);
@@ -1596,8 +1640,7 @@ impl ConversationState {
     }
 
     pub(crate) fn unresolved_user(&self) -> Option<Uuid> {
-        self.latest_user
-            .filter(|id| !self.settled_turns.contains(id))
+        self.pending_user
     }
 
     pub(crate) fn turn_outcome(&self, user: Uuid) -> Option<&ConversationMessage> {
@@ -1662,6 +1705,39 @@ impl ConversationState {
             .map(|position| &self.messages[*position])
     }
 
+    /// Returns one exact model-visible delta using the existing position index.
+    /// Oversized deltas reject before iteration; no older history is silently dropped.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the position index is maintained by append/decode; partition bounds its slice"
+    )]
+    pub(crate) fn model_messages_between(
+        &self,
+        after: u64,
+        through: u64,
+        maximum: usize,
+    ) -> Result<impl Iterator<Item = &ConversationMessage>> {
+        if after > through || through > self.messages.last().map_or(0, |message| message.sequence) {
+            return Err(Error::Invalid(
+                "model history delta bounds are invalid".into(),
+            ));
+        }
+        let start = self
+            .model_positions
+            .partition_point(|position| self.messages[*position].sequence <= after);
+        let end = self
+            .model_positions
+            .partition_point(|position| self.messages[*position].sequence <= through);
+        if end - start > maximum {
+            return Err(Error::Invalid(
+                "canonical history delta exceeds context limit".into(),
+            ));
+        }
+        Ok(self.model_positions[start..end]
+            .iter()
+            .map(|position| &self.messages[*position]))
+    }
+
     /// Binds an empty conversation to exactly one agent.
     pub fn bind(&mut self, agent: AgentId) -> Result<()> {
         if self.agent.is_some() || !self.messages.is_empty() {
@@ -1674,9 +1750,15 @@ impl ConversationState {
     /// Appends one ordered, validated message.
     pub fn append(&mut self, message: ConversationMessage) -> Result<()> {
         self.validate_append(&message)?;
-        // Publish rebuildable indexes only after complete append validation.
+        let history_digest = advance_history_digest(self.history_digest, &message)?;
+        // Foreign-owned refs may be carried globally. Their bytes are gated by
+        // the provider's owner-mediated read grant at event admission/resolution.
         self.by_id.insert(message.id, self.messages.len());
+        if message.kind == MessageKind::User {
+            self.pending_user = Some(message.id);
+        }
         self.messages.push(message);
+        self.history_digest = history_digest;
         self.index_turn(self.messages.len() - 1);
         Ok(())
     }
@@ -1728,6 +1810,22 @@ impl ConversationState {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static HISTORY_HASH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn advance_history_digest(previous: [u8; 32], message: &ConversationMessage) -> Result<[u8; 32]> {
+    #[cfg(test)]
+    HISTORY_HASH_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let digest = crate::contract::canonical_json_digest(message)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"harness:conversation-prefix:v3\0");
+    hash.update(&previous);
+    hash.update(&digest);
+    Ok(*hash.finalize().as_bytes())
+}
+
 fn validate_label(value: &str, limit: usize) -> Result<()> {
     if value.is_empty()
         || value.len() > limit
@@ -1762,6 +1860,179 @@ pub fn validate_content_path(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {
+        let agent = AgentId::new();
+        let content = file(agent, "fingerprint.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        for sequence in 1..=10_000_u64 {
+            state.append(ConversationMessage {
+                id: Uuid::from_u128(u128::from(sequence)),
+                sequence,
+                kind: if sequence % 2 == 0 {
+                    MessageKind::Interaction
+                } else {
+                    MessageKind::User
+                },
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to: None,
+                tool_call_id: None,
+                extensions: BTreeMap::new(),
+            })?;
+        }
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 10_000);
+        let authority = crate::core::Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: "fingerprint-parent".into(),
+        };
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        let pinned = crate::fork::InheritedConversationPrefix::select(
+            authority.clone(),
+            10_001,
+            10_000,
+            &[],
+            &state,
+        )?;
+        for _ in 0..32 {
+            assert_eq!(
+                crate::fork::InheritedConversationPrefix::select(
+                    authority.clone(),
+                    10_001,
+                    10_000,
+                    &[],
+                    &state
+                )?,
+                pinned
+            );
+        }
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
+        assert_eq!(pinned.format_version, 3);
+        let old = state.history_prefix_digest(2)?;
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 2);
+        let encoded = crate::contract::canonical_json_bytes(&state)?;
+        let mut reopened: ConversationState =
+            serde_json::from_slice(&encoded).map_err(|error| Error::Invalid(error.to_string()))?;
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        assert_eq!(
+            reopened.history_prefix_digest(10_000)?,
+            pinned.message_digest
+        );
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
+        let mut next = reopened
+            .messages()
+            .last()
+            .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
+            .clone();
+        next.sequence += 1;
+        next.id = Uuid::from_u128(10_001);
+        reopened.append(next.clone())?;
+        assert_ne!(
+            reopened.history_prefix_digest(10_001)?,
+            pinned.message_digest
+        );
+        assert_eq!(
+            reopened.history_prefix_digest(10_000)?,
+            pinned.message_digest
+        );
+        assert_eq!(reopened.history_prefix_digest(2)?, old);
+        let before = reopened.history_prefix_digest(10_001)?;
+        assert!(reopened.append(next).is_err());
+        assert_eq!(reopened.history_prefix_digest(10_001)?, before);
+        let sparse = ConversationState::selected_view(vec![
+            reopened
+                .messages()
+                .last()
+                .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
+                .clone(),
+        ])?;
+        assert!(sparse.history_prefix_digest(1).is_err());
+        assert!(state.history_prefix_digest(10_001).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn pending_turn_rebuilds_without_retaining_settled_turn_identities() -> Result<()> {
+        fn append(
+            state: &mut ConversationState,
+            content: &FileRef,
+            kind: MessageKind,
+            reply_to: Option<Uuid>,
+            terminal: bool,
+        ) -> Result<Uuid> {
+            let sequence = state.messages().len() as u64 + 1;
+            let id = Uuid::from_u128(u128::from(sequence));
+            let mut extensions = BTreeMap::new();
+            if terminal {
+                extensions.insert("acyclic.turn.outcome".into(), content.clone());
+            }
+            state.append(ConversationMessage {
+                id,
+                sequence,
+                kind,
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to,
+                tool_call_id: None,
+                extensions,
+            })?;
+            Ok(id)
+        }
+
+        fn reopen(state: &ConversationState) -> Result<ConversationState> {
+            let bytes = crate::contract::canonical_json_bytes(state)?;
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
+        }
+
+        let agent = AgentId::new();
+        let content = file(agent, "pending.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        let mut previous = None;
+        for _ in 0..256 {
+            let user = append(&mut state, &content, MessageKind::User, None, false)?;
+            assert_eq!(state.unresolved_user(), Some(user));
+            if let Some(previous) = previous {
+                // A delayed older response must not settle the current user.
+                append(
+                    &mut state,
+                    &content,
+                    MessageKind::Assistant,
+                    Some(previous),
+                    false,
+                )?;
+                assert_eq!(state.unresolved_user(), Some(user));
+            }
+            append(
+                &mut state,
+                &content,
+                MessageKind::Assistant,
+                Some(user),
+                false,
+            )?;
+            assert_eq!(state.unresolved_user(), None);
+            previous = Some(user);
+        }
+        assert_eq!(reopen(&state)?, state);
+        let user = append(&mut state, &content, MessageKind::User, None, false)?;
+        append(&mut state, &content, MessageKind::System, Some(user), false)?;
+        assert_eq!(state.unresolved_user(), Some(user));
+        assert_eq!(reopen(&state)?, state);
+        let outcome = append(&mut state, &content, MessageKind::System, Some(user), true)?;
+        assert_eq!(state.unresolved_user(), None);
+        assert_eq!(
+            state.turn_outcome(user).map(|message| message.id),
+            Some(outcome)
+        );
+        assert_eq!(reopen(&state)?, state);
+        let next = append(&mut state, &content, MessageKind::User, None, false)?;
+        assert_eq!(state.unresolved_user(), Some(next));
+        assert_eq!(reopen(&state)?, state);
+        Ok(())
+    }
 
     #[test]
     fn indexed_history_rebuilds_and_pinned_pages_exclude_later_appends() -> Result<()> {

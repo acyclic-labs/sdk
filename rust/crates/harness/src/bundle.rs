@@ -46,6 +46,7 @@ pub struct HarnessBuilder {
     model: Option<Model>,
     provider: Option<Arc<dyn ModelProvider>>,
     context: ContextPipeline,
+    compaction: crate::context::CompactionPolicy,
     bindings: Bindings,
     capabilities: Vec<String>,
     limits: Limits,
@@ -118,6 +119,13 @@ impl HarnessBuilder {
     #[must_use]
     pub fn context(mut self, value: ContextPipeline) -> Self {
         self.context = value;
+        self
+    }
+
+    /// Replaces or disables stock threshold compaction for this composition.
+    #[must_use]
+    pub fn compaction(mut self, value: crate::context::CompactionPolicy) -> Self {
+        self.compaction = value;
         self
     }
 
@@ -393,6 +401,7 @@ impl HarnessBuilder {
             tools.definitions()?;
             Some(Arc::new(
                 StockExecutor::new(model, provider, self.context, tools)
+                    .with_compaction_policy(self.compaction)
                     .with_limits(self.limits)
                     .with_tool_authority(scope, policy)?,
             ) as Arc<dyn Executor>)

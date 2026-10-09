@@ -10,6 +10,10 @@ export type PiEvent<Metadata = unknown> =
 
 /** Pi owns model-wire projection; Harness only supplies typed, provenance-bearing model input. */
 export interface PiBridge<Request, Event, Metadata = unknown> {
+  /** Exact selected-model capacity; required when accounting is requested. */
+  readonly contextCapacity?: ModelProvider["contextCapacity"];
+  /** Request-bound additive token bounds, without projection or dispatch. */
+  readonly countTokens?: ModelProvider["countTokens"];
   readonly project: (request: ModelRequest) => Request | Promise<Request>;
   readonly run: (request: Request, options: { readonly signal?: AbortSignal }) => AsyncIterable<Event>;
   readonly event?: (event: Event) => PiEvent<Metadata>;
@@ -21,6 +25,18 @@ export function piProvider<Request, Event, Metadata = unknown>(bridge: PiBridge<
 export function piProvider<Request, Event, Metadata>(bridge: PiBridge<Request, Event, Metadata>): ModelProvider {
   const projectEvent = bridge.event ?? ((event: unknown) => event);
   return {
+    contextCapacity(model) {
+      if (bridge.contextCapacity === undefined) {
+        throw new TypeError("Pi provider requires explicit model capacity accounting");
+      }
+      return bridge.contextCapacity(model);
+    },
+    countTokens(request) {
+      if (bridge.countTokens === undefined) {
+        throw new TypeError("Pi provider requires explicit token accounting");
+      }
+      return bridge.countTokens(request);
+    },
     async *generate(request) {
       request.signal?.throwIfAborted();
       const projected = await bridge.project(request);
@@ -146,6 +162,8 @@ export function piDefaultProvider<Metadata = unknown>(bridge: PiDefaultBridge<Me
     project: request => projectPiRequest(request, bridge),
     run: bridge.run,
     reconcile: bridge.reconcile,
+    ...(bridge.contextCapacity === undefined ? {} : { contextCapacity: bridge.contextCapacity.bind(bridge) }),
+    ...(bridge.countTokens === undefined ? {} : { countTokens: bridge.countTokens.bind(bridge) }),
     ...(bridge.event === undefined ? {} : { event: bridge.event }),
   });
 }

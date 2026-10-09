@@ -101,6 +101,81 @@ pub fn bounded_model_context_selection(
     select_turn_suffix(conversation, current, false, maximum_messages)
 }
 
+/// Selects the exact canonical history delta after an owner-verified checkpoint.
+/// The immutable envelope is cryptographically bound to its pinned `FileRef` here;
+/// the owning journal remains responsible for its publication and summary admission.
+/// With no checkpoint all model-visible history is selected or the explicit bound rejects.
+pub fn select_turn_delta(
+    conversation: &ConversationState,
+    current: &ConversationMessage,
+    append: bool,
+    checkpoint: Option<(&crate::context::CanonicalContextCheckpoint, FileRef)>,
+    limits: crate::conversation::Limits,
+) -> Result<ModelContextSelection> {
+    limits.validate()?;
+    current.validate()?;
+    if current.kind != MessageKind::User || limits.context_messages == 0 {
+        return Err(Error::Invalid(
+            "canonical turn delta requires a bounded user input".into(),
+        ));
+    }
+    if append {
+        if conversation.message(current.id).is_some()
+            || current.sequence != conversation.messages.len() as u64 + 1
+        {
+            return Err(Error::Conflict(
+                "new user does not extend canonical history".into(),
+            ));
+        }
+    } else if conversation.message(current.id) != Some(current) {
+        return Err(Error::Conflict(
+            "current user differs from canonical history".into(),
+        ));
+    }
+    let (after, checkpoint) = if let Some((envelope, reference)) = checkpoint {
+        envelope.validate(limits)?;
+        limits.validate_file(&reference)?;
+        reference
+            .descriptor()
+            .verify(&crate::contract::canonical_json_bytes(envelope)?)?;
+        validate_model_context_selection_at_revision(
+            conversation,
+            &envelope.selection,
+            envelope.selection.conversation_revision,
+        )?;
+        if envelope.selection.conversation_revision >= current.sequence {
+            return Err(Error::Conflict(
+                "checkpoint already covers the current user".into(),
+            ));
+        }
+        (envelope.selection.conversation_revision, Some(reference))
+    } else {
+        (0, None)
+    };
+    let mut ids = conversation
+        .model_messages_between(
+            after,
+            current.sequence - u64::from(append),
+            limits.context_messages - usize::from(append),
+        )?
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    if append {
+        ids.push(current.id);
+    }
+    validate_selected_tool_pairs(conversation, current, &ids)?;
+    if ids.last() != Some(&current.id) {
+        return Err(Error::Conflict(
+            "canonical turn delta has no current user".into(),
+        ));
+    }
+    Ok(ModelContextSelection {
+        conversation_revision: conversation.messages.len() as u64 + u64::from(append),
+        message_ids: ids,
+        checkpoint,
+    })
+}
+
 pub(crate) fn select_turn_suffix(
     conversation: &ConversationState,
     current: &ConversationMessage,
@@ -127,8 +202,30 @@ pub(crate) fn select_turn_suffix(
     if append {
         ids.push(current.id);
     }
+    validate_selected_tool_pairs(conversation, current, &ids)?;
+    let selection = ModelContextSelection {
+        checkpoint: None,
+        conversation_revision: conversation.messages.len() as u64 + u64::from(append),
+        message_ids: ids,
+    };
+    if !append {
+        selection.validate(conversation)?;
+    }
+    if selection.message_ids.last() != Some(&current.id) {
+        return Err(Error::Conflict(
+            "turn identity is bound to another context selection".into(),
+        ));
+    }
+    Ok(selection)
+}
+
+fn validate_selected_tool_pairs(
+    conversation: &ConversationState,
+    current: &ConversationMessage,
+    ids: &[Uuid],
+) -> Result<()> {
     let included = ids.iter().copied().collect::<HashSet<_>>();
-    for id in &ids {
+    for id in ids {
         let message = if *id == current.id {
             Some(current)
         } else {
@@ -145,19 +242,7 @@ pub(crate) fn select_turn_suffix(
             ));
         }
     }
-    let selection = ModelContextSelection {
-        conversation_revision: conversation.messages.len() as u64 + u64::from(append),
-        message_ids: ids,
-    };
-    if !append {
-        selection.validate(conversation)?;
-    }
-    if selection.message_ids.last() != Some(&current.id) {
-        return Err(Error::Conflict(
-            "turn identity is bound to another context selection".into(),
-        ));
-    }
-    Ok(selection)
+    Ok(())
 }
 
 impl SelectedModelContext {
@@ -165,6 +250,9 @@ impl SelectedModelContext {
     /// owning conversation or reimplementing model bounds in a host adapter.
     pub fn validate_for_dispatch(&self, limits: Limits) -> Result<()> {
         limits.validate()?;
+        if let Some(checkpoint) = &self.selection.checkpoint {
+            limits.validate_file(checkpoint)?;
+        }
         let last = self.messages.last().ok_or_else(|| {
             Error::Invalid("selected context must end with the current user message".into())
         })?;
@@ -417,6 +505,7 @@ pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized
     let loaded_revision = u64::try_from(conversation.messages.len())
         .map_err(|_| Error::Invalid("conversation message count exceeds u64".into()))?;
     let loaded_selection = ModelContextSelection {
+        checkpoint: selection.checkpoint.clone(),
         conversation_revision: loaded_revision,
         message_ids: selection.message_ids.clone(),
     };
@@ -648,11 +737,145 @@ mod tests {
         )
     }
 
+    fn append_history_message(
+        conversation: &mut ConversationState,
+        content: &FileRef,
+        kind: MessageKind,
+        reply_to: Option<Uuid>,
+    ) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        conversation.append(ConversationMessage {
+            id,
+            sequence: conversation.messages.len() as u64 + 1,
+            kind,
+            content: content.clone(),
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        })?;
+        Ok(id)
+    }
+
+    #[test]
+    fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() -> Result<()> {
+        let agent = AgentId::new();
+        let mut conversation = ConversationState::default();
+        conversation.bind(agent)?;
+        let content = file(agent, "message.txt", "text/plain")?;
+        for _ in 0..5_000 {
+            let user =
+                append_history_message(&mut conversation, &content, MessageKind::User, None)?;
+            append_history_message(
+                &mut conversation,
+                &content,
+                MessageKind::Assistant,
+                Some(user),
+            )?;
+        }
+        let current = ConversationMessage {
+            id: Uuid::new_v4(),
+            sequence: 10_001,
+            kind: MessageKind::User,
+            content,
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        let limits = Limits {
+            context_messages: 3,
+            ..Limits::default()
+        };
+        assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
+        // This fixture checks the envelope/source-selection boundary and indexed delta,
+        // not publication or summary proof. Those are explicitly owner-verified inputs.
+        let payload = file(agent, "source.json", "application/json")?;
+        let checkpoint = crate::context::CanonicalContextCheckpoint {
+            operation_id: crate::OperationId::new(),
+            selection: ModelContextSelection {
+                conversation_revision: 9_998,
+                message_ids: vec![
+                    conversation.messages[9_996].id,
+                    conversation.messages[9_997].id,
+                ],
+                checkpoint: Some(file(agent, "previous-checkpoint.json", "application/json")?),
+            },
+            source: payload.clone(),
+            retained: payload.clone(),
+            compaction: payload.clone(),
+        };
+        let bytes = crate::contract::canonical_json_bytes(&checkpoint)?;
+        let pinned = FileRef::new(
+            payload.volume().clone(),
+            "checkpoint.json",
+            "v1",
+            FileDescriptor::from_bytes(&bytes, "application/json")?,
+            "checkpoint.json",
+        )?;
+        let selected = select_turn_delta(
+            &conversation,
+            &current,
+            true,
+            Some((&checkpoint, pinned.clone())),
+            limits,
+        )?;
+        assert_eq!(
+            selected.message_ids,
+            vec![
+                conversation.messages[9_998].id,
+                conversation.messages[9_999].id,
+                current.id
+            ]
+        );
+        assert_eq!(selected.checkpoint, Some(pinned.clone()));
+        assert_eq!(selected.conversation_revision, 10_001);
+        let smaller = Limits {
+            context_messages: 2,
+            ..limits
+        };
+        assert!(
+            select_turn_delta(
+                &conversation,
+                &current,
+                true,
+                Some((&checkpoint, pinned.clone())),
+                smaller
+            )
+            .is_err()
+        );
+        let mut changed = checkpoint.clone();
+        changed.operation_id = crate::OperationId::new();
+        assert!(
+            select_turn_delta(
+                &conversation,
+                &current,
+                true,
+                Some((&changed, pinned)),
+                limits
+            )
+            .is_err()
+        );
+        conversation.append(current.clone())?;
+        assert_eq!(
+            select_turn_delta(
+                &conversation,
+                &current,
+                false,
+                Some((&checkpoint, selected.checkpoint.clone().unwrap())),
+                limits
+            )?,
+            selected
+        );
+        Ok(())
+    }
+
     #[test]
     fn projected_context_dispatch_admission_uses_native_model_bounds() {
         let id = Uuid::new_v4();
         let mut selected = SelectedModelContext {
             selection: ModelContextSelection {
+                checkpoint: None,
                 conversation_revision: 1,
                 message_ids: vec![id],
             },
@@ -701,6 +924,7 @@ mod tests {
             extensions: BTreeMap::new(),
         })?;
         let selection = ModelContextSelection {
+            checkpoint: None,
             conversation_revision: 1,
             message_ids: vec![id],
         };

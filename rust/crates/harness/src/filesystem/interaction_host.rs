@@ -230,7 +230,7 @@ where
         owner: &crate::durable_host::TaskJournalOwner<P>,
     ) -> Result<ApplyResult> {
         let mut aggregate = self.aggregate().await?;
-        let expected_revision = match aggregate.reducer().operation_revision(operation_id) {
+        let expected_revision = match aggregate.operation_revision(operation_id).await? {
             Some(revision) => revision
                 .checked_sub(1)
                 .ok_or_else(|| Error::Invalid("committed interaction revision is zero".into()))?,
@@ -455,7 +455,7 @@ where
         action: Action,
     ) -> Result<ApplyResult> {
         let mut aggregate = self.aggregate().await?;
-        let expected_revision = match aggregate.reducer().operation_revision(operation_id) {
+        let expected_revision = match aggregate.operation_revision(operation_id).await? {
             Some(revision) => revision
                 .checked_sub(1)
                 .ok_or_else(|| Error::Invalid("committed interaction revision is zero".into()))?,

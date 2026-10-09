@@ -1,3 +1,4 @@
+import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, projectModelFile, verifiedContentResolver } from "../dist/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 
@@ -104,6 +105,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
     };
     const runtime = await Harness.builder(contracts).declaredContext(snapshot).content(content)
       .grant(core.volumeCapability(volume, "read")).model({ provider: "mock", name: "discovery", revision: "1", options: {} }, {
+      ...syntheticAccounting(contracts),
       async *generate(request) {
         dispatches++;
         const admitted = new TextDecoder().decode(request.serializedInput);

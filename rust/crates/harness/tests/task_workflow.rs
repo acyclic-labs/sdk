@@ -178,6 +178,51 @@ impl ToolProjection for InterruptedTool {
 }
 
 impl ModelProvider for InterruptedModel {
+    fn context_capacity(
+        &self,
+        _: &Model,
+    ) -> Result<acyclic_harness::context::ModelContextCapacity> {
+        Ok(acyclic_harness::context::ModelContextCapacity {
+            context_tokens: 131_072,
+            output_tokens: 16_384,
+        })
+    }
+
+    fn count_tokens(
+        &self,
+        request: &PreparedModelRequest,
+    ) -> Result<acyclic_harness::context::ModelTokenCount> {
+        // This fixture counts serialized UTF-8 bytes and referenced bytes as token units.
+        let message_tokens = request
+            .request()
+            .messages
+            .iter()
+            .map(|message| {
+                let bytes = message.content.file_refs().iter().try_fold(
+                    serde_json::to_vec(message)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .len() as u64,
+                    |total, file| {
+                        total
+                            .checked_add(file.descriptor().byte_length())
+                            .ok_or_else(|| Error::Invalid("synthetic token count overflows".into()))
+                    },
+                )?;
+                u32::try_from(bytes)
+                    .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fixed = serde_json::to_vec(&request.request().tools)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .len();
+        Ok(acyclic_harness::context::ModelTokenCount {
+            request_digest: request.manifest().request_digest,
+            fixed_tokens: u32::try_from(fixed)
+                .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+            message_tokens,
+        })
+    }
+
     fn generate<'a>(
         &'a self,
         request: PreparedModelRequest,
@@ -1676,6 +1721,7 @@ async fn worker_restart_with_options(
                         Model::new("test", "interrupted", "1", Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
+                        acyclic_harness::context::CompactionPolicy::default(),
                     ),
                     2,
                 )
@@ -1705,6 +1751,7 @@ async fn worker_restart_with_options(
                         Model::new("test", "interrupted", "1", Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
+                        acyclic_harness::context::CompactionPolicy::default(),
                     ),
                     2,
                 )
@@ -1935,7 +1982,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
 }
 
 #[tokio::test]
-async fn pre_context_stock_turn_reconciles_after_provider_reopen() -> Result<()> {
+async fn direct_stock_turn_reconciles_through_runtime_after_provider_reopen() -> Result<()> {
     stock_restart_with_publication_fault(None, false, true).await
 }
 
@@ -1971,7 +2018,7 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
 async fn stock_restart_with_publication_fault(
     fault: Option<ExecutionFaultMode>,
     cancel_after_failure: bool,
-    pre_context: bool,
+    direct_executor: bool,
 ) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
@@ -2217,6 +2264,16 @@ async fn stock_restart_with_publication_fault(
                 .await
                 .is_err()
         );
+        let compaction_policy = if fault.is_none() {
+            acyclic_harness::context::CompactionPolicy::Threshold(
+                acyclic_harness::context::ThresholdCompaction {
+                    response_reserve_tokens: 8_192,
+                    ..acyclic_harness::context::ThresholdCompaction::default()
+                },
+            )
+        } else {
+            acyclic_harness::context::CompactionPolicy::default()
+        };
         let execution = runtime
             .stock_execution(
                 task,
@@ -2226,7 +2283,8 @@ async fn stock_restart_with_publication_fault(
                 model.clone(),
                 ContextPipeline::default(),
             )
-            .await?;
+            .await?
+            .with_compaction_policy(compaction_policy.clone());
         let turn = TurnInput {
             operation_id: execution.operation_id(),
             input: ModelContent::Text("hello".into()),
@@ -2256,6 +2314,26 @@ async fn stock_restart_with_publication_fault(
                 .is_err()
         );
         if reopened {
+            if direct_executor {
+                let drifted = runtime
+                    .stock_execution(
+                        task,
+                        fence.clone(),
+                        OperationId::from_bytes([8; 16]),
+                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        model.clone(),
+                        ContextPipeline::default(),
+                    )
+                    .await?
+                    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
+                assert!(matches!(
+                    drifted.execute(turn.clone()).await,
+                    Err(Error::Conflict(message))
+                        if message == "execution identity is bound to another request or configuration"
+                ));
+                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            }
             let restored = execution.execute(turn.clone()).await?;
             assert_eq!(
                 restored.text,
@@ -2268,6 +2346,9 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(execution.execute(turn).await?, restored);
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            if fault.is_none() {
+                assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+            }
             let another = runtime
                 .stock_execution(
                     task,
@@ -2302,11 +2383,13 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
         } else {
             if let Some(mode) = fault {
-                stream_provider.arm_execution(2, mode);
+                // Started, ContextPrepared and ModelStarted precede the first
+                // observed event. Keep the fault on event publication.
+                stream_provider.arm_execution(3, mode);
             }
-            let interrupted = if pre_context {
-                // Produce the actual earlier stock Started/request bytes and
-                // pending model history through the same fenced disk journal.
+            let interrupted = if direct_executor {
+                // Admit through the direct stock executor and recover through
+                // the runtime with the same pinned policy and fenced disk journal.
                 let admission = host.observe_admission(task).await?;
                 let admitted_scope = RuntimeScope::new(admission.grants, admission.limits)?
                     .with_run_limits(admission.run_limits)?;
@@ -2317,6 +2400,7 @@ async fn stock_restart_with_publication_fault(
                     ToolRegistry::default(),
                 )
                 .with_limits(admitted_scope.limits())
+                .with_compaction_policy(compaction_policy.clone())
                 .with_tool_authority(admitted_scope, None)?
                 .with_durable_task(host.clone(), task, fence.clone());
                 let journal = FilesystemExecutionJournal::for_task(

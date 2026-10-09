@@ -816,14 +816,13 @@ impl ModelPrefix {
         let (parent, offset) = if let Some((reference, prior)) = parent {
             reference.validate()?;
             if reference.descriptor().media_type() != Self::MEDIA_TYPE
-                || prior.manifest.binding_digest != request.manifest.binding_digest
                 || !request
                     .request
                     .messages
                     .starts_with(&prior.request.messages)
             {
                 return Err(Error::Invalid(
-                    "model prefix changed its parent or binding".into(),
+                    "model prefix changed its parent messages".into(),
                 ));
             }
             (Some(reference.clone()), prior.request.messages.len())
@@ -875,6 +874,8 @@ impl PreparedModelRequest {
     /// Resolves only the direct-parent chain, in order, then appends explicit
     /// local messages. No retrieval, summarization, history scan or truncation.
     /// The verifier must enforce the reader's exact generation-pinned grants.
+    /// The original binding digest is provenance, not a restriction on future
+    /// models. The resulting request validates against its selected tools/model.
     pub async fn inherit(
         mut local: ModelRequest,
         prefix: &FileRef,
@@ -882,7 +883,6 @@ impl PreparedModelRequest {
         limits: crate::conversation::Limits,
     ) -> Result<Self> {
         limits.validate()?;
-        let binding = crate::contract::canonical_json_digest(&(&local.model, &local.tools))?;
         let mut next = Some(prefix.clone());
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
@@ -912,7 +912,6 @@ impl PreparedModelRequest {
             let segment: ModelPrefix = crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?;
             if segment.version != 1
-                || segment.binding_digest != binding
                 || segment.messages.is_empty()
                 || expected_count.is_some_and(|count| count != segment.total_messages)
                 || segment.canonical_bytes()? != bytes
@@ -1511,8 +1510,22 @@ mod tests {
             );
             let mut changed = local.clone();
             changed.model.revision = "changed".into();
+            let changed_request =
+                PreparedModelRequest::inherit(changed, &head, &reader, limits).await?;
+            assert_eq!(changed_request.request().model.revision, "changed");
+            assert_eq!(
+                changed_request.request().messages,
+                inherited.request().messages
+            );
+            assert_ne!(
+                changed_request.manifest().binding_digest,
+                inherited.manifest().binding_digest
+            );
+            // Inherited tool exchanges must still validate against the new schema set.
+            let mut incompatible = local.clone();
+            incompatible.tools.clear();
             assert!(
-                PreparedModelRequest::inherit(changed, &head, &reader, limits)
+                PreparedModelRequest::inherit(incompatible, &head, &reader, limits)
                     .await
                     .is_err()
             );

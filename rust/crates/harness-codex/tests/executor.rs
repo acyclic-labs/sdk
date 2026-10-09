@@ -14,7 +14,7 @@ mod support;
 use acyclic_harness::{
     Capabilities, OperationId,
     conversation::ModelContextSelection,
-    executor::{ExecutionEvent, ExecutionJournal as _, Executor, TurnInput},
+    executor::{ExecutionEvent, ExecutionJournal as _, Executor, ModelPurpose, TurnInput},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
     runtime::RuntimeScope,
@@ -529,6 +529,7 @@ async fn a_resumed_turn_only_gets_the_steps_that_are_left() {
             "test:spent".into(),
             ExecutionEvent::ModelStarted {
                 step: 8,
+                purpose: ModelPurpose::Response,
                 request_digest: [0; 32],
                 request,
             },
@@ -558,6 +559,7 @@ async fn selected_context_reaches_a_new_codex_thread() {
     let selected = SelectedModelContext {
         selection: ModelContextSelection {
             conversation_revision: 3,
+            checkpoint: None,
             message_ids: (0..3).map(|_| uuid::Uuid::new_v4()).collect(),
         },
         messages: vec![
@@ -664,4 +666,73 @@ fn the_fake_codex_replays_its_fixture_and_rejects_an_open_stdin() {
         Some(97),
         "an open stdin is caught"
     );
+}
+
+#[tokio::test]
+async fn stock_context_and_summary_records_cannot_resume_a_codex_execution() {
+    for kind in 0..4 {
+        let turn = Turn::new().await;
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let crashed = FakeCodex {
+            fixture: "synthetic-crash",
+            exit: 137,
+            ..FakeCodex::default()
+        };
+        turn.executor(&crashed, None)
+            .execute(input(operation, "task"), &journal)
+            .await
+            .expect_err("killed mid-turn");
+        let reference = journal
+            .stage(
+                operation,
+                "foreign".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await
+            .expect("stage");
+        let event = match kind {
+            0 => ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                request_digest: [0; 32],
+                request: reference,
+            },
+            1 => ExecutionEvent::Model {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                event: reference,
+            },
+            2 => ExecutionEvent::ContextPrepared {
+                step: 0,
+                projection: reference,
+                accounting: None,
+            },
+            _ => ExecutionEvent::ContextCompacted {
+                step: 0,
+                projection: reference.clone(),
+                compaction: reference.clone(),
+                accounting: reference,
+            },
+        };
+        journal
+            .append(operation, "foreign".into(), event)
+            .await
+            .expect("append");
+        let error = turn
+            .executor(&crashed, None)
+            .execute(input(operation, "task"), &journal)
+            .await
+            .expect_err("foreign context is not a codex turn");
+        assert!(
+            matches!(error, acyclic_harness::Error::Conflict(_)),
+            "{error:?}"
+        );
+        assert_eq!(
+            turn.invocations().len(),
+            1,
+            "foreign records never start another process"
+        );
+    }
 }

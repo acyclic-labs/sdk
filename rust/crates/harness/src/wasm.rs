@@ -50,6 +50,7 @@ use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
+mod history;
 mod mcp;
 
 #[derive(Deserialize, Tsify)]
@@ -69,6 +70,8 @@ struct WasmLimitsInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WasmPublicModelContextSelection {
+    #[serde(default)]
+    checkpoint: Option<FileRef>,
     conversation_revision: u64,
     message_ids: Vec<uuid::Uuid>,
 }
@@ -774,6 +777,7 @@ export interface WasmTurnPreparation {
     readonly selection: Readonly<{
         readonly conversation_revision: bigint;
         readonly message_ids: readonly string[];
+        readonly checkpoint?: WasmFileRefWire;
     }>;
     readonly selection_is_new: boolean;
     readonly disposition: WasmTurnDisposition;
@@ -1209,6 +1213,14 @@ pub fn decode_canonical_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 #[wasm_bindgen(js_name = decodeJson)]
 pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     to_js(&parse_json_bytes(bytes)?)
+}
+
+/// Admits one canonical ref-only execution journal observation through Rust.
+#[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
+pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let event: crate::executor::ExecutionEvent =
+        crate::executor::decode_json(bytes).map_err(js_error)?;
+    to_js_admitted(&event)
 }
 
 fn parse_json_bytes(bytes: &[u8]) -> Result<serde_json::Value, JsValue> {
@@ -2284,6 +2296,27 @@ impl WasmReducer {
         decode_attachment_manifest_bytes(manifest, bytes, item_count)
     }
 
+    /// Selects logical fork history against this reducer before provider preparation.
+    /// No provider, grant or model representation is chosen by this operation.
+    #[wasm_bindgen(js_name = prepareForkRequest, unchecked_return_type = "ForkRequest")]
+    pub fn prepare_fork_request(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "unknown")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ForkHistoryPolicy | null")] policy: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let request: ForkRequest = from_js(request)?;
+        let policy: crate::fork::ForkHistoryPolicy = if policy.is_null() || policy.is_undefined() {
+            crate::fork::ForkHistoryPolicy::default()
+        } else {
+            from_js(policy)?
+        };
+        to_js_admitted(
+            &request
+                .with_history_policy(&self.reducer, policy)
+                .map_err(js_error)?,
+        )
+    }
+
     /// Returns the authoritative conversation projection, never a parallel JS reducer.
     #[wasm_bindgen(js_name = conversationJson)]
     pub fn conversation_json(&self) -> Result<String, JsValue> {
@@ -2349,7 +2382,19 @@ impl WasmReducer {
         })
     }
 
-    /// Returns a versioned integrity-checked restoration snapshot.
+    /// Returns only authority and revision; command admission needs no snapshot.
+    pub fn head(&self) -> Result<JsValue, JsValue> {
+        to_js(&(self.reducer.authority(), self.reducer.revision()))
+    }
+
+    /// Reads one admitted selection through the reducer's retained identity index.
+    #[wasm_bindgen(js_name = contextSelectionForOperation)]
+    pub fn context_selection_for_operation(&self, operation: JsValue) -> Result<JsValue, JsValue> {
+        let operation = from_js(operation)?;
+        to_js_admitted(&self.reducer.context_selection_for_operation(operation))
+    }
+
+    /// Returns a versioned issuer-authenticated restoration snapshot.
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
         to_js(&self.reducer.snapshot().map_err(js_error)?)
     }
@@ -2738,6 +2783,44 @@ pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8
     Ok(prepared.bytes().to_vec())
 }
 
+/// Returns the ordinary replaceable policy used by the stock Rust executor.
+#[wasm_bindgen(js_name = defaultCompactionPolicy, unchecked_return_type = "CompactionPolicy")]
+pub fn default_compaction_policy() -> Result<JsValue, JsValue> {
+    to_js(&crate::context::CompactionPolicy::default())
+}
+
+/// Checks a threshold against actual selected capacity, returning its finite output ceiling.
+#[wasm_bindgen(js_name = validateThresholdCompaction)]
+pub fn validate_threshold_compaction(
+    #[wasm_bindgen(unchecked_param_type = "ThresholdCompaction")] config: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ModelContextCapacity")] capacity: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] output_tokens: JsValue,
+) -> Result<u32, JsValue> {
+    let config: crate::context::ThresholdCompaction = from_js(config)?;
+    let output_tokens = if output_tokens.is_undefined() {
+        None
+    } else {
+        from_js(output_tokens)?
+    };
+    config
+        .validate(from_js(capacity)?, output_tokens)
+        .map_err(js_error)
+}
+
+/// Validates provider-owned counts against the exact canonical prepared request.
+#[wasm_bindgen(js_name = validateModelTokenCount)]
+pub fn validate_model_token_count(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelRequestWire")] request: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ModelTokenCount")] count: JsValue,
+    limits: JsValue,
+) -> Result<u64, JsValue> {
+    let request: crate::model::ModelRequest = from_js(request)?;
+    let prepared =
+        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
+    let count: crate::context::ModelTokenCount = from_js(count)?;
+    count.validate(&prepared).map_err(js_error)
+}
+
 /// Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
 #[wasm_bindgen(js_name = parseSkillMetadata, unchecked_return_type = "SkillMetadata")]
 pub fn parse_skill_metadata(
@@ -2776,6 +2859,14 @@ pub fn project_discovered_context(
 // Tool JSON may contain similar keys without being descriptors.
 fn context_to_js(context: &crate::context::Context) -> Result<JsValue, JsValue> {
     let result = to_js(context)?;
+    if context.current_input_index.is_none() {
+        let object: js_sys::Object = result.clone().dyn_into()?;
+        if !js_sys::Reflect::delete_property(&object, &JsValue::from_str("current_input_index"))? {
+            return Err(JsValue::from_str(
+                "could not omit absent current input index",
+            ));
+        }
+    }
     let metadata = js_sys::Array::new();
     for (name, file) in &context.metadata {
         let entry = js_sys::Array::new();
@@ -2974,6 +3065,7 @@ pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Re
     let limits: Limits = from_js(limits)?;
     SelectedModelContext {
         selection: ModelContextSelection {
+            checkpoint: selected.selection.checkpoint,
             conversation_revision: selected.selection.conversation_revision,
             message_ids: selected.selection.message_ids,
         },
