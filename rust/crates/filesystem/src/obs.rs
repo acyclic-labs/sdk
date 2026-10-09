@@ -287,6 +287,10 @@ mod worker_context_tests {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "test callbacks cannot return errors; failed fixture invariants must fail the test"
+    )]
     impl<S> tracing_subscriber::Layer<S> for Capture
     where
         S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -450,6 +454,10 @@ mod worker_context_tests {
         feature = "native-mount",
         any(target_os = "linux", target_os = "macos")
     ))]
+    #[expect(
+        clippy::expect_used,
+        reason = "test assertion helper cannot return errors; poisoned evidence must fail the test"
+    )]
     pub(crate) fn assert_filtered_callback_isolation(
         body: impl Fn(&tracing::span::EnteredSpan) -> i32,
     ) {
