@@ -269,7 +269,7 @@ test("merged PR proof reuses only executed core jobs for identical consumer inpu
   assert.deepEqual(exercise(undefined, changed(".github/workflows/qualification.yml")), {});
   assert.deepEqual(Object.keys(exercise(undefined, changed("README.md"))).sort(), Object.keys(markers).sort());
   assert.equal(exercise(undefined, tree, lanes.map(lane => lane.lane === "gate" ? { ...lane, source_bound: true } : lane)).gate, undefined);
-  assert.throws(() => mergedPullRequestMarkers(lanes, repository, head, { query: () => baseline.pr, treeAt: sha => { if (sha === donor) throw new Error("missing donor object"); return tree; } }), /donor Git tree is incomplete/);
+  assert.deepEqual(mergedPullRequestMarkers(lanes, repository, head, { query: () => baseline.pr, treeAt: sha => { if (sha === donor) throw new Error("missing donor object"); return tree; } }), {});
 });
 
 test("remote donor trees preserve real Git records and reject incomplete identity", () => {
@@ -341,6 +341,8 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     const commit = message => git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", message]);
     commit("donor");
     const donor = git(["rev-parse", "HEAD"]);
+    const donorTreeSha = git(["rev-parse", "HEAD^{tree}"]);
+    assert.notEqual(donorTreeSha, donor);
     const donorEntries = git(["ls-tree", "-r", "-z", "--full-tree", donor]).split("\0").filter(Boolean).map(record => {
       const [mode, type, sha] = record.slice(0, record.indexOf("\t")).split(" ");
       return { mode, type, sha, path: record.slice(record.indexOf("\t") + 1) };
@@ -354,10 +356,11 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     git(["gc", "--prune=now", "--quiet"]);
     assert.notEqual(spawnSync("git", ["cat-file", "-e", donor], { cwd: root }).status, 0, "squash donor must actually be absent");
     const repo = { full_name: repository }, path = ".github/workflows/qualification.yml";
-    const donorResponse = { sha: donor, truncated: false, tree: donorEntries };
+    const donorResponse = { sha: donorTreeSha, truncated: false, tree: donorEntries };
     const api = {
       [`repos/${repository}/commits/${head}/pulls`]: [{ merged_at: "today", merge_commit_sha: head, base: { ref: "main", repo }, head: { sha: donor, repo } }],
-      [`repos/${repository}/git/trees/${donor}?recursive=1`]: donorResponse,
+      [`repos/${repository}/git/commits/${donor}`]: { sha: donor, tree: { sha: donorTreeSha } },
+      [`repos/${repository}/git/trees/${donorTreeSha}?recursive=1`]: donorResponse,
       [`repos/${repository}/actions/workflows/qualification.yml`]: { id: 9, path },
       [`repos/${repository}/actions/workflows/9/runs?event=pull_request&head_sha=${donor}&status=success&per_page=5`]: { workflow_runs: [{ id: 7, run_attempt: 2, workflow_id: 9, path, event: "pull_request", head_sha: donor, head_repository: repo, status: "completed", conclusion: "success" }] },
       [`repos/${repository}/actions/runs/7/attempts/2/jobs?per_page=100`]: { total_count: 4, jobs: ["plan", "gate", "typescript", "policy"].map(name => ({ name, head_sha: donor, run_id: 7, run_attempt: 2, runner_id: 1, status: "completed", conclusion: "success", steps: [{ name: name === "plan" ? "Verify commit signatures and secrets" : "Run qualification lane", status: "completed", conclusion: "success" }] })) },
@@ -379,6 +382,14 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     };
     const selected = run("select");
     assert.deepEqual(selected.matrix, []);
+    for (const mismatch of ["commit", "tree"]) {
+      const record = mismatch === "commit" ? api[`repos/${repository}/git/commits/${donor}`] : donorResponse;
+      const sha = record.sha;
+      record.sha = "f".repeat(40);
+      put("api.json", JSON.stringify(api));
+      assert.deepEqual(named(run("select").matrix), ["gate", "policy", "typescript"]);
+      record.sha = sha;
+    }
     donorResponse.truncated = true;
     put("api.json", JSON.stringify(api));
     assert.deepEqual(named(run("select").matrix), ["gate", "policy", "typescript"]);

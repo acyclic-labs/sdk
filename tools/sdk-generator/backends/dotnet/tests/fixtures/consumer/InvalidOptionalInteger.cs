@@ -1,1 +1,1 @@
-new Acyclic.Stream.V2.AppendRequest { IfTail = "invalid" };
+new Acyclic.Stream.V1.AppendRequest { IfTail = "invalid" };

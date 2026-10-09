@@ -7,7 +7,7 @@ import { canonical, loadAuthority, readInput, sha256, within } from "../../../sh
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
+const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
 
 // Commands and manifests are injectable only for offline runner controls.
 export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {

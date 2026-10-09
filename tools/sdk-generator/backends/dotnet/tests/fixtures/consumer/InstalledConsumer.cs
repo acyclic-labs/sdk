@@ -4,7 +4,7 @@ using Grpc.Core;
 using System.Reflection;
 using Actors = Acyclic.Actors.V1;
 using Workers = Acyclic.Workers.V1;
-using Stream = Acyclic.Stream.V2;
+using Stream = Acyclic.Stream.V1;
 
 static class Program {
   static void Require(bool condition, string detail) {

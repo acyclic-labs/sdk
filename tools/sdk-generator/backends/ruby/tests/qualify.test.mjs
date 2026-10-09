@@ -10,7 +10,7 @@ function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "ruby-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"].map(source => {
+  const families = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"].map(source => {
     put(join(authority, source), source);
     return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   });

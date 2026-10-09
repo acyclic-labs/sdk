@@ -247,7 +247,11 @@ export function mergedPullRequestMarkers(lanes, repository, head, {
   const currentKeys = laneKeys(lanes, treeAt(head), "core");
   let donorTree;
   try { donorTree = treeAt(donor); }
-  catch { donorTree = remoteTreeEntries(query(`repos/${repository}/git/trees/${donor}?recursive=1`), donor); }
+  catch {
+    const commit = query(`repos/${repository}/git/commits/${donor}`);
+    if (commit.sha !== donor || !/^[0-9a-f]{40}$/.test(commit.tree?.sha)) return decline("donor commit/tree mismatch");
+    donorTree = remoteTreeEntries(query(`repos/${repository}/git/trees/${commit.tree.sha}?recursive=1`), commit.tree.sha);
+  }
   const donorKeys = laneKeys(lanes, donorTree, "core");
   const eligible = lanes.filter(lane => reusableCore(lane) && currentKeys[lane.lane] === donorKeys[lane.lane]);
   if (!eligible.length) return decline("no matching core input keys");
@@ -281,8 +285,8 @@ export function mergedPullRequestMarkers(lanes, repository, head, {
 
 // Match `git ls-tree -r -z --full-tree`: tree directories are not records,
 // paths are unquoted, and recursive entries have bytewise Git path order.
-export function remoteTreeEntries(response, sourceCommit) {
-  if (response.sha !== sourceCommit || response.truncated !== false || !Array.isArray(response.tree)) {
+export function remoteTreeEntries(response, sourceTree) {
+  if (response.sha !== sourceTree || response.truncated !== false || !Array.isArray(response.tree)) {
     throw new Error("donor Git tree is incomplete or belongs to another source");
   }
   const entries = response.tree;
