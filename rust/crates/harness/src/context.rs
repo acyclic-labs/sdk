@@ -422,6 +422,8 @@ impl DurableContextProvider {
         let key_bytes = idempotency_key.into();
         let key = StreamIdempotencyKey::new(key_bytes.clone())
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        validate_projected_context(&source, self.limits)?;
+        validate_projected_context(&compacted, self.limits)?;
         validate_compaction(&reference, &source, &compacted)?;
         validate_context_refs(&source, self.content_verifier.as_ref(), self.limits).await?;
         validate_context_refs(&compacted, self.content_verifier.as_ref(), self.limits).await?;
@@ -514,7 +516,9 @@ impl DurableContextProvider {
                     "context page returned an invalid range".into(),
                 ));
             }
-            let revision = self.decode_revision(record.sequence, &record.value).await?;
+            let revision = self
+                .decode_revision(record.sequence, &record.value, self.limits)
+                .await?;
             if let Some(reference) = &revision.compaction {
                 let preceding = if revisions.is_empty() {
                     if after == 0 {
@@ -541,7 +545,13 @@ impl DurableContextProvider {
         Ok(revisions)
     }
 
-    async fn decode_revision(&self, sequence: u64, bytes: &[u8]) -> Result<ContextRevision> {
+    async fn decode_revision(
+        &self,
+        sequence: u64,
+        bytes: &[u8],
+        limits: Limits,
+    ) -> Result<ContextRevision> {
+        let limits = restrict_context_limits(self.limits, limits)?;
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(crate::Error::Storage(
                 "context record exceeds Stream limit".into(),
@@ -559,9 +569,9 @@ impl DurableContextProvider {
                 "durable context identity, revision or canonical bytes are invalid".into(),
             ));
         }
-        self.limits.validate_file(&revision.context)?;
+        limits.validate_file(&revision.context)?;
         if revision.context.descriptor().media_type() != "application/json"
-            || revision.context.descriptor().byte_length() > self.limits.render_bytes
+            || revision.context.descriptor().byte_length() > limits.render_bytes
         {
             return Err(crate::Error::Storage(
                 "context payload descriptor is invalid".into(),
@@ -577,7 +587,7 @@ impl DurableContextProvider {
                 "context payload is not canonical".into(),
             ));
         }
-        validate_context_refs(&context, self.content_verifier.as_ref(), self.limits).await?;
+        validate_context_refs(&context, self.content_verifier.as_ref(), limits).await?;
         Ok(ContextRevision {
             format_version: revision.format_version,
             revision: revision.revision,
@@ -590,6 +600,15 @@ impl DurableContextProvider {
     }
 
     async fn read_revision(&self, revision: u64) -> Result<ContextRevision> {
+        self.read_revision_bounded(revision, self.limits).await
+    }
+
+    async fn read_revision_bounded(
+        &self,
+        revision: u64,
+        limits: Limits,
+    ) -> Result<ContextRevision> {
+        limits.validate()?;
         if revision == 0 {
             return Err(crate::Error::Invalid(
                 "context revision must be positive".into(),
@@ -614,15 +633,20 @@ impl DurableContextProvider {
                 "context revision read returned an invalid range".into(),
             ));
         }
-        self.decode_revision(record.sequence, &record.value).await
+        self.decode_revision(record.sequence, &record.value, limits)
+            .await
     }
 
     /// Loads one pinned revision, checking its source proof with at most two
     /// record reads. Later publications do not change this projection.
     pub async fn revision(&self, revision: u64) -> Result<ContextRevision> {
-        let record = self.read_revision(revision).await?;
+        self.revision_bounded(revision, self.limits).await
+    }
+
+    async fn revision_bounded(&self, revision: u64, limits: Limits) -> Result<ContextRevision> {
+        let record = self.read_revision_bounded(revision, limits).await?;
         if let Some(reference) = &record.compaction {
-            let source = self.read_revision(revision - 1).await?;
+            let source = self.read_revision_bounded(revision - 1, limits).await?;
             validate_compaction(reference, &source.context, &record.context)?;
         }
         Ok(record)
@@ -890,21 +914,83 @@ async fn validate_context_refs(
 }
 
 impl ContextSource for DurableContextProvider {
-    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { Ok(self.latest().await?.messages) })
+    fn load<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move {
+            limits.validate()?;
+            let tail = self.tail_revision().await?;
+            if tail == 0 {
+                return Ok(Vec::new());
+            }
+            Ok(self.revision_bounded(tail, limits).await?.context.messages)
+        })
     }
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
 pub trait ContextSource: acyclic_stream::ProviderPlatform {
-    /// Resolves model-visible messages for the current step.
-    fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
+    /// Resolves model-visible messages under the original admitted limits.
+    /// Implementations must bound source reads and construction before returning;
+    /// the pipeline independently validates the returned projection.
+    fn load<'a>(
+        &'a self,
+        input: &'a ContextInput,
+        limits: Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
 
 impl ContextSource for Context {
-    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { Ok(self.messages.clone()) })
+    fn load<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move {
+            validate_source_messages(&self.messages, limits)?;
+            Ok(self.messages.clone())
+        })
     }
+}
+
+/// A source contributes messages only; its unrelated metadata is not imported.
+pub(super) fn validate_source_messages(messages: &[ModelMessage], limits: Limits) -> Result<()> {
+    limits.validate()?;
+    let metadata = BTreeMap::new();
+    BorrowedContext {
+        messages: ContextMessages {
+            first: messages,
+            user: None,
+            second: &[],
+        },
+        metadata: &metadata,
+        current_input_index: None,
+    }
+    .validate_bounds(limits)?;
+    for message in messages {
+        message.content.validate_limits(limits)?;
+    }
+    Ok(())
+}
+
+/// A pinned provider allowance can narrow, never widen, the admitted request.
+pub(super) fn restrict_context_limits(pinned: Limits, admitted: Limits) -> Result<Limits> {
+    pinned.validate()?;
+    admitted.validate()?;
+    Ok(Limits {
+        file_bytes: pinned.file_bytes.min(admitted.file_bytes),
+        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
+        attachments: pinned.attachments.min(admitted.attachments),
+        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        model_steps: pinned.model_steps.min(admitted.model_steps),
+        model_events_per_step: pinned
+            .model_events_per_step
+            .min(admitted.model_events_per_step),
+        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
+        context_messages: pinned.context_messages.min(admitted.context_messages),
+    })
 }
 
 /// Placement of source messages relative to existing context.
@@ -969,10 +1055,12 @@ impl ContextStage for SourceStage {
         &'a self,
         input: &'a ContextInput,
         context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
-            let loaded = self.source.load(input).await?;
-            selection::place_messages(context, loaded, self.placement)
+            validate_projected_context(&context, limits)?;
+            let loaded = self.source.load(input, limits).await?;
+            selection::place_messages(context, loaded, self.placement, limits)
         })
     }
 }
@@ -1016,16 +1104,20 @@ impl ContextStage for CompactionStage {
         &'a self,
         _: &'a ContextInput,
         context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
             self.validate()?;
-            Ok(DurableContextProvider::compact(
+            validate_projected_context(&context, limits)?;
+            let compacted = DurableContextProvider::compact(
                 &context,
                 self.max_messages,
                 self.summary.clone(),
                 self.retention.clone(),
             )?
-            .0)
+            .0;
+            validate_projected_context(&compacted, limits)?;
+            Ok(compacted)
         })
     }
 }
@@ -1159,11 +1251,14 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
-    /// Transforms context; stage order is the order supplied by application code.
+    /// Transforms context under the original admitted limits, in application order.
+    /// Implementations must apply these bounds before source reads or allocation;
+    /// the pipeline also checks every returned projection.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
         context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>>;
 }
 
@@ -1335,7 +1430,7 @@ impl ContextPipeline {
             ));
         }
         for stage in &self.0 {
-            context = stage.apply(input, context).await?;
+            context = stage.apply(input, context, limits).await?;
             validate_projected_context(&context, limits)?;
             if context.current_input_index.is_none() {
                 return Err(crate::Error::Invalid(
@@ -1840,6 +1935,375 @@ mod tests {
         }
     }
 
+    struct SourceLimitSpy(std::sync::Mutex<Vec<Limits>>);
+
+    impl ContextSource for SourceLimitSpy {
+        fn load<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            limits: Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(limits);
+                Ok(vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("source".into()),
+                }])
+            })
+        }
+    }
+
+    struct StageLimitSpy(std::sync::Mutex<Vec<Limits>>);
+
+    impl ContextStage for StageLimitSpy {
+        fn name(&self) -> &str {
+            "limit-spy"
+        }
+        fn contract(&self) -> Value {
+            serde_json::json!({"revision":"1"})
+        }
+        fn apply<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            context: Context,
+            limits: Limits,
+        ) -> BoxFuture<'a, Result<Context>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(limits);
+                Ok(context)
+            })
+        }
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one actual pipeline fixture checks forwarding and both exact placement boundaries"
+    )]
+    async fn admitted_limits_reach_sources_and_stages_and_bound_message_joins() -> Result<()> {
+        let input = ContextInput {
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let limits = Limits {
+            context_messages: 2,
+            render_bytes: 2_048,
+            ..payload_limits()
+        };
+        let source = Arc::new(SourceLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let stage = Arc::new(StageLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let pipeline = ContextPipeline::new([
+            Arc::new(SourceStage::new(
+                "source",
+                "1",
+                source.clone(),
+                ContextPlacement::Prepend,
+            )) as Arc<dyn ContextStage>,
+            stage.clone(),
+        ]);
+        let projected = pipeline.run_bounded(&input, limits).await?;
+        assert_eq!(projected.current_input_index, Some(1));
+        assert_eq!(
+            *source
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![limits]
+        );
+        assert_eq!(
+            *stage
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![limits]
+        );
+        let base = ContextPipeline::base_context(&input, limits)?;
+        let contribution = vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text("source".into()),
+        }];
+        for placement in [ContextPlacement::Prepend, ContextPlacement::Append] {
+            let joined =
+                selection::place_messages(base.clone(), contribution.clone(), placement, limits)?;
+            assert_eq!(
+                joined.current_input_index,
+                Some(u32::from(placement == ContextPlacement::Prepend))
+            );
+            let exact = crate::contract::canonical_json_bytes(&joined)?.len() as u64;
+            assert_eq!(
+                selection::place_messages(
+                    base.clone(),
+                    contribution.clone(),
+                    placement,
+                    Limits {
+                        render_bytes: exact,
+                        ..limits
+                    }
+                )?,
+                joined
+            );
+            for rejected in [
+                Limits {
+                    context_messages: 1,
+                    ..limits
+                },
+                Limits {
+                    render_bytes: exact - 1,
+                    ..limits
+                },
+            ] {
+                assert!(matches!(
+                    selection::place_messages(
+                        base.clone(),
+                        contribution.clone(),
+                        placement,
+                        rejected
+                    ),
+                    Err(crate::Error::Invalid(_))
+                ));
+            }
+        }
+        let oversized = Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("x".repeat(2_048)),
+            }],
+            ..Context::default()
+        };
+        assert!(matches!(
+            oversized.load(&input, limits).await,
+            Err(crate::Error::Invalid(_))
+        ));
+        let too_many = Context {
+            messages: projected.messages,
+            ..Context::default()
+        };
+        assert!(matches!(
+            too_many
+                .load(
+                    &input,
+                    Limits {
+                        context_messages: 1,
+                        ..limits
+                    }
+                )
+                .await,
+            Err(crate::Error::Invalid(_))
+        ));
+        let file = message(ModelRole::System, "instruction")?
+            .content
+            .file_refs()
+            .first()
+            .ok_or_else(|| crate::Error::Invalid("fixture instruction is missing".into()))?
+            .clone();
+        let discovered = DiscoveredContext {
+            instructions: vec![file.clone(), file],
+            skills: Vec::new(),
+        };
+        assert!(matches!(
+            discovered
+                .load(
+                    &input,
+                    Limits {
+                        context_messages: 1,
+                        ..limits
+                    }
+                )
+                .await,
+            Err(crate::Error::Invalid(_))
+        ));
+        assert!(matches!(
+            discovered
+                .load(
+                    &input,
+                    Limits {
+                        file_bytes: 1,
+                        ..limits
+                    }
+                )
+                .await,
+            Err(crate::Error::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    struct RendererLimitSpy(std::sync::Mutex<Vec<Limits>>);
+
+    impl ContextRenderer for RendererLimitSpy {
+        fn contract(&self) -> Value {
+            serde_json::json!({"revision":"1"})
+        }
+        fn render<'a>(
+            &'a self,
+            _: &'a ContextSelection,
+            _: ContextRenderMode,
+            _: &'a ContextInput,
+            limits: Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(limits);
+                Ok(vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("rendered".into()),
+                }])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_stage_narrows_limits_before_source_verification_and_rendering() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let verifier = Arc::new(CountingVerifier {
+            count: std::sync::atomic::AtomicUsize::new(0),
+            payloads,
+        });
+        let renderer = Arc::new(RendererLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let file = message(ModelRole::System, "0123456789")?
+            .content
+            .file_refs()
+            .first()
+            .ok_or_else(|| crate::Error::Invalid("fixture source is missing".into()))?
+            .clone();
+        let pinned = Limits {
+            render_bytes: 2_048,
+            ..payload_limits()
+        };
+        let stage = SelectionStage::new(
+            "selection".into(),
+            ContextSelection {
+                source: ContextSourceValue::File { file },
+                extent: ContextExtent::Whole,
+                representation: ContextRepresentation::Full,
+            },
+            renderer.clone(),
+            verifier.clone(),
+            ContextRenderMode::Prompt,
+            ContextPlacement::Prepend,
+            pinned,
+        )?;
+        let input = ContextInput {
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let admitted = Limits {
+            file_bytes: 9,
+            render_bytes: 4_096,
+            context_messages: 2,
+            ..payload_limits()
+        };
+        let base = ContextPipeline::base_context(&input, admitted)?;
+        assert!(matches!(
+            stage.apply(&input, base.clone(), admitted).await,
+            Err(crate::Error::Invalid(_))
+        ));
+        assert_eq!(verifier.count.load(Ordering::SeqCst), 0);
+        assert!(
+            renderer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        let admitted = Limits {
+            file_bytes: 10,
+            ..admitted
+        };
+        let projected = stage.apply(&input, base, admitted).await?;
+        assert_eq!(projected.current_input_index, Some(1));
+        assert_eq!(verifier.count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *renderer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Limits {
+                render_bytes: pinned.render_bytes,
+                ..admitted
+            }]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_source_reopen_applies_admitted_payload_bounds_before_body_reads() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let stream = Arc::new(MemoryStream::default());
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let path = StreamPath::new("bounded/source-admission")
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let provider = DurableContextProvider::new(
+            stream.clone(),
+            path.clone(),
+            "source",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads.clone())?;
+        let context = Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("x".repeat(400)),
+            }],
+            ..Context::default()
+        };
+        provider
+            .append(0, context.clone(), None, Bytes::from_static(b"original"))
+            .await?;
+        let reopened = DurableContextProvider::new(
+            stream,
+            path,
+            "source",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?;
+        let input = ContextInput {
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        for limits in [
+            Limits {
+                file_bytes: 128,
+                ..payload_limits()
+            },
+            Limits {
+                render_bytes: 128,
+                ..payload_limits()
+            },
+        ] {
+            payloads.reads.store(0, Ordering::SeqCst);
+            assert!(reopened.load(&input, limits).await.is_err());
+            assert_eq!(payloads.reads.load(Ordering::SeqCst), 0);
+        }
+        assert_eq!(
+            reopened.load(&input, payload_limits()).await?,
+            context.messages
+        );
+        assert_eq!(payloads.reads.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
     impl TestPayloadStore {
         fn new() -> Result<Self> {
             Ok(Self {
@@ -1932,6 +2396,7 @@ mod tests {
             &'a self,
             _: &'a ContextInput,
             mut context: Context,
+            _: Limits,
         ) -> BoxFuture<'a, Result<Context>> {
             context.current_input_index = None;
             Box::pin(async move { Ok(context) })
@@ -2075,6 +2540,7 @@ mod tests {
             &'a self,
             input: &'a ContextInput,
             mut context: Context,
+            _: Limits,
         ) -> BoxFuture<'a, Result<Context>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2346,7 +2812,7 @@ mod tests {
             assert!(provider.revisions(0, 1).await.is_err());
             assert!(
                 provider
-                    .decode_revision(0, &vec![b' '; MAX_RECORD_BYTES + 1])
+                    .decode_revision(0, &vec![b' '; MAX_RECORD_BYTES + 1], payload_limits())
                     .await
                     .is_err()
             );

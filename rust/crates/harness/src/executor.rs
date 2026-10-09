@@ -3508,7 +3508,11 @@ mod tests {
     struct ChangingCompactionSource(AtomicUsize);
 
     impl crate::context::ContextSource for ChangingCompactionSource {
-        fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        fn load<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            _: Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
             let revision = self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(vec![
@@ -4439,7 +4443,11 @@ mod tests {
     struct ChangingContextSource(AtomicUsize);
 
     impl crate::context::ContextSource for ChangingContextSource {
-        fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        fn load<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            _: Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
             let read = self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(vec![ModelMessage {
@@ -4761,6 +4769,7 @@ mod tests {
             &'a self,
             _: &'a ContextInput,
             context: crate::context::Context,
+            _: Limits,
         ) -> BoxFuture<'a, Result<crate::context::Context>> {
             Box::pin(async move {
                 if self.0.fetch_add(1, Ordering::SeqCst) != 0 {

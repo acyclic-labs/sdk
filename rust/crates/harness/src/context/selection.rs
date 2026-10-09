@@ -53,13 +53,7 @@ impl ContextAttribute {
 
     /// Validates type identity, revision and state using the existing schema boundary.
     pub fn validate(&self) -> Result<()> {
-        if crate::contract::canonical_json_bytes(self)?.len() as u64
-            > crate::model::MAX_MODEL_REQUEST_BYTES
-        {
-            return Err(Error::Invalid(
-                "context attribute exceeds wire bound".into(),
-            ));
-        }
+        crate::contract::validate_json_byte_bound(self, crate::model::MAX_MODEL_REQUEST_BYTES)?;
         for label in [&self.type_name, &self.type_revision, &self.state_revision] {
             crate::contract::validate_component_label(label, "context attribute identity")?;
         }
@@ -131,11 +125,7 @@ impl ContextSelection {
     /// Validates structure without granting authority or executing a renderer.
     pub fn validate(&self, limits: Limits) -> Result<()> {
         limits.validate()?;
-        if crate::contract::canonical_json_bytes(self)?.len() as u64 > limits.render_bytes {
-            return Err(Error::Invalid(
-                "context selection exceeds input bound".into(),
-            ));
-        }
+        crate::contract::validate_json_byte_bound(self, limits.render_bytes)?;
         match &self.source {
             ContextSourceValue::File { file } => {
                 limits.validate_file(file)?;
@@ -238,17 +228,21 @@ impl ContextStage for SelectionStage {
         &'a self,
         input: &'a ContextInput,
         context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
+            let limits = super::restrict_context_limits(self.limits, limits)?;
+            validate_projected_context(&context, limits)?;
+            self.selection.validate(limits)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                self.limits.validate_file(file)?;
+                limits.validate_file(file)?;
                 self.verifier.verify(file).await?;
             }
             let messages = self
                 .renderer
-                .render(&self.selection, self.mode, input, self.limits)
+                .render(&self.selection, self.mode, input, limits)
                 .await?;
-            apply_context_projection(context, messages, self.mode, self.placement, self.limits)
+            apply_context_projection(context, messages, self.mode, self.placement, limits)
         })
     }
 }
@@ -267,7 +261,7 @@ pub fn apply_context_projection(
     } else {
         placement
     };
-    let context = place_messages(context, messages, placement)?;
+    let context = place_messages(context, messages, placement, limits)?;
     validate_projected_context(&context, limits)?;
     Ok(context)
 }
@@ -276,20 +270,38 @@ pub(super) fn place_messages(
     mut context: Context,
     mut messages: Vec<ModelMessage>,
     placement: ContextPlacement,
+    limits: Limits,
 ) -> Result<Context> {
-    context.validate_current_input()?;
+    validate_projected_context(&context, limits)?;
+    super::validate_source_messages(&messages, limits)?;
+    let current_input_index = match (placement, context.current_input_index) {
+        (ContextPlacement::Prepend, Some(index)) => Some(
+            u32::try_from(messages.len())
+                .ok()
+                .and_then(|count| index.checked_add(count))
+                .ok_or_else(|| {
+                    Error::Invalid("current input index exceeds portable count".into())
+                })?,
+        ),
+        (_, marker) => marker,
+    };
+    let (first, second) = match placement {
+        ContextPlacement::Prepend => (messages.as_slice(), context.messages.as_slice()),
+        ContextPlacement::Append => (context.messages.as_slice(), messages.as_slice()),
+    };
+    super::BorrowedContext {
+        messages: super::ContextMessages {
+            first,
+            user: None,
+            second,
+        },
+        metadata: &context.metadata,
+        current_input_index,
+    }
+    .validate_bounds(limits)?;
+    context.current_input_index = current_input_index;
     match placement {
         ContextPlacement::Prepend => {
-            if let Some(index) = context.current_input_index {
-                context.current_input_index = Some(
-                    u32::try_from(messages.len())
-                        .ok()
-                        .and_then(|count| index.checked_add(count))
-                        .ok_or_else(|| {
-                            Error::Invalid("current input index exceeds portable count".into())
-                        })?,
-                );
-            }
             messages.append(&mut context.messages);
             context.messages = messages;
         }

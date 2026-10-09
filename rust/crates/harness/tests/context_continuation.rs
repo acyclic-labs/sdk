@@ -620,6 +620,7 @@ impl acyclic_harness::context::ContextStage for InputDependentStage {
         &'a self,
         input: &'a acyclic_harness::context::ContextInput,
         mut context: Context,
+        _: Limits,
     ) -> BoxProviderFuture<'a, Result<Context>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);

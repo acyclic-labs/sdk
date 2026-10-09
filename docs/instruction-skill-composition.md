@@ -28,6 +28,17 @@ store callbacks, open a host path or maintain a catalog. TypeScript's
 context builder; later `context` calls replace it. Configure limits before
 binding. Final model admission still applies the active request limits.
 
+Native `ContextSource::load(input, limits)` and `ContextStage::apply(input,
+context, limits)` receive the original admitted limits through this same
+pipeline. Sources and custom stages must use those bounds before reads or
+construction; the pipeline independently checks every intermediate result.
+Built-in snapshot sources check message and byte bounds before cloning or
+serializing contributions. File selection stages use the tighter of their
+pinned limits and the admission limits before verification or rendering.
+Durable sources check retained payload descriptors before reading bodies.
+Source placement checks the combined message count and encoded size before
+joining vectors, retaining exact ordering and the current-input marker.
+
 The Filesystem owner can retain a generation with `generation.pin(identity)`
 and reopen it after restart with `workspace.generation(id)`. The latter exposes
 the existing Rust exact-generation lookup in browser, native and hosted consumers;
