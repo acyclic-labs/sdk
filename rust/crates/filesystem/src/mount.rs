@@ -274,5 +274,6 @@ pub enum MountError {
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/mount.rs"]
 mod tests;

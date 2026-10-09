@@ -1,16 +1,10 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
 
-#[cfg(any(test, target_arch = "wasm32"))]
-mod authority_codec;
-
-#[cfg(target_arch = "wasm32")]
-mod indexed_db;
-
 #[cfg(target_arch = "wasm32")]
 mod opfs;
 
 #[cfg(target_arch = "wasm32")]
-pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpenError};
+pub use acyclic_fs::browser::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpenError};
 
 #[cfg(target_arch = "wasm32")]
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};

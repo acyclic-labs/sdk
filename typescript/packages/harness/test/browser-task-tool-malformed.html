@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Malformed browser tool receipt retains uncertainty</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+const result = document.querySelector("#result");
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const effectKey = `harness-malformed-tool-${crypto.randomUUID()}`;
+let fixture;
+let runtime;
+try {
+  fixture = await taskFixture(crypto.randomUUID());
+  let executions = 0;
+  let reconciliations = 0;
+  let projections = 0;
+  const requests = [];
+  fixture.registry.registerTool({ name: "test.effect", revision: "1", description: "Retained effect with malformed delivery",
+    input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+    output_schema: { type: "string" } }, invocation => {
+    executions++;
+    assert(localStorage.getItem(effectKey) === null, "malformed receipt caused effect redispatch");
+    localStorage.setItem(effectKey, JSON.stringify(invocation));
+    return { value: "\ud800" };
+  }, invocation => {
+    reconciliations++;
+    assert(localStorage.getItem(effectKey) === JSON.stringify(invocation), "recovery substituted the exact invocation");
+    return reconciliations === 1 ? "malformed reconciliation receipt" : { value: invocation.arguments.value };
+  }, (_, canonical) => {
+    projections++;
+    assert(canonical.value === "committed", "projection lost the canonical effect result");
+    return canonical.value;
+  });
+  const bind = runtime => runtime.configureModel({ provider: "browser-test", name: "tool", revision: "1", options: {} },
+    async function* (_, dispatch) {
+      assert(!requests.includes(dispatch.step), "recovery redispatched an admitted model step");
+      requests.push(dispatch.step);
+      if (dispatch.step === 0) yield { kind: "tool_call", call_id: "effect", name: "test.effect", arguments: { value: "committed" } };
+      else yield { kind: "content", delta: "done" };
+      yield { kind: "completed", metadata: {} };
+    }, () => { throw new Error("completed model step unexpectedly required reconciliation"); });
+  runtime = await fixture.open();
+  bind(runtime);
+  await runtime.initializeVolume();
+  const operation = crypto.randomUUID();
+  const file = await runtime.stage(operation, "model", new TextEncoder().encode(JSON.stringify({ input: "apply effect", max_steps: 2 })));
+  const admission = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file, operation, kind: "acyclic.model.v1" });
+  assert(admission.kind === "accepted", describe(admission));
+  const worker = { id: "malformed-tool-worker", available: {}, labels: {} };
+  const first = await runtime.workerTick(worker, null, 128, 4);
+  assert(executions === 1 && requests.length === 1, "model/tool exchange did not execute exactly once");
+  const unsettled = async () => {
+    const outcome = await runtime.outcome(admission.task_id);
+    assert(outcome === null || outcome.Indeterminate != null, `malformed receipt claimed a terminal outcome: ${describe(outcome)}`);
+  };
+  assert(first.work?.lease != null, `malformed receipt released its original lease: ${describe(first)}`);
+  await unsettled();
+  runtime.free();
+  runtime = await fixture.open();
+  bind(runtime);
+  const reservation = await runtime.recoverWork(admission.task_id);
+  assert(reservation.kind === "claimed", `original reservation was not recovered: ${describe(reservation)}`);
+  assert(describe(reservation.lease.reservation) === describe(first.work.lease.reservation)
+    && describe(reservation.lease.operation) === describe(first.work.lease.operation), "recovery substituted original admitted work");
+  assert(await runtime.runOperation(worker, admission.task_id, 4) === null, "recovery claimed a replacement attempt");
+  assert(executions === 1 && reconciliations === 0, "reservation recovery dispatched a provider");
+  const second = await runtime.resume(reservation.lease, 4);
+  assert(second.kind !== "completed" && reconciliations === 1 && executions === 1,
+    `malformed reconciliation lost recovery: executions=${executions}, reconciliations=${reconciliations}, result=${describe(second)}`);
+  await unsettled();
+  runtime.free();
+  runtime = await fixture.open();
+  bind(runtime);
+  const recovered = await runtime.resume(first.work.lease, 4);
+  assert(recovered.kind === "completed",
+    `valid reconciliation did not complete: executions=${executions}, reconciliations=${reconciliations}, projections=${projections}, requests=${describe(requests)}, result=${describe(recovered)}`);
+  assert(executions === 1 && reconciliations === 2 && projections === 1 && describe(requests) === "[0,1]", "recovery repeated effect, projection or model dispatch");
+  assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "durable workflow result differs");
+  assert((await runtime.workerTick(worker, null, 128, 4)).work === null, "duplicate wake replayed settled work");
+  result.dataset.status = "passed";
+  result.textContent = "malformed execution/reconciliation receipts retain the exact attempt; valid recovery observes one effect";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  runtime?.free();
+  fixture?.free();
+  localStorage.removeItem(effectKey);
+}
+</script>

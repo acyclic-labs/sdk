@@ -121,6 +121,8 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "indexed_db_futures",
+ "js-sys",
  "libc",
  "napi",
  "napi-derive",
@@ -154,6 +156,9 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
  "windows",
 ]
 
@@ -238,6 +243,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

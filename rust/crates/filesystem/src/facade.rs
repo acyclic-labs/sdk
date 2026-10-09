@@ -45,6 +45,7 @@ use crate::kernel::{
     volume_authority_id,
 };
 #[cfg(test)]
+#[cfg(feature = "memory")]
 use crate::kernel::{
     FileTableMutation, TreeMutation, file_table_mutation,
     merge_directory_record_async as merge_directory_record, merge_file_fields, resolve_three,

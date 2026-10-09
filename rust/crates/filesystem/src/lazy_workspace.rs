@@ -5393,6 +5393,7 @@ fn exactify_batch_key(snapshot_id: LazySnapshotId, root: &str, index: u64) -> Id
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 mod tests {
 
     use super::*;
