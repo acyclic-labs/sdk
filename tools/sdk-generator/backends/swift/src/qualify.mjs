@@ -88,9 +88,10 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   const controls = new Map(["Consumer.swift", "RPCConsumer.swift", ...Object.keys(negatives).map(name => name + ".swift")]
     .map(name => [name, sourceBytes.get("../tests/fixtures/consumer/" + name)]));
   const template = sourceBytes.get("../templates/qualification/Package.swift");
-  put("consumer/Package.swift", template);
-  put("consumer/Sources/Consumer/main.swift", Buffer.concat([controls.get("Consumer.swift"), Buffer.from("\n"), controls.get("RPCConsumer.swift")]));
-  for (const name of Object.keys(negatives)) put("negative/" + name + ".swift", controls.get(name + ".swift"));
+  const stagedControls = new Map([["consumer/Package.swift", template],
+    ["consumer/Sources/Consumer/main.swift", Buffer.concat([controls.get("Consumer.swift"), Buffer.from("\n"), controls.get("RPCConsumer.swift")])],
+    ...Object.keys(negatives).map(name => ["negative/" + name + ".swift", controls.get(name + ".swift")])]);
+  for (const [name, bytes] of stagedControls) put(name, bytes);
   mkdirSync(env.HOME, { recursive: true }); mkdirSync(join(output, "feed"));
   const options = ["--package-path", project, "--scratch-path", scratch, "--cache-path", join(output, "cache"),
     "--config-path", join(output, "config"), "--security-path", join(output, "security")];
@@ -101,6 +102,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     const owner = pin.name.startsWith("swift-") ? "apple" : "grpc";
     run("mirror-" + pin.name, swift, ["package", ...options, "config", "set-mirror", "--original", `https://github.com/${owner}/${pin.name}.git`, "--mirror", pathToFileURL(mirror).href]);
   }
+  stagedControls.set("consumer/.swiftpm/configuration/mirrors.json", readFileSync(join(project, ".swiftpm/configuration/mirrors.json")));
   run("build-positive", swift, ["build", ...options, "--configuration", "release", "--product", "Consumer", "--jobs", "1"]);
   const lockBytes = readFileSync(join(project, "Package.resolved")), lock = JSON.parse(lockBytes);
   if (!Array.isArray(lock.pins) || lock.pins.length !== toolchain.dependencies.length) throw new Error("resolved dependency closure differs");
@@ -125,6 +127,12 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   if (JSON.stringify(tree(installed).files) !== JSON.stringify([...admitted.payload.keys()].sort()) || Object.keys(tree(installed).links).length) throw new Error("installed SDK inventory changed");
   for (const [name, bytes] of admitted.payload) readInput(installed, name, sha256(bytes));
   onProgress("Verify SDK and source inputs after native controls");
+  const consumerSources = tree(project), negativeSources = tree(join(output, "negative"));
+  if (JSON.stringify(consumerSources.files) !== JSON.stringify([".swiftpm/configuration/mirrors.json", "Package.resolved", "Package.swift", "Sources/Consumer/main.swift"]) || Object.keys(consumerSources.links).length
+    || JSON.stringify(negativeSources.files) !== JSON.stringify(Object.keys(negatives).map(name => name + ".swift").sort())
+    || Object.keys(negativeSources.links).length) throw new Error("staged consumer inventory changed");
+  for (const [name, bytes] of stagedControls) if (!readFileSync(join(output, name)).equals(bytes)) throw new Error("staged consumer source changed: " + name);
+  if (!readFileSync(join(project, "Package.resolved")).equals(lockBytes)) throw new Error("consumer dependency lock changed");
   verifyRuntime(inputs["swift-home"], inventoryBytes, toolchain);
   for (const pin of toolchain.dependencies) {
     verifySource(realpathSync(join(inputs.dependencies, pin.name)), pin, git, { cloneInput: true });
@@ -138,6 +146,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     sdk_inventory_sha256: sha256(inventoryBytes), sdk_archive_sha256: toolchain.sdk_archive_sha256,
     swift_version: inventory.swift_version, git_sha256: gitPin.sha256, dependencies: compiled,
     consumer_template_sha256: sha256(template), control_sha256: Object.fromEntries([...controls].map(([name, bytes]) => [name, sha256(bytes)])),
+    staged_control_sha256: Object.fromEntries([...stagedControls].map(([name, bytes]) => [name, sha256(bytes)])),
     qualifier_sha256: sha256(sourceBytes.get("qualify.mjs")),
     package_admission_sha256: sha256(sourceBytes.get("package.mjs")), provenance_reader_sha256: sha256(sourceBytes.get("provenance.mjs")),
     source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),

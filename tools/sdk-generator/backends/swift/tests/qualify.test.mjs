@@ -35,7 +35,7 @@ function installedFixture(t) {
       return { status: 0, stdout: `100644 blob ${blob}\tPackage.swift\0` };
     }
     if (exe === git && argv[0] === "clone") { const destination = argv.at(-1); write(join(destination,"Package.swift"), packageBytes.get(basename(destination))); return { status: 0, stdout: "" }; }
-    if (argv[0] === "package") return { status: 0, stdout: "" };
+    if (argv[0] === "package") { write(join(args.output,"consumer/.swiftpm/configuration/mirrors.json"),"fixture mirrors"); return { status: 0, stdout: "" }; }
     if (argv[0] === "build") {
       write(join(args.output, "consumer/Package.resolved"), JSON.stringify({ pins: dependencyPins.map(pin => ({ identity: pin.name, state: { revision: pin.revision, version: pin.version } })) }));
       for (const pin of dependencyPins) write(join(args.output, "build/checkouts", pin.name, "Package.swift"), packageBytes.get(pin.name));
@@ -98,6 +98,21 @@ test("untracked preparation metadata in clone inputs is excluded from compiled m
   const result = qualify(f.args,f);
   assert.equal(Object.keys(result.dependencies["grpc-swift-2"].files_sha256).length,1);
   assert.equal(existsSync(join(f.args.output,"feed/grpc-swift-2/untracked.swift")),false);
+});
+
+test("mutated or extra staged consumer inputs cannot write qualification success", t => {
+  for (const name of ["consumer/Package.swift", "consumer/Sources/Consumer/main.swift", "negative/InvalidActorBytes.swift",
+    "negative/InvalidWorkerBytes.swift", "negative/InvalidOptionalInteger.swift", "consumer/.swiftpm/configuration/mirrors.json",
+    "consumer/Package.resolved", "consumer/Sources/Consumer/Extra.swift", "consumer/Package@swift-6.4.swift", "negative/Extra.swift"]) {
+    const f = installedFixture(t);
+    const command = (exe, argv, options) => {
+      const result = f.command(exe, argv, options);
+      if (basename(exe) === "Consumer") { const file = join(f.args.output,name); mkdirSync(dirname(file),{recursive:true}); writeFileSync(file,"changed staged source"); }
+      return result;
+    };
+    assert.throws(() => qualify(f.args,{...f,command}), /staged consumer|dependency lock changed/);
+    assert.equal(existsSync(join(f.args.output,"qualification.json")),false);
+  }
 });
 
 test("existing and overlapping output paths remain intact", t => {
