@@ -121,6 +121,18 @@ stream_binding() {
     --output "$directory/bundle" --target-dir "$target_dir-stream-native"
   cp "$target_dir-stream-native/stream-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
 }
+client_bindings() {
+  local target family bundle
+  target="$(rustc --version --verbose | sed -n 's/^host: //p')"
+  for family in actors workers; do
+    bundle="$SDK_TEMP_DIR/client-native/$family"
+    node "scripts/build-$family-native.mjs" build --target "$target" \
+      --output "$bundle" --target-dir "$target_dir-$family-native"
+    node "scripts/build-$family-native.mjs" stage --bundle "$bundle"
+  done
+  # The live TLS fixture invokes this helper inside Bun's short test deadline.
+  cargo build --offline --locked -p acyclic-actors --example conformance-certificate
+}
 # The live native-mount tests are the only ignored acyclic-fs library tests.
 # Selecting them from the all-feature workspace build reuses its test binaries
 # instead of rebuilding acyclic-fs under a narrower feature resolution.
@@ -303,6 +315,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi release
     stream_binding
+    client_bindings
     bun run test
     bun scripts/check-typescript-tarballs.mjs
     # WASM builds are path-independent but not host-independent: panic
@@ -441,6 +454,7 @@ case "$lane" in
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
+    client_bindings
     bun run test
     git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm       typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts       typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts
     bun run check:generated
