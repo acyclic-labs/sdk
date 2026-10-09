@@ -40,6 +40,7 @@ pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
+pub mod mcp;
 #[cfg(any(
     test,
     feature = "filesystem",

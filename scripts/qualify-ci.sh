@@ -430,6 +430,8 @@ case "$lane" in
     bun run --filter '@acyclic-labs/harness' build
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/fs' test:browser
+    CHROME="$(command -v google-chrome || command -v chromium)" \
+      bun run --filter '@acyclic-labs/harness' test:browser:mcp
     ;;
   typescript)
     # Pull requests and main pushes only; full runs cover this in the linux

@@ -358,7 +358,7 @@ mod process_tree;
 #[cfg(windows)]
 mod windows;
 
-pub use process_tree::{ProcessCaptureFailure, ProcessTree};
+pub use process_tree::{ProcessCaptureFailure, ProcessInput, ProcessTree};
 
 /// Whether a native operation may still have an unresolved kernel completion.
 ///

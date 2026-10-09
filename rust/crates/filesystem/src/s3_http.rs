@@ -1409,7 +1409,7 @@ where
         }))
     }
 
-    async fn list_objects_v1(
+    async fn list_objects_v2(
         &self,
         request: S3Request<ListObjectsV2Input>,
     ) -> S3Result<S3Response<ListObjectsV2Output>> {
@@ -3018,7 +3018,7 @@ mod tests {
             );
             S3::put_object(&adapter, request).await?;
         }
-        let first = S3::list_objects_v1(
+        let first = S3::list_objects_v2(
             &adapter,
             request(ListObjectsV2Input {
                 bucket: "bucket".to_owned(),
@@ -3043,7 +3043,7 @@ mod tests {
             HeaderValue::from_static("later-operation"),
         );
         S3::put_object(&adapter, later).await?;
-        let second = S3::list_objects_v1(
+        let second = S3::list_objects_v2(
             &adapter,
             request(ListObjectsV2Input {
                 bucket: "bucket".to_owned(),
