@@ -13,26 +13,32 @@ fn finite(value: u64, field: &str) -> Result<()> {
 }
 
 /// Exact UTF-8 byte interval; offsets refer to the original immutable source.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextRange {
     /// Inclusive byte offset.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub start: u64,
     /// Exclusive byte offset.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub end: u64,
 }
 
 /// Consumer-selected ceilings for an explicit partial read.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadOptions {
     /// Maximum verified source bytes, checked before source I/O by adapters.
     #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_input_bytes: u64,
     /// Maximum selected UTF-8 bytes, independent of the source allowance.
     #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_text_bytes: u64,
 }
 
@@ -45,6 +51,7 @@ impl ReadOptions {
 }
 
 /// One explicit partial read, including the exact omitted source intervals.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextSelection {
@@ -54,9 +61,11 @@ pub struct TextSelection {
     pub text: String,
     /// Bytes excluded before the selection.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub omitted_before: u64,
     /// Bytes excluded after the selection.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub omitted_after: u64,
 }
 
@@ -93,17 +102,21 @@ pub fn read_range(source: &str, range: TextRange, options: ReadOptions) -> Resul
 }
 
 /// Consumer-selected finite literal-search allowances.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchOptions {
     /// Maximum verified source bytes, checked before I/O by adapters.
     #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_input_bytes: u64,
     /// Maximum nonempty literal needle bytes.
     #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_query_bytes: u64,
     /// Maximum individual byte comparisons across all candidates.
     #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_work: u64,
     /// Maximum retained match intervals; remaining matches are counted.
     #[schemars(range(min = 1, max = 4294967294_u32))]
@@ -126,6 +139,7 @@ impl SearchOptions {
 }
 
 /// Complete literal-search accounting with bounded retained match positions.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchMatches {
@@ -133,12 +147,15 @@ pub struct SearchMatches {
     pub matches: Vec<TextRange>,
     /// All matches in the verified source, including omitted intervals.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub total_matches: u64,
     /// Exact count of additional matches excluded from the retained result.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub omitted_matches: u64,
     /// Individual byte comparisons actually performed.
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub work: u64,
 }
 

@@ -117,14 +117,17 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
 }
 
 /// Exact immutable UTF-8 file read arguments.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadFileInput {
     /// Owner-authorized immutable source.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
 }
 
 /// Single-operation UTF-8 publication arguments.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteFileInput {
@@ -139,10 +142,12 @@ pub struct WriteFileInput {
 }
 
 /// Exact replacement against one pinned file generation.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EditFileInput {
     /// Owner-authorized immutable source.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// One exact nonempty unambiguous needle.
     #[schemars(length(min = 1))]
@@ -152,10 +157,12 @@ pub struct EditFileInput {
 }
 
 /// Explicit single-file V4A update arguments.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchFileInput {
     /// Owner-authorized immutable source generation.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// Nonempty exact V4A update diff fragment.
     #[schemars(length(min = 1))]
@@ -163,10 +170,12 @@ pub struct PatchFileInput {
 }
 
 /// Canonical successful write/edit result, independent of model projection.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileResult {
     /// Exact retained publication result with workspace and content identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
 }
 
@@ -319,12 +328,74 @@ impl ToolExecutor for FileTool {
     }
 }
 
-impl ToolProjection for FileTool {
+/// Replaceable projector for the canonical published file result.
+#[derive(Clone, Copy)]
+pub struct FileResultProjection(pub super::schema::ProjectionMode);
+
+impl FileResultProjection {
+    /// Complete generated model envelope contract for this representation.
+    pub fn schema(self) -> Result<Value> {
+        match self.0 {
+            super::schema::ProjectionMode::Full => super::schema::json_projection::<FileResult>(),
+            super::schema::ProjectionMode::Reference => super::schema::reference_projection(),
+        }
+    }
+}
+
+impl ToolProjection for FileResultProjection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        let value: FileResult = decode(result.value.clone())?;
+        match self.0 {
+            super::schema::ProjectionMode::Full => super::schema::project_json(value),
+            super::schema::ProjectionMode::Reference => super::schema::project_reference(value.file,
+                "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.".into()),
+        }
+    }
+}
+
+/// Replaceable projector for the exact reader's unchanged canonical string.
+#[derive(Clone, Copy)]
+pub struct ReadFileProjection(pub super::schema::ProjectionMode);
+
+impl ReadFileProjection {
+    /// Complete generated model envelope contract for this representation.
+    pub fn schema(self) -> Result<Value> {
+        match self.0 {
+            super::schema::ProjectionMode::Full => super::schema::json_projection::<String>(),
+            super::schema::ProjectionMode::Reference => super::schema::reference_projection(),
+        }
+    }
+}
+
+impl ToolProjection for ReadFileProjection {
+    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        let text: String = decode(result.value.clone())?;
+        match self.0 {
+            super::schema::ProjectionMode::Full => super::schema::project_json(text),
+            super::schema::ProjectionMode::Reference => {
+                let input: ReadFileInput = decode(invocation.arguments.clone())?;
+                input.file.descriptor().verify(text.as_bytes())?;
+                super::schema::project_reference(
+                    input.file,
+                    format!(
+                        "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
+                        text.len()
+                    ),
+                )
+            }
+        }
+    }
+}
+
+impl ToolProjection for FileTool {
+    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         match self {
-            Self::Read => super::schema::project_json(decode::<String>(result.value.clone())?),
+            Self::Read => {
+                ReadFileProjection(super::schema::ProjectionMode::Full).project(invocation, result)
+            }
             Self::Write | Self::Edit | Self::Patch { .. } => {
-                super::schema::project_json(decode::<FileResult>(result.value.clone())?)
+                FileResultProjection(super::schema::ProjectionMode::Full)
+                    .project(invocation, result)
             }
         }
     }

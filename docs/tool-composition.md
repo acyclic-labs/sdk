@@ -259,3 +259,30 @@ actual output through `ToolResultContent` and `ModelDataPart`. Compilation,
 execution, generated consumers and actual browser/WASM qualification remain open
 until these source fixtures and public tools run through the shared validation
 lane. The preflight unit fixture is not proof of real task admission or recovery.
+
+### Replacing existing file-result projections
+
+`tool::schema::ProjectionMode` is shared by the file and bounded-text projectors.
+`FileResultProjection` works with the original canonical `FileResult` from write,
+exact edit and patch tools. `ReadFileProjection` works with the original exact
+reader's canonical string and retains its original invocation `FileRef`. Their
+Full mode uses the unchanged JSON serializer; Reference mode uses one shared typed
+parts serializer and an explicit omission summary. Reference selection changes
+neither executor admission nor publication, receipts, canonical results or read
+allowances. Full/reference schemas are generated at the complete envelope root.
+
+A consumer replaces a projector and its schema together through the existing
+public tool components, then admits the resulting definition digest:
+
+```rust,ignore
+use acyclic_harness::tool::{files, schema::ProjectionMode};
+use std::sync::Arc;
+let mut tool = files::write_file()?;
+let projection = files::FileResultProjection(ProjectionMode::Reference);
+tool.definition.projection_schema = projection.schema()?;
+tool.projection = Arc::new(projection);
+tool.definition.validate()?;
+```
+
+This reuses the admitted registry's existing definition/executor/projection seam;
+there is no second result ledger, attachment mechanism or provider policy.

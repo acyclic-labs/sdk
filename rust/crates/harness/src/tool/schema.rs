@@ -2,7 +2,7 @@
 
 use crate::{Error, Result};
 use schemars::{JsonSchema, generate::SchemaSettings};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Generates a complete draft-2020-12 input contract, including root definitions.
@@ -46,9 +46,65 @@ pub(crate) fn project_json<T: Serialize>(value: T) -> Result<Value> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
+/// Explicit model representation, independent of the retained canonical result.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionMode {
+    /// Complete typed value in the existing JSON envelope.
+    Full,
+    /// Summary and original immutable file reference; omitted details stay canonical.
+    Reference,
+}
+
+// Actual serializers shared by file and text-result projectors. These constrain
+// this reference-only producer, not the general native media/model contract.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ReferencePolicy {
+    Reference,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ReferencePart {
+    Text {
+        text: String,
+    },
+    File {
+        file: crate::conversation::FileRef,
+        policy: ReferencePolicy,
+    },
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ReferenceProjection {
+    Parts { parts: [ReferencePart; 2] },
+}
+
+/// Complete schema of the actual reference-only parts serializer.
+pub fn reference_projection() -> Result<Value> {
+    output::<ReferenceProjection>()
+}
+
+pub(crate) fn project_reference(file: crate::conversation::FileRef, text: String) -> Result<Value> {
+    serde_json::to_value(ReferenceProjection::Parts {
+        parts: [
+            ReferencePart::Text { text },
+            ReferencePart::File {
+                file,
+                policy: ReferencePolicy::Reference,
+            },
+        ],
+    })
+    .map_err(|error| Error::Invalid(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::{ToolInvocation, ToolProjection, ToolResult};
     use crate::{
         AgentId,
         conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
@@ -72,6 +128,85 @@ mod tests {
             FileDescriptor::from_bytes(b"exact", "text/plain")?,
             "file.txt",
         )
+    }
+
+    #[test]
+    fn existing_file_results_support_reference_projection_without_changing_canonical_values()
+    -> Result<()> {
+        use crate::model::{FileProjectionPolicy, ModelDataPart, ToolResultContent};
+        use crate::tool::files::{FileResultProjection, ReadFileProjection};
+        let file = file()?;
+        let invocation = ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "file-projection".into(),
+            name: "acyclic.read_file".into(),
+            arguments: json!({"file":file}),
+        };
+        let published = ToolResult {
+            value: json!(FileResult { file: file.clone() }),
+        };
+        let read = ToolResult {
+            value: json!("exact"),
+        };
+        for (canonical, projection, schema) in [
+            (
+                &published,
+                FileResultProjection(ProjectionMode::Reference).project(&invocation, &published)?,
+                FileResultProjection(ProjectionMode::Reference).schema()?,
+            ),
+            (
+                &read,
+                ReadFileProjection(ProjectionMode::Reference).project(&invocation, &read)?,
+                ReadFileProjection(ProjectionMode::Reference).schema()?,
+            ),
+        ] {
+            let unchanged = canonical.clone();
+            crate::tool::validate_value(&schema, &projection, "file reference projection")?;
+            let wire: ToolResultContent = serde_json::from_value(projection.clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let ToolResultContent::Parts { parts } = wire else {
+                panic!("reference parts")
+            };
+            assert!(
+                matches!(parts.get(1),Some(ModelDataPart::File { file:actual,policy:FileProjectionPolicy::Reference }) if actual==&file)
+            );
+            assert!(
+                matches!(parts.first(),Some(ModelDataPart::Text { text }) if text.contains("omitted"))
+            );
+            let mut changed = projection;
+            changed["parts"][1]["policy"] = json!("bounded_full");
+            assert!(crate::tool::validate_value(&schema, &changed, "unselected policy").is_err());
+            assert_eq!(canonical, &unchanged);
+        }
+        assert_eq!(
+            FileResultProjection(ProjectionMode::Full).project(&invocation, &published)?,
+            json!({"kind":"json","value":published.value})
+        );
+        assert_eq!(
+            ReadFileProjection(ProjectionMode::Full).project(&invocation, &read)?,
+            json!({"kind":"json","value":read.value})
+        );
+        assert!(
+            ReadFileProjection(ProjectionMode::Reference)
+                .project(
+                    &invocation,
+                    &ToolResult {
+                        value: json!("changed")
+                    }
+                )
+                .is_err()
+        );
+        let mut tool = files::write_file()?;
+        let original_digest = tool.definition.digest()?;
+        let projector = FileResultProjection(ProjectionMode::Reference);
+        tool.definition.projection_schema = projector.schema()?;
+        tool.projection = std::sync::Arc::new(projector);
+        assert_ne!(tool.definition.digest()?, original_digest);
+        assert_eq!(
+            tool.projection.project(&invocation, &published)?,
+            FileResultProjection(ProjectionMode::Reference).project(&invocation, &published)?
+        );
+        Ok(())
     }
 
     #[test]

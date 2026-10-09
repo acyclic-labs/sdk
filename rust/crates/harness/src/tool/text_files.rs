@@ -1,5 +1,6 @@
 //! Explicit bounded text tools using the original task's authenticated reader.
 
+use super::schema::ProjectionMode;
 use super::text::{ReadOptions, SearchMatches, SearchOptions, TextRange, TextSelection};
 use super::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
 use crate::{
@@ -13,31 +14,25 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// Explicit model projection; canonical executor results are identical in both modes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectionMode {
-    /// Complete typed canonical value in the existing JSON envelope.
-    Full,
-    /// Original source reference and explicit summary of omitted result details.
-    Reference,
-}
-
 /// Exact immutable source and byte interval supplied by the caller.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadInput {
     /// Owner-authorized immutable source.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// Exact UTF-8 byte interval; no implicit rounding or truncation.
     pub range: TextRange,
 }
 
 /// Literal search arguments; there is no implicit regex, directory or shell search.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInput {
     /// Owner-authorized immutable source.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// Nonempty case-sensitive UTF-8 literal, including overlapping matches.
     #[schemars(length(min = 1))]
@@ -45,20 +40,24 @@ pub struct SearchInput {
 }
 
 /// Durable read result retaining exact source identity and explicit omissions.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadResult {
     /// Original reference, including provider, volume, generation and content identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// Exact selected bytes and omitted source intervals.
     pub selection: TextSelection,
 }
 
 /// Durable literal-search result, independent of its model projection.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchResult {
     /// Original reference, including provider, volume, generation and content identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
     /// Exact literal searched in that source.
     pub query: String,
@@ -74,45 +73,6 @@ pub struct ReadProjection(pub ProjectionMode);
 #[derive(Clone, Copy)]
 pub struct SearchProjection(pub ProjectionMode);
 
-// These are the actual reference-only serializers. Their wire compatibility
-// with ModelDataPart/ToolResultContent is checked below, without claiming native
-// media support or making the general model wire schema narrower.
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum ReferencePolicy {
-    Reference,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ReferencePart {
-    Text {
-        text: String,
-    },
-    File {
-        file: FileRef,
-        policy: ReferencePolicy,
-    },
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ReferenceProjection {
-    Parts { parts: [ReferencePart; 2] },
-}
-
-fn reference(file: FileRef, text: String) -> Result<Value> {
-    encode(ReferenceProjection::Parts {
-        parts: [
-            ReferencePart::Text { text },
-            ReferencePart::File {
-                file,
-                policy: ReferencePolicy::Reference,
-            },
-        ],
-    })
-}
-
 fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -126,7 +86,7 @@ impl ReadProjection {
     pub fn schema(self) -> Result<Value> {
         match self.0 {
             ProjectionMode::Full => super::schema::json_projection::<ReadResult>(),
-            ProjectionMode::Reference => super::schema::output::<ReferenceProjection>(),
+            ProjectionMode::Reference => super::schema::reference_projection(),
         }
     }
 }
@@ -136,7 +96,7 @@ impl ToolProjection for ReadProjection {
         let value: ReadResult = decode(result.value.clone())?;
         match self.0 {
             ProjectionMode::Full => super::schema::project_json(value),
-            ProjectionMode::Reference => reference(
+            ProjectionMode::Reference => super::schema::project_reference(
                 value.file,
                 format!(
                     "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
@@ -155,7 +115,7 @@ impl SearchProjection {
     pub fn schema(self) -> Result<Value> {
         match self.0 {
             ProjectionMode::Full => super::schema::json_projection::<SearchResult>(),
-            ProjectionMode::Reference => super::schema::output::<ReferenceProjection>(),
+            ProjectionMode::Reference => super::schema::reference_projection(),
         }
     }
 }
@@ -165,7 +125,7 @@ impl ToolProjection for SearchProjection {
         let value: SearchResult = decode(result.value.clone())?;
         match self.0 {
             ProjectionMode::Full => super::schema::project_json(value),
-            ProjectionMode::Reference => reference(
+            ProjectionMode::Reference => super::schema::project_reference(
                 value.file,
                 format!(
                     "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",

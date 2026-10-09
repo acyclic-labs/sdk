@@ -16,8 +16,9 @@ use acyclic_harness::{
     runtime::{Bindings, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext},
     tool::{
         ToolInvocation, ToolRegistry, ToolResult,
+        schema::ProjectionMode,
         text::{ReadOptions, SearchOptions, TextRange},
-        text_files::{self, ProjectionMode, ReadInput, ReadResult, SearchInput, SearchResult},
+        text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
     },
 };
 use acyclic_stream::BoxProviderFuture;
