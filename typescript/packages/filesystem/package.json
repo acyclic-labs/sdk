@@ -56,7 +56,7 @@
     "pack:dry": "bun run build:clean && bun pm pack --dry-run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
+    "@bufbuild/protobuf": "2.16.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-web": "2.1.1"
   },

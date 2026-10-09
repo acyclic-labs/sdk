@@ -20,7 +20,7 @@
       "name": "@acyclic-labs/actors",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
       },
       "devDependencies": {
         "@connectrpc/connect": "2.1.1",
@@ -38,7 +38,7 @@
       "name": "@acyclic-labs/fs",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
         "@connectrpc/connect": "2.1.1",
         "@connectrpc/connect-web": "2.1.1",
       },
@@ -51,7 +51,7 @@
       "name": "@acyclic-labs/harness",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.2",
@@ -71,7 +71,7 @@
       "name": "@acyclic-labs/inference",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.2",
@@ -83,7 +83,7 @@
       "name": "@acyclic-labs/machines",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
       },
       "devDependencies": {
         "@types/node": "26.4.1",
@@ -94,7 +94,7 @@
       "name": "@acyclic-labs/objects",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
         "@connectrpc/connect": "2.1.1",
         "@connectrpc/connect-node": "2.1.1",
       },
@@ -129,7 +129,7 @@
         "@acyclic-labs/workers": "0.2.0",
       },
       "devDependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
         "typescript": "7.0.2",
       },
     },
@@ -137,7 +137,7 @@
       "name": "@acyclic-labs/stream",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
         "@connectrpc/connect": "2.1.1",
         "@connectrpc/connect-node": "2.1.1",
       },
@@ -150,7 +150,7 @@
       "name": "@acyclic-labs/workers",
       "version": "0.2.0",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "2.16.0",
       },
       "devDependencies": {
         "@types/node": "26.4.1",
@@ -198,7 +198,7 @@
 
     "@bufbuild/buf-win32-x64": ["@bufbuild/buf-win32-x64@1.73.0", "", { "os": "win32", "cpu": "x64" }, "sha512-/Buo10rXzqNLnFDh3BpzGdcrx6OalcU8o8gUyObCFZA5wKcUvBVNDhhpMmoB6YeiOPpPn47jHgW4bSSlypaaOQ=="],
 
-    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.15.0", "", {}, "sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA=="],
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.16.0", "", {}, "sha512-FWa0sPlqYGJgpTs6OxBRcL/AW4JT0OIO+W1ajerluoTVh8CV0B7XM1qsNCRgnkSCkRCgOICKHRQlY17jrsm0+Q=="],
 
     "@bufbuild/protoc-gen-es": ["@bufbuild/protoc-gen-es@2.15.0", "", { "dependencies": { "@bufbuild/protobuf": "2.15.0", "@bufbuild/protoplugin": "2.15.0" }, "bin": { "protoc-gen-es": "bin/protoc-gen-es" } }, "sha512-FRhNTAZEXW6arWx2JxgtpuazhmewYctXugu5SfXGpXpLLCInDT1005fSKDzEM/70Es2oIn07PM4RvpwvDvR/fg=="],
 
@@ -497,6 +497,10 @@
     "universal-user-agent": ["universal-user-agent@7.0.3", "", {}, "sha512-TmnEAEAsBJVZM/AADELsK76llnwcf9vMKuPz8JflO1frO8Lchitr0fNaN9d+Ap0BjKtqWqd/J17qeDnXh8CL2A=="],
 
     "@acyclic-labs/fs/@types/node": ["@types/node@26.6.2", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-X1P21scMv4zGKLYqjdGjaKa7COa0RKVYYZZN/NfvLQ1JegxFhdhpZG/Lyn8AXx6CDUavKAd11v6BvfpkDByK8g=="],
+
+    "@bufbuild/protoc-gen-es/@bufbuild/protobuf": ["@bufbuild/protobuf@2.15.0", "", {}, "sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA=="],
+
+    "@bufbuild/protoplugin/@bufbuild/protobuf": ["@bufbuild/protobuf@2.15.0", "", {}, "sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA=="],
 
     "@bufbuild/protoplugin/typescript": ["typescript@5.4.5", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-vcI4UpRgg81oIRUFwR0WSIHKt11nJ7SAVlYNIu+QpqeyXP+gpQJy/Z4+F0aGxSE4MqwjyXvW/TzgkLAx2AGHwQ=="],
 
