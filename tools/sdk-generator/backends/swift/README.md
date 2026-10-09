@@ -69,6 +69,18 @@ The SDK inventory is an external artifact verified by its maintained checksum.
 Qualification output must be absent, with an existing parent. A failed native
 operation retains logs and partial output and does not emit a success receipt.
 
+Reproduce that inventory directly from a prepared SDK extraction:
+
+```sh
+node tools/sdk-generator/backends/swift/src/inventory-sdk.mjs \
+  --swift-home /absolute/path/to/swift-6.4 \
+  --output /absolute/path/to/new-sdk-inventory.json
+```
+
+This command hashes the complete file and link inventory and writes its canonical
+JSON only when the result matches the maintained admission pin. It preserves
+existing output and rejects changed, missing or additional SDK files.
+
 `toolchains/build-generators.sh` accepts absolute paths in `SWIFT_HOME`,
 `PROTOBUF_SOURCE`, `GRPC_PROTOBUF_SOURCE`, `GRPC_SOURCE`, `COLLECTIONS_SOURCE`
 and `BUILD_ROOT`. It verifies clean source revisions, configures package-local
