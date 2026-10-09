@@ -1,0 +1,83 @@
+{
+  "grpc_ruby_version": "1.84.0",
+  "grpc_ruby_archive": {
+    "url": "https://rubygems.org/downloads/grpc-tools-1.84.0.gem",
+    "sha256": "f54767ec65e22553768d38a20d021ca2241c33ae2e96d51336152bbcc62578a8"
+  },
+  "grpc_ruby": {
+    "win32-x64": {
+      "path": "bin/x86_64-windows/grpc_ruby_plugin.exe",
+      "sha256": "93283836b61d6c06e95ce9ae11224522714544986be8571e4b85d99d1e1bae4b",
+      "url": "https://rubygems.org/downloads/grpc-tools-1.84.0.gem"
+    },
+    "win32-ia32": {
+      "path": "bin/x86-windows/grpc_ruby_plugin.exe",
+      "sha256": "5ae7e1613cba3d789c6ef6f81e99b55c74132db96db0130d3b1f3cd496f67b1e",
+      "url": "https://rubygems.org/downloads/grpc-tools-1.84.0.gem"
+    },
+    "linux-x64": {
+      "path": "bin/x86_64-linux/grpc_ruby_plugin",
+      "sha256": "dfebb612e662fd1fe1c71553bd169e068d447c1345fa044fed34ee392d261e43",
+      "url": "https://rubygems.org/downloads/grpc-tools-1.84.0.gem"
+    },
+    "linux-ia32": {
+      "path": "bin/x86-linux/grpc_ruby_plugin",
+      "sha256": "e74764eaef9b1031d4913216a4bbbc35f9882eb567862e1309bcb7bb8fe0275c",
+      "url": "https://rubygems.org/downloads/grpc-tools-1.84.0.gem"
+    },
+    "darwin-x64": {
+      "path": "bin/x86_64-macos/grpc_ruby_plugin",
+      "sha256": "7f8dfb965f069b356e3c9dce4581c04dc9106b4b3564f1507815bf67f6bde6c9",
+      "url": "https://rubygems.org/downloads/grpc-tools-1.84.0.gem"
+    }
+  },
+  "qualification": {
+    "ruby_version": "3.4.11",
+    "ruby_platform": "x64-mingw-ucrt",
+    "ruby_api_version": "3.4.0",
+    "source_date_epoch": "1767225600",
+    "runtime_source": {
+      "url": "https://github.com/oneclick/rubyinstaller2/releases/download/RubyInstaller-3.4.11-1/rubyinstaller-3.4.11-1-x64.7z",
+      "sha256": "a9aca84326a90422c0905bcb47be629b687a881dcad96149604c2cb074d03154"
+    },
+    "runtime_files": {
+      "bin/ruby.exe": "2a59449091e01551835ef6d3a0e45498bc977f094fc0475ff288131cb90f058b",
+      "bin/x64-ucrt-ruby340.dll": "da3e7693ad20b545e75a26455350c373dce389fb60c99a2120686b5f50a27eec",
+      "bin/gem": "d0fdb694a5d45a39e0d19c61ef8f1557003d410958e9579f832034eaf0371fae",
+      "lib/ruby/3.4.0/rubygems.rb": "d028c2bd8ed3189183974b8ab6c9aca3f3e3ec0a9c179fb682d7f30fd4ebc27a",
+      "lib/ruby/3.4.0/rubygems/package.rb": "712310184686c9a2bb692a86f544fd7e2f0fbe911eabdbe34e35fe39ee9b4686",
+      "lib/ruby/gems/3.4.0/specifications/bigdecimal-3.1.8.gemspec": "480348be51650896d90c2ec4514cef2be83b2d1b416b1a3a1d40c59c31b4aa64",
+      "lib/ruby/gems/3.4.0/extensions/x64-mingw-ucrt/3.4.0/bigdecimal-3.1.8/bigdecimal.so": "34ac170ca7ce3d1af26bda64ec1758e28229811e8b2eedf15c350e6945094b0e"
+    },
+    "dependencies": [
+      {
+        "name": "grpc",
+        "version": "1.84.0",
+        "platform": "x64-mingw-ucrt",
+        "url": "https://rubygems.org/downloads/grpc-1.84.0-x64-mingw-ucrt.gem",
+        "sha256": "c841c3850404b97fd6c39951eb29aafd376b2e464178f6b5337e97f75f89e8ff"
+      },
+      {
+        "name": "google-protobuf",
+        "version": "4.36.2",
+        "platform": "x64-mingw-ucrt",
+        "url": "https://rubygems.org/downloads/google-protobuf-4.36.2-x64-mingw-ucrt.gem",
+        "sha256": "02b55d56c1c56a58a5e1cc3a7dda87e97343574ea5aa4f0e503379ba2647bbd1"
+      },
+      {
+        "name": "googleapis-common-protos-types",
+        "version": "1.23.0",
+        "platform": "ruby",
+        "url": "https://rubygems.org/downloads/googleapis-common-protos-types-1.23.0.gem",
+        "sha256": "992e740a523794d9fc5f29a504465d8fc737aaa16c930fe7228e3346860faf0a"
+      },
+      {
+        "name": "rake",
+        "version": "13.4.2",
+        "platform": "ruby",
+        "url": "https://rubygems.org/downloads/rake-13.4.2.gem",
+        "sha256": "cb825b2bd5f1f8e91ca37bddb4b9aaf345551b4731da62949be002fa89283701"
+      }
+    ]
+  }
+}

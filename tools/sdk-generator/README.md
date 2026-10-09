@@ -11,6 +11,7 @@ tools/sdk-generator/
     go/                 Go producer, module and focused tests
     java/               Java producer and Java/Kotlin/Scala consumer qualification
     dotnet/             C# producer, pinned package and installed controls
+    ruby/               Ruby producer, pinned gem and installed controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -18,7 +19,7 @@ Add a backend directory when it contains executable tooling; keep generated SDK
 source and package artifacts in their language package or requested output path.
 Do not check tool downloads, caches or generation output into this directory.
 
-Java and .NET use the same layout within each backend:
+Java, .NET and Ruby use the same layout within each backend:
 
 ```text
 <backend>/

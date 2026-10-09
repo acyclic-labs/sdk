@@ -31,6 +31,7 @@ const languageGenerator = path =>
   path.startsWith("tools/sdk-generator/backends/go/") ||
   path.startsWith("tools/sdk-generator/backends/java/") ||
   path.startsWith("tools/sdk-generator/backends/dotnet/") ||
+  path.startsWith("tools/sdk-generator/backends/ruby/") ||
   path.startsWith("tools/sdk-generator/shared/") ||
   path === "tools/sdk-generator/README.md";
 

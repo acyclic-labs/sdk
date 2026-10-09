@@ -41,7 +41,7 @@ jobs:
             ? execFileSync('git', ['diff', '--name-only', '-z', 'HEAD^', 'HEAD'], { encoding: 'utf8' }).split('\0')
             : ['.github/workflows/sdk-generator.yml'];
           const workflow = changed.includes('.github/workflows/sdk-generator.yml');
-          for (const backend of ['go', 'java', 'dotnet']) {
+          for (const backend of ['go', 'java', 'dotnet', 'ruby']) {
             const affected = workflow || changed.some(path =>
               (path.startsWith(`tools/sdk-generator/backends/${backend}/`)
                 && path !== `tools/sdk-generator/backends/${backend}/README.md`)
@@ -70,3 +70,6 @@ jobs:
       - name: Check .NET staging
         if: steps.scope.outputs.dotnet == 'true'
         run: node --test --test-concurrency=1 tools/sdk-generator/backends/dotnet/tests/*.test.mjs
+      - name: Check Ruby staging
+        if: steps.scope.outputs.ruby == 'true'
+        run: node --test --test-concurrency=1 tools/sdk-generator/backends/ruby/tests/*.test.mjs
