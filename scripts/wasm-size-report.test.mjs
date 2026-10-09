@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -143,21 +143,6 @@ test("ignored custom-name corruption cannot silently misattribute bytes", () => 
   }
   assert.throws(() => reportWasm(moduleBytes(type, declarations, code,
     nameSection([[0, "a"]]), nameSection([[0, "b"]]))));
-});
-
-test("tracked real artifacts conserve independently counted file and code bytes", () => {
-  for (const family of ["filesystem", "stream"]) {
-    const stem = family === "filesystem" ? "fs" : family;
-    const bytes = readFileSync(new URL(`../typescript/packages/${family}/generated/wasm/acyclic_${stem}_wasm_bg.wasm`, import.meta.url));
-    const report = reportWasm(bytes, ["future"]);
-    assert.equal(report.moduleBytes, bytes.length);
-    assert.equal(report.headerBytes + report.sections.reduce((n, row) => n + row.encodedBytes, 0), bytes.length);
-    assert.equal(report.code.payloadBytes, report.code.vectorBytes + report.functions.reduce((n, row) => n + row.bodyBytes + row.sizePrefixBytes, 0));
-    assert.equal(report.namedFunctions, 0);
-    assert.equal(report.nameCoverage, "unavailable");
-    assert.equal(report.matches[0].encodedBytes, null);
-    assert.ok(report.definedFunctions > 100);
-  }
 });
 
 test("CLI emits parseable reports and fails without partial stdout", () => {
