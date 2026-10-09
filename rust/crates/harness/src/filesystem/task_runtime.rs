@@ -1164,7 +1164,8 @@ where
         let executor = StockExecutor::new(model, provider, context, self.tools.clone())
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
-            .with_durable_task(self.host.clone(), task, fence);
+            .with_durable_task(self.host.clone(), task, fence)
+            .with_task_context(task_context, operation_id)?;
         Ok(FilesystemTaskExecution {
             operation_id,
             executor,

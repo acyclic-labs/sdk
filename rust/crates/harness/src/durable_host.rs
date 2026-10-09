@@ -547,6 +547,47 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await
     }
 
+    /// Recovers the coordinator's original reservation after a lost pull response.
+    /// This performs no claim, release, or publication. The returned reference is
+    /// not execution authority: start/resume must still verify its exact fence.
+    /// A retained cancelled or nonexecutable reservation remains unresolved.
+    pub async fn recover_work(&self, task: TaskId) -> Result<crate::distributed::WorkPull> {
+        use crate::distributed::{WorkLease, WorkPull};
+        use crate::scheduler::OperationPhase;
+
+        let operation_id = OperationId::from_bytes(task.into_bytes());
+        self.admission(operation_id).await?;
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+        )?;
+        let Some(reservation) = operation.reservation else {
+            return Ok(WorkPull::Idle);
+        };
+        let lease = WorkLease {
+            operation: operation.spec,
+            reservation,
+            checkpoint: operation.checkpoint,
+            operation_revision: operation.revision,
+        };
+        if operation.cancellation_requested
+            || !matches!(
+                operation.phase,
+                OperationPhase::Admitted | OperationPhase::Running | OperationPhase::Reconciling
+            )
+        {
+            return Ok(WorkPull::Unresolved {
+                lease,
+                error: Error::Conflict("retained task reservation requires reconciliation".into()),
+            });
+        }
+        Ok(WorkPull::Claimed(lease))
+    }
+
     /// Durably retains one timer identity without holding a waiting future.
     /// The existing owner-authenticated workflow wake supplies later admission.
     #[cfg(feature = "filesystem")]
@@ -2938,6 +2979,111 @@ mod tests {
             payloads,
             runtime_scope,
         })
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn recovery_after_pull_response_loss_keeps_original_reservation_without_writes()
+    -> Result<()> {
+        use crate::distributed::{WorkLease, WorkPull, Worker};
+        use std::sync::atomic::Ordering;
+
+        for mode in 0..3 {
+            let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+            let stream = StreamClient::new(provider.clone());
+            let fixture = effect_task_fixture(stream.clone(), "test.recovery", Vec::new()).await?;
+            let host = fixture.host;
+            let (task, _) = fixture.binding.task_binding();
+            let WorkPull::Claimed(previous) = host.recover_work(task).await? else {
+                return Err(Error::NotFound("original running reservation".into()));
+            };
+            host.coordinator
+                .lock()
+                .await
+                .release_lease(&previous, IdempotencyKey::new("recover-fixture-release")?)
+                .await?;
+            if mode == 1 {
+                provider.lose_ack.store(true, Ordering::SeqCst);
+                provider.hide_receipt.store(true, Ordering::SeqCst);
+            } else if mode == 2 {
+                provider.location_fault.store(4, Ordering::SeqCst);
+            }
+            let response = host
+                .pull_operation(
+                    &Worker {
+                        id: "reopened-worker".into(),
+                        available: Default::default(),
+                        labels: BTreeMap::new(),
+                    },
+                    OperationId::from_bytes(task.into_bytes()),
+                )
+                .await?;
+            let expected = match response {
+                WorkPull::Claimed(lease) if mode == 0 => lease,
+                WorkPull::Unresolved { lease, .. } if mode != 0 => lease,
+                _ => return Err(Error::Conflict("pull fault did not execute".into())),
+            };
+            // No route or client lease is retained. Rebuild the actual controller
+            // from its original providers, scope and registered implementations.
+            let reopened = Arc::new(CoordinatorTaskHost::new(
+                DistributedCoordinator::open(&stream, fixture.payloads.clone()).await?,
+                stream.clone(),
+                host.payloads.clone(),
+                host.reader.clone(),
+                host.owner.clone(),
+                host.owner_scope.clone(),
+                host.verifier.clone(),
+                host.root_scope.clone(),
+                host.tasks.clone(),
+                host.machines.clone(),
+                host.clock.clone(),
+            )?);
+            drop(fixture.binding);
+            drop(host);
+            let journal = stream.stream("harness/v2/coordinator/events")?;
+            let tail = journal.tail().await?;
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let recovered = reopened.recover_work(task).await?;
+            assert_eq!(journal.tail().await?, tail);
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            assert!(
+                reopened
+                    .recover_work(TaskId::from_bytes([201; 16]))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+            if mode == 2 {
+                assert!(matches!(recovered, WorkPull::Idle));
+                continue;
+            }
+            let WorkPull::Claimed(recovered) = recovered else {
+                return Err(Error::NotFound("committed original reservation".into()));
+            };
+            assert_eq!(recovered, expected);
+            assert_ne!(recovered.reservation, previous.reservation);
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+            reopened.start_task(&recovered).await?;
+            assert!(reopened.start_task(&previous).await.is_err());
+            reopened.cancel(task).await?;
+            let tail = journal.tail().await?;
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            let WorkPull::Unresolved { lease, .. } = reopened.recover_work(task).await? else {
+                return Err(Error::Conflict(
+                    "cancelled reservation was made ready".into(),
+                ));
+            };
+            let WorkLease {
+                reservation,
+                operation,
+                ..
+            } = lease;
+            assert_eq!(reservation, recovered.reservation);
+            assert_eq!(operation, recovered.operation);
+            assert_eq!(journal.tail().await?, tail);
+            assert!(reopened.start_task(&recovered).await.is_err());
+        }
+        Ok(())
     }
 
     #[cfg(feature = "filesystem")]
