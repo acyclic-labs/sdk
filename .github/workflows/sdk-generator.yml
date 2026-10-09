@@ -5,6 +5,7 @@ on:
     paths:
       - 'tools/sdk-generator/**'
       - '.github/workflows/sdk-generator.yml'
+      - 'scripts/archive-utils.mjs'
   workflow_dispatch:
 
 permissions:
@@ -39,3 +40,4 @@ jobs:
           set -euo pipefail
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
+          node --test qualify.test.mjs

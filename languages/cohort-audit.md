@@ -101,9 +101,20 @@ and receipt hashes. A real protoc 28.3 control rejects an unlisted import and
 accepts it once attested. All twelve focused tests pass outside the Windows
 sandbox, including the two symlink controls; no generator correctness or SDK
 runtime claim follows from the test double.
-This evidence covers staging only; plugin generation, installed packages and
-the accepted Rust binding interface still need qualification. Local execution
-is now authorized; the earlier host-grant hold has been superseded.
+Real maintained protoc 28.3, protoc-gen-go v1.36.10 and protoc-gen-go-grpc 1.5.1
+also generate Actors, Workers and Stream bindings from immutable foundation
+source `51f3fe070c7b48ff5c7413671638634086aabe75`. Two runs produce identical
+eleven-file payloads and deterministic ZIPs with SHA-256
+`3a829f15bb7d1b813faf3d0a0b4f31f13a8869557b48a79ac4963e041aaee45c`.
+An archive-installed Go 1.27.2 consumer matches all three Rust API descriptors
+(excluding source comments and Buf image metadata tag 8042), passes wire
+round trips including optional zero and integer bounds, and rejects three
+invalid byte/optional-integer assignments. The reusable backend qualifier
+records the exact tools, controls and logs. This qualifies those installed
+transport bindings; Rust-backed RPC and embedded runtime remain unqualified.
+Other family generation, installed packages, Rust-backed RPC and the accepted
+embedded binding interface still need qualification. Local execution is
+authorized; the earlier host-grant hold has been superseded.
 
 The historical JVM consumer
 `jvm/src/test/java/dev/acyclic/transport/RpcScenarioEvidenceTest.java`, read with
