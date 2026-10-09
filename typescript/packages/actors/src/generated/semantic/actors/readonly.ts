@@ -18,6 +18,7 @@ export type CreateActorRequest = ReadonlySemantic<Semantic.CreateActorRequest>;
 export type CreateActorResponse = ReadonlySemantic<Semantic.CreateActorResponse>;
 export type CurrentHeadMarker = ReadonlySemantic<Semantic.CurrentHeadMarker>;
 export type ErrorCode = ReadonlySemantic<Semantic.ErrorCode>;
+export type Header = ReadonlySemantic<Semantic.Header>;
 export type InspectActorRequest = ReadonlySemantic<Semantic.InspectActorRequest>;
 export type InspectActorResponse = ReadonlySemantic<Semantic.InspectActorResponse>;
 export type InvokeActorRequest = ReadonlySemantic<Semantic.InvokeActorRequest>;

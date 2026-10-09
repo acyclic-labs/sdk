@@ -44,7 +44,9 @@ export type ReadonlyBytes<T extends Uint8Array = Uint8Array> = ReadonlyByteSurfa
 };
 
 /** Recursively project Rust semantic records and collections to readonly data. */
-export type ReadonlySemantic<T> = T extends Uint8Array
+export type ReadonlySemantic<T> = T extends string | number | bigint | boolean | symbol | null | undefined
+  ? T
+  : T extends Uint8Array
   ? ReadonlyBytes<T>
   : T extends (...args: never[]) => unknown
     ? T
@@ -55,7 +57,9 @@ export type ReadonlySemantic<T> = T extends Uint8Array
         : T;
 
 /** Inputs may be supplied by existing Uint8Array callers; the output view remains readonly. */
-export type ReadonlyInputSemantic<T> = T extends Uint8Array
+export type ReadonlyInputSemantic<T> = T extends string | number | bigint | boolean | symbol | null | undefined
+  ? T
+  : T extends Uint8Array
   ? ReadonlyBytes<T> | Uint8Array
   : T extends (...args: never[]) => unknown
     ? T

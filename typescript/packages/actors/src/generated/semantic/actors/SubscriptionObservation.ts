@@ -4,4 +4,4 @@ import type { SubscriptionState } from "./SubscriptionState.js";
 /**
  * Lossless semantic view of a subscription observation.
  */
-export type SubscriptionObservation = { subscriptionId: string, streamPath: string, state: SubscriptionState, deliveredCursor: bigint, completedCursor: bigint, recoverableCursor: bigint, placementAnchor: boolean, retryCount: number, failureCode: string, failedCursor: bigint | undefined, };
+export type SubscriptionObservation = { subscriptionId: string, streamPath: string, state: SubscriptionState, deliveredCursor: bigint, completedCursor: bigint, recoverableCursor: bigint, placementAnchor: boolean, retryCount: number, failureCode: string, failedCursor?: bigint, };

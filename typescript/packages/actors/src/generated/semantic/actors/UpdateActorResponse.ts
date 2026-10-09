@@ -4,4 +4,4 @@ import type { ActorObservation } from "./ActorObservation.js";
 /**
  *Typed response preserving the optional server Actor observation.
  */
-export type UpdateActorResponse = { actor: ActorObservation | null, };
+export type UpdateActorResponse = { actor?: ActorObservation, };

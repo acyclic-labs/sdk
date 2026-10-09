@@ -1,6 +1,6 @@
 import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
@@ -158,6 +158,10 @@ try {
   for (const family of ["actors", "workers"]) if (readFileSync(join(root, `typescript/packages/${family}/src/generated/readonly.ts`), "utf8") !== readonly.stdout) throw new Error(`${family} readonly projection drift`);
   const readonlyTypes = join(temporary, "readonly-types");
   mkdirSync(readonlyTypes);
+  // Bun's isolated install keeps protobuf in the consuming package's
+  // node_modules. Resolve the fixture against those maintained dependencies.
+  mkdirSync(join(readonlyTypes, "node_modules/@bufbuild"), { recursive: true });
+  symlinkSync(realpathSync(join(root, "typescript/packages/actors/node_modules/@bufbuild/protobuf")), join(readonlyTypes, "node_modules/@bufbuild/protobuf"), process.platform === "win32" ? "junction" : "dir");
   writeFileSync(join(readonlyTypes, "readonly.ts"), readonly.stdout);
   writeFileSync(join(readonlyTypes, "consumer.ts"), readFileSync(join(root, "rust/crates/proto-codegen/tests/readonly-consumer.ts")));
   const readonlyConsumer = spawnSync(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--ignoreConfig", "--noEmit", "--strict", "--target", "ES2023", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--pretty", "false", join(readonlyTypes, "consumer.ts")], { cwd: root, encoding: "utf8" });

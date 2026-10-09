@@ -7,4 +7,4 @@ import type { SubscriptionObservation } from "./SubscriptionObservation.js";
 /**
  * Lossless semantic view of a server Actor observation.
  */
-export type ActorObservation = { actorId: ActorId, codeSha256: CodeSha256, homeRegion: string, state: ActorState, subscriptions: Array<SubscriptionObservation>, checkpointUnixMillis: bigint | undefined, checkpointEpoch: bigint, configurationRevision: bigint, };
+export type ActorObservation = { actorId: ActorId, codeSha256: CodeSha256, homeRegion: string, state: ActorState, subscriptions: Array<SubscriptionObservation>, checkpointUnixMillis?: bigint, checkpointEpoch: bigint, configurationRevision: bigint, };

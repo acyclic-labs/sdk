@@ -13,6 +13,7 @@ export * from "./CreateActorRequest.js";
 export * from "./CreateActorResponse.js";
 export * from "./CurrentHeadMarker.js";
 export * from "./ErrorCode.js";
+export * from "./Header.js";
 export * from "./InspectActorRequest.js";
 export * from "./InspectActorResponse.js";
 export * from "./InvokeActorRequest.js";
