@@ -660,6 +660,20 @@ export interface ContextDiscovery {
 export type ContextPlacement = "prepend" | "append";
 
 /**
+ * Provider evidence of a consistent boundary across selected resources.
+ */
+export interface AttestedBoundary {
+    /**
+     * Provider qualified to attest this boundary.
+     */
+    provider: WasmProviderRefWire;
+    /**
+     * Opaque bounded proof, interpreted only by that provider.
+     */
+    evidence: readonly number[];
+}
+
+/**
  * Provider-owned additive upper bounds for an exact prepared request.
  * Counters must include structured content, native media and provider framing.
  * The SDK supplies no tokenizer or model-name capacity catalog.
