@@ -431,6 +431,11 @@ case "$lane" in
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-harness --features browser --target wasm32-unknown-unknown \
         --test browser_runtime --locked
+    # Provider capacity/counting callbacks execute under the same actual
+    # browser runner; native Send/property fixtures retain native qualification.
+    CHROMEDRIVER="$(command -v chromedriver)" \
+      cargo test -p acyclic-harness --features browser --target wasm32-unknown-unknown \
+        --lib --locked
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     # The shipped browser package end to end in headless Chrome: one tab, then
