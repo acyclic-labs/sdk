@@ -3,7 +3,7 @@ import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpath
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { readBoundedGzip, sha256, tarEntries } from "../../../../scripts/archive-utils.mjs";
+import { readBoundedGzip, sha256, tarEntries } from "../../../../../scripts/archive-utils.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
@@ -53,7 +53,7 @@ export function qualify(args, command = spawnSync) {
   const work = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
   try { lstatSync(work); throw new Error("qualification output must be absent"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const source of [archive, authority, receiptPath, directory, go]) {
+  for (const source of [archive, authority, receiptPath, dirname(directory), go]) {
     if (within(work, source) || within(source, work)) throw new Error("qualification output overlaps an input");
   }
   const receiptBytes = readFileSync(receiptPath);
@@ -110,7 +110,7 @@ export function qualify(args, command = spawnSync) {
   const consumer = join(work, "consumer");
   mkdirSync(consumer);
   for (const name of ["go.mod", "go.sum"]) copyFileSync(join(installed, name), join(consumer, name));
-  const controls = join(directory, "testdata", "consumer");
+  const controls = join(directory, "../testdata", "consumer");
   const controlNames = readdirSync(controls).filter(name => name.endsWith(".go")).sort();
   for (const name of controlNames) copyFileSync(join(controls, name), join(consumer, name));
   const run = (name, arguments_, failure = false) => {
