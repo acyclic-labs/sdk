@@ -3323,26 +3323,287 @@ mod tests {
         Ok(())
     }
 
-    async fn model_claim_host<P: StreamProvider>(
-        stream: StreamClient<P>,
-    ) -> Result<Arc<MemoryPayloads>> {
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn task_execution_context_uses_original_turn_and_reopens() -> Result<()> {
+        use crate::{
+            conversation::{ConversationMessage, MessageKind, VolumeOperation},
+            core::{Action, Command, SchemaRegistry},
+            executor::ExecutionJournal,
+            filesystem::{FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost},
+            projection::{ModelContextSelection, select_model_context},
+            store::StreamAggregate,
+        };
+        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
-            kind: AggregateKind::Task,
-            id: "model-owner".into(),
+            kind: AggregateKind::Conversation,
+            id: "context-owner".into(),
         };
         let issuer = AuthorityIssuer::new("model-test", [7; 32], owner.clone());
+        let agent = AgentId::from_bytes([1; 16]);
+        let provider = ProviderRef::new("turn-context", "filesystem", "1")?;
+        let filesystem = Arc::new(FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            provider.clone(),
+        )?);
+        let volume = VolumeRef::new(
+            provider,
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        filesystem.create_volume(&volume).await?;
         let owner_scope = issuer.root(
             "owner",
+            Capabilities::new(
+                [
+                    "operation:declare",
+                    "operation:observe",
+                    "operation:cancel",
+                    "task:spawn:test.model@1",
+                    "model:generate",
+                    "interaction:route",
+                    "conversation:bind",
+                    "conversation:append",
+                    "conversation:select_context",
+                ]
+                .map(str::to_owned)
+                .into_iter()
+                .chain([
+                    volume.capability(VolumeOperation::Read)?,
+                    volume.capability(VolumeOperation::Write)?,
+                ]),
+            ),
+        );
+        let RunningModelTask {
+            host,
+            task_id,
+            fence,
+            ..
+        } = running_model_task(&stream, payloads, &issuer, &owner_scope).await?;
+        let content_scope = issuer.root_for_agent(
+            agent,
+            "content",
             Capabilities::new([
-                "operation:declare",
-                "operation:observe",
-                "operation:cancel",
-                "task:spawn:test.model@1",
-                "model:generate",
-                "interaction:route",
+                volume.capability(VolumeOperation::Read)?,
+                volume.capability(VolumeOperation::Write)?,
             ]),
         );
+        let resolver = Arc::new(FilesystemContentVerifier::new(
+            filesystem.clone(),
+            issuer.verifier(),
+            content_scope.clone(),
+            65_536,
+        )?);
+        let turn = OperationId::from_bytes([81; 16]);
+        let execution = OperationId::from_bytes([82; 16]);
+        let open_journal = async |original_turn| {
+            Ok::<_, Error>(
+                FilesystemExecutionJournal::for_task(
+                    host.journal_owner(task_id, fence.clone()).await?,
+                    execution,
+                    original_turn,
+                    filesystem.clone(),
+                    volume.clone(),
+                    issuer.verifier(),
+                    content_scope.clone(),
+                    65_536,
+                )?
+                .with_input_verifier(resolver.clone()),
+            )
+        };
+        let journal = open_journal(turn).await?;
+        let file = journal
+            .stage(
+                execution,
+                "user".into(),
+                b"original user".to_vec(),
+                "text/plain",
+            )
+            .await?;
+        let mut aggregate =
+            StreamAggregate::open(&stream, owner, issuer.verifier(), SchemaRegistry::new())
+                .await?
+                .with_content_verifier(resolver.clone());
+        let command = |operation_id, revision, action| -> Result<Command> {
+            Ok(Command {
+                operation_id,
+                idempotency_key: IdempotencyKey::new(format!("context:{operation_id}"))?,
+                expected_revision: revision,
+                scope: owner_scope.clone(),
+                causal_parent: None,
+                action,
+            })
+        };
+        aggregate
+            .execute(command(
+                OperationId::from_bytes([83; 16]),
+                0,
+                Action::BindConversation { agent },
+            )?)
+            .await?;
+        let message = ConversationMessage {
+            id: uuid::Uuid::from_bytes([84; 16]),
+            sequence: 1,
+            kind: MessageKind::User,
+            content: file,
+            attachments: Vec::new().into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        aggregate
+            .execute(command(
+                OperationId::from_bytes([85; 16]),
+                1,
+                Action::AppendConversationMessage {
+                    message: Box::new(message.clone()),
+                },
+            )?)
+            .await?;
+        let selection = ModelContextSelection {
+            conversation_revision: 1,
+            message_ids: vec![message.id],
+        };
+        let selected = select_model_context(
+            aggregate
+                .reducer()
+                .conversation()
+                .ok_or_else(|| Error::NotFound("conversation".into()))?,
+            selection.clone(),
+            resolver.as_ref(),
+            8,
+            8,
+            65_536,
+        )
+        .await?;
+        aggregate
+            .execute(command(turn, 2, Action::SelectModelContext { selection })?)
+            .await?;
+        // The execution namespace has no selection; only the original turn does.
+        assert!(
+            aggregate
+                .reducer()
+                .context_selection_for_operation(execution)
+                .is_none()
+        );
+        journal
+            .append(
+                execution,
+                "start".into(),
+                crate::executor::ExecutionEvent::Started {
+                    request_digest: [9; 32],
+                },
+            )
+            .await?;
+        journal
+            .verify_selected_context(execution, &selected)
+            .await?;
+        assert!(matches!(
+            journal.verify_selected_context(turn, &selected).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let mut forged = selected.clone();
+        forged.messages.clear();
+        assert!(matches!(
+            journal.verify_selected_context(execution, &forged).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            open_journal(OperationId::from_bytes([86; 16]))
+                .await?
+                .verify_selected_context(execution, &selected)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        // Later history cannot replace the original turn's pinned projection.
+        let later = ConversationMessage {
+            id: uuid::Uuid::from_bytes([87; 16]),
+            sequence: 2,
+            ..message
+        };
+        aggregate
+            .execute(command(
+                OperationId::from_bytes([88; 16]),
+                3,
+                Action::AppendConversationMessage {
+                    message: Box::new(later),
+                },
+            )?)
+            .await?;
+        let other_turn = OperationId::from_bytes([89; 16]);
+        let other_selection = ModelContextSelection {
+            conversation_revision: 2,
+            message_ids: vec![uuid::Uuid::from_bytes([87; 16])],
+        };
+        let other_selected = select_model_context(
+            aggregate
+                .reducer()
+                .conversation()
+                .ok_or_else(|| Error::NotFound("later conversation".into()))?,
+            other_selection.clone(),
+            resolver.as_ref(),
+            8,
+            8,
+            65_536,
+        )
+        .await?;
+        aggregate
+            .execute(command(
+                other_turn,
+                4,
+                Action::SelectModelContext {
+                    selection: other_selection,
+                },
+            )?)
+            .await?;
+        let rebound = open_journal(other_turn).await?;
+        assert!(matches!(
+            rebound.replay(execution, 0, 1).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            rebound
+                .verify_selected_context(execution, &other_selected)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(
+            rebound
+                .append(
+                    execution,
+                    "start".into(),
+                    crate::executor::ExecutionEvent::Started {
+                        request_digest: [9; 32]
+                    }
+                )
+                .await
+                .is_err()
+        );
+        drop(journal);
+        open_journal(turn)
+            .await?
+            .verify_selected_context(execution, &selected)
+            .await?;
+        Ok(())
+    }
+
+    struct RunningModelTask<P: StreamProvider> {
+        host: Arc<CoordinatorTaskHost<P>>,
+        scope: RuntimeScope,
+        operation_id: OperationId,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+    }
+
+    async fn running_model_task<P: StreamProvider>(
+        stream: &StreamClient<P>,
+        payloads: Arc<MemoryPayloads>,
+        issuer: &AuthorityIssuer,
+        owner_scope: &crate::core::Scope,
+    ) -> Result<RunningModelTask<P>> {
+        let owner = issuer.verifier().audience().clone();
         let scope = RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
         let machine = MachineIdentity {
             name: "test.model".into(),
@@ -3364,7 +3625,7 @@ mod tests {
         let mut machines = MachineRegistry::default();
         machines.register(implementation)?;
         let host = Arc::new(CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone()).await?,
+            DistributedCoordinator::open(stream, payloads.clone()).await?,
             stream.clone(),
             payloads.clone(),
             payloads.clone(),
@@ -3435,6 +3696,42 @@ mod tests {
                 .await?;
             fence
         };
+        Ok(RunningModelTask {
+            host,
+            scope,
+            operation_id,
+            task_id,
+            fence,
+        })
+    }
+
+    async fn model_claim_host<P: StreamProvider>(
+        stream: StreamClient<P>,
+    ) -> Result<Arc<MemoryPayloads>> {
+        let payloads = Arc::new(MemoryPayloads::new()?);
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "model-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("model-test", [7; 32], owner.clone());
+        let owner_scope = issuer.root(
+            "owner",
+            Capabilities::new([
+                "operation:declare",
+                "operation:observe",
+                "operation:cancel",
+                "task:spawn:test.model@1",
+                "model:generate",
+                "interaction:route",
+            ]),
+        );
+        let RunningModelTask {
+            host,
+            scope,
+            operation_id,
+            task_id,
+            fence,
+        } = running_model_task(&stream, payloads.clone(), &issuer, &owner_scope).await?;
         host.verify_execution_owner(task_id, fence.clone()).await?;
         let attempt = OperationId::from_bytes([78; 16]);
         host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
@@ -3554,6 +3851,7 @@ mod tests {
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
                 attempt,
+                attempt,
                 filesystem.clone(),
                 volume.clone(),
                 issuer.verifier(),
@@ -3575,6 +3873,7 @@ mod tests {
             let bytes = Bytes::from(
                 serde_json::to_vec(&serde_json::json!({
                     "operation_id": pending_operation,
+                    "turn_operation": pending_operation,
                     "retry_digest": digest.to_hex().to_string(),
                     "event": ExecutionEvent::Started { request_digest: [9; 32] },
                 }))
@@ -3713,6 +4012,7 @@ mod tests {
             let adopted = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
                 uncharged,
+                uncharged,
                 filesystem.clone(),
                 volume.clone(),
                 issuer.verifier(),
@@ -3784,6 +4084,7 @@ mod tests {
                 .await?;
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
@@ -3937,6 +4238,7 @@ mod tests {
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 binding,
                 attempt,
+                attempt,
                 filesystem.clone(),
                 volume.clone(),
                 issuer.verifier(),
@@ -4053,6 +4355,7 @@ mod tests {
                 let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
                 let bytes = Bytes::from(serde_json::to_vec(&serde_json::json!({
                 "operation_id": pending_operation,
+                "turn_operation": pending_operation,
                 "retry_digest": digest.to_hex().to_string(),
                 "event": crate::executor::ExecutionEvent::Started { request_digest: [9; 32] },
             })).map_err(|error| Error::Invalid(error.to_string()))?);
@@ -4132,6 +4435,7 @@ mod tests {
             );
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
@@ -4215,6 +4519,7 @@ mod tests {
             assert_eq!(journal.replay(attempt, 64, 64).await?.len(), 10);
             let reopened = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
                 attempt,
                 filesystem.clone(),
                 volume.clone(),

@@ -164,6 +164,7 @@ impl ExecutionSummary {
 #[serde(deny_unknown_fields)]
 struct Observation {
     operation_id: OperationId,
+    turn_operation: OperationId,
     retry_digest: String,
     event: ExecutionEvent,
 }
@@ -171,6 +172,7 @@ struct Observation {
 impl Observation {
     fn encode(
         operation_id: OperationId,
+        turn_operation: OperationId,
         claim_id: &str,
         event: &ExecutionEvent,
     ) -> Result<(StreamKey, String, Bytes)> {
@@ -178,6 +180,7 @@ impl Observation {
         let retry_digest = digest.to_hex().to_string();
         let bytes = serde_json::to_vec(&Self {
             operation_id,
+            turn_operation,
             retry_digest: retry_digest.clone(),
             event: event.clone(),
         })
@@ -195,6 +198,11 @@ impl Observation {
     }
 }
 
+struct TaskExecutionIdentity {
+    operation: OperationId,
+    turn: OperationId,
+}
+
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
     stream: StreamClient<P>,
@@ -206,16 +214,22 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
-    owner: Option<(TaskJournalOwner<P>, OperationId)>,
+    owner: Option<(TaskJournalOwner<P>, TaskExecutionIdentity)>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     /// Binds one execution to the task's exact lease and coordinator provider.
+    /// The original turn identifies committed context independently of the execution namespace.
     /// Fresh model starts require their matching retained shared-budget claim.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "task, execution, turn and storage bindings are explicit"
+    )]
     pub fn for_task(
         owner: TaskJournalOwner<P>,
         operation_id: OperationId,
+        turn_operation: OperationId,
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
         verifier: AuthorityVerifier,
@@ -236,15 +250,27 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             scope,
             maximum_payload_bytes,
         )?;
-        journal.owner = Some((owner, operation_id));
+        journal.owner = Some((
+            owner,
+            TaskExecutionIdentity {
+                operation: operation_id,
+                turn: turn_operation,
+            },
+        ));
         Ok(journal)
+    }
+
+    fn turn_operation(&self, operation: OperationId) -> OperationId {
+        self.owner
+            .as_ref()
+            .map_or(operation, |(_, identity)| identity.turn)
     }
 
     fn require_operation(&self, operation: OperationId) -> Result<()> {
         if self
             .owner
             .as_ref()
-            .is_some_and(|(_, bound)| *bound != operation)
+            .is_some_and(|(_, bound)| bound.operation != operation)
         {
             return Err(Error::Unauthorized(
                 "journal belongs to another task execution".into(),
@@ -305,16 +331,17 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+        let (owner, identity) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
+        let operation = identity.operation;
         let mut summary = self.verified.lock().await;
-        Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
+        Box::pin(self.refresh_summary(operation, &mut summary)).await?;
         if !summary.quiescent() {
-            return Err(Error::Indeterminate(*operation));
+            return Err(Error::Indeterminate(operation));
         }
         owner
-            .suspend_quiescent_execution(*operation, summary.tail, revision, command)
+            .suspend_quiescent_execution(operation, summary.tail, revision, command)
             .await
     }
 
@@ -342,7 +369,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .ok_or_else(|| Error::Invalid("task journal owner required".into()))?;
         let model = self.verify_event_refs(&event).await?;
         let limits = owner.input_limits();
-        let (key, retry_digest, bytes) = Observation::encode(operation_id, claim_id, &event)?;
+        let (key, retry_digest, bytes) = Observation::encode(
+            operation_id,
+            self.turn_operation(operation_id),
+            claim_id,
+            &event,
+        )?;
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::contract::canonical_json_digest(&event)?;
         let mut summary = self.verified.lock().await;
@@ -709,6 +741,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     "execution journal identity is invalid".into(),
                 ));
             }
+            if observation.turn_operation != self.turn_operation(operation_id) {
+                return Err(Error::Conflict(
+                    "execution journal belongs to another original turn".into(),
+                ));
+            }
             let model = self.verify_event_refs(&observation.event).await?;
             result.push((
                 ExecutionRecord {
@@ -863,7 +900,12 @@ where
                 ));
             }
             self.verify_event_refs(&event).await?;
-            let (key, _, bytes) = Observation::encode(operation_id, &idempotency_key, &event)?;
+            let (key, _, bytes) = Observation::encode(
+                operation_id,
+                self.turn_operation(operation_id),
+                &idempotency_key,
+                &event,
+            )?;
             match self
                 .path(operation_id)?
                 .append_batch(vec![bytes], None, Some(key))
@@ -904,7 +946,12 @@ where
                 ));
             }
             self.verify_event_refs(&event).await?;
-            let (key, retry_digest, bytes) = Observation::encode(operation_id, &claim_id, &event)?;
+            let (key, retry_digest, bytes) = Observation::encode(
+                operation_id,
+                self.turn_operation(operation_id),
+                &claim_id,
+                &event,
+            )?;
             match self
                 .path(operation_id)?
                 .append_batch(vec![bytes], Some(expected_tail), Some(key))
@@ -1039,6 +1086,10 @@ where
         selected: &'a SelectedModelContext,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            self.require_operation(operation_id)?;
+            let turn_operation = self.turn_operation(operation_id);
+            // The first retained observation pins this association across reopen.
+            self.replay_verified(operation_id, 0, 1).await?;
             let verifier = self.input_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("conversation content verifier is not bound".into())
             })?;
@@ -1051,7 +1102,7 @@ where
             .await?;
             let committed = aggregate
                 .reducer()
-                .context_selection_for_operation(operation_id)
+                .context_selection_for_operation(turn_operation)
                 .ok_or_else(|| {
                     Error::Conflict("turn has no committed model-context selection".into())
                 })?;

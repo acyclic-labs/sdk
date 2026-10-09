@@ -693,6 +693,7 @@ where
             FilesystemExecutionJournal::for_task(
                 self.host.journal_owner(task, fence).await?,
                 execution_operation(task, turn),
+                turn,
                 self.filesystem.clone(),
                 self.volume.clone(),
                 self.verifier.clone(),
