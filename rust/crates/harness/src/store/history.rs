@@ -75,6 +75,25 @@ impl<P: StreamProvider> HistoryReader<P> {
         .await
     }
 
+    /// Resolves an attested operation under a finite encoded-byte allowance.
+    /// The returned count includes its atomic locator and canonical event, so
+    /// a composite read can deduct both before loading another history range.
+    /// Zero rejects before I/O; exhaustion at the locator avoids the event read.
+    pub async fn operation_event_bounded(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+    ) -> Result<(Option<Event>, u64)> {
+        super::operations::find_operation_bounded(
+            &self.client,
+            self.verifier.audience(),
+            &self.verifier,
+            operation,
+            maximum_bytes,
+        )
+        .await
+    }
+
     /// Resolves one message at the pinned boundary using its atomic locator.
     /// Reads at most one locator and one canonical record; no history scan or
     /// reducer hydration occurs. The byte budget includes both encoded records.

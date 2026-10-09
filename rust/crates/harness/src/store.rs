@@ -1676,6 +1676,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
+                .await?
+                .with_resident_event_limit(1)?,
+        );
+        let original = command(1)?;
+        let first = writer.execute(original.clone()).await?;
+        let ApplyResult::Applied { event } = first else {
+            return Err(Error::Invalid("fixture event was not published".into()));
+        };
+        let mut later = command(2)?;
+        later.expected_revision = 1;
+        writer.execute(later).await?;
+        assert!(
+            writer
+                .reducer()
+                .operation_revision(original.operation_id)
+                .is_none()
+        );
+        let index = client
+            .stream(operations::operation_path(&authority(), original.operation_id)?.as_str())?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let canonical = client
+            .stream(authority().stream_path()?)?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let index_bytes = index
+            .first()
+            .ok_or_else(|| Error::Storage("fixture index missing".into()))?
+            .value
+            .len() as u64;
+        let total_bytes = index_bytes
+            + canonical
+                .first()
+                .ok_or_else(|| Error::Storage("fixture canonical event missing".into()))?
+                .value
+                .len() as u64;
+        let reader = writer.history_reader()?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .operation_event_bounded(original.operation_id, 0)
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        for maximum in [index_bytes - 1, index_bytes] {
+            provider.observation_reads.store(0, Ordering::SeqCst);
+            assert!(matches!(
+                reader
+                    .operation_event_bounded(original.operation_id, maximum)
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 1);
+        }
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .operation_event_bounded(original.operation_id, total_bytes - 1)
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert_eq!(
+            reader
+                .operation_event_bounded(original.operation_id, total_bytes)
+                .await?,
+            (Some(event.clone()), total_bytes)
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            reader.operation_event(original.operation_id).await?,
+            Some(event)
+        );
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            reader
+                .operation_event_bounded(OperationId::from_bytes([254; 16]), total_bytes)
+                .await?,
+            (None, 0)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction() -> Result<()>
     {
         use std::sync::atomic::Ordering;

@@ -231,17 +231,45 @@ pub(crate) async fn find_operation<P: StreamProvider>(
     verifier: &AuthorityVerifier,
     operation: OperationId,
 ) -> Result<Option<Event>> {
+    find_operation_bounded(
+        client,
+        authority,
+        verifier,
+        operation,
+        2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+    )
+    .await
+    .map(|(event, _)| event)
+}
+
+/// Counts the atomic locator and canonical record against one caller-owned budget.
+pub(crate) async fn find_operation_bounded<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    operation: OperationId,
+    maximum_bytes: u64,
+) -> Result<(Option<Event>, u64)> {
     verifier.verify_audience(authority)?;
+    if maximum_bytes == 0 {
+        return Err(Error::Invalid(
+            "operation lookup byte bound must be positive".into(),
+        ));
+    }
     let path = operation_path(authority, operation)?;
     let Some(index) = one_record(client, &path, 0).await? else {
         return match client.stream(path.as_str())?.tail().await {
-            Err(acyclic_stream::StreamError::NotFound) => Ok(None),
+            Err(acyclic_stream::StreamError::NotFound) => Ok((None, 0)),
             Ok(_) => Err(Error::Storage(
                 "operation location is missing before its committed tail".into(),
             )),
             Err(error) => Err(error.into()),
         };
     };
+    let index_bytes = index.value.len() as u64;
+    if index_bytes >= maximum_bytes {
+        return Err(Error::Invalid("operation lookup exceeds byte bound".into()));
+    }
     if client.stream(path.as_str())?.tail().await? != 1 {
         return Err(Error::Storage(
             "operation location is not a single immutable record".into(),
@@ -261,6 +289,10 @@ pub(crate) async fn find_operation<P: StreamProvider>(
     let record = one_record(client, &canonical, sequence)
         .await?
         .ok_or_else(|| Error::Storage("indexed canonical event is missing".into()))?;
+    let consumed_bytes = index_bytes
+        .checked_add(record.value.len() as u64)
+        .filter(|bytes| *bytes <= maximum_bytes)
+        .ok_or_else(|| Error::Invalid("operation lookup exceeds byte bound".into()))?;
     let event = super::history::verify_history_record(verifier, authority, sequence, &record)?;
     if event.operation_id != operation
         || event.intent_digest != location.intent_digest
@@ -270,7 +302,7 @@ pub(crate) async fn find_operation<P: StreamProvider>(
             "operation location differs from its atomic canonical event".into(),
         ));
     }
-    Ok(Some(event))
+    Ok((Some(event), consumed_bytes))
 }
 
 /// Loads one exact archived message without reconstructing a conversation projection.
