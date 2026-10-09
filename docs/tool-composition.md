@@ -221,3 +221,10 @@ portable replay/text-variant integration tests and strict library/test/example
 lint. Its complete library suite reports 291 passes and one failure: the
 existing default LocalHarness original-context consumer gap. This failure is
 preserved and remains a required integration gate.
+
+The replay fix also passed a fresh production WASM rebuild. Following test-only
+and documentation commits, source `e0bc68d76` passed both package builds/type
+contracts, all 269 Harness/Pi source tests and 51 fresh installed-package tests,
+consumer types and metadata/export validation. The local workspace dependencies
+were restored with the unchanged frozen lockfile; no manifests or lockfiles
+changed. These artifact passes do not waive the default-context failure above.
