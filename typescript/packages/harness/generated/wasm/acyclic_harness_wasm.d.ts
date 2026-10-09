@@ -1593,8 +1593,11 @@ export class WasmTaskRuntime {
      * Generate receives canonical request bytes, separate dispatch identity and
      * an `AbortSignal`, and returns an async iterator;
      * reconcile receives the exact retained attempt and never redispatches it.
+     * Optional capacity/counting callbacks are synchronous, effect-free provider
+     * operations. Counting receives exact canonical bytes and their Rust digest;
+     * Rust validates the response binding and ordered message dimensions.
      */
-    configureModel(model: WasmModelWire, generate: (request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>, reconcile: (attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>): void;
+    configureModel(model: WasmModelWire, generate: (request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>, reconcile: (attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>, capacity: ((model: WasmModelWire) => ModelContextCapacity) | undefined, count_tokens: ((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined): void;
     /**
      * A page observation is not a retained model-consumption acknowledgment.
      */
@@ -2237,7 +2240,7 @@ export interface InitOutput {
     readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
     readonly wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
     readonly wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;
-    readonly wasmtaskruntime_configureModel: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskruntime_configureModel: (a: number, b: any, c: any, d: any, e: number, f: number) => [number, number];
     readonly wasmtaskruntime_inbox: (a: number, b: number, c: number, d: bigint, e: number) => any;
     readonly wasmtaskruntime_initializeVolume: (a: number) => any;
     readonly wasmtaskruntime_open: (a: any, b: number, c: number, d: any) => any;

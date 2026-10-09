@@ -3804,11 +3804,12 @@ resolve_interaction interaction_resolved interaction:resolve";
                 if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                     &resource.source
                 {
-                    capabilities.push(
-                        volume
-                            .capability(crate::conversation::VolumeOperation::Read)
-                            .expect("valid scratch reference"),
+                    let capability = volume.capability(crate::conversation::VolumeOperation::Read);
+                    assert!(
+                        capability.is_ok(),
+                        "invalid scratch reference: {capability:?}"
                     );
+                    capabilities.extend(capability);
                 }
             }
         }

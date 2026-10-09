@@ -2324,9 +2324,12 @@ mod tests {
         }
     }
 
-    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) -> u64 {
+    fn check_model_claim_orderings(
+        scheduler: &Scheduler,
+        remaining: &[SchedulerEvent],
+    ) -> Result<u64> {
         if remaining.is_empty() {
-            return 1;
+            return Ok(1);
         }
         let used = |state: &Scheduler| {
             state
@@ -2383,7 +2386,10 @@ mod tests {
             }
             assert!(used(&next) <= 2, "shared budget exceeded: {event:?}");
             for (op, prior) in &scheduler.model_claims {
-                let current = next.model_claims.get(op).expect("claim refunded");
+                let current = next
+                    .model_claims
+                    .get(op)
+                    .ok_or_else(|| Error::Conflict("claim refunded".into()))?;
                 assert_eq!(current.ceiling, prior.ceiling);
                 for (attempt, steps) in &prior.attempts {
                     for (step, digest) in steps {
@@ -2410,9 +2416,9 @@ mod tests {
             }
             let mut pending = remaining.to_vec();
             pending.remove(index);
-            leaves += check_model_claim_orderings(&next, &pending);
+            leaves += check_model_claim_orderings(&next, &pending)?;
         }
-        leaves
+        Ok(leaves)
     }
 
     /// Bounded exhaustive checking of the production reducer, not a second
@@ -2463,7 +2469,7 @@ mod tests {
         })
         .collect::<Result<Vec<_>>>()?;
         assert_eq!(
-            check_model_claim_orderings(&scheduler, &actions),
+            check_model_claim_orderings(&scheduler, &actions)?,
             (1..=actions.len() as u64).product::<u64>()
         );
         Ok(())

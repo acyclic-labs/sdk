@@ -1995,7 +1995,10 @@ mod tests {
             move |context, _: ()| {
                 let sink = sink.clone();
                 async move {
-                    *sink.lock().unwrap() = Some(context);
+                    *sink
+                        .lock()
+                        .map_err(|_| Error::Storage("context lock poisoned".into()))? =
+                        Some(context);
                     Ok(())
                 }
             },
@@ -2009,7 +2012,7 @@ mod tests {
         ));
         captured
             .lock()
-            .unwrap()
+            .map_err(|_| Error::Storage("context lock poisoned".into()))?
             .take()
             .ok_or_else(|| Error::NotFound("admitted context".into()))
     }
@@ -2221,7 +2224,12 @@ mod tests {
             dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             assert_eq!(dispatch.request_digest, request.manifest().request_digest);
-            self.dispatches.lock().unwrap().push(dispatch);
+            let Ok(mut dispatches) = self.dispatches.lock() else {
+                return Box::pin(stream::once(async {
+                    Err(Error::Storage("model lock poisoned".into()))
+                }));
+            };
+            dispatches.push(dispatch);
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(
                 (0..70)
@@ -2240,14 +2248,14 @@ mod tests {
             &'a self,
             attempt: ModelAttempt,
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            assert!(
-                self.dispatches
-                    .lock()
-                    .unwrap()
-                    .contains(&attempt.dispatch())
-            );
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
+                assert!(
+                    self.dispatches
+                        .lock()
+                        .map_err(|_| Error::Storage("model lock poisoned".into()))?
+                        .contains(&attempt.dispatch())
+                );
                 if attempt.observed
                     != vec![
                         ModelEvent::Content {
