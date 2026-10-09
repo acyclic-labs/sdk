@@ -56,11 +56,11 @@ function verifyPayload(root, payload) {
 // This adapter enumerates maintained reflection variables and message factories;
 // schema expectations still come from verified Rust descriptor bytes at runtime.
 function reflection(payload) {
-  let imports = "import 'package:protobuf/protobuf.dart';\n";
-  const maps = [], factories = [];
+  let imports = "import 'package:protobuf/protobuf.dart';\nimport 'package:grpc/service_api.dart' as grpc;\n";
+  const maps = [], factories = [], clients = [];
   targets.forEach((source, index) => {
     const family = source.slice(0, -6);
-    imports += `import 'package:acyclic_sdk_transport/${family}.pbjson.dart' as j${index};\nimport 'package:acyclic_sdk_transport/${family}.pb.dart' as p${index};\n`;
+    imports += `import 'package:acyclic_sdk_transport/${family}.pbjson.dart' as j${index};\nimport 'package:acyclic_sdk_transport/${family}.pb.dart' as p${index};\nimport 'package:acyclic_sdk_transport/${family}.pbgrpc.dart' as g${index};\n`;
     const json = payload.get(`lib/${family}.pbjson.dart`)?.toString("utf8") ?? "";
     const entries = [...json.matchAll(/\/\/\/ Descriptor for `([^`]+)`\. Decode as a `google\.protobuf\.(?:DescriptorProto|EnumDescriptorProto)`\.\s*final \$typed_data\.Uint8List (\w+) =/g)];
     if (entries.length === 0 || new Set(entries.map(entry => entry[1])).size !== entries.length) throw new Error("missing or duplicate maintained reflection descriptors");
@@ -69,8 +69,20 @@ function reflection(payload) {
     const classes = [...messages.matchAll(/class (\w+) extends \$pb\.GeneratedMessage/g)];
     if (classes.length === 0) throw new Error("missing maintained message factories");
     for (const [, name] of classes) factories.push(`p${index}.${name}.create`);
+    const grpc = payload.get(`lib/${family}.pbgrpc.dart`).toString("utf8");
+    const client = grpc.match(/class (\w+Client) extends \$grpc\.Client/);
+    const methods = [...grpc.matchAll(/static final _\$(\w+)\s*=\s*\$grpc\.ClientMethod<\s*\$0\.(\w+),\s*\$0\.(\w+)>\(\s*'([^']+)'/g)];
+    if (!client || methods.length === 0 || new Set(methods.map(entry => entry[4])).size !== methods.length) throw new Error("missing or duplicate maintained client descriptors");
+    const calls = methods.map(([, name, input, output, path]) => {
+      const signature = grpc.match(new RegExp(`\\$grpc\\.(ResponseFuture|ResponseStream)<\\$0\\.(\\w+)>\\s+${name}\\(\\s*(\\$async\\.Stream<\\$0\\.(\\w+)>|\\$0\\.(\\w+))\\s+\\w+`));
+      if (!signature || signature[2] !== output || (signature[4] ?? signature[5]) !== input) throw new Error("maintained client signature differs from descriptor");
+      const streaming = signature[4] !== undefined;
+      const request = streaming ? `Stream<p${index}.${input}>.value(message as p${index}.${input})` : `message as p${index}.${input}`;
+      return `${JSON.stringify(path)}:ClientProbe(${streaming},${signature[1] === "ResponseStream"},(channel,message)=>g${index}.${client[1]}(channel).${name}(${request}))`;
+    });
+    clients.push(`{${calls.join(",")}}`);
   });
-  return `${imports}final sourceNames=${JSON.stringify(targets)};\nfinal descriptors=<Map<String,List<int>>>[${maps.join(",")}];\nfinal messageFactories=<String,GeneratedMessage Function()>{for(final factory in <GeneratedMessage Function()>[${factories.join(",")}]) '.\${factory().info_.qualifiedMessageName}':factory};\n`;
+  return `${imports}class ClientProbe { final bool clientStreaming,serverStreaming; final dynamic Function(grpc.ClientChannel,GeneratedMessage) invoke; ClientProbe(this.clientStreaming,this.serverStreaming,this.invoke); }\nfinal clientProbes=<Map<String,ClientProbe>>[${clients.join(",")}];\nfinal sourceNames=${JSON.stringify(targets)};\nfinal descriptors=<Map<String,List<int>>>[${maps.join(",")}];\nfinal messageFactories=<String,GeneratedMessage Function()>{for(final factory in <GeneratedMessage Function()>[${factories.join(",")}]) '.\${factory().info_.qualifiedMessageName}':factory};\n`;
 }
 
 // Injected commands/pins allow offline staging controls; the CLI uses real tools.

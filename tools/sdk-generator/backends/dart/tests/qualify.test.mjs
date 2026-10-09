@@ -38,7 +38,8 @@ function fixture(t, failure = "") {
     const family = source.slice(0, -6);
     payload[`lib/${family}.pb.dart`] = `class Thing${i} extends $pb.GeneratedMessage {}`;
     payload[`lib/${family}.pbjson.dart`] = `/// Descriptor for \`Thing${i}\`. Decode as a \`google.protobuf.DescriptorProto\`.\nfinal $typed_data.Uint8List thing${i} = data;`;
-    payload[`lib/${family}.pbenum.dart`] = "enums"; payload[`lib/${family}.pbgrpc.dart`] = "grpc";
+    payload[`lib/${family}.pbenum.dart`] = "enums";
+    payload[`lib/${family}.pbgrpc.dart`] = `class Fixture${i}Client extends $grpc.Client {\n$grpc.ResponseFuture<$0.Thing${i}> method${i}($0.Thing${i} request) {}\nstatic final _$method${i} = $grpc.ClientMethod<\n    $0.Thing${i}, $0.Thing${i}>('/fixture/Method${i}',null,null);\n}`;
   });
   for (const [name, bytes] of Object.entries(payload)) put(join(packageRoot, name), bytes);
   const receipt = { schema: "acyclic.sdk.dart-producer-receipt.v1", authority: "rust", target: "dart", source_revision: manifest.source_revision,
@@ -104,6 +105,8 @@ test("builds, installs and checks a fresh offline SDK with three independent sta
   assert.equal(result.complete_file_descriptor_comparison, false); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(result.archive_sha256, sha256(readFileSync(join(f.args.output, "package/acyclic_sdk_transport-0.2.0-alpha.1.tar.gz"))));
   assert.equal(f.calls.filter(c => c.argv[0] === "analyze").length, 3);
+  const adapter = readFileSync(join(f.args.output, "project/reflection.dart"), "utf8");
+  for (let i = 0; i < 3; i++) assert.ok(adapter.includes(`"/fixture/Method${i}":ClientProbe(false,false,`));
   for (const { argv, options } of f.calls) {
     assert.equal(options.env.PUB_CACHE, join(f.args.output, "cache")); assert.equal(options.env.HOME, join(f.args.output, "home"));
     if (argv[0] === "pub") { assert.ok(argv.includes("--offline")); assert.ok(argv.includes("--enforce-lockfile")); }

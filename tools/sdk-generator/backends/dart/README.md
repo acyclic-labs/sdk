@@ -55,7 +55,11 @@ bsdtar packaging with sorted files, fixed ownership/time and
 The exact archive passes the reusable installed qualifier with a fresh
 offline dependency cache: all message/enum descriptors and nested contents,
 binary bytes, unsigned integer bits, optional zero presence, both oneof branches,
-and gRPC method/message/streaming shapes. Three independent static type controls
+and gRPC method/message/streaming shapes. Every server callback processes a
+nonempty wire sample. Every generated client method runs through a probe channel
+that checks its Rust-declared path, request serializer, response decoder and
+unary or streaming result. These controls exercise generated bindings locally.
+Three independent static type controls
 reject invalid Actor bytes, Worker bytes and an optional Stream integer.
 The gRPC plugin does not export complete file descriptors; the qualifier does
 not claim complete file-level metadata equality. Rust-backed RPC, TLS/authentication, cancellation/recovery,
