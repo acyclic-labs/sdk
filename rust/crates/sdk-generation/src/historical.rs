@@ -1600,12 +1600,24 @@ pub fn capture_registry_cohort(
             capture_registry_corpus(repository, anchors.clone(), frontier_root, cargo)?;
         let publishers = cohort_publishers(&corpus_inventory(&corpus)?, version, archives)?;
         let expanded = publisher_anchor_union(&anchors, &publishers);
-        if expanded == anchors {
-            corpus.declared_anchors = declared_anchors;
-            corpus.publisher_anchors = publishers;
-            return Ok(corpus);
+        if expanded != anchors {
+            // Publisher commits commonly already occur in manifest history.
+            // Reuse this capture only when the exact immutable revision set is
+            // unchanged. Admission and drift still recheck every original export.
+            let captured = corpus
+                .frontier
+                .iter()
+                .map(|source| source.revision.clone())
+                .collect();
+            if frontier_revisions(repository, &expanded)? != captured {
+                anchors = expanded;
+                continue;
+            }
+            corpus.anchors = expanded;
         }
-        anchors = expanded;
+        corpus.declared_anchors = declared_anchors;
+        corpus.publisher_anchors = publishers;
+        return Ok(corpus);
     }
 }
 

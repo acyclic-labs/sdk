@@ -2017,6 +2017,58 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
 }
 
 #[test]
+fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
+    let (fixture, support) = registry_archive_fixture(true, true, None, true);
+    let publisher = git_revision(&fixture.root);
+    git(
+        &fixture.root,
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "newer declared history",
+        ],
+    );
+    let declared = git_revision(&fixture.root);
+    assert_ne!(publisher, declared);
+    let generated = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+    assert!(generated.status.success(), "{}", output_message(&generated));
+    let output = fixture.output.join("releases/1.0.0");
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(output.join("generation-manifest.v1.json")).unwrap())
+            .unwrap();
+    let corpus = &manifest["registryCorpus"];
+    assert_eq!(corpus["declared_anchors"], json!([declared]));
+    let anchors = corpus["anchors"].as_array().unwrap();
+    assert_eq!(anchors.len(), 2);
+    assert!(anchors.contains(&json!(publisher)));
+    assert!(anchors.contains(&json!(declared)));
+    let imported = Fixture {
+        root: fixture.root.clone(),
+        rustdoc: output.join(".rustdoc"),
+        output: output.clone(),
+    };
+    let drift = run_drift(&imported);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+    fs::write(
+        output
+            .join("registry-frontier")
+            .join(&publisher)
+            .join("rust/crates/demo/src/lib.rs"),
+        b"tampered original publisher export",
+    )
+    .unwrap();
+    let drift = run_drift(&imported);
+    assert!(
+        !drift.status.success(),
+        "changed original publisher export was admitted"
+    );
+    let _ = fs::remove_dir_all(fixture.root);
+    let _ = fs::remove_dir_all(fixture.output);
+}
+
+#[test]
 fn historical_source_help_and_flag_contract_are_explicit() {
     let binary = env!("CARGO_BIN_EXE_sdk-generation");
     let help = Command::new(binary).arg("help").output().unwrap();
