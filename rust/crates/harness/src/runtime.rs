@@ -6581,22 +6581,23 @@ mod tests {
     }
 
     struct CompletedModel {
-        requests: std::sync::Mutex<Vec<ModelRequest>>,
+        requests: std::sync::Mutex<Vec<(crate::model::ModelDispatch, ModelRequest)>>,
     }
 
     impl ModelProvider for CompletedModel {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
+            dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+            assert_eq!(dispatch.request_digest, request.manifest().request_digest);
             let request = request.request().clone();
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(
                     "test model lock poisoned".into(),
                 ))]));
             };
-            requests.push(request);
+            requests.push((dispatch, request));
             Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
                 metadata: Value::Null,
             })]))
@@ -6645,7 +6646,10 @@ mod tests {
             role: crate::model::ModelRole::User,
             content: crate::model::ModelContent::Text("hello".into()),
         };
-        context.model_events(vec![message.clone()], None).await?;
+        context
+            .clone()
+            .model_events(vec![message.clone()], None)
+            .await?;
         let child = context.scoped_model(
             Capabilities::new(["model:generate"]),
             Limits::default(),
@@ -6664,6 +6668,7 @@ mod tests {
                 .requests
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())[0]
+                .1
                 .model
                 .provider,
             "root"
@@ -6673,10 +6678,17 @@ mod tests {
                 .requests
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())[0]
+                .1
                 .model
                 .provider,
             "child"
         );
+        let root_dispatch = root_provider.requests.lock().unwrap()[0].0;
+        let child_dispatch = child_provider.requests.lock().unwrap()[0].0;
+        assert_eq!(root_dispatch.operation_id, context.task_id);
+        assert_eq!(child_dispatch.operation_id, context.task_id);
+        assert_eq!(root_dispatch.step, 0);
+        assert_eq!(child_dispatch.step, 1);
         let foreign = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("other", "filesystem", "2")?,
