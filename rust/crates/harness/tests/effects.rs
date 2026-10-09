@@ -25,11 +25,15 @@ use acyclic_stream::{MemoryStream, StreamClient};
 use futures::{TryStreamExt as _, future::BoxFuture};
 use std::{collections::BTreeSet, sync::Arc};
 
-struct ResultProvider(FileRef);
+struct ResultProvider(FileRef, bool);
 
 impl EffectProvider for ResultProvider {
     fn id(&self) -> &str {
-        "test.effects"
+        if self.1 {
+            "test.uncertain"
+        } else {
+            "test.effects"
+        }
     }
     fn guarantees(&self, _: &str) -> BTreeSet<EffectGuarantee> {
         BTreeSet::from([EffectGuarantee::IdempotentRetry])
@@ -45,8 +49,12 @@ impl EffectProvider for ResultProvider {
                 attempt_id: request.attempt_id,
                 request_digest: request.request_digest,
                 guarantee: request.guarantee,
-                status: EffectStatus::Succeeded {
-                    result: self.0.clone(),
+                status: if self.1 {
+                    EffectStatus::Indeterminate
+                } else {
+                    EffectStatus::Succeeded {
+                        result: self.0.clone(),
+                    }
                 },
             })
         })
@@ -83,6 +91,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             "lifecycle:manage",
             "effect:plan",
             "effect:provider:test.effects",
+            "effect:provider:test.uncertain",
             &volume.capability(VolumeOperation::Read)?,
             &volume.capability(VolumeOperation::Write)?,
         ]),
@@ -214,8 +223,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .effect(effect_id)
         .cloned()
         .ok_or_else(|| acyclic_harness::Error::Invalid("dispatched effect missing".into()))?;
-    let mut registry = EffectRegistry::default().with_result_resolver(verifier);
-    registry.register(Arc::new(ResultProvider(result)))?;
+    let mut registry = EffectRegistry::default().with_result_resolver(verifier.clone());
+    registry.register(Arc::new(ResultProvider(result.clone(), false)))?;
+    registry.register(Arc::new(ResultProvider(result, true)))?;
     let state = aggregate
         .reducer()
         .effect(effect_id)
@@ -229,7 +239,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             3,
             2,
             Action::ResolveEffect {
-                observation: attestation,
+                observation: attestation.clone(),
             },
         ))
         .await?;
@@ -456,6 +466,452 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     )?;
     assert!(wrong.effect(&cursor, effect_id, limits).await.is_err());
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+
+    // terminal_effect_retirement_probe: fixed active work and a growing terminal
+    // archive, including actual Filesystem validation and issuer attestations.
+    provider.forbid_writes.store(false, Ordering::SeqCst);
+    aggregate = aggregate.with_resident_terminal_effect_limit(2)?;
+    let fresh = |ordinal: u128, expected_revision, action| Command {
+        operation_id: OperationId::from_bytes(
+            uuid::Uuid::from_u128(ordinal + 3_000_000).into_bytes(),
+        ),
+        idempotency_key: IdempotencyKey(format!("retirement-{ordinal}")),
+        expected_revision,
+        scope: scope.clone(),
+        causal_parent: None,
+        action,
+    };
+    let plan = |id, uncertain| Action::PlanEffect {
+        effect_id: id,
+        provider: if uncertain {
+            "test.uncertain".into()
+        } else {
+            completed.provider.clone()
+        },
+        guarantee: completed.guarantee,
+        effect_kind: completed.effect_kind.clone(),
+        request: completed.request.clone(),
+        result_schema: completed.result_schema.clone(),
+    };
+    let mut ordinal = 0_u128;
+    let active = [
+        EffectId::from_bytes([200; 16]),
+        EffectId::from_bytes([201; 16]),
+        EffectId::from_bytes([202; 16]),
+    ];
+    for (position, id) in active.into_iter().enumerate() {
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                plan(id, position == 2),
+            ))
+            .await?;
+        if position == 0 {
+            continue;
+        }
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::MarkEffectDispatched {
+                    effect_id: id,
+                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
+                },
+            ))
+            .await?;
+        if position == 2 {
+            let state = aggregate
+                .reducer()
+                .effect(id)
+                .ok_or_else(|| acyclic_harness::Error::Invalid("active effect missing".into()))?;
+            let observation = registry
+                .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
+                .await?;
+            ordinal += 1;
+            aggregate
+                .execute(fresh(
+                    ordinal,
+                    aggregate.reducer().revision(),
+                    Action::ResolveEffect { observation },
+                ))
+                .await?;
+        }
+    }
+    for retained in 1..=1_000_u128 {
+        let id = EffectId::from_bytes(uuid::Uuid::from_u128(retained + 10_000_000).into_bytes());
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                plan(id, false),
+            ))
+            .await?;
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::MarkEffectDispatched {
+                    effect_id: id,
+                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
+                },
+            ))
+            .await?;
+        let state = aggregate
+            .reducer()
+            .effect(id)
+            .ok_or_else(|| acyclic_harness::Error::Invalid("new effect missing".into()))?;
+        let observation = registry
+            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
+            .await?;
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::ResolveEffect { observation },
+            ))
+            .await?;
+        if matches!(retained, 1 | 100 | 1_000) {
+            assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
+            assert_eq!(aggregate.reducer().resident_effect_count(), 5);
+            provider.forbid_writes.store(true, Ordering::SeqCst);
+            provider.observation_reads.store(0, Ordering::SeqCst);
+            provider.observation_maximum.store(0, Ordering::SeqCst);
+            let started = std::time::Instant::now();
+            let cold = StreamAggregate::open_with_projection_limits(
+                &stream,
+                authority.clone(),
+                issuer.verifier(),
+                SchemaRegistry::new(),
+                acyclic_harness::store::default_projection_read_limits(),
+                2,
+            )
+            .await?
+            .with_content_verifier(verifier.clone());
+            let reads = provider.observation_reads.load(Ordering::SeqCst);
+            let maximum = provider.observation_maximum.load(Ordering::SeqCst);
+            assert_eq!(cold.reducer().revision(), aggregate.reducer().revision());
+            assert_eq!(cold.reducer().resident_terminal_effect_count(), 2);
+            assert_eq!(cold.reducer().resident_effect_count(), 5);
+            for (id, expected) in active.into_iter().zip([
+                EffectStatus::Planned,
+                EffectStatus::Dispatched,
+                EffectStatus::Indeterminate,
+            ]) {
+                assert_eq!(
+                    cold.reducer().effect(id).map(|state| &state.status),
+                    Some(&expected)
+                );
+            }
+            let snapshot_bytes = serde_json::to_vec(&cold.reducer().snapshot_with_event_limit(1)?)
+                .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
+                .len();
+            assert!(snapshot_bytes < 32 * 1_024);
+            assert!(reads <= 4 + 2 * 64);
+            assert!(maximum <= 64);
+            assert_eq!(
+                cold.effect(effect_id, limits).await?,
+                Some(completed.clone())
+            );
+            if retained > 1 {
+                assert!(cold.reducer().effect(effect_id).is_none());
+            }
+            println!(
+                "terminal retirement retained={retained} resident=5 snapshot_bytes={snapshot_bytes} cold_reads={reads} max_batch={maximum} elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+            aggregate = cold;
+            provider.forbid_writes.store(false, Ordering::SeqCst);
+        }
+    }
+
+    // Lost acknowledgements and malformed receipts must not turn a committed
+    // terminal effect into guessed absence or repeat a provider dispatch.
+    for fault in 1..=5 {
+        let id = EffectId::from_bytes([210 + fault; 16]);
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                plan(id, false),
+            ))
+            .await?;
+        ordinal += 1;
+        aggregate
+            .execute(fresh(
+                ordinal,
+                aggregate.reducer().revision(),
+                Action::MarkEffectDispatched {
+                    effect_id: id,
+                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
+                },
+            ))
+            .await?;
+        let state = aggregate
+            .reducer()
+            .effect(id)
+            .ok_or_else(|| acyclic_harness::Error::Invalid("fault effect missing".into()))?;
+        let observation = registry
+            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
+            .await?;
+        let expected_status = observation.status.clone();
+        ordinal += 1;
+        let resolve = fresh(
+            ordinal,
+            aggregate.reducer().revision(),
+            Action::ResolveEffect { observation },
+        );
+        let before = aggregate.reducer().revision();
+        provider
+            .aggregate_commit_fault
+            .store(fault, Ordering::SeqCst);
+        let first = aggregate.execute(resolve.clone()).await;
+        if matches!(fault, 1 | 3 | 4 | 5) {
+            assert!(first.is_err());
+        }
+        let tail = stream.stream(authority.stream_path()?)?.tail().await?;
+        assert_eq!(tail, before + u64::from(fault != 1));
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        let reopened = StreamAggregate::open_with_projection_limits(
+            &stream,
+            authority.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+            acyclic_harness::store::default_projection_read_limits(),
+            2,
+        )
+        .await;
+        aggregate = match reopened {
+            Ok(cold) => cold,
+            Err(error) => {
+                assert_eq!(fault, 3, "unexpected cold-open failure: {error}");
+                StreamAggregate::open_with_projection_limits(
+                    &stream,
+                    authority.clone(),
+                    issuer.verifier(),
+                    SchemaRegistry::new(),
+                    acyclic_harness::store::default_projection_read_limits(),
+                    2,
+                )
+                .await?
+            }
+        }
+        .with_content_verifier(verifier.clone());
+        provider.forbid_writes.store(false, Ordering::SeqCst);
+        let retried = aggregate.execute(resolve).await?;
+        assert_eq!(
+            matches!(retried, acyclic_harness::core::ApplyResult::Replayed { .. }),
+            fault != 1
+        );
+        let recovered = aggregate
+            .effect(id, acyclic_harness::store::default_projection_read_limits())
+            .await?
+            .ok_or_else(|| acyclic_harness::Error::Invalid("recovered effect missing".into()))?;
+        assert_eq!(recovered.status, expected_status);
+        assert_eq!(
+            recovered.attempts,
+            vec![EffectAttemptId::from_bytes(id.into_bytes())]
+        );
+        assert_eq!(aggregate.reducer().revision(), before + 1);
+        assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
+        assert_eq!(aggregate.reducer().resident_effect_count(), 5);
+    }
+    // Retirement must also fence pure planning before the event cache evicts.
+    let short_provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
+    let short_stream = StreamClient::new(short_provider.clone());
+    let mut short = StreamAggregate::open_with_projection_limits(
+        &short_stream,
+        authority.clone(),
+        issuer.verifier(),
+        SchemaRegistry::new(),
+        acyclic_harness::store::default_projection_read_limits(),
+        1,
+    )
+    .await?
+    .with_content_verifier(verifier.clone());
+    let mut before_terminal = None;
+    let mut terminal_operations = Vec::new();
+    for number in 1..=3_u128 {
+        let id = EffectId::from_bytes(uuid::Uuid::from_u128(number + 20_000_000).into_bytes());
+        short
+            .execute(fresh(
+                number * 3,
+                short.reducer().revision(),
+                plan(id, false),
+            ))
+            .await?;
+        short
+            .execute(fresh(
+                number * 3 + 1,
+                short.reducer().revision(),
+                Action::MarkEffectDispatched {
+                    effect_id: id,
+                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
+                },
+            ))
+            .await?;
+        if number == 1 {
+            before_terminal = Some(short.reducer().snapshot_with_event_limit(1)?);
+        }
+        let state = short
+            .reducer()
+            .effect(id)
+            .ok_or_else(|| acyclic_harness::Error::Invalid("short effect missing".into()))?;
+        let observation = registry
+            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
+            .await?;
+        terminal_operations.push((
+            id,
+            OperationId::from_bytes(uuid::Uuid::from_u128(number * 3 + 2 + 3_000_000).into_bytes()),
+        ));
+        short
+            .execute(fresh(
+                number * 3 + 2,
+                short.reducer().revision(),
+                Action::ResolveEffect { observation },
+            ))
+            .await?;
+    }
+    assert_eq!(short.reducer().revision(), 9);
+    assert_eq!(short.reducer().resident_effect_count(), 1);
+    assert!(matches!(
+        short
+            .reducer()
+            .plan(&fresh(100, 9, plan(EffectId::from_bytes([240; 16]), false))),
+        Err(acyclic_harness::Error::Unsupported(_))
+    ));
+
+    let before_terminal = before_terminal
+        .ok_or_else(|| acyclic_harness::Error::Invalid("pre-terminal snapshot missing".into()))?;
+    let mut terminal_proof_bytes = 0_u64;
+    for (id, operation) in terminal_operations {
+        for (path, position) in [
+            (
+                format!("harness/v2/aggregate-operations/tasks/effect-task/{operation}"),
+                0,
+            ),
+            (
+                format!("harness/v2/effect-transitions/tasks/effect-task/{id}"),
+                2,
+            ),
+        ] {
+            let records = short_stream
+                .stream(path)?
+                .read(position, 1)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            let record = records.first().ok_or_else(|| {
+                acyclic_harness::Error::Invalid("original retirement proof missing".into())
+            })?;
+            assert_eq!(records.len(), 1);
+            terminal_proof_bytes += record.value.len() as u64;
+        }
+    }
+    let suffix = short_stream
+        .stream(authority.stream_path()?)?
+        .read(2, 7)
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(suffix.len(), 7);
+    let snapshot_bytes = serde_json::to_vec(&before_terminal)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
+        .len() as u64;
+    let exact = HistoryReadLimits {
+        maximum_events: 8,
+        maximum_bytes: snapshot_bytes
+            + terminal_proof_bytes
+            + suffix
+                .iter()
+                .map(|record| record.value.len() as u64)
+                .sum::<u64>(),
+    };
+    short_provider.forbid_writes.store(true, Ordering::SeqCst);
+    for allowance in [exact.maximum_bytes - 1, exact.maximum_bytes] {
+        short_provider.observation_reads.store(0, Ordering::SeqCst);
+        let restored = StreamAggregate::open_from_snapshot_with_projection_limits(
+            &short_stream,
+            authority.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+            before_terminal.clone(),
+            HistoryReadLimits {
+                maximum_bytes: allowance,
+                ..exact
+            },
+            1,
+        )
+        .await;
+        if allowance == exact.maximum_bytes {
+            let restored = restored?;
+            assert_eq!(restored.reducer().revision(), 9);
+            assert_eq!(restored.reducer().resident_effect_count(), 1);
+            assert_eq!(restored.reducer().resident_terminal_effect_count(), 1);
+        } else {
+            assert!(matches!(restored, Err(acyclic_harness::Error::Invalid(_))));
+        }
+        assert_eq!(short_provider.observation_reads.load(Ordering::SeqCst), 7);
+    }
+    short_provider.observation_reads.store(0, Ordering::SeqCst);
+    assert!(matches!(
+        StreamAggregate::open_from_snapshot_with_projection_limits(
+            &short_stream,
+            authority.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+            before_terminal,
+            HistoryReadLimits {
+                maximum_events: 7,
+                ..exact
+            },
+            1,
+        )
+        .await,
+        Err(acyclic_harness::Error::Invalid(_))
+    ));
+    assert_eq!(short_provider.observation_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(short_provider.observation_writes.load(Ordering::SeqCst), 0);
+    let revision = aggregate.reducer().revision();
+    assert!(aggregate.reducer().effect(effect_id).is_none());
+    assert!(matches!(
+        aggregate
+            .execute(command(1, 0, plan(effect_id, false)))
+            .await?,
+        acyclic_harness::core::ApplyResult::Replayed { .. }
+    ));
+    assert!(matches!(
+        aggregate
+            .execute(command(
+                3,
+                2,
+                Action::ResolveEffect {
+                    observation: attestation
+                }
+            ))
+            .await?,
+        acyclic_harness::core::ApplyResult::Replayed { .. }
+    ));
+    assert_eq!(aggregate.reducer().revision(), revision);
+    ordinal += 1;
+    let reuse = fresh(ordinal, revision, plan(effect_id, false));
+    assert!(aggregate.reducer().plan(&reuse).is_err());
+    assert!(matches!(
+        aggregate.execute(reuse).await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    assert_eq!(aggregate.reducer().revision(), revision);
+    assert_eq!(
+        stream.stream(authority.stream_path()?)?.tail().await?,
+        revision
+    );
+    assert_eq!(aggregate.effect(effect_id, limits).await?, Some(completed));
     Ok(())
 }
 

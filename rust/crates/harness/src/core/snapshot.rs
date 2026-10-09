@@ -11,7 +11,7 @@ use crate::{
     interaction::{InteractionResolution, InteractionTicket},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +44,10 @@ struct Projection {
     configured_extensions: Vec<(ExtensionDependency, ExtensionConfiguration)>,
     active_configurations: Vec<ExtensionConfiguration>,
     effects: BTreeMap<EffectId, EffectState>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    indexed_terminal_effects: VecDeque<EffectId>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    effects_archived: bool,
     forks: Vec<(Authority, ForkSeed)>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
@@ -52,6 +56,10 @@ struct Projection {
     // Rebuild the retry map from the authenticated cache, without applying
     // payloads. This avoids storing every retained Event a second time.
     bindings: Vec<(ExtensionDependency, [u8; 32])>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Reducer {
@@ -77,6 +85,8 @@ impl Reducer {
             configured_extensions: self.configured_extensions.clone().into_iter().collect(),
             active_configurations: self.active_configurations.clone(),
             effects: self.effects.clone(),
+            indexed_terminal_effects: self.indexed_terminal_effects.clone(),
+            effects_archived: self.effects_archived,
             forks: self.forks.clone().into_iter().collect(),
             published_merges: self.published_merges.clone(),
             conversation,
@@ -170,6 +180,9 @@ impl Reducer {
             resident_event_limit: usize::MAX,
             operation_positions,
             effects: projection.effects,
+            indexed_terminal_effects: projection.indexed_terminal_effects,
+            effects_archived: projection.effects_archived,
+            resident_terminal_effect_limit: usize::MAX,
             forks: projection.forks.into_iter().collect(),
             published_merges: projection.published_merges,
             conversation: projection.conversation,
@@ -204,6 +217,20 @@ impl Snapshot {
         if verifier.attest_snapshot(self)? != self.attestation {
             return Err(Error::Unauthorized(
                 "snapshot admission attestation is invalid".into(),
+            ));
+        }
+        let eligible: BTreeSet<_> = self.projection.indexed_terminal_effects.iter().collect();
+        if eligible.len() != self.projection.indexed_terminal_effects.len()
+            || eligible.iter().any(|id| {
+                !self
+                    .projection
+                    .effects
+                    .get(id)
+                    .is_some_and(|state| super::settled_effect(&state.status))
+            })
+        {
+            return Err(Error::Invalid(
+                "snapshot indexed terminal effects are invalid".into(),
             ));
         }
         let mut identities = BTreeSet::new();

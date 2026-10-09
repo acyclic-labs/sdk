@@ -17,6 +17,7 @@ provider reconciliation own admission and effects.
 | A retired turn replays its original selection. | `HistoryReader::selected_conversation` verifies each selected ID through the original atomic locator and canonical event, charging all encoded records to one allowance. Native callers bind the selection to its original operation and reuse indexed assistant/tool outputs. | The selected view is read-only and grants no admission authority. Default cold aggregate construction uses an authenticated durable checkpoint and a bounded canonical suffix; the decoded projection can still contain lifetime-sized terminal maps. |
 | Default cold restoration has finite input work. | Every 64th canonical event atomically publishes a checkpoint pointer with the original event and indexes. The snapshot retains its canonical head and original issuer MAC. Opening charges pointer, chunks, canonical anchor and suffix to one byte allowance, and the anchor and suffix to one event allowance. Caller-supplied snapshots charge their bytes and cached events before provider IO. | Defaults allow 64 decoded events and 32 MiB total encoded input. Missing checkpoints for established histories fail explicitly; no lifetime replay fallback. Larger caller inputs require explicit limits. This bounds restoration input, not whole reducer residency. |
 | Checkpoints reuse unchanged stored payloads. | Bounded content-defined chunks use immutable content-addressed Stream paths. Each chunk digest and length, the complete payload digest, original snapshot MAC and atomic canonical binding are verified on restore. | Chunks are at most one Stream record and interior chunks at least 16 KiB. The manifest fits one record. Payloads above the configured implementation ceiling fail explicitly. Snapshot construction still serializes the current projection; growing active or terminal state is not constant work. |
+| Retired successful/failed effects keep their original identity and result. | Explicit finite terminal caches retire only effects with original atomic operation/effect indexes. Snapshot format 6 authenticates retirement eligibility and archived-state flags. `StreamAggregate::effect` and the owned effect host read retired state through the original bounded effect reader. Cold suffix replay charges both retirement-proof records to its cumulative input allowance. | Planned, dispatched and indeterminate effects remain resident. Legacy terminal state without original retirement proof stays protected. The rollout default retains terminal state until the native receipt consumer adopts the archive API on qualified main; finite cache tests do not establish default activation or bounded whole-aggregate memory. |
 | A snapshot cannot manufacture state. | The original issuer authenticates the snapshot's complete projection, cut and digest. Restore checks the original authority and schema registry before applying a canonical suffix. | Trust rests on the existing issuer key and provider integrity. Snapshot size remains proportional to its projection. |
 | A selected context has explicit bounds. | Selection, rendering, whole-tool-batch checks and each stage validate the admitted limits. Sources and stage inputs use separate allowances. | Oversized mandatory content fails explicitly. Selection must not retain a tool result without its call or split a completed tool batch. |
 | Immutable context imports preserve metadata and authority. | `PinnedContextStage::capture` validates the exact canonical context file, its descriptor, bounds and all referenced content through the supplied reader. Its contract binds the file reference. New admissions verify access again. | The reader must already carry the receiving authority. Construction grants no access and performs no model operation. |
@@ -56,6 +57,17 @@ eighteen turns, then continues and replays through default cold opening. Fixed
 active extension state at 69, 1,029 and 10,245 retained events restores in four
 record reads with six resident events. These are protocol-work and serialized
 state checks, not RSS or retained-10,000-model-turn qualification.
+
+The real Filesystem effect fixture keeps three planned/dispatched/indeterminate
+effects active while terminal history grows through 1, 100 and 1,000 effects.
+An explicit two-terminal cache survives cold reopen and preserves original
+archived results, retries, attempt identities and lifetime ID fences. Five
+publication-fault controls cover pre-commit failure, visible/hidden lost
+acknowledgements and malformed receipts. A nine-event control exercises the
+pure-planner guard before event eviction and admits cold retirement at the
+exact combined snapshot, canonical and derived-proof byte allowance; one byte
+less fails, and an insufficient event allowance fails before record IO. These
+controls qualify explicit retirement, not the pending default rollout.
 
 Browser consumers exercise the Rust/WASM history reader, aggregate snapshot,
 compaction accounting, fork-policy wire and generated declarations. Native

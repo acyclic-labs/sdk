@@ -172,6 +172,9 @@ pub(super) async fn publication<P: StreamProvider>(
     }
     let mut preview = reducer.clone();
     preview.apply_committed(event.clone())?;
+    // The staged projection becomes visible only in the same canonical commit
+    // that publishes these original operation/effect indexes and checkpoint.
+    preview.mark_indexed_terminal_effect(event)?;
     let snapshot = preview.snapshot_with_event_limit(1)?;
     crate::contract::validate_json_byte_bound(&snapshot, MAX_PROJECTION_BYTES)?;
     let bytes = crate::contract::canonical_json_bytes(&snapshot)?;

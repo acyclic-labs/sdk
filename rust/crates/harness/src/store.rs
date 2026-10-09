@@ -32,6 +32,11 @@ use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Existing default retained until the native receipt consumer adopts the
+/// authoritative async lookup. Finite retirement is currently explicit opt-in;
+/// default activation remains required composition work after consumer landing.
+pub const DEFAULT_TERMINAL_EFFECTS: usize = usize::MAX;
+
 fn fork_child_binding(seed: &ForkSeed) -> Result<(OperationId, EventReference)> {
     let revision = seed
         .parent_revision
@@ -191,6 +196,7 @@ pub struct StreamAggregate<P> {
     merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
     extension_migrations: Option<Arc<dyn ExtensionMigrationProvider>>,
     limits: Limits,
+    effect_history_limits: HistoryReadLimits,
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
@@ -573,7 +579,38 @@ impl<P: StreamProvider> StreamAggregate<P> {
         schemas: SchemaRegistry,
         limits: HistoryReadLimits,
     ) -> Result<Self> {
-        Self::open_inner(client, authority, authority_verifier, schemas, None, limits).await
+        Self::open_with_projection_limits(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            limits,
+            DEFAULT_TERMINAL_EFFECTS,
+        )
+        .await
+    }
+
+    /// Opens with finite cold input bounds and a configurable terminal-effect
+    /// cache. Only originally indexed successes/failures can be retired; active
+    /// and indeterminate effects remain resident. Zero cache size is invalid.
+    pub async fn open_with_projection_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        limits: HistoryReadLimits,
+        maximum_terminal_effects: usize,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            None,
+            limits,
+            maximum_terminal_effects,
+        )
+        .await
     }
 
     /// Restores an integrity-checked snapshot, then replays its retained suffix.
@@ -626,6 +663,29 @@ impl<P: StreamProvider> StreamAggregate<P> {
             schemas,
             Some(snapshot),
             limits,
+            DEFAULT_TERMINAL_EFFECTS,
+        )
+        .await
+    }
+
+    /// Restores caller state with explicit cold input and terminal cache limits.
+    pub async fn open_from_snapshot_with_projection_limits(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        snapshot: Snapshot,
+        limits: HistoryReadLimits,
+        maximum_terminal_effects: usize,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client,
+            authority,
+            authority_verifier,
+            schemas,
+            Some(snapshot),
+            limits,
+            maximum_terminal_effects,
         )
         .await
     }
@@ -637,9 +697,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         schemas: SchemaRegistry,
         snapshot: Option<Snapshot>,
         limits: HistoryReadLimits,
+        maximum_terminal_effects: usize,
     ) -> Result<Self> {
         authority_verifier.verify_audience(&authority)?;
-        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 || maximum_terminal_effects == 0
+        {
             return Err(Error::Invalid(
                 "projection read bounds must be positive".into(),
             ));
@@ -662,6 +724,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Reducer::new(authority, authority_verifier, schemas)
         };
         reducer.set_resident_event_limit(1024)?;
+        reducer.set_resident_terminal_effect_limit(maximum_terminal_effects)?;
         let start = reducer.revision();
         let remaining_events = limits.maximum_events - loaded.consumed_events;
         if loaded.through_revision < start
@@ -672,33 +735,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
             ));
         }
         if start < loaded.through_revision {
-            let remaining_bytes = limits.maximum_bytes.saturating_sub(loaded.consumed_bytes);
-            if remaining_bytes == 0 {
-                return Err(Error::Invalid(
-                    "projection suffix exceeds byte allowance".into(),
-                ));
-            }
-            let page = reader
-                .read_page(
-                    &HistoryCursor {
-                        authority: reducer.authority().clone(),
-                        after_revision: start,
-                        through_revision: loaded.through_revision,
-                    },
-                    HistoryReadLimits {
-                        maximum_events: remaining_events,
-                        maximum_bytes: remaining_bytes,
-                    },
-                )
-                .await?;
-            if page.cursor.after_revision != loaded.through_revision {
-                return Err(Error::Invalid(
-                    "projection suffix exceeds byte allowance".into(),
-                ));
-            }
-            for event in page.events {
-                reducer.apply_committed(event)?;
-            }
+            Self::restore_suffix(
+                client,
+                &reader,
+                &mut reducer,
+                loaded.through_revision,
+                remaining_events,
+                limits.maximum_bytes.saturating_sub(loaded.consumed_bytes),
+            )
+            .await?;
         }
         crate::obs::obs_record!(
             "rev" = reducer.revision(),
@@ -713,7 +758,115 @@ impl<P: StreamProvider> StreamAggregate<P> {
             merge_verifier: None,
             extension_migrations: None,
             limits: Limits::default(),
+            effect_history_limits: default_projection_read_limits(),
         })
+    }
+
+    async fn restore_suffix(
+        client: &StreamClient<P>,
+        reader: &HistoryReader<P>,
+        reducer: &mut Reducer,
+        through: u64,
+        maximum_events: u32,
+        maximum_bytes: u64,
+    ) -> Result<()> {
+        if maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "projection suffix exceeds byte allowance".into(),
+            ));
+        }
+        let read = reader
+            .read_page_counted(
+                &HistoryCursor {
+                    authority: reducer.authority().clone(),
+                    after_revision: reducer.revision(),
+                    through_revision: through,
+                },
+                HistoryReadLimits {
+                    maximum_events,
+                    maximum_bytes,
+                },
+            )
+            .await?;
+        if read.page.cursor.after_revision != through {
+            return Err(Error::Invalid(
+                "projection suffix exceeds byte allowance".into(),
+            ));
+        }
+        let mut used = read.bytes;
+        for (event, record) in read.page.events.into_iter().zip(read.records) {
+            let (indexed, bytes) = effects::retirement_proof(
+                client,
+                reducer.authority(),
+                &event,
+                &record,
+                maximum_bytes.saturating_sub(used),
+            )
+            .await?;
+            used = used
+                .checked_add(bytes)
+                .filter(|total| *total <= maximum_bytes)
+                .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
+            reducer.apply_committed(event.clone())?;
+            if indexed {
+                reducer.mark_indexed_terminal_effect(&event)?;
+            }
+            reducer.enforce_terminal_effect_limit()?;
+        }
+        Ok(())
+    }
+
+    /// Configures retirement of originally indexed successful/failed effects.
+    /// Active/indeterminate states and protected legacy terminal entries stay resident.
+    pub fn with_resident_terminal_effect_limit(mut self, maximum: usize) -> Result<Self> {
+        self.reducer.set_resident_terminal_effect_limit(maximum)?;
+        Ok(self)
+    }
+
+    /// Sets the finite archive allowance used by task-owner effect permission
+    /// classification, including exact retries whose terminal state was retired.
+    pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "effect history bounds must be positive".into(),
+            ));
+        }
+        self.effect_history_limits = limits;
+        Ok(self)
+    }
+
+    /// Reads an exact typed effect at this aggregate's current committed cut.
+    /// Cached data and archival data share explicit input/output bounds; this
+    /// observation never refreshes, dispatches or admits an operation.
+    pub async fn effect(
+        &self,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+    ) -> Result<Option<crate::core::EffectState>> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid("effect read bounds must be positive".into()));
+        }
+        if let Some(state) = self.reducer.effect(effect) {
+            crate::contract::validate_json_byte_bound(state, limits.maximum_bytes)?;
+            return Ok(Some(state.clone()));
+        }
+        self.history_reader()?
+            .effect(
+                &HistoryCursor {
+                    authority: self.reducer.authority().clone(),
+                    after_revision: 0,
+                    through_revision: self.reducer.revision(),
+                },
+                effect,
+                limits,
+            )
+            .await
+    }
+
+    fn apply_published_event(&mut self, event: &crate::core::Event) -> Result<ApplyResult> {
+        let result = self.reducer.apply_committed(event.clone())?;
+        self.reducer.mark_indexed_terminal_effect(event)?;
+        Ok(result)
     }
 
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
@@ -852,7 +1005,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate must refresh to the indexed operation boundary".into(),
                 ));
             }
-            return self.reducer.apply_committed(event).map(Some);
+            let indexed =
+                effects::retirement_proof_for_event(&self.client, self.reducer.authority(), &event)
+                    .await?;
+            let result = self.reducer.apply_committed(event.clone())?;
+            if indexed {
+                self.reducer.mark_indexed_terminal_effect(&event)?;
+            }
+            self.reducer.enforce_terminal_effect_limit()?;
+            return Ok(Some(result));
         }
         Ok(Some(ApplyResult::Replayed { event }))
     }
@@ -939,7 +1100,19 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh event binding is invalid".into(),
                 ));
             }
-            self.reducer.apply_committed(event)?;
+            let (indexed, _) = effects::retirement_proof(
+                &self.client,
+                self.reducer.authority(),
+                &event,
+                &record,
+                2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+            )
+            .await?;
+            self.reducer.apply_committed(event.clone())?;
+            if indexed {
+                self.reducer.mark_indexed_terminal_effect(&event)?;
+            }
+            self.reducer.enforce_terminal_effect_limit()?;
             consumed += 1;
         }
         if consumed == 0 {
@@ -1039,8 +1212,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 observation: crate::core::EffectAttestation { effect_id, .. },
             } => {
                 let effect = self
-                    .reducer
-                    .effect(*effect_id)
+                    .effect(*effect_id, self.effect_history_limits)
+                    .await?
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
                 owner.require_effect_grants(&effect.provider, false)?;
                 if matches!(command.action, Action::ResolveEffect { .. }) {
@@ -1073,8 +1246,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "task publication lost its owner or conversation tail".into(),
             ));
         }
-        self.reducer
-            .apply_committed(event)
+        self.apply_published_event(&event)
             .map_err(|_| Error::Indeterminate(command.operation_id))
     }
 
@@ -1165,7 +1337,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 if publication.verify(&envelope).is_err() {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
-                match self.reducer.apply_committed(event) {
+                match self.apply_published_event(&event) {
                     Ok(result) => Ok(result),
                     Err(_) => return Err(Error::Indeterminate(command.operation_id)),
                 }

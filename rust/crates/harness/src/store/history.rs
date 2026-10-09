@@ -43,6 +43,12 @@ pub struct HistoryPage {
     pub cursor: HistoryCursor,
 }
 
+pub(super) struct CountedHistoryPage {
+    pub(super) page: HistoryPage,
+    pub(super) records: Vec<acyclic_stream::Record>,
+    pub(super) bytes: u64,
+}
+
 /// An owner-bound Stream handle, with no reducer, history cache or replay on open.
 pub struct HistoryReader<P> {
     client: StreamClient<P>,
@@ -464,6 +470,16 @@ impl<P: StreamProvider> HistoryReader<P> {
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
     ) -> Result<HistoryPage> {
+        self.read_page_counted(cursor, limits)
+            .await
+            .map(|read| read.page)
+    }
+
+    pub(super) async fn read_page_counted(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+    ) -> Result<CountedHistoryPage> {
         self.verifier.verify_audience(&cursor.authority)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
@@ -485,12 +501,17 @@ impl<P: StreamProvider> HistoryReader<P> {
         .map_err(|_| Error::Invalid("history page count exceeds platform bounds".into()))?;
         let mut events = Vec::new();
         if count == 0 {
-            return Ok(HistoryPage {
-                events,
-                cursor: next,
+            return Ok(CountedHistoryPage {
+                page: HistoryPage {
+                    events,
+                    cursor: next,
+                },
+                records: Vec::new(),
+                bytes: 0,
             });
         }
         let mut records = self.stream.read(cursor.after_revision, count).await?;
+        let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         while let Some(record) = records.try_next().await? {
             if events.len() >= count as usize || record.sequence != next.after_revision {
@@ -510,15 +531,20 @@ impl<P: StreamProvider> HistoryReader<P> {
             )?;
             next.after_revision = event.revision;
             events.push(event);
+            retained_records.push(record);
         }
         if events.is_empty() {
             return Err(Error::Storage(
                 "history page stopped before its pinned boundary".into(),
             ));
         }
-        Ok(HistoryPage {
-            events,
-            cursor: next,
+        Ok(CountedHistoryPage {
+            page: HistoryPage {
+                events,
+                cursor: next,
+            },
+            records: retained_records,
+            bytes,
         })
     }
 

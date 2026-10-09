@@ -567,6 +567,13 @@ pub struct EffectState {
     pub attempts: Vec<EffectAttemptId>,
 }
 
+pub(super) fn settled_effect(status: &EffectStatus) -> bool {
+    matches!(
+        status,
+        EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. }
+    )
+}
+
 pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
     match payload {
         EventPayload::EffectPlanned { effect_id, .. }
@@ -1480,6 +1487,9 @@ pub struct Reducer {
     resident_event_limit: usize,
     active_extension_revision: Option<u64>,
     effects: BTreeMap<EffectId, EffectState>,
+    indexed_terminal_effects: VecDeque<EffectId>,
+    effects_archived: bool,
+    resident_terminal_effect_limit: usize,
     forks: BTreeMap<Authority, ForkSeed>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
@@ -1510,6 +1520,9 @@ impl Reducer {
             resident_event_limit: usize::MAX,
             active_extension_revision: None,
             effects: BTreeMap::new(),
+            indexed_terminal_effects: VecDeque::new(),
+            effects_archived: false,
+            resident_terminal_effect_limit: usize::MAX,
             forks: BTreeMap::new(),
             published_merges: BTreeSet::new(),
             conversation: ConversationState::default(),
@@ -1909,7 +1922,7 @@ impl Reducer {
                 "operation identity is already bound to another intent".into(),
             ));
         }
-        if !identity_checked && self.archived_through_revision() != 0 {
+        if !identity_checked && (self.archived_through_revision() != 0 || self.effects_archived) {
             return Err(Error::Unsupported(
                 "operation identity requires authoritative archive lookup".into(),
             ));
@@ -2111,6 +2124,96 @@ impl Reducer {
             .take(limit)
             .cloned()
             .collect())
+    }
+
+    pub(crate) fn set_resident_terminal_effect_limit(&mut self, maximum: usize) -> Result<()> {
+        if maximum == 0 {
+            return Err(Error::Invalid(
+                "terminal effect cache limit must be positive".into(),
+            ));
+        }
+        if maximum == usize::MAX {
+            self.resident_terminal_effect_limit = maximum;
+            return Ok(());
+        }
+        let indexed: BTreeSet<_> = self.indexed_terminal_effects.iter().collect();
+        let protected = self
+            .effects
+            .iter()
+            .filter(|(id, effect)| settled_effect(&effect.status) && !indexed.contains(id))
+            .count();
+        if protected > maximum {
+            return Err(Error::Unsupported(
+                "unindexed terminal effects exceed cache allowance".into(),
+            ));
+        }
+        self.resident_terminal_effect_limit = maximum;
+        self.trim_terminal_effects(protected);
+        Ok(())
+    }
+
+    pub(crate) fn mark_indexed_terminal_effect(&mut self, event: &Event) -> Result<()> {
+        let EventPayload::EffectResolved { observation } = &event.payload else {
+            return Ok(());
+        };
+        if !settled_effect(&observation.status) {
+            return Ok(());
+        }
+        let state = self
+            .effects
+            .get(&observation.effect_id)
+            .ok_or_else(|| Error::Storage("indexed terminal effect is absent".into()))?;
+        if state.status != observation.status {
+            return Err(Error::Storage(
+                "indexed terminal effect differs from admitted result".into(),
+            ));
+        }
+        // Original core transitions settle an effect only once. Every caller
+        // marks the just-applied canonical head, so only an immediate repeated
+        // mark can already be eligible. Avoid a lifetime queue scan while the
+        // staged rollout still retains terminal effects by default.
+        if self.indexed_terminal_effects.back() != Some(&observation.effect_id) {
+            self.indexed_terminal_effects
+                .push_back(observation.effect_id);
+        }
+        if self.resident_terminal_effect_limit == usize::MAX {
+            return Ok(());
+        }
+        self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
+    }
+
+    pub(crate) fn enforce_terminal_effect_limit(&mut self) -> Result<()> {
+        if self.resident_terminal_effect_limit == usize::MAX {
+            return Ok(());
+        }
+        self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
+    }
+
+    fn trim_terminal_effects(&mut self, protected: usize) {
+        let budget = self
+            .resident_terminal_effect_limit
+            .saturating_sub(protected);
+        while self.indexed_terminal_effects.len() > budget {
+            if let Some(effect) = self.indexed_terminal_effects.pop_front() {
+                self.effects.remove(&effect);
+                self.effects_archived = true;
+            }
+        }
+    }
+
+    /// Number of resident active and cached terminal effect projections.
+    #[must_use]
+    pub fn resident_effect_count(&self) -> usize {
+        self.effects.len()
+    }
+
+    /// Cached known successes/failures; indeterminate effects remain active.
+    #[must_use]
+    pub fn resident_terminal_effect_count(&self) -> usize {
+        self.effects
+            .values()
+            .filter(|effect| settled_effect(&effect.status))
+            .count()
     }
 
     /// Reconstructs one read-only effect using the same authorization and

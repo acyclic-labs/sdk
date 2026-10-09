@@ -10,7 +10,10 @@ use crate::{
     },
     effects::EffectRegistry,
     runtime::DurableEffectObserver,
-    store::StreamAggregate,
+    store::{
+        DEFAULT_TERMINAL_EFFECTS, HistoryReadLimits, StreamAggregate,
+        default_projection_read_limits,
+    },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{StreamClient, StreamProvider};
@@ -51,6 +54,8 @@ pub struct ConversationEffectHost<P> {
     schemas: SchemaRegistry,
     content: Arc<dyn ContentResidencyVerifier>,
     providers: EffectRegistry,
+    effect_history_limits: HistoryReadLimits,
+    terminal_effect_limit: usize,
 }
 
 impl<P: StreamProvider> ConversationEffectHost<P> {
@@ -85,7 +90,32 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             schemas,
             content,
             providers,
+            effect_history_limits: default_projection_read_limits(),
+            terminal_effect_limit: DEFAULT_TERMINAL_EFFECTS,
         })
+    }
+
+    /// Configures bounded original-effect lookup for archived result/retry reads.
+    pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "effect history bounds must be positive".into(),
+            ));
+        }
+        self.effect_history_limits = limits;
+        Ok(self)
+    }
+
+    /// Configures only the resident success/failure cache; active uncertainty
+    /// stays resident and every archived observation keeps its original proof.
+    pub fn with_resident_terminal_effect_limit(mut self, maximum: usize) -> Result<Self> {
+        if maximum == 0 {
+            return Err(Error::Invalid(
+                "terminal effect cache limit must be positive".into(),
+            ));
+        }
+        self.terminal_effect_limit = maximum;
+        Ok(self)
     }
 
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
@@ -93,14 +123,17 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     async fn aggregate_on(&self, stream: &StreamClient<P>) -> Result<StreamAggregate<P>> {
-        Ok(StreamAggregate::open(
+        StreamAggregate::open_with_projection_limits(
             stream,
             self.authority.clone(),
             self.issuer.verifier(),
             self.schemas.clone(),
+            default_projection_read_limits(),
+            self.terminal_effect_limit,
         )
         .await?
-        .with_content_verifier(Arc::clone(&self.content)))
+        .with_content_verifier(Arc::clone(&self.content))
+        .with_effect_history_read_limits(self.effect_history_limits)
     }
 
     /// Runs one task command through the existing conversation effect lifecycle.
@@ -138,10 +171,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let mut effect = self
             .aggregate_on(&owner.stream())
             .await?
-            .reducer()
-            .effect(effect_id)
-            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?
-            .clone();
+            .effect(effect_id, self.effect_history_limits)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
         if !matches!(
             effect.status,
             EffectStatus::Planned | EffectStatus::Dispatched | EffectStatus::Indeterminate
@@ -169,10 +201,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         effect = self
             .aggregate_on(&owner.stream())
             .await?
-            .reducer()
-            .effect(effect_id)
-            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?
-            .clone();
+            .effect(effect_id, self.effect_history_limits)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
         if !matches!(
             effect.status,
             EffectStatus::Dispatched | EffectStatus::Indeterminate
@@ -223,10 +254,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let effect = self
             .aggregate_on(&owner.stream())
             .await?
-            .reducer()
-            .effect(effect_id)
-            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?
-            .clone();
+            .effect(effect_id, self.effect_history_limits)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
         if effect.provider != plan.provider
             || effect.guarantee != plan.guarantee
             || effect.effect_kind != plan.effect_kind
@@ -327,8 +357,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let stream = self.stream.clone();
             let mut aggregate = self.aggregate_on(&stream).await?;
             let current = aggregate
-                .reducer()
-                .effect(effect_id)
+                .effect(effect_id, self.effect_history_limits)
+                .await?
                 .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
             if current.status == observed {
                 return Ok(observed);
@@ -374,10 +404,9 @@ impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
         Box::pin(async move {
             let aggregate = self.aggregate().await?;
             let effect = aggregate
-                .reducer()
-                .effect(effect_id)
-                .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?
-                .clone();
+                .effect(effect_id, self.effect_history_limits)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
             if !matches!(
                 effect.status,
                 EffectStatus::Dispatched | EffectStatus::Indeterminate
