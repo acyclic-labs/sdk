@@ -1,0 +1,38 @@
+{
+  "hex_version": "2.5.1",
+  "tool_inventory_sha256": "642a706808fc10a6042e525340ea5e4589e0c0f0047988667cf47b9583720182",
+  "tool_files": 135,
+  "lock_sha256": "50a0d1147fff8ea5ff25458d20db6a5e6b7f51b0b464080e3b02e25894696cda",
+  "dependencies": [
+    {
+      "name": "googleapis",
+      "version": "0.1.0",
+      "archive_sha256": "1989a7244fd17d3eb5f3de311a022b656c3736b39740db46506157c4604bd212"
+    },
+    {
+      "name": "grpc",
+      "version": "1.0.5",
+      "archive_sha256": "5e892e542a2e0f05ed17a4ad3814483e3980eaa93906f993dac9e08369b178ea"
+    },
+    {
+      "name": "grpc_core",
+      "version": "1.0.5",
+      "archive_sha256": "a18ae7380cfebc20271aad36393e8aa041e1faa926fa25f40328e4350f83d8f0"
+    },
+    {
+      "name": "jason",
+      "version": "1.4.5",
+      "archive_sha256": "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"
+    },
+    {
+      "name": "protobuf",
+      "version": "0.17.1",
+      "archive_sha256": "76770ecda0ef057e540932f15b5a143ba8877875e88727f53429a7dc4dbf8b6c"
+    },
+    {
+      "name": "telemetry",
+      "version": "1.4.2",
+      "archive_sha256": "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1"
+    }
+  ]
+}

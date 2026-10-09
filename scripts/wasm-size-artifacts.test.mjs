@@ -17,4 +17,3 @@ test("generated real artifacts conserve independently counted file and code byte
     assert.ok(report.definedFunctions > 100);
   }
 });
-
