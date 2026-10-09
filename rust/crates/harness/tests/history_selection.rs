@@ -1,3 +1,5 @@
+//! Public-API regression coverage for bounded candidate history selection.
+
 use acyclic_harness::{
     AgentId, OperationId, Result,
     conversation::{
