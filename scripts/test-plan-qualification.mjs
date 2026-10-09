@@ -357,9 +357,10 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     assert.notEqual(spawnSync("git", ["cat-file", "-e", donor], { cwd: root }).status, 0, "squash donor must actually be absent");
     const repo = { full_name: repository }, path = ".github/workflows/qualification.yml";
     const donorResponse = { sha: donorTreeSha, truncated: false, tree: donorEntries };
+    const donorCommitResponse = { sha: donor, tree: { sha: donorTreeSha } };
     const api = {
       [`repos/${repository}/commits/${head}/pulls`]: [{ merged_at: "today", merge_commit_sha: head, base: { ref: "main", repo }, head: { sha: donor, repo } }],
-      [`repos/${repository}/git/commits/${donor}`]: { sha: donor, tree: { sha: donorTreeSha } },
+      [`repos/${repository}/git/commits/${donor}`]: donorCommitResponse,
       [`repos/${repository}/git/trees/${donorTreeSha}?recursive=1`]: donorResponse,
       [`repos/${repository}/actions/workflows/qualification.yml`]: { id: 9, path },
       [`repos/${repository}/actions/workflows/9/runs?event=pull_request&head_sha=${donor}&status=success&per_page=5`]: { workflow_runs: [{ id: 7, run_attempt: 2, workflow_id: 9, path, event: "pull_request", head_sha: donor, head_repository: repo, status: "completed", conclusion: "success" }] },
@@ -382,8 +383,7 @@ test("the planner CLI promotes main proof and fails closed without changing PR/f
     };
     const selected = run("select");
     assert.deepEqual(selected.matrix, []);
-    for (const mismatch of ["commit", "tree"]) {
-      const record = mismatch === "commit" ? api[`repos/${repository}/git/commits/${donor}`] : donorResponse;
+    for (const record of [donorCommitResponse, donorResponse]) {
       const sha = record.sha;
       record.sha = "f".repeat(40);
       put("api.json", JSON.stringify(api));
