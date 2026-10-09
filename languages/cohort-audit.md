@@ -54,9 +54,11 @@ Protify and Rust ABI changes remain foundation-owned.
 
 ## Coupled qualification proposal
 
-Await the foundation owner's exact reconstructed source commit and accepted
-interface/lock hashes. Prepare one source-attested generation run together with
-the docs owner; reuse its canonical exports and native assets across consumers.
+The Rust/TypeScript foundation is protected-merged at
+`5f13157414a5f48425007ffd957ea7d09611e5fe` (PR #303). Use that accepted
+source's exact canonical exports across consumers. The future embedded ABI is
+still unimplemented, as recorded in `ffi/README.md`; its absence does not exclude
+otherwise practical language transport targets.
 Run local cohort checks with jobs and test threads set to one, bounded caches
 and owned output paths. Local builds, tests and locked dependency installation
 are authorized; coordinate contention without a repeated host-approval gate.
@@ -128,7 +130,104 @@ Keep in-process dispatch, Rust-backed remote semantics, and TLS evidence as
 separate gates. Reusing its scenario count as complete semantic coverage would
 exceed the consumer's actual scope.
 
+The new `tools/sdk-generator/backends/java` producer consumes verified descriptor
+snapshots through protoc 28.3 and grpc-java 1.75.0. The plugin executable matches
+Maven Central's published host digest. Eleven offline generator/runner controls pass, and
+real Actors/Workers/Stream generation from foundation source
+`51f3fe070c7b48ff5c7413671638634086aabe75` produces an installable Java 17 JAR.
+Two clean builds and a third through the reusable producer are byte-identical,
+SHA-256 `86101bcb8ab71fdc95fa7472e2a4f8e684afb7b42fe816e7abd57c4cda96115b`.
+A consumer compiled against the installed artifact matches the Rust API
+descriptors, exercises bytes, unsigned bounds, optional-zero presence and oneof,
+and checks each generated gRPC method shape against its canonical descriptor.
+All three invalid byte/integer assignments fail compilation as expected.
+This evidence qualifies those installed transport bindings. It does not qualify
+Rust-backed RPC, the remaining families, the final foundation revision, or the
+pending embedded runtime boundary.
+
 Supply executable snippets and scoped results to the docs owner with exact Rust
 source, package version, package hash, snippet source hash, runtime/compiler and
 observed output. Preserve the docs owner's TypeScript receipt interface without
 claiming its six execution results for another language.
+
+### Accepted-foundation regeneration and .NET tooling
+
+Go and Java installed transport controls pass on exact Git object exports from
+accepted foundation `5f13157414a5f48425007ffd957ea7d09611e5fe`. Go's two clean
+archives have SHA-256
+`80fc7f6982e13ad1c0c030bc8bdc19e2d3b2b00af66a978e7351c9565d51fae4`.
+Java's two clean offline builds have JAR SHA-256
+`e0c5aeba5042764c2aa73de65456f538c25e2723506eb3628044cf739557ba26`.
+Java tooling is protected-merged at `f80ad5d25c93c73487381feee43f3256b514a928`
+(PR #310), following exact-head required qualification and resolved reviews.
+
+The reusable `tools/sdk-generator/backends/dotnet` producer consumes the same
+Rust exports using protoc 28.3 and the hash-pinned Grpc.Tools 2.71.0 C# plugin.
+Its net8.0 project pins SDK 8.0.425 and dependencies. Shared Rust manifest
+admission lives in `tools/sdk-generator/shared/authority.mjs` for Java and .NET.
+Twelve focused controls cover staging, pinned inputs, isolated installation,
+independent negative compiles and prevention of success receipts after failure.
+Routine CI executes these standard Node controls and skips the Go toolchain
+download when the Go backend and its dependencies are unaffected.
+
+Two clean .NET producer/qualifier runs on Windows x64 produce NuGet SHA-256
+`e8160d1010c6805166e1974bfef35d3cf3ee080ececc087c52c63bca86fd9da5`.
+The generated project excludes ambient Git/SourceLink metadata. NuGet 7.9.0's
+maintained deterministic packer uses a fixed timestamp. Each qualifier verifies
+five dependency archives against official raw catalog hashes, restores offline
+into a fresh cache and installs the exact newly built SDK archive. The positive
+consumer checks loaded assembly bytes, all three Rust API descriptors, bytes,
+unsigned bounds, optional-zero presence, oneof and exact gRPC method shapes.
+Three separate negative consumers fail only for their intended CS0029 type
+mismatches. Signed NuGet lock content hashes and raw archive hashes are distinct;
+both are checked through pinned archive admission and locked restore.
+This evidence covers Actors, Workers and Stream installed transport bindings.
+Remaining families and platforms, Rust-backed RPC, TLS/authentication,
+cancellation/recovery and embedded runtime qualification remain outstanding.
+
+### Installed Kotlin and Scala interoperability
+
+Kotlin 2.4.20 and Scala 3.10.0 consumers pass against the accepted-foundation
+Java JAR `e0c5aeba5042764c2aa73de65456f538c25e2723506eb3628044cf739557ba26`
+on JDK 17.0.14. The reusable Java backend's `src/qualify-jvm.mjs` admits a
+matching Java installation receipt and Rust authority, verifies all compiler
+and dependency JAR hashes, and compiles against fresh snapshots. Its maintained
+compiler manifests record official Maven coordinates and published checksums.
+Eleven offline runner tests cover both languages, drift, destination admission,
+unexpected compiler versions and prevention of success after failed controls.
+
+Each actual consumer executes the shared Java controls for all three API
+descriptors, bytes, unsigned bounds, optional-zero presence, both oneof branches
+and exact gRPC method shapes. Language-specific builder and serialization calls
+also pass. Three independently compiled invalid byte/integer assignments fail
+for their intended type errors in each language. Installed-JAR provenance is
+checked at runtime. Receipts retain source, compiler/tool, dependency, control
+and log hashes; compiler work is bounded to one CPU and 512 MiB.
+These results establish Java-binding interoperability. Dedicated Kotlin/Scala
+API generation, remaining families, Rust-backed RPC, TLS/authentication,
+cancellation/recovery and embedded qualification remain outstanding.
+
+### Reusable Ruby transport tooling
+
+The reusable Ruby backend consumes the accepted Rust descriptor exports through
+hash-pinned protoc 28.3 and the maintained grpc-tools 1.84.0 plugin. It stages
+only verified descriptors, rejects unsafe/overlapping destinations, and retains
+per-input and per-output receipts. Seventeen offline producer/qualifier controls
+cover admission, isolation, independent runtime negatives and failure receipts.
+Routine CI selects affected backends and downloads no Ruby tools or gems.
+
+On portable RubyInstaller 3.4.11-1 Windows x64, the accepted foundation
+`5f13157414a5f48425007ffd957ea7d09611e5fe` passes actual installed transport
+controls. Independent generation runs emit identical sources; clean official
+RubyGems builds and the reusable qualifier produce gem SHA-256
+`c4bac636334fbd2662b5eea962d48ad82b36301a4f66d78215bfd98d5c59c197`.
+The qualifier verifies four raw dependency archives and pinned runtime components,
+installs offline into a fresh cache, and checks the exact SDK archive and payload.
+It compares complete Actors/Workers/Stream API descriptors after removing only
+source comments and Buf image tag 8042, then checks wire bytes, unsigned bounds,
+optional zero, both oneof branches/switching/clearing and gRPC message/method shapes.
+Loaded SDK source provenance and completion messages are checked. Three independent
+invalid assignments produce their intended runtime TypeErrors. Ruby's dynamic
+checks do not establish compile-time typing. Receipts retain all runtime/cache
+file hashes, controls and logs. Remaining families/platforms, Rust-backed RPC,
+TLS/authentication, cancellation/recovery and embedded runtime remain pending.

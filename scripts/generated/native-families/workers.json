@@ -23,6 +23,7 @@
     "package.json",
     "patches/napi-rs-cli-3.10.5.patch",
     "rust-toolchain.toml",
+    "rust/crates/grpc-observability",
     "rust/crates/proto-codegen",
     "rust/crates/workers",
     "rust/vendor/protify-proc-macro-0.1.4",

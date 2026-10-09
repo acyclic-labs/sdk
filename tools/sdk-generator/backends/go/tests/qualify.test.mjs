@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { sha256 } from "../../../../scripts/archive-utils.mjs";
-import { qualify, validatePayload, verifyArchive } from "./qualify.mjs";
+import { sha256 } from "../../../../../scripts/archive-utils.mjs";
+import { qualify, validatePayload, verifyArchive } from "../src/qualify.mjs";
 
 const entry = (path, body = "module fixture\n", type = "0") => ({ path, body: Buffer.from(body), type });
 const receiptFor = entries => ({ outputs: entries.map(item => item.path),

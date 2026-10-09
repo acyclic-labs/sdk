@@ -281,6 +281,20 @@ export interface ContextRoot {
 export type ContextSourceValue = { kind: "file"; file: WasmFileRefWire } | { kind: "attribute"; attribute: ContextAttribute };
 
 /**
+ * Actual context and output capacities of one immutable selected model.
+ */
+export interface ModelContextCapacity {
+    /**
+     * Maximum tokens in the provider's complete input plus generated output.
+     */
+    context_tokens: number;
+    /**
+     * Maximum generated tokens supported by the selected model.
+     */
+    output_tokens: number;
+}
+
+/**
  * Admission barrier for every version-pinned file in a conversation message.
  *
  * Implementations must verify exact byte residency and access before Stream
@@ -626,6 +640,27 @@ export interface ContextDiscovery {
  * Placement of source messages relative to existing context.
  */
 export type ContextPlacement = "prepend" | "append";
+
+/**
+ * Provider-owned additive upper bounds for an exact prepared request.
+ * Counters must include structured content, native media and provider framing.
+ * The SDK supplies no tokenizer or model-name capacity catalog.
+ */
+export interface ModelTokenCount {
+    /**
+     * Binds every count to the exact canonical model request.
+     */
+    request_digest: number[];
+    /**
+     * Upper bound for tools, options and request framing independent of messages.
+     */
+    fixed_tokens: number;
+    /**
+     * Ordered per-message upper bounds, including message-specific framing.
+     * The provider must make these safe for ordered subsequences of this request.
+     */
+    message_tokens: number[];
+}
 
 /**
  * Public Rust projection for the immutable workflow admission envelope.

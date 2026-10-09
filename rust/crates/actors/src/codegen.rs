@@ -97,5 +97,13 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
         .server_mod_attribute(".", "#[cfg(not(target_arch = \"wasm32\"))]")
         .compile_with_config(prost, &[protoc_proto], &[protoc_proto_root, include_path])
         .map_err(|error| io::Error::other(format!("Actors tonic generation failed: {error}")))?;
+    if std::env::var("CARGO_CFG_TARGET_ARCH").map_err(io::Error::other)? != "wasm32" {
+        let transport = rust_root.join("acyclic.actors.v1.rs");
+        let observed = acyclic_grpc_observability::codegen::observe_clients(
+            &fs::read_to_string(&transport)?,
+            "actors",
+        )?;
+        fs::write(transport, observed)?;
+    }
     Ok(())
 }

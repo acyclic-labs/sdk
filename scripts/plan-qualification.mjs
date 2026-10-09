@@ -25,10 +25,14 @@ const qualificationDefinition = path =>
   path.startsWith(".github/actions/");
 const unrelatedGithub = path => path.startsWith(".github/") && !qualificationDefinition(path);
 const standaloneProjects = path => path.startsWith("arena/") || path.startsWith("examples/");
-// This stdlib-only Go module has its own focused CI and is not read by Cargo,
+// These isolated generators have focused CI and are not read by Cargo,
 // TypeScript generation or native/WASM builds.
 const languageGenerator = path =>
   path.startsWith("tools/sdk-generator/backends/go/") ||
+  path.startsWith("tools/sdk-generator/backends/java/") ||
+  path.startsWith("tools/sdk-generator/backends/dotnet/") ||
+  path.startsWith("tools/sdk-generator/backends/ruby/") ||
+  path.startsWith("tools/sdk-generator/shared/") ||
   path === "tools/sdk-generator/README.md";
 
 export const qualificationEventKinds = Object.freeze({

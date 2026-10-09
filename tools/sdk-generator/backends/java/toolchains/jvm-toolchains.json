@@ -1,0 +1,141 @@
+{
+  "scala": {
+    "artifacts": [
+      {
+        "sha256": "51e241938950723faebe420eb4d3bd4da3a1b686f6be574ad0ff4040a6b4bc1f",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-lang/scala3-compiler_3/3.10.0/scala3-compiler_3-3.10.0.jar",
+        "published_sha1": "d2cdcb1492182240acb681122769a6daa36df1ce",
+        "path": "org/scala-lang/scala3-compiler_3/3.10.0/scala3-compiler_3-3.10.0.jar"
+      },
+      {
+        "sha256": "2293237c57462efcc200e1cf9ec7b5764c17458b3886689cc16c5ec9a5552ddf",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-lang/scala3-interfaces/3.10.0/scala3-interfaces-3.10.0.jar",
+        "published_sha1": "ec5cff0ae3f3c9b8e3ae626756305a8d1b065056",
+        "path": "org/scala-lang/scala3-interfaces/3.10.0/scala3-interfaces-3.10.0.jar"
+      },
+      {
+        "sha256": "cd8088db4457e84610cfdf0381e8c2f92f409fb565ad5d792a3bdc7d37526058",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-lang/tasty-core_3/3.10.0/tasty-core_3-3.10.0.jar",
+        "published_sha1": "b397142cc659b5bb86b25312f67f7d947ba09ef6",
+        "path": "org/scala-lang/tasty-core_3/3.10.0/tasty-core_3-3.10.0.jar"
+      },
+      {
+        "sha256": "4daaede24ddfeea082bbed096ba0c492d99e8428632e9fd3c38f82cf7aad4b63",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-lang/scala3-library_3/3.10.0/scala3-library_3-3.10.0.jar",
+        "published_sha1": "627db8d32c19992784d7c9e6ea36602c528ddb27",
+        "path": "org/scala-lang/scala3-library_3/3.10.0/scala3-library_3-3.10.0.jar"
+      },
+      {
+        "sha256": "b47befb29e02bbc08a10bbd387b35cf80ff9bf04fda8fdf3dda6c8ad6895f325",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar",
+        "published_sha1": "61d988a5a26d550bc3a08a777dd63b9e94393ad9",
+        "path": "org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar"
+      },
+      {
+        "sha256": "1bb99d091fba2597dc6d51193e9bbcf0d8447e7ed96bd8f0198b18152f09655c",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-util/9.10.1/asm-util-9.10.1.jar",
+        "published_sha1": "7bb9d450e8d4cbf9f9e04096c44bbfe7fba80b15",
+        "path": "org/ow2/asm/asm-util/9.10.1/asm-util-9.10.1.jar"
+      },
+      {
+        "sha256": "ed825d10ab1399c8c0cb669e688cf0c8c82629b4c8399b58352b68e92ca10fcb",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.10.1/asm-9.10.1.jar",
+        "published_sha1": "ada2141c0cc52ee8f5c48cd5fa4ce0e794f22236",
+        "path": "org/ow2/asm/asm/9.10.1/asm-9.10.1.jar"
+      },
+      {
+        "sha256": "3dfb0d5b6a106cd40b5b250e39935fbf2f927f4477546a5369a3ac609cf0506b",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.10.1/asm-tree-9.10.1.jar",
+        "published_sha1": "e244332a17564c1d1572449399a842de35881be2",
+        "path": "org/ow2/asm/asm-tree/9.10.1/asm-tree-9.10.1.jar"
+      },
+      {
+        "sha256": "dede75a21306b65974ecd8f87114ff6970f09fb794157a4ca09ab25c888c2bfc",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-analysis/9.10.1/asm-analysis-9.10.1.jar",
+        "published_sha1": "8d49f14d51f632cb1d87c88d1ceaf50db0d8af1b",
+        "path": "org/ow2/asm/asm-analysis/9.10.1/asm-analysis-9.10.1.jar"
+      },
+      {
+        "sha256": "6d0abefb7cbf972ea16edb37ec14835372505063a45f976ab7ea889ed9497895",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-commons/9.10.1/asm-commons-9.10.1.jar",
+        "published_sha1": "4229e4c55fd8e01c23f9fe9884075cc628aacc50",
+        "path": "org/ow2/asm/asm-commons/9.10.1/asm-commons-9.10.1.jar"
+      },
+      {
+        "sha256": "92f487a505eafdd0a033e4ff4f38a81509a655c76257c64e6808dd873cc145c3",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-sbt/compiler-interface/1.12.0/compiler-interface-1.12.0.jar",
+        "published_sha1": "8c684a52535bd2d7cd436a9f5769364a839a5bc3",
+        "path": "org/scala-sbt/compiler-interface/1.12.0/compiler-interface-1.12.0.jar"
+      },
+      {
+        "sha256": "1fc950a9e1a35385e79316e23c120d4fd184f6a7af0274e00a703b0dc76376af",
+        "url": "https://repo.maven.apache.org/maven2/org/scala-sbt/util-interface/1.11.5/util-interface-1.11.5.jar",
+        "published_sha1": "e691fff26e8814e5773084bec55639b1e7e30fed",
+        "path": "org/scala-sbt/util-interface/1.11.5/util-interface-1.11.5.jar"
+      }
+    ],
+    "main_class": "dotty.tools.dotc.Main",
+    "version": "3.10.0",
+    "runtime": [
+      "org/scala-lang/scala3-library_3/3.10.0/scala3-library_3-3.10.0.jar",
+      "org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar"
+    ]
+  },
+  "kotlin": {
+    "artifacts": [
+      {
+        "sha256": "cf97161430683fb9af96dc6a7017ffae1fe8737b80d12eee11f2fe3e76f8ded8",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.4.20/kotlin-compiler-embeddable-2.4.20.jar",
+        "published_sha1": "23b042894dcabe39edd0f8bd30b7be0f25fe9933",
+        "path": "org/jetbrains/kotlin/kotlin-compiler-embeddable/2.4.20/kotlin-compiler-embeddable-2.4.20.jar"
+      },
+      {
+        "sha256": "47a622dce7231b1916334b69a00bc1094adf6577e6492f9f06b3d9c2450fe459",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-build-tools-api/2.4.20/kotlin-build-tools-api-2.4.20.jar",
+        "published_sha1": "846d16ddb9652941ac68fe45dad92524358f0b89",
+        "path": "org/jetbrains/kotlin/kotlin-build-tools-api/2.4.20/kotlin-build-tools-api-2.4.20.jar"
+      },
+      {
+        "sha256": "2226de463d309d4a5500a481320b3dea515a6981dcae1def531fbc158884e25f",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.20/kotlin-stdlib-2.4.20.jar",
+        "published_sha1": "94c1451890d164aed65d43b3db0b7ecef7c183e7",
+        "path": "org/jetbrains/kotlin/kotlin-stdlib/2.4.20/kotlin-stdlib-2.4.20.jar"
+      },
+      {
+        "sha256": "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar",
+        "published_sha1": "919f0dfe192fb4e063e7dacadee7f8bb9a2672a9",
+        "path": "org/jetbrains/annotations/13.0/annotations-13.0.jar"
+      },
+      {
+        "sha256": "fc5a19df78be445d84e8352e0d01098a6a8181324aa50c6f7bf850338e81e1b4",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-script-runtime/2.4.20/kotlin-script-runtime-2.4.20.jar",
+        "published_sha1": "c5d2fe2964e557067ce970573bbc7ffa74f57cf4",
+        "path": "org/jetbrains/kotlin/kotlin-script-runtime/2.4.20/kotlin-script-runtime-2.4.20.jar"
+      },
+      {
+        "sha256": "3277ac102ae17aad10a55abec75ff5696c8d109790396434b496e75087854203",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-reflect/1.6.10/kotlin-reflect-1.6.10.jar",
+        "published_sha1": "1cbe9c92c12a94eea200d23c2bbaedaf3daf5132",
+        "path": "org/jetbrains/kotlin/kotlin-reflect/1.6.10/kotlin-reflect-1.6.10.jar"
+      },
+      {
+        "sha256": "eef72cf8f17e6d98d33e5b7c7e1cab31a1cf5fc34084dd5e563e7b1f3ef53435",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-daemon-embeddable/2.4.20/kotlin-daemon-embeddable-2.4.20.jar",
+        "published_sha1": "6216c8108a609251b8314bcc0f0ef7eb48e3b67a",
+        "path": "org/jetbrains/kotlin/kotlin-daemon-embeddable/2.4.20/kotlin-daemon-embeddable-2.4.20.jar"
+      },
+      {
+        "sha256": "9860906a1937490bf5f3b06d2f0e10ef451e65b95b269f22daf68a3d1f5065c5",
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.8.0/kotlinx-coroutines-core-jvm-1.8.0.jar",
+        "published_sha1": "ac1dc37a30a93150b704022f8d895ee1bd3a36b3",
+        "path": "org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.8.0/kotlinx-coroutines-core-jvm-1.8.0.jar"
+      }
+    ],
+    "main_class": "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+    "version": "2.4.20",
+    "runtime": [
+      "org/jetbrains/kotlin/kotlin-stdlib/2.4.20/kotlin-stdlib-2.4.20.jar"
+    ]
+  }
+}

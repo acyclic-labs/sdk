@@ -50,17 +50,17 @@ The backend is one Go package, split by responsibility:
 - `protoc_test.go`: optional real-compiler import control. Set `SDK_TEST_PROTOC`
   to an exact executable and `SDK_TEST_PROTOC_VERSION` to its complete version
   report to run it. Ordinary staging CI skips this download-dependent check.
-- `qualify.mjs` and `testdata/consumer/`: archive-installed Actors/Workers/Stream
+- `src/qualify.mjs` and `testdata/consumer/`: archive-installed Actors/Workers/Stream
   descriptor, wire round-trip and positive/negative Go type controls.
-- `qualify.test.mjs`: archive admission and qualification workflow regressions,
-  run with `node --test tools/sdk-generator/backends/go/qualify.test.mjs`.
+- `tests/qualify.test.mjs`: archive admission and qualification workflow regressions,
+  run with `node --test tools/sdk-generator/backends/go/tests/qualify.test.mjs`.
 
 For an actual generated package, create a tar.gz containing exactly the payload
 listed in `generation-receipt.json` (keep the receipt alongside the archive).
 Run the installed consumer with a prepared, pinned Go dependency cache:
 
 ```sh
-node tools/sdk-generator/backends/go/qualify.mjs \
+node tools/sdk-generator/backends/go/src/qualify.mjs \
   --package package.tar.gz --sha256 <archive-sha256> \
   --receipt generation-receipt.json --authority rust-export \
   --go /absolute/path/to/go --output /absolute/path/to/new-qualification-directory
