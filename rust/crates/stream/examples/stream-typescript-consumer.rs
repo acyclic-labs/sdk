@@ -1,3 +1,5 @@
+//! Executes the Rust Stream scenario projected into the TypeScript consumer guide.
+
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
     StreamProvider,
