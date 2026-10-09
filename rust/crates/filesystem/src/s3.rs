@@ -1075,6 +1075,7 @@ pub enum S3Error {
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 mod tests {
     use super::*;
     use crate::Fs;

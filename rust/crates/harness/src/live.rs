@@ -1,5 +1,6 @@
 //! Live-only bounded execution for arbitrary Rust futures.
 
+use crate::platform::{AbortHandle, TaskJoin};
 use crate::{Admission, OperationId, Outcome};
 use acyclic_stream::BoxProviderStream as BoxStream;
 use futures::{StreamExt, stream};
@@ -8,10 +9,7 @@ use std::{
     future::Future,
     sync::{Arc, Mutex, Weak},
 };
-use tokio::{
-    sync::{Semaphore, oneshot},
-    task::{AbortHandle, JoinHandle},
-};
+use tokio::sync::{Semaphore, oneshot};
 
 struct ActiveGuard {
     id: OperationId,
@@ -87,20 +85,20 @@ impl TaskGroup {
     /// Admits one live task.
     pub async fn spawn<T, F>(&self, future: F) -> TaskHandle<T>
     where
-        T: Send + 'static,
+        T: acyclic_stream::ProviderTask + 'static,
         F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
     {
         match self.try_spawn(future).await {
             Admission::Accepted(handle) => handle,
             Admission::Rejected { reason } => TaskHandle {
                 id: OperationId::new(),
-                join: Some(tokio::spawn(
-                    async move { Outcome::Failed { message: reason } },
-                )),
+                join: Some(TaskJoin::spawn(async move {
+                    Outcome::Failed { message: reason }
+                })),
             },
             Admission::Indeterminate { operation_id } => TaskHandle {
                 id: operation_id,
-                join: Some(tokio::spawn(async move {
+                join: Some(TaskJoin::spawn(async move {
                     Outcome::Indeterminate { operation_id }
                 })),
             },
@@ -110,7 +108,7 @@ impl TaskGroup {
     /// Returns an explicit rejection when cancellation has closed admission.
     pub async fn try_spawn<T, F>(&self, future: F) -> Admission<TaskHandle<T>>
     where
-        T: Send + 'static,
+        T: acyclic_stream::ProviderTask + 'static,
         F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
     {
         let id = OperationId::new();
@@ -130,10 +128,7 @@ impl TaskGroup {
                 },
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let join = tokio::spawn(task);
-        #[cfg(target_arch = "wasm32")]
-        let join = tokio::task::spawn_local(task);
+        let join = TaskJoin::spawn(task);
         {
             let mut admission = self
                 .state
@@ -207,7 +202,7 @@ impl TaskGroup {
     /// Admits many independent tasks without serially awaiting results.
     pub async fn spawn_many<T, F, I>(&self, futures: I) -> Vec<TaskHandle<T>>
     where
-        T: Send + 'static,
+        T: acyclic_stream::ProviderTask + 'static,
         F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
         I: IntoIterator<Item = F>,
     {
@@ -220,7 +215,7 @@ impl TaskGroup {
     /// Preserves one admission result per input.
     pub async fn admit_many<T, F, I>(&self, futures: I) -> Vec<Admission<TaskHandle<T>>>
     where
-        T: Send + 'static,
+        T: acyclic_stream::ProviderTask + 'static,
         F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
         I: IntoIterator<Item = F>,
     {
@@ -234,7 +229,7 @@ impl TaskGroup {
 /// Addressable handle for an admitted live task.
 pub struct TaskHandle<T> {
     id: OperationId,
-    join: Option<JoinHandle<Outcome<T>>>,
+    join: Option<TaskJoin<T>>,
 }
 
 impl<T> TaskHandle<T> {
@@ -258,13 +253,7 @@ impl<T> TaskHandle<T> {
                 message: "task handle has no join".into(),
             };
         };
-        match join.await {
-            Ok(outcome) => outcome,
-            Err(error) if error.is_cancelled() => Outcome::Cancelled,
-            Err(error) => Outcome::Failed {
-                message: error.to_string(),
-            },
-        }
+        join.result().await
     }
 }
 
@@ -277,21 +266,21 @@ pub async fn join_all<T>(handles: Vec<TaskHandle<T>>) -> Vec<Outcome<T>> {
 }
 
 /// Streams outcomes in completion order.
-pub fn completion_stream<T: Send + 'static>(
+pub fn completion_stream<T: acyclic_stream::ProviderTask + 'static>(
     handles: Vec<TaskHandle<T>>,
 ) -> BoxStream<'static, (OperationId, Outcome<T>)> {
     let concurrency = handles.len().max(1);
-    stream::iter(handles)
+    let completions = stream::iter(handles)
         .map(|handle| async move {
             let id = handle.id;
             (id, handle.result().await)
         })
-        .buffer_unordered(concurrency)
-        .boxed()
+        .buffer_unordered(concurrency);
+    Box::pin(completions)
 }
 
 /// Returns the first terminal task; cancellation remains an explicit group action.
-pub async fn race<T: Send + 'static>(
+pub async fn race<T: acyclic_stream::ProviderTask + 'static>(
     handles: Vec<TaskHandle<T>>,
 ) -> Option<(OperationId, Outcome<T>)> {
     completion_stream(handles).next().await
@@ -306,7 +295,7 @@ where
 }
 
 /// Returns the first success or all failures.
-pub async fn first_success<T: Send + 'static>(
+pub async fn first_success<T: acyclic_stream::ProviderTask + 'static>(
     handles: Vec<TaskHandle<T>>,
 ) -> std::result::Result<T, Vec<Outcome<T>>> {
     let mut completions = completion_stream(handles);
@@ -321,7 +310,7 @@ pub async fn first_success<T: Send + 'static>(
 }
 
 /// Collects the first `required` successes.
-pub async fn quorum<T: Send + 'static>(
+pub async fn quorum<T: acyclic_stream::ProviderTask + 'static>(
     handles: Vec<TaskHandle<T>>,
     required: usize,
 ) -> std::result::Result<Vec<T>, Vec<Outcome<T>>> {

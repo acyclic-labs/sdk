@@ -863,6 +863,7 @@ async fn worker_restart_with_options(
         labels: BTreeMap::new(),
     };
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
+    let mut model_execution = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
         approval_tool: with_model_approval,
@@ -1099,7 +1100,35 @@ async fn worker_restart_with_options(
             .with_payload_store(payloads.clone());
         let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
+            // A passive model approval has no reservation. Inspecting its
+            // original execution must neither acquire authority nor publish.
+            let passive = if with_model_approval {
+                let execution = model_execution.ok_or_else(|| Error::NotFound("model execution".into()))?;
+                let journal = stream.stream(format!("harness/v2/execution/{execution}"))?;
+                let workspace = acyclic_harness::filesystem::workspace_ref(provider.clone(), &volume.storage_name()?)?;
+                let before = (journal.tail().await?, filesystem.resolve(&workspace).await?,
+                    stream.stream("harness/v2/coordinator/events")?.tail().await?);
+                let callbacks = (model.generated.load(Ordering::SeqCst), model.reconciled.load(Ordering::SeqCst),
+                    tool.executed.load(Ordering::SeqCst), tool.reconciled.load(Ordering::SeqCst));
+                assert!(coordinator.scheduler().operation(operation)
+                    .ok_or_else(|| Error::NotFound("passive task".into()))?.reservation.is_none());
+                let old = old_lease.as_ref().ok_or_else(|| Error::NotFound("original approval lease".into()))?;
+                assert!(runtime.task_host().journal_owner(task, LeaseFence::from(&old.reservation)).await.is_err());
+                Some((journal, workspace, before, callbacks))
+            } else { None };
             assert!(!runtime.poll_task_wake(task).await?);
+            if let Some((journal, workspace, before, callbacks)) = passive {
+                assert_eq!(journal.tail().await?, before.0);
+                assert_eq!(filesystem.resolve(&workspace).await?, before.1);
+                assert_eq!(stream.stream("harness/v2/coordinator/events")?.tail().await?, before.2);
+                assert_eq!((model.generated.load(Ordering::SeqCst), model.reconciled.load(Ordering::SeqCst),
+                    tool.executed.load(Ordering::SeqCst), tool.reconciled.load(Ordering::SeqCst)), callbacks);
+                coordinator.refresh().await?;
+                let retained = coordinator.scheduler().operation(operation)
+                    .ok_or_else(|| Error::NotFound("passive task".into()))?;
+                assert_eq!(retained.phase, acyclic_harness::scheduler::OperationPhase::Suspended);
+                assert!(retained.reservation.is_none());
+            }
             if with_timer || with_mail_receive || with_child || with_approval_wait {
                 let cursor = discovery_cursor
                     .as_ref()
@@ -1382,6 +1411,13 @@ async fn worker_restart_with_options(
         let Some(outcome) = boxed_restart_phase(|| async {
         let outcome = if with_command {
             if !reopened {
+                if with_model_approval {
+                    // Obtain the namespace from the public, effect-free
+                    // production constructor rather than repeat its hash rule.
+                    model_execution = Some(runtime.stock_execution(task, LeaseFence::from(&lease.reservation),
+                        OperationId::from_bytes([26;16]), Model::new("test", "interrupted", "1", Value::Null)?,
+                        model.clone(), ContextPipeline::default()).await?.operation_id());
+                }
                 assert!(
                     matches!(runtime.resume_task(lease.clone(), &NoCommands, 0).await,
                     TaskWorkerAttempt::Unresolved { lease: retained, error: Error::Invalid(_) } if retained == lease)
@@ -1840,8 +1876,17 @@ async fn worker_restart_with_options(
             }
         }
         if with_timer {
-            let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
-            assert_eq!(timers.bounds().await?.tail, 72);
+            let mut retained_timers = 0;
+            for index in std::iter::once(99_u8)
+                .chain(100..170_u8)
+                .chain(std::iter::once(26_u8))
+            {
+                let timer_operation = OperationId::from_bytes([index; 16]);
+                let timer = stream.stream(format!("harness/v2/timers/{task}/{timer_operation}"))?;
+                assert_eq!(timer.bounds().await?.tail, 1);
+                retained_timers += 1;
+            }
+            assert_eq!(retained_timers, 72);
             if let Some(old) = &old_lease {
                 assert!(
                     runtime
@@ -1935,7 +1980,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
 }
 
 #[tokio::test]
-async fn pre_context_stock_turn_reconciles_after_provider_reopen() -> Result<()> {
+async fn admitted_stock_turn_without_selected_context_reconciles_after_reopen() -> Result<()> {
     stock_restart_with_publication_fault(None, false, true).await
 }
 
@@ -1971,7 +2016,7 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
 async fn stock_restart_with_publication_fault(
     fault: Option<ExecutionFaultMode>,
     cancel_after_failure: bool,
-    pre_context: bool,
+    unselected_context: bool,
 ) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
@@ -2304,12 +2349,14 @@ async fn stock_restart_with_publication_fault(
             if let Some(mode) = fault {
                 stream_provider.arm_execution(2, mode);
             }
-            let interrupted = if pre_context {
-                // Produce the actual earlier stock Started/request bytes and
-                // pending model history through the same fenced disk journal.
+            let interrupted = if unselected_context {
+                // Produce current stock Started/request bytes with explicit
+                // unselected context through the same fenced disk journal.
                 let admission = host.observe_admission(task).await?;
-                let admitted_scope = RuntimeScope::new(admission.grants, admission.limits)?
-                    .with_run_limits(admission.run_limits)?;
+                let admitted_context = harness
+                    .durable_context(task, admission.operation_id)
+                    .await?;
+                let admitted_scope = admitted_context.scope().clone();
                 let previous = StockExecutor::new(
                     Model::new("test", "interrupted", "1", Value::Null)?,
                     model.clone(),
@@ -2318,10 +2365,12 @@ async fn stock_restart_with_publication_fault(
                 )
                 .with_limits(admitted_scope.limits())
                 .with_tool_authority(admitted_scope, None)?
-                .with_durable_task(host.clone(), task, fence.clone());
+                .with_durable_task(host.clone(), task, fence.clone())
+                .with_task_context(&admitted_context, execution.operation_id())?;
                 let journal = FilesystemExecutionJournal::for_task(
                     host.journal_owner(task, fence.clone()).await?,
                     execution.operation_id(),
+                    OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
                     volume.clone(),
                     issuer.verifier(),
@@ -2527,3 +2576,6 @@ async fn stock_restart_with_publication_fault(
     }
     Ok(())
 }
+
+#[path = "task_workflow/stock_turn.rs"]
+mod stock_turn;

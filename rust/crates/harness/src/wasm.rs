@@ -51,6 +51,8 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
 mod mcp;
+#[cfg(feature = "browser")]
+mod task_runtime;
 
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]

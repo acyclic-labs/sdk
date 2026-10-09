@@ -52,6 +52,7 @@ pub mod model;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
+mod platform;
 pub mod projection;
 pub mod registry;
 pub mod resources;
@@ -65,7 +66,7 @@ mod wasm;
 pub mod wire_api;
 mod wire_codec;
 pub use wire_codec::encode_error;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/support/stream.rs"]
 mod test_stream;
 pub mod wire_validation;

@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AggregateKind {
     /// Durable agent definition and configuration.
     Agent,
@@ -43,6 +44,7 @@ pub const AUTHORITY_ID_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 /// Stable identity of one independently ordered history.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Authority {
     /// Aggregate kind.
     pub kind: AggregateKind,
@@ -2899,7 +2901,7 @@ macro_rules! transition_kinds {
         }
 
         impl TransitionKind {
-            #[cfg(test)]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             const ALL: &[Self] = &[$(Self::$kind,)*];
 
             const fn spec(self) -> (&'static str, &'static str, &'static str) {
@@ -3238,7 +3240,7 @@ fn json_digest(value: &Value) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -3869,11 +3871,12 @@ resolve_interaction interaction_resolved interaction:resolve";
                 if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                     &resource.source
                 {
-                    capabilities.push(
-                        volume
-                            .capability(crate::conversation::VolumeOperation::Read)
-                            .expect("valid scratch reference"),
+                    let capability = volume.capability(crate::conversation::VolumeOperation::Read);
+                    assert!(
+                        capability.is_ok(),
+                        "invalid scratch reference: {capability:?}"
                     );
+                    capabilities.extend(capability);
                 }
             }
         }

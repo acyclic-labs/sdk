@@ -24,11 +24,7 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "2";
@@ -118,6 +114,11 @@ pub struct ChildOperationPageRequest<'a> {
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(large_number_types_as_bigints, hashmap_as_object)
+)]
 pub struct Worker {
     /// Stable worker identity.
     pub id: String,
@@ -130,12 +131,18 @@ pub struct Worker {
 
 /// Work atomically claimed from the coordinator.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct WorkLease {
     /// Complete immutable operation declaration.
     pub operation: OperationSpec,
     /// Pinned execution allocation.
     pub reservation: Reservation,
     /// Latest durable resumable checkpoint, if any.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "(WasmResourceRefWire & { kind: 'checkpoint' }) | null")
+    )]
     pub checkpoint: Option<crate::resources::CheckpointRef>,
     /// Coordinator-observed revision associated with this reservation. Recovery
     /// may observe progress since the reservation's initial admission.
@@ -1344,17 +1351,21 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         // Stream retains failed CAS requests too. A refreshed coordinator tail
         // needs a new physical retry identity; the encoded logical intent and
         // declaration/wake intent still prevents another logical publication.
+        // Concurrent hosts also have distinct envelope timestamps at the same
+        // revision. Bind the physical attempt to its exact encoded bytes;
+        // retained_intent above still owns the logical event identity.
+        let physical_key = format!("{key}:attempt:{}", blake3::hash(&bytes).to_hex());
         let stream_key = if parent_fence.is_some() {
-            stream_key(&format!("{key}:owned-parent:{}", self.revision))?
+            stream_key(&format!("{physical_key}:owned-parent:{}", self.revision))?
         } else if waiting_command.is_some() {
-            stream_key(&format!("{key}:owned-wait:{}", self.revision))?
+            stream_key(&format!("{physical_key}:owned-wait:{}", self.revision))?
         } else if let Some((execution, expected_tail)) = idle_execution {
             stream_key(&format!(
-                "{key}:idle-execution:{execution}:{expected_tail}:{}",
+                "{physical_key}:idle-execution:{execution}:{expected_tail}:{}",
                 self.revision
             ))?
         } else {
-            stream_key(key)?
+            stream_key(&physical_key)?
         };
         let outcome = if let Some((execution, expected_tail)) = idle_execution {
             Box::pin(append_if_execution_idle(
@@ -1959,12 +1970,13 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
 }
 
 fn current_time_millis() -> Result<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::Invalid("coordinator clock predates Unix epoch".into()))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| Error::Invalid("coordinator clock exceeds supported range".into()))
+    let now = crate::platform::now_unix_millis();
+    if now == 0 {
+        return Err(Error::Invalid(
+            "coordinator clock is unavailable or predates Unix epoch".into(),
+        ));
+    }
+    Ok(now)
 }
 
 fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
@@ -2121,7 +2133,7 @@ fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     type LostSessionAck = crate::test_stream::LostSessionAck<acyclic_stream::MemoryStream>;
@@ -4767,8 +4779,20 @@ mod tests {
         );
         let winner_id = winner.operation_id();
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(winner)?).as_bytes();
+        let (_, _, committed_revision, _) = reopened
+            .retained_intent(key)
+            .await?
+            .ok_or_else(|| Error::NotFound("winning logical budget receipt".into()))?;
+        let committed = client
+            .stream(COORDINATOR_PATH)?
+            .read(committed_revision - 1, 1)
+            .await?
+            .try_next()
+            .await?
+            .ok_or_else(|| Error::NotFound("winning budget envelope".into()))?;
+        let physical_key = format!("{key}:attempt:{}", blake3::hash(&committed.value).to_hex());
         let receipt = client
-            .inspect_idempotency(stream_key(key)?)
+            .inspect_idempotency(stream_key(&physical_key)?)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?
             .ok_or_else(|| Error::NotFound("winning budget receipt".into()))?;

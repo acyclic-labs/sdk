@@ -66,6 +66,8 @@ enum CommandDispatch {
 /// execution authority and can be serialized by the caller across restarts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct TaskWakeCursor {
     /// Last inspected coordinator revision.
     pub after_revision: u64,
@@ -493,7 +495,8 @@ where
             self.verifier.clone(),
             self.signed.clone(),
             self.maximum_payload_bytes.min(limits.file_bytes),
-        )?;
+        )?
+        .with_turn(operation, turn);
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
         while let Some(page) = replay.next_page(&journal).await? {
@@ -693,6 +696,7 @@ where
             FilesystemExecutionJournal::for_task(
                 self.host.journal_owner(task, fence).await?,
                 execution_operation(task, turn),
+                turn,
                 self.filesystem.clone(),
                 self.volume.clone(),
                 self.verifier.clone(),

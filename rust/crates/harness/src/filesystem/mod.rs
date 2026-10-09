@@ -72,6 +72,8 @@ pub use native_contract::{
     NativeProcessStop, NativeProcessStopKind, NativeViewManifest, NativeViewOptions,
     NativeVolumeMapping,
 };
+mod stock_turn;
+pub use stock_turn::StockTurnMachine;
 mod task_commands;
 mod task_runtime;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]

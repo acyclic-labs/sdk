@@ -333,6 +333,11 @@ export interface ContextAttribute {
 }
 
 /**
+ * Available logical resources advertised to admission policy.
+ */
+export type ResourceSnapshot = Record<string, bigint>;
+
+/**
  * Bounded immutable remote catalog. The existing `ToolRegistry` is the only
  * execution registry; this value is a validated registration input.
  */
@@ -393,6 +398,11 @@ export interface WasmModelContentInventoryWire {
     files: readonly WasmFileRefWire[];
     nativeConfigurations: readonly WasmNativeConfigurationBindingWire[];
 }
+
+/**
+ * Durable orchestration behavior represented as data.
+ */
+export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
 
 /**
  * Exact portable HTTP input. Credentials belong to the bound provider.
@@ -479,6 +489,11 @@ export interface ContextDiscoveryLimits {
 }
 
 /**
+ * Explicit lifetime owner for durable work.
+ */
+export type DurableOwner = { kind: "attached"; authority: Authority } | { kind: "detached"; authority: Authority };
+
+/**
  * Explicit model schema exposure for an installed complete catalog.
  */
 export type McpSchemaExposure = { kind: "eager" } | { kind: "selected"; names: string[] };
@@ -529,6 +544,24 @@ export interface ContextSelection {
 export type McpDiscoveryPolicy = "disabled" | "search";
 
 /**
+ * Immutable component implementation identity.
+ */
+export interface ComponentIdentity {
+    /**
+     * Stable local or namespaced logical name.
+     */
+    name: string;
+    /**
+     * Semantic implementation version.
+     */
+    version: string;
+    /**
+     * Implementation/schema digest.
+     */
+    digest: number[];
+}
+
+/**
  * Immutable discovery revision. Serialize this value through the existing admitted
  * caller journal for restart; it contains no credentials or mutable provider handles.
  */
@@ -541,6 +574,48 @@ export interface DiscoveredContext {
      * Skills in declared root and lexical directory order; duplicate names reject discovery.
      */
     skills: SkillMetadata[];
+}
+
+/**
+ * Immutable durable operation declaration.
+ */
+export interface OperationSpec {
+    /**
+     * Stable operation identity.
+     */
+    operation_id: string;
+    /**
+     * Optional structured parent.
+     */
+    parent: ParentLink | null;
+    /**
+     * Explicit durable owner.
+     */
+    owner: DurableOwner;
+    /**
+     * Restartable implementation identity.
+     */
+    entrypoint: EntrypointRef;
+    /**
+     * Dependencies that must succeed before admission.
+     */
+    dependencies: string[];
+    /**
+     * Logical capacity requirements.
+     */
+    resources: ResourceRequest;
+    /**
+     * Small provider-neutral placement labels, not process or file content.
+     */
+    placement: Record<string, string>;
+    /**
+     * Orchestration behavior.
+     */
+    orchestration: Orchestration;
+    /**
+     * Immutable, provider-owned initial state bytes.
+     */
+    state: WasmFileRefWire;
 }
 
 /**
@@ -560,6 +635,16 @@ export interface PinnedContextPath {
      */
     path: string;
 }
+
+/**
+ * Kind of independently ordered durable aggregate.
+ */
+export type AggregateKind = "agent" | "conversation" | "session" | "turn" | "task";
+
+/**
+ * Logical resource quantities; providers decide how they map to capacity.
+ */
+export type ResourceRequest = Record<string, bigint>;
 
 /**
  * Mutable context assembled for one model step.
@@ -627,6 +712,28 @@ export interface PrivateDirectoryEntry {
 }
 
 /**
+ * One ref-only durable inbox item with a gapless per-task sequence.
+ */
+export interface InboxItem {
+    /**
+     * Owning task.
+     */
+    task_id: string;
+    /**
+     * Gapless one-based sequence.
+     */
+    sequence: bigint;
+    /**
+     * Sender-defined idempotency identity.
+     */
+    message_id: string;
+    /**
+     * Immutable payload bytes staged before Stream publication.
+     */
+    payload: WasmFileRefWire;
+}
+
+/**
  * Ordered authority-resolution level from the runtime root to one invocation.
  */
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
@@ -651,6 +758,24 @@ export interface ContextDiscovery {
      * Explicit work and byte limits.
      */
     limits: ContextDiscoveryLimits;
+}
+
+/**
+ * Pinned resource allocation.
+ */
+export interface Reservation {
+    /**
+     * Provider-owned stable lease identity.
+     */
+    id: string;
+    /**
+     * Selected worker/placement identity.
+     */
+    placement: string;
+    /**
+     * Resources actually admitted; partial admission remains observable.
+     */
+    admitted: ResourceRequest;
 }
 
 /**
@@ -700,6 +825,24 @@ export interface WasmWorkflowAdmissionWire {
 export interface WasmModelMessageInput {
     role: WasmModelRole;
     content: WasmModelContentInput;
+}
+
+/**
+ * Pull worker capacity and placement identity.
+ */
+export interface Worker {
+    /**
+     * Stable worker identity.
+     */
+    id: string;
+    /**
+     * Currently available logical capacity.
+     */
+    available: ResourceSnapshot;
+    /**
+     * Labels available for exact-match operation placement.
+     */
+    labels?: Record<string, string>;
 }
 
 /**
@@ -767,6 +910,49 @@ export interface InstructionScope {
 }
 
 /**
+ * Resume hint for one finite coordinator discovery sweep. It conveys no
+ * execution authority and can be serialized by the caller across restarts.
+ */
+export interface TaskWakeCursor {
+    /**
+     * Last inspected coordinator revision.
+     */
+    after_revision: bigint;
+    /**
+     * Fixed inclusive revision at which this sweep ends.
+     */
+    through_revision: bigint;
+}
+
+/**
+ * Stable identity of one independently ordered history.
+ */
+export interface Authority {
+    /**
+     * Aggregate kind.
+     */
+    kind: AggregateKind;
+    /**
+     * Provider-independent identity.
+     */
+    id: string;
+}
+
+/**
+ * Stable parent link and child slot.
+ */
+export interface ParentLink {
+    /**
+     * Parent operation.
+     */
+    operation_id: string;
+    /**
+     * Stable logical slot, independent of observation order.
+     */
+    slot: string;
+}
+
+/**
  * Stable wire identity used during compatibility handshakes.
  */
 export interface ProtocolIdentity {
@@ -779,6 +965,11 @@ export interface ProtocolIdentity {
      */
     descriptor_digest: string;
 }
+
+/**
+ * Terminal outcome of admitted work.
+ */
+export type Outcome<T> = { Succeeded: T } | { Failed: { message: string } } | "Cancelled" | { Indeterminate: { operation_id: string } };
 
 /**
  * The only operations this one-shot client can admit.
@@ -795,6 +986,51 @@ export interface WasmModelWire {
     name: string;
     revision: string;
     options: WasmModelJsonValue;
+}
+
+/**
+ * Versioned resumable entrypoint for durable work.
+ */
+export interface EntrypointRef {
+    /**
+     * Stable namespaced entrypoint name.
+     */
+    name: string;
+    /**
+     * Semantic implementation version.
+     */
+    version: string;
+    /**
+     * Digest of the state/input schema and implementation contract.
+     */
+    digest: number[];
+    /**
+     * JSON Schema for the durable result value.
+     */
+    result_schema: WasmModelJsonSchema;
+}
+
+/**
+ * Work atomically claimed from the coordinator.
+ */
+export interface WorkLease {
+    /**
+     * Complete immutable operation declaration.
+     */
+    operation: OperationSpec;
+    /**
+     * Pinned execution allocation.
+     */
+    reservation: Reservation;
+    /**
+     * Latest durable resumable checkpoint, if any.
+     */
+    checkpoint: (WasmResourceRefWire & { kind: 'checkpoint' }) | null;
+    /**
+     * Coordinator-observed revision associated with this reservation. Recovery
+     * may observe progress since the reservation's initial admission.
+     */
+    operation_revision: bigint;
 }
 
 export interface ContextDirectoryQuery {
@@ -840,6 +1076,56 @@ export interface WasmBatchAdmissionInput {
     execution: WasmExecutionPlacementWire | null;
 }
 
+export interface WasmBrowserSessionLimits {
+    active_tasks: bigint;
+    total_tasks: bigint;
+    depth: number;
+    model_steps: bigint;
+}
+
+export interface WasmBrowserStreamLimits {
+    commands: bigint;
+    journal_bytes: bigint;
+    paths: number;
+    path_bytes: number;
+    records: number;
+    payload_bytes: number;
+    commits: number;
+    idempotency_results: number;
+}
+
+export interface WasmBrowserTaskOptions {
+    filesystem_database: string;
+    stream_database: string;
+    maximum_object_bytes: bigint;
+    stream_limits: WasmBrowserStreamLimits;
+    filesystem_provider: WasmProviderRefWire;
+    volume: WasmVolumeRefWire;
+    limits: WasmLimitsInput;
+    run_limits: WasmTaskRunLimitsInput;
+    session_limits: WasmBrowserSessionLimits;
+    concurrency: number;
+    maximum_payload_bytes: bigint;
+}
+
+export interface WasmBrowserTick {
+    wake: WasmBrowserWake;
+    work: WasmBrowserWork | null;
+}
+
+export interface WasmBrowserWake {
+    cursor: TaskWakeCursor | null;
+    through_revision: bigint;
+    events_read: number;
+    tasks_polled: number;
+    woken: string[];
+}
+
+export interface WasmBrowserWorkError {
+    code: number;
+    message: string;
+}
+
 export interface WasmExtensionDependencyDefinition {
     name: string;
     version: number;
@@ -854,6 +1140,16 @@ export interface WasmLimitsInput {
     model_events_per_step: bigint;
     tool_calls_per_step: bigint;
     context_messages: bigint;
+}
+
+export interface WasmMachineDefinition {
+    name: string;
+    version: string;
+    digest: number[];
+    state_schema: WasmModelJsonSchema;
+    input_schema: WasmModelJsonSchema;
+    output_schema: WasmModelJsonSchema;
+    requirements: string[];
 }
 
 export interface WasmModelAttemptWire {
@@ -975,6 +1271,14 @@ export interface WasmToolDependencyDefinition {
     version: string;
 }
 
+export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
+
+export type WasmBrowserAdmission = { kind: "accepted"; task_id: string } | { kind: "rejected"; reason: string } | { kind: "indeterminate"; operation_id: string };
+
+export type WasmBrowserRecoveredWork = { kind: "idle" } | { kind: "claimed"; lease: WorkLease } | { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError };
+
+export type WasmBrowserWork = { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError } | { kind: "suspended"; task_id: string; revision: bigint } | { kind: "completed"; task_id: string } | { kind: "yielded"; lease: WorkLease } | { kind: "reconciling"; lease: WorkLease };
+
 export type WasmFileProjectionPolicy = "reference" | "bounded_full" | { native: WasmNativeMediaPolicyWire };
 
 export type WasmImageDetail = "auto" | "low" | "high";
@@ -1032,6 +1336,26 @@ export class WasmContentStore {
      * Stores one immutable file and optionally advances its path head.
      */
     stage(path: string, bytes: Uint8Array, media_type: string, display_name: string, update_path: boolean): any;
+}
+
+/**
+ * One Rust-backed live follow cursor.
+ *
+ * `next` releases the state lock before awaiting the stream, so `close` can
+ * always signal a pending call and promptly release its cursor.
+ */
+export class WasmFollow {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Cancels the cursor and wakes any pending `next` call.
+     */
+    close(): void;
+    /**
+     * Waits for one record. Returns `null` after close or stream termination.
+     */
+    next(): Promise<Uint8Array | null>;
 }
 
 /**
@@ -1236,6 +1560,135 @@ export class WasmReducer {
 }
 
 /**
+ * Browser ABI over canonical Rust memory or durable providers.
+ *
+ * Unary operations use `dispatch(operation, request_bytes)` and return the
+ * corresponding protobuf response bytes. `read` and `children` return arrays
+ * of encoded stream response messages because protobuf streams have no single
+ * finite response envelope.
+ */
+export class WasmStream {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Lists one fixed-snapshot child page, returning encoded `ChildrenResponse` messages.
+     */
+    children(input: Uint8Array): Promise<Uint8Array[]>;
+    /**
+     * Executes one finite unary operation over canonical protobuf bytes.
+     */
+    dispatch(operation: string, input: Uint8Array): Promise<Uint8Array>;
+    constructor();
+    /**
+     * Opens the canonical Rust provider on one durable `IndexedDB` journal.
+     */
+    static openBrowser(name: string, maximum_commands: number, maximum_journal_bytes: bigint): Promise<WasmStream>;
+    /**
+     * Opens a live follow cursor backed by the canonical provider.
+     */
+    open_follow(input: Uint8Array): Promise<WasmFollow>;
+    /**
+     * Reads one bounded page, returning encoded `ReadResponse` messages.
+     */
+    read(input: Uint8Array): Promise<Uint8Array[]>;
+}
+
+/**
+ * The existing typed registries, sealed into each opened runtime. Host callbacks
+ * are trusted pure machine implementations, with the same contract as Rust.
+ */
+export class WasmTaskRegistry {
+    free(): void;
+    [Symbol.dispose](): void;
+    constructor();
+    registerMachine(definition: WasmMachineDefinition, initialize: Function, transition: Function): void;
+    /**
+     * Registers the Rust stock-turn adapter over the ordinary model outbox.
+     * Registration starts no worker and grants no model or task authority.
+     */
+    registerStockTurn(): void;
+    /**
+     * Callbacks share one immutable definition revision and are trusted host
+     * implementations. They receive runtime-owned invocation identities.
+     */
+    registerTool(definition: WasmModelToolDefinitionWire, execute: Function, reconcile: Function, project: Function): void;
+}
+
+/**
+ * Thin event-loop handle; scheduling, ownership, effects and recovery stay in
+ * `FilesystemTaskRuntime`. No worker starts when this handle is opened.
+ */
+export class WasmTaskRuntime {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    admit(operation: string, name: string, version: string, input: WasmModelJsonValue, parent?: string | null): Promise<WasmBrowserAdmission>;
+    /**
+     * Publishes durable cancellation without claiming terminal completion.
+     */
+    cancel(task: string): Promise<void>;
+    /**
+     * Composes an explicit provider with the stock model command executor.
+     * Generate receives canonical request bytes, separate dispatch identity and
+     * an `AbortSignal`, and returns an async iterator;
+     * reconcile receives the exact retained attempt and never redispatches it.
+     * Optional capacity/counting callbacks are synchronous, effect-free provider
+     * operations. Counting receives exact canonical bytes and their Rust digest;
+     * Rust validates the response binding and ordered message dimensions.
+     */
+    configureModel(model: WasmModelWire, generate: (request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>, reconcile: (attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>, capacity: ((model: WasmModelWire) => ModelContextCapacity) | undefined, count_tokens: ((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined): void;
+    /**
+     * A page observation is not a retained model-consumption acknowledgment.
+     */
+    inbox(task: string, after: bigint, maximum: number): Promise<InboxItem[]>;
+    /**
+     * Creates only the explicitly authorized private journal volume.
+     */
+    initializeVolume(): Promise<void>;
+    /**
+     * Opens existing providers with caller-supplied limits and signed authority.
+     * Volume creation and task admission remain separate explicit operations.
+     */
+    static open(options: WasmBrowserTaskOptions, owner: WasmReducer, registry: WasmTaskRegistry, signed_scope: any): Promise<WasmTaskRuntime>;
+    /**
+     * Observes only; absence does not dispatch or replay an uncertain effect.
+     */
+    outcome(task: string): Promise<Outcome<WasmModelJsonValue> | null>;
+    reconcileAdmission(operation: string): Promise<[string, ComponentIdentity] | null>;
+    /**
+     * Reads the original reservation without claiming or releasing work.
+     */
+    recoverWork(task: string): Promise<WasmBrowserRecoveredWork>;
+    /**
+     * Resumes only the exact retained lease; another tick never substitutes it.
+     */
+    resume(lease: WorkLease, maximum_transitions: number): Promise<WasmBrowserWork>;
+    /**
+     * Runs only this original task through the ordinary fenced worker path.
+     */
+    runOperation(worker: Worker, task: string, maximum_transitions: number): Promise<WasmBrowserWork | null>;
+    /**
+     * Returns only after receiver-owned durable bytes are verified. A lost
+     * acknowledgment permits exact redelivery; it grants no effect retry.
+     */
+    send(lease: WorkLease, recipient: string, message: string, payload: WasmFileRefWire): Promise<void>;
+    /**
+     * Stages an exact immutable command/input artifact through the ordinary store.
+     */
+    stage(operation: string, key: string, bytes: Uint8Array): Promise<WasmFileRefWire>;
+    /**
+     * Executes one caller-bounded tick using the production command resolver.
+     * Missing tool/model routes stay unavailable; no fabricated default swarm.
+     */
+    workerTick(worker: Worker, cursor: TaskWakeCursor | null, maximum_events: number, maximum_transitions: number): Promise<WasmBrowserTick>;
+}
+
+/**
+ * Type-only bridge for the complete Rust-owned Stream error-code contract.
+ */
+export function __streamErrorCodeContract(value: StreamErrorCode): StreamErrorCode;
+
+/**
  * Builds and validates the complete immutable batch request before any
  * member admission. Inputs, task identity, limits, policy, and route are
  * projected by the same Rust constructor used by native hosts.
@@ -1312,11 +1765,28 @@ export function decodeCanonicalJson(bytes: Uint8Array): any;
 export function decodeEventPayload(event_type: string, canonical_payload_json: Uint8Array): any;
 
 /**
+ * Validate and project one hosted HTTP JSON success response into the public
+ * JavaScript shape. Rust owns the scalar widths and tagged response schema:
+ * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
+ * and token timestamps become `Date` values before the value crosses the
+ * browser boundary.
+ */
+export function decodeHttpResponse(route: string, response_json: string): unknown;
+
+/**
  * Parses external JSON with exact integers but without demanding canonical
  * key order or whitespace. Callers must still apply their schema and numeric
  * range policy before presenting model-authored values to an executor.
  */
 export function decodeJson(bytes: Uint8Array): any;
+
+/**
+ * Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
+ *
+ * The shared Rust decoder bounds the declared length before decompressing and
+ * requires the decoded length to match it exactly.
+ */
+export function decodeReadResponse(codec: number, data: Uint8Array, decoded_length: bigint): Uint8Array;
 
 /**
  * Derives a stable child operation/message identity from one admitted operation
@@ -1342,6 +1812,16 @@ export function encodeAttachmentManifest(items: any): Uint8Array;
 export function encodeCanonicalJson(value: any): Uint8Array;
 
 /**
+ * Encode one protobuf request into the hosted Stream HTTP JSON shape.
+ *
+ * Protobuf remains the only request contract crossing from TypeScript into
+ * Rust.  Rust owns the conversion of uint64 values and opaque bytes to the
+ * decimal and base64 spellings required by the hosted API, keeping the HTTP
+ * adapter from maintaining a second scalar conversion table.
+ */
+export function encodeHttpRequest(route: string, input: Uint8Array): string;
+
+/**
  * Creates a direct-parent segment from the exact admitted request bytes.
  */
 export function encodeModelPrefix(request: Uint8Array, parent: any, parent_request: Uint8Array | null | undefined, limits: any): Uint8Array;
@@ -1358,6 +1838,14 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 export function forkSeedFromReport(report: any): any;
 
 /**
+ * Return whether a code can be emitted by this WASM adapter.
+ *
+ * Keeping this validator beside the Rust error mapping prevents the TypeScript adapter from
+ * maintaining a second, potentially stale list of base Stream error codes.
+ */
+export function is_stream_error_code(value: string): boolean;
+
+/**
  * Wraps a consumer's JSON value schema in the complete typed projection envelope.
  */
 export function jsonToolProjectionSchema(value_schema: WasmToolJsonSchema): WasmToolJsonSchema;
@@ -1371,6 +1859,20 @@ export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, 
  * Returns all media/options refs and original-admission claims without IO.
  */
 export function modelContentInventory(content: WasmModelContentInput, limits: WasmModelLimitsInput): WasmModelContentInventoryWire;
+
+/**
+ * Binds the exact native request without rounding its filesystem work counters
+ * through JavaScript numbers. This performs no native dispatch or path lookup.
+ */
+export function nativeProcessApprovalDigest(task: string, command: string, request_json: string): Uint8Array;
+
+/**
+ * Normalize and encode canonical protobuf bytes for one commit request.
+ *
+ * The returned bytes use the same deterministic ordering as the in-memory
+ * provider. Validation failures are thrown as stable error codes.
+ */
+export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
 
 /**
  * Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
@@ -1395,6 +1897,22 @@ export function prepareModelRequest(request: any, limits: any): Uint8Array;
  * Discovery/body reads and their authority remain in ordinary provider bindings.
  */
 export function projectDiscoveredContext(snapshot: DiscoveredContext, context: Context, placement: ContextPlacement, limits: WasmModelLimitsInput): Context;
+
+/**
+ * Decode one unary memory-provider response from canonical protobuf bytes
+ * into the public JavaScript result shape. Rust owns the response oneofs,
+ * scalar widths, copied byte buffers, and camelCase projection at this
+ * boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+ */
+export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;
+
+/**
+ * Project a hosted HTTP error code onto the public Stream error vocabulary.
+ *
+ * The hosted API may report either the Rust-owned wire code or a public alias.
+ * Unknown values and a commit-only alias on another route return no value.
+ */
+export function publicHttpErrorCode(raw: string, route: string): string | undefined;
 
 /**
  * Ordinary bounded owner read of a discovered body; no model projection or execution is implied.
@@ -1433,6 +1951,14 @@ export function taskIdentityDigest(name: string, version: string, input_schema: 
 export function uuidFromDigestHalf(digest: Uint8Array, second: boolean): string;
 
 /**
+ * Validate canonical protobuf bytes for one append request.
+ *
+ * The empty string means that the request passed the same domain validators as
+ * the in-memory provider. Otherwise this returns one stable error code.
+ */
+export function validateAppendRequest(input: Uint8Array): string;
+
+/**
  * Validates one aggregate identity with the same path-segment policy used by
  * every Rust stream access. The returned spelling is unchanged so hosts can
  * retain their branded string facade without reimplementing the policy.
@@ -1461,6 +1987,17 @@ export function validateContract(kind: string, value: any, context: any): any;
  * Returns the one Rust UUID spelling accepted for a conversation identity.
  */
 export function validateConversationMessageId(value: string): string;
+
+/**
+ * Validate one hosted HTTP JSON success response using the same path, width,
+ * identity, and tagged-union rules as the canonical Stream domain.
+ *
+ * The HTTP adapter keeps its intentionally simple JSON representation (u64
+ * values are decimal strings and opaque bytes are base64). This entry point
+ * validates that representation using the same Rust projection used by
+ * `decodeHttpResponse`, without crossing a second scalar schema boundary.
+ */
+export function validateHttpResponse(route: string, response_json: string): void;
 
 /**
  * Parses one public Harness identity with the canonical Rust contract and
@@ -1498,9 +2035,36 @@ export function validateModelContextSelection(conversation: any, selection: any)
 export function validateModelMessages(messages: readonly WasmModelMessageInput[], limits: WasmModelLimitsInput): void;
 
 /**
+ * Validate one canonical Stream path using the same parser used by every
+ * provider and wire decoder.
+ *
+ * The empty string means success; failures use the stable Stream error code
+ * consumed by the TypeScript adapter.
+ */
+export function validatePath(path: string): string;
+
+/**
+ * Validate one canonical protobuf request at the browser boundary.
+ *
+ * `kind` is deliberately a small closed set so callers cannot accidentally
+ * select a different validator after adding a new wire message. The empty
+ * string means success; failures use the same stable codes as the append and
+ * commit entry points.
+ */
+export function validateRequest(kind: string, input: Uint8Array): string;
+
+/**
  * Admits an already projected, provider-proven context with native model bounds.
  */
 export function validateSelectedModelContext(selected: any, limits: any): void;
+
+/**
+ * Validate one JavaScript representation of a canonical Stream sequence.
+ *
+ * JavaScript passes the decimal spelling of its `bigint`; Rust owns the
+ * unsigned 64-bit range accepted by every Stream wire field.
+ */
+export function validateSequence(value: string): string;
 
 /**
  * Validates and reprojects one owner-retained direct-child page using the
@@ -1611,6 +2175,8 @@ export interface InitOutput {
     readonly __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
     readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
+    readonly __wbg_wasmtaskregistry_free: (a: number, b: number) => void;
+    readonly __wbg_wasmtaskruntime_free: (a: number, b: number) => void;
     readonly admitBatch: (a: any) => [number, number, number];
     readonly admitBatchRequest: (a: any) => [number, number, number];
     readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
@@ -1635,6 +2201,7 @@ export interface InitOutput {
     readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
     readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
     readonly modelContentInventory: (a: any, b: any) => [number, number, number];
+    readonly nativeProcessApprovalDigest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
@@ -1724,6 +2291,47 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
+    readonly wasmtaskregistry_new: () => number;
+    readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
+    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
+    readonly wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
+    readonly wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_configureModel: (a: number, b: any, c: any, d: any, e: number, f: number) => [number, number];
+    readonly wasmtaskruntime_inbox: (a: number, b: number, c: number, d: bigint, e: number) => any;
+    readonly wasmtaskruntime_initializeVolume: (a: number) => any;
+    readonly wasmtaskruntime_open: (a: any, b: number, c: number, d: any) => any;
+    readonly wasmtaskruntime_outcome: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_reconcileAdmission: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_recoverWork: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_resume: (a: number, b: any, c: number) => any;
+    readonly wasmtaskruntime_runOperation: (a: number, b: any, c: number, d: number, e: number) => any;
+    readonly wasmtaskruntime_send: (a: number, b: any, c: number, d: number, e: number, f: number, g: any) => any;
+    readonly wasmtaskruntime_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly wasmtaskruntime_workerTick: (a: number, b: any, c: any, d: number, e: number) => any;
+    readonly __streamErrorCodeContract: (a: any) => any;
+    readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
+    readonly __wbg_wasmstream_free: (a: number, b: number) => void;
+    readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly decodeReadResponse: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
+    readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly is_stream_error_code: (a: number, b: number) => number;
+    readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+    readonly projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateAppendRequest: (a: number, b: number) => [number, number];
+    readonly validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validatePath: (a: number, b: number) => [number, number];
+    readonly validateRequest: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateSequence: (a: number, b: number) => [number, number];
+    readonly wasmfollow_close: (a: number) => void;
+    readonly wasmfollow_next: (a: number) => any;
+    readonly wasmstream_children: (a: number, b: number, c: number) => any;
+    readonly wasmstream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly wasmstream_new: () => number;
+    readonly wasmstream_openBrowser: (a: number, b: number, c: number, d: bigint) => any;
+    readonly wasmstream_open_follow: (a: number, b: number, c: number) => any;
+    readonly wasmstream_read: (a: number, b: number, c: number) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
