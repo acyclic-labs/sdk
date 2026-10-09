@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ $# == 4 && "$1" == /* && "$2" == /* && "$3" == /* && "$4" == /* ]] || {
-  echo 'usage: check-typescript-packages.sh ABSOLUTE_OUTPUT INFERENCE_ARCHIVE FILESYSTEM_ARCHIVE HARNESS_ARCHIVE' >&2
+[[ $# == 5 && "$1" == /* && "$2" == /* && "$3" == /* && "$4" == /* && "$5" == /* ]] || {
+  echo 'usage: check-typescript-packages.sh ABSOLUTE_OUTPUT INFERENCE_ARCHIVE FILESYSTEM_ARCHIVE HARNESS_ARCHIVE BUILD_RECEIPT' >&2
   exit 2
 }
 output=$1
 inference_archive=$2
 filesystem_archive=$3
 harness_archive=$4
+build_receipt=$5
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +50,7 @@ verify_staged_input "$filesystem_archive"
 verify_staged_input "$harness_archive"
 
 mkdir "$output"
+install -m 0644 "$build_receipt" "$output/BUILD.json"
 while IFS=$'\t' read -r slug directory name version; do
   archive="$output/acyclic-labs-${slug}-${version}.tgz"
   case "$slug" in
@@ -76,7 +78,7 @@ done < <(node -e '
   }
 ')
 (cd "$output" && sha256sum ./*.tgz > SHA256SUMS)
-node scripts/typescript-qualification.mjs create "$output" "$source_sha"
+node scripts/typescript-qualification.mjs create "$output" "$source_sha" "$output/BUILD.json"
 
 mkdir "$work/consumer"
 node --input-type=module - "$output" "$work/consumer" <<'EOF'

@@ -88,8 +88,10 @@ sha256sum acyclic-fs.tgz acyclic-*.crate > SHA256SUMS
 git -C "$root" rev-parse --verify HEAD > SOURCE_COMMIT
 
 package_root="$(dirname "$output")"
+node "$root/scripts/typescript-qualification.mjs" consumer "$(command -v bun)" "$package_root/BUILD.json"
 bash "$root/scripts/check-typescript-packages.sh" \
   "$package_root/typescript" \
   "$inference_evidence" \
   "$output/acyclic-fs.tgz" \
-  "$package_root/harness/acyclic-harness.tgz"
+  "$package_root/harness/acyclic-harness.tgz" \
+  "$package_root/BUILD.json"

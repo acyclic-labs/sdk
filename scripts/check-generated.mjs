@@ -1,12 +1,32 @@
+import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
+import { nativeFamily } from "./native-family.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const args = process.argv.slice(2);
+if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Error("usage: check-generated.mjs [--source-only]");
+const sourceOnly = args.includes("--source-only");
+for (const key of ["actors", "workers", "stream"]) {
+  const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
+  if (facts.error) throw facts.error;
+  if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
+  const expected = `${JSON.stringify(JSON.parse(facts.stdout), null, 2)}\n`;
+  if (readFileSync(join(root, "scripts/generated/native-families", `${key}.json`), "utf8") !== expected) throw new Error(`Rust native-family ${key} generation drift`);
+}
+const actors = spawnSync(process.execPath, [join(root, "scripts", "generate-actors.mjs"), "check"], {
+  cwd: root,
+  encoding: "utf8",
+});
+if (actors.status !== 0) {
+  process.stderr.write(actors.stdout ?? "");
+  process.stderr.write(actors.stderr ?? "");
+  throw new Error(`Actors Rust generation drift check failed with status ${actors.status ?? "unknown"}`);
+}
 const generatedFiles = directory => {
   const files = [];
   const visit = (current, prefix) => {
@@ -72,7 +92,7 @@ const wasmPackages = [
   ["inference", "acyclic_inference_wasm"],
   ["machines", "acyclic_machines_wasm"],
   ["objects", "acyclic_objects_wasm"],
-  ["stream", "acyclic_stream_wasm"],
+  ...["actors", "workers", "stream"].map(key => /** @type {[string, string]} */ ([key, nativeFamily(key).wasm.outName])),
 ];
 const checkWasmPackage = async ([packageName, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);
@@ -131,8 +151,43 @@ const checkWasmPackage = async ([packageName, basename]) => {
 };
 
 
-const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
+// Keep temporary consumers under the workspace so maintained dependencies resolve
+// through its installed node_modules without copying or inventing codec packages.
+const temporary = mkdtempSync(join(root, "target-sdk-codegen-"));
 try {
+  const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8" });
+  if (readonly.error) throw readonly.error;
+  if (readonly.status !== 0) throw new Error(`Rust readonly projection failed: ${readonly.stderr}`);
+  for (const family of ["actors", "workers"]) if (readFileSync(join(root, `typescript/packages/${family}/src/generated/readonly.ts`), "utf8") !== readonly.stdout) throw new Error(`${family} readonly projection drift`);
+  const readonlyTypes = join(temporary, "readonly-types");
+  mkdirSync(readonlyTypes);
+  // Bun's isolated install keeps protobuf in the consuming package's
+  // node_modules. Resolve the fixture against those maintained dependencies.
+  mkdirSync(join(readonlyTypes, "node_modules/@bufbuild"), { recursive: true });
+  symlinkSync(realpathSync(join(root, "typescript/packages/actors/node_modules/@bufbuild/protobuf")), join(readonlyTypes, "node_modules/@bufbuild/protobuf"), process.platform === "win32" ? "junction" : "dir");
+  writeFileSync(join(readonlyTypes, "readonly.ts"), readonly.stdout);
+  writeFileSync(join(readonlyTypes, "consumer.ts"), readFileSync(join(root, "rust/crates/proto-codegen/tests/readonly-consumer.ts")));
+  const readonlyConsumer = spawnSync(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--ignoreConfig", "--noEmit", "--strict", "--target", "ES2023", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--pretty", "false", join(readonlyTypes, "consumer.ts")], { cwd: root, encoding: "utf8" });
+  if (readonlyConsumer.error) throw readonlyConsumer.error;
+  if (readonlyConsumer.status !== 0) throw new Error(`readonly TypeScript consumer failed: ${readonlyConsumer.stdout}${readonlyConsumer.stderr}`);
+  const freshWorkers = join(temporary, "workers-semantic");
+  const freshWorkersProto = join(temporary, "workers-proto");
+  const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", freshWorkersProto, freshWorkers], { cwd: root, encoding: "utf8" });
+  if (workers.error) throw workers.error;
+  if (workers.status !== 0) throw new Error(`Workers Rust generation failed: ${workers.stderr}`);
+  const formattedWorkers = spawnSync(join(root, "node_modules/.bin", process.platform === "win32" ? "buf.exe" : "buf"), ["format", "-w", join(freshWorkersProto, "workers/v1/workers.proto")], { cwd: root, encoding: "utf8" });
+  if (formattedWorkers.error) throw formattedWorkers.error;
+  if (formattedWorkers.status !== 0) throw new Error(`Workers Proto formatting failed: ${formattedWorkers.stderr}`);
+  if (!readFileSync(join(freshWorkersProto, "workers/v1/workers.proto")).equals(readFileSync(join(root, "proto/workers/v1/workers.proto")))) throw new Error("Workers Rust-rendered Proto drift");
+  const generatedService = join(temporary, "workers-service.ts");
+  await serviceGenerate("Workers", temporary, generatedService);
+  if (!readFileSync(generatedService).equals(readFileSync(join(root, "typescript/packages/workers/src/generated/workers-service.ts")))) throw new Error("Workers semantic service drift");
+  if (!readFileSync(join(temporary, "workers-binding.ts")).equals(readFileSync(join(root, "typescript/packages/workers/src/generated/workers-binding.ts")))) throw new Error("Workers binding identity drift");
+  if (!readFileSync(join(temporary, "native-absence.ts")).equals(readFileSync(join(root, "typescript/packages/workers/src/generated/native-absence.ts")))) throw new Error("Workers native absence projection drift");
+  const packagedWorkers = join(root, "typescript/packages/workers/src/generated/semantic");
+  const expectedWorkers = generatedFiles(freshWorkers);
+  if (JSON.stringify(expectedWorkers) !== JSON.stringify(generatedFiles(packagedWorkers))) throw new Error("Workers semantic TypeScript file set drift");
+  for (const file of expectedWorkers) if (!readFileSync(join(freshWorkers, file)).equals(readFileSync(join(packagedWorkers, file)))) throw new Error(`Workers semantic TypeScript drift: ${file}`);
   for (const [source, packaged] of packagedSourceCopies) {
     if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
       throw new Error(`packaged source drift: ${packaged}`);
@@ -207,7 +262,7 @@ try {
       throw new Error(`packaged ${name} TypeScript file set drift`);
     }
   }
-  for (const wasmPackage of wasmPackages) {
+  for (const wasmPackage of sourceOnly ? [] : wasmPackages) {
     await checkWasmPackage(wasmPackage);
   }
 } finally {

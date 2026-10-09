@@ -72,6 +72,8 @@ jobs:
 
       - name: Install exact Rust toolchain
         uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Install maintained NAPI assembly dependencies
         env:
@@ -81,6 +83,8 @@ jobs:
           set -euo pipefail
           source scripts/ensure-bun.sh
           bun install --frozen-lockfile
+          # Inventory generation uses the maintained Rust generator offline.
+          cargo fetch --locked
 
       - name: Download exact successful qualification artifact
         env:
@@ -106,9 +110,15 @@ jobs:
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
-          cp scripts/assemble-stream-native-package.mjs scripts/build-stream-native.mjs scripts/archive-utils.mjs "$stage/scripts/"
+          cp scripts/assemble-{actors,stream,workers}-native-package.mjs scripts/build-{actors,stream,workers}-native.mjs \
+            scripts/assemble-native-family.mjs scripts/build-native-family.mjs \
+            scripts/native-family.mjs scripts/archive-utils.mjs "$stage/scripts/"
+          mkdir -p "$stage/scripts/generated/native-families"
+          cp scripts/generated/native-families/{actors,stream,workers}.json "$stage/scripts/generated/native-families/"
           cp release/npm-packages.json "$stage/release/"
           node scripts/assemble-stream-native-package.mjs inventory "$stage/release/stream-native-packages.json" "$SOURCE_SHA"
+          node scripts/assemble-actors-native-package.mjs inventory "$stage/release/actors-native-packages.json" "$SOURCE_SHA"
+          node scripts/assemble-workers-native-package.mjs inventory "$stage/release/workers-native-packages.json" "$SOURCE_SHA"
           node - "$stage" <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -131,12 +141,29 @@ jobs:
           native_stage="$RUNNER_TEMP/qualified-stream-native"
           mkdir -p "$native_stage"
           cp -R "$RUNNER_TEMP/qualified/stream-native" "$native_stage/linux"
-          gh run download "$run_id" --name "$native_artifact" --dir "$native_stage/windows"
+          gh run download "$run_id" --name "$native_artifact" --dir "$RUNNER_TEMP/qualified-windows-native"
+          mkdir -p "$native_stage/windows"
+          cp -R "$RUNNER_TEMP/qualified-windows-native/bundle" "$native_stage/windows/bundle"
+          cp "$RUNNER_TEMP/qualified-windows-native/producer-receipt.json" "$native_stage/windows/"
           mac_artifact="packages-macos-${run_id}-${run_attempt}"
           gh run download "$run_id" --name "$mac_artifact" --dir "$RUNNER_TEMP/qualified-macos"
           cp -R "$RUNNER_TEMP/qualified-macos/stream-native" "$native_stage/macos"
-          node scripts/assemble-stream-native-package.mjs \
-            "$stage/typescript" "$native_stage" "$SOURCE_SHA"
+          node scripts/assemble-stream-native-package.mjs release \
+            "$stage/typescript" "$native_stage" "$SOURCE_SHA" "$RUNNER_TEMP/qualified/typescript"
+          actors_stage="$RUNNER_TEMP/qualified-actors-native"
+          mkdir -p "$actors_stage"
+          cp -R "$RUNNER_TEMP/qualified/actors-native" "$actors_stage/linux"
+          cp -R "$RUNNER_TEMP/qualified-windows-native/actors-native" "$actors_stage/windows"
+          cp -R "$RUNNER_TEMP/qualified-macos/actors-native" "$actors_stage/macos"
+          node scripts/assemble-actors-native-package.mjs release \
+            "$stage/typescript" "$actors_stage" "$SOURCE_SHA" "$RUNNER_TEMP/qualified/typescript"
+          workers_stage="$RUNNER_TEMP/qualified-workers-native"
+          mkdir -p "$workers_stage"
+          cp -R "$RUNNER_TEMP/qualified/workers-native" "$workers_stage/linux"
+          cp -R "$RUNNER_TEMP/qualified-windows-native/workers-native" "$workers_stage/windows"
+          cp -R "$RUNNER_TEMP/qualified-macos/workers-native" "$workers_stage/macos"
+          node scripts/assemble-workers-native-package.mjs release \
+            "$stage/typescript" "$workers_stage" "$SOURCE_SHA" "$RUNNER_TEMP/qualified/typescript"
           source scripts/ensure-bun.sh
           bun scripts/check-typescript-tarballs.mjs --archives "$stage/typescript"
 
