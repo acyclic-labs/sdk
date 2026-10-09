@@ -383,64 +383,52 @@ impl ProcessTree {
             let mut stderr = child.stderr.take();
             let mut output = [Vec::new(), Vec::new()];
             let mut status = None;
-            let result = (|| {
-                loop {
-                    check()?;
-                    let mut progressed = false;
-                    if let Some(input) = input.as_mut() {
-                        progressed = input.poll(self)?;
-                    }
-                    let before_stdout = output[0].len();
-                    progressed |= drain_pipe(&mut stdout, &mut output[0], &mut remaining)?
-                        | drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
-                    if let Some(input) = input.as_mut()
-                        && !input.complete
-                        && output[0].len() > before_stdout
-                    {
-                        let chunk = output[0]
-                            .get(before_stdout..)
-                            .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
-                        input.observe(chunk, &mut observe)?;
-                    }
-                    if status.is_none() {
-                        status = self.try_wait()?;
-                        if status.is_some() {
-                            self.terminate_descendants()?;
-                        }
-                    }
-                    if status.is_some() && stdout.is_none() && stderr.is_none() {
-                        return Ok(());
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "process output deadline exceeded; effects may have occurred",
-                        ));
-                    }
-                    if !progressed {
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
+            let result = (|| loop {
+                check()?;
+                let mut progressed = input.as_mut().map_or(Ok(false), |stdin| stdin.poll(self))?;
+                let before_stdout = output[0].len();
+                progressed |= drain_pipe(&mut stdout, &mut output[0], &mut remaining)?
+                    | drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
+                if let Some(input) = input.as_mut()
+                    && !input.complete
+                    && output[0].len() > before_stdout
+                {
+                    let chunk = output[0]
+                        .get(before_stdout..)
+                        .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
+                    input.observe(chunk, &mut observe)?;
+                }
+                if status.is_none()
+                    && let Some(exit) = self.try_wait()?
+                {
+                    status = Some(exit);
+                    self.terminate_descendants()?;
+                }
+                if status.is_some() && stdout.is_none() && stderr.is_none() {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "process output deadline exceeded; effects may have occurred",
+                    ));
+                }
+                if !progressed {
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             })();
             // Cleanup errors take precedence: a capture timeout alone does not
             // describe an unresolved termination. Keep Child ownership on error.
-            let cleanup = self.terminate();
+            let result = self.terminate().and(result).and_then(|()| {
+                status.ok_or_else(|| io::Error::other("capture completed without an exit status"))
+            });
             let [stdout, stderr] = output;
-            match cleanup.and(result) {
-                Ok(()) => match status {
-                    Some(status) => Ok(Output {
-                        status,
-                        stdout,
-                        stderr,
-                    }),
-                    None => Err(ProcessCaptureFailure {
-                        error: io::Error::other("capture completed without an exit status"),
-                        status,
-                        stdout,
-                        stderr,
-                        cleanup_completed: self.is_reaped(),
-                    }),
-                },
+            match result {
+                Ok(status) => Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                }),
                 Err(error) => Err(ProcessCaptureFailure {
                     error,
                     status,
