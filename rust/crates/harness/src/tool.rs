@@ -68,7 +68,7 @@ impl ToolDefinition {
         value: &Value,
     ) -> Result<crate::model::ToolResultContent> {
         validate_value(&self.projection_schema, value, "tool projection")?;
-        serde_json::from_value(value.clone()).map_err(|error| {
+        crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })
     }
