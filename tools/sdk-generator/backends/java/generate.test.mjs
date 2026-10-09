@@ -27,7 +27,8 @@ function fixture(t) {
   const plugin = join(root, "plugin");
   writeFileSync(protoc, "compiler fixture");
   writeFileSync(plugin, "plugin fixture");
-  const toolchain = { protoc_version: "libprotoc 28.3", grpc_java_version: "fixture",
+  const toolchain = { protoc_version: "libprotoc 28.3",
+    protoc: { [`${process.platform}-${process.arch}`]: { sha256: hash("compiler fixture") } }, grpc_java_version: "fixture",
     grpc_java: { [`${process.platform}-${process.arch}`]: { sha256: hash("plugin fixture"), url: "fixture" } } };
   const args = { "source-root": source, authority, protoc, "grpc-java": plugin, output: join(root, "new-package") };
   const calls = [];
@@ -97,6 +98,11 @@ test("plugin drift and compiler version mismatch cannot create output", t => {
   assert.throws(() => generate(f.args, { command: f.command, toolchain: f.toolchain }), /published host pin/);
   assert.equal(existsSync(f.args.output), false);
   writeFileSync(f.args["grpc-java"], "plugin fixture");
+  writeFileSync(f.args.protoc, "compiler drift with same version");
+  assert.throws(() => generate(f.args, { command: f.command, toolchain: f.toolchain }), /compiler executable differs/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(existsSync(f.args.output), false);
+  writeFileSync(f.args.protoc, "compiler fixture");
   assert.throws(() => generate(f.args, { command: () => ({ status: 0, stdout: "libprotoc wrong" }), toolchain: f.toolchain }), /protoc version/);
   assert.equal(existsSync(f.args.output), false);
 });

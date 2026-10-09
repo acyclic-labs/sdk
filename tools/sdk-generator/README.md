@@ -6,7 +6,7 @@ packages and the repository's CI and release scripts.
 ```text
 tools/sdk-generator/
   README.md
-  shared/               Rust manifest, path and digest admission
+  shared/               Rust manifest admission and maintained compiler pins
   backends/
     go/                 Go producer, module and focused tests
     java/               Descriptor-based Java producer and installed controls

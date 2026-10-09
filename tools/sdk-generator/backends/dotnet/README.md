@@ -33,7 +33,10 @@ collisions fail. The output must be absent and disjoint from protected inputs.
 Failed generation retains partial output; temporary snapshots are removed.
 Input directories and their parents must not be concurrently replaced.
 
-Protoc must report `libprotoc 28.3`. The C# gRPC plugin must match the host pin
+Protoc must report `libprotoc 28.3` and match the host's SHA-256 in
+`../../shared/protoc.json` before execution. Those pins are computed from the
+official Maven Central artifacts and checked against their published checksums.
+The C# gRPC plugin must match the host pin
 from the official Grpc.Tools 2.71.0 package. The receipt records tool, authority,
 input, generator and output hashes. The generator downloads nothing.
 
@@ -83,6 +86,8 @@ The installed controls cover Actors, Workers and Stream descriptor equality,
 bytes, unsigned integer bounds, optional-zero presence, oneof and exact gRPC
 method shapes. Descriptor comparison retains all API fields and other unknown
 fields, excluding source comments and Buf file image metadata tag 8042.
+Oneof controls exercise both branches, verify that switching clears the previous
+branch, check the active branch after serialization and test clearing the target.
 These are transport binding checks. Remaining families, other consumer platforms,
 Rust-backed remote RPC, TLS/authentication, cancellation/recovery and embedded
 runtime qualification remain outstanding.

@@ -61,7 +61,17 @@ public final class InstalledConsumer {
     require(!absent.hasIfTail() && explicit.hasIfTail(), "optional presence");
     require(absent.toByteArray().length == 0 && explicit.toByteArray().length != 0, "optional zero encoding");
     var oneof = Workers.JobTarget.newBuilder().setVersionSha256(bytes).build();
+    require(oneof.getTargetCase() == Workers.JobTarget.TargetCase.VERSION_SHA256 && oneof.getDeploymentAlias().isEmpty(), "version branch presence");
     require(oneof.equals(Workers.JobTarget.parseFrom(oneof.toByteArray())), "oneof wire");
+    var target = oneof.toBuilder().setDeploymentAlias("test-alias");
+    require(target.getTargetCase() == Workers.JobTarget.TargetCase.DEPLOYMENT_ALIAS && target.getVersionSha256().isEmpty(), "alias must clear version branch");
+    var aliasTarget = Workers.JobTarget.parseFrom(target.build().toByteArray());
+    require(aliasTarget.getTargetCase() == Workers.JobTarget.TargetCase.DEPLOYMENT_ALIAS && aliasTarget.getDeploymentAlias().equals("test-alias") && aliasTarget.getVersionSha256().isEmpty(), "alias branch wire");
+    target.setVersionSha256(bytes);
+    require(target.getTargetCase() == Workers.JobTarget.TargetCase.VERSION_SHA256 && target.getDeploymentAlias().isEmpty(), "version must clear alias branch");
+    require(target.build().equals(Workers.JobTarget.parseFrom(target.build().toByteArray())), "switched version branch wire");
+    target.clearTarget();
+    require(target.getTargetCase() == Workers.JobTarget.TargetCase.TARGET_NOT_SET && target.getVersionSha256().isEmpty() && target.getDeploymentAlias().isEmpty(), "clear oneof target");
     for (var service : List.of(ActorsServiceGrpc.getServiceDescriptor(),
       WorkersServiceGrpc.getServiceDescriptor(), StreamServiceGrpc.getServiceDescriptor())) {
       var schema = ((ProtoServiceDescriptorSupplier) service.getSchemaDescriptor()).getServiceDescriptor();

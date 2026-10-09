@@ -41,7 +41,10 @@ filenames fail instead of overwriting another family's bindings. Partial output
 remains available if generation fails. Temporary descriptors are removed.
 Input directories and their parents must not be concurrently replaced.
 
-Protoc must report `libprotoc 28.3`. The grpc-java 1.75.0 executable must match
+Protoc must report `libprotoc 28.3` and match the host's SHA-256 in
+`../../shared/protoc.json` before execution. Compiler pins come from the official
+Maven Central artifacts and are checked against their published checksums.
+The grpc-java 1.75.0 executable must match
 the host's SHA-256 in `toolchain.json`, obtained from the published
 [Maven Central artifacts](https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/).
 The backend does not download tools. Its receipt records the manifest, all

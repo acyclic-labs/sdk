@@ -7,7 +7,8 @@ import { parseArgs } from "node:util";
 import { loadAuthority, sha256, within } from "../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const pinned = JSON.parse(readFileSync(join(directory, "toolchain.json"), "utf8"));
+const pinned = { ...JSON.parse(readFileSync(join(directory, "toolchain.json"), "utf8")),
+  ...JSON.parse(readFileSync(join(directory, "../../shared/protoc.json"), "utf8")) };
 
 function inventory(root, prefix = "") {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
@@ -45,6 +46,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   const pluginPin = toolchain.grpc_java[host];
   const pluginHash = sha256(readFileSync(plugin));
   if (!pluginPin || pluginHash !== pluginPin.sha256) throw new Error("grpc-java executable differs from published host pin");
+  const compilerHash = sha256(readFileSync(protoc));
+  if (compilerHash !== toolchain.protoc?.[host]?.sha256) throw new Error("compiler executable differs from published host pin");
   const options = { encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
     env: { ...process.env, LC_ALL: "C" } };
   const version = command(protoc, ["--version"], options);
@@ -92,7 +95,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       source_revision: manifest.source_revision, authority_manifest_sha256: sha256(manifestBytes),
       input_sha256: inputHashes, protoc_version: version.stdout.trim(),
       grpc_java_version: toolchain.grpc_java_version, grpc_java_coordinate: pluginPin.url,
-      tool_sha256: { protoc: sha256(readFileSync(protoc)), grpc_java: pluginHash },
+      tool_sha256: { protoc: compilerHash, grpc_java: pluginHash },
       generator_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
       authority_reader_sha256: sha256(readFileSync(join(directory, "../../shared/authority.mjs"))),
       toolchain_sha256: sha256(JSON.stringify(toolchain)), node_version: process.version,
