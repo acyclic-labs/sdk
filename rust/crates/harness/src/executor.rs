@@ -785,6 +785,22 @@ impl StockExecutor {
         executor
     }
 
+    async fn verify_model_request_content(
+        &self,
+        journal: &dyn ExecutionJournal,
+        request: &crate::model::PreparedModelRequest,
+    ) -> Result<()> {
+        for message in &request.request().messages {
+            message.content.validate_limits(self.limits)?;
+        }
+        for message in &request.request().messages {
+            for reference in message.content.file_refs() {
+                journal.verify_input_file(reference).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn validate_summary_capacity(
         &self,
         executor: &Self,
@@ -792,27 +808,6 @@ impl StockExecutor {
         input: &TurnInput,
         step: u32,
     ) -> Result<()> {
-<<<<<<< HEAD
-        if let Some(capacity) = self.model_capacity()? {
-            let (_, records) = self
-                .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
-                .await?;
-            if records
-                .iter()
-                .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
-            {
-                return Ok(());
-            }
-            let prepared = executor.prepare_request(input, step, &[]).await?;
-            let count = self.provider.count_tokens(&prepared)?.validate(&prepared)?;
-            if count + u64::from(executor.max_output_tokens.unwrap_or_default())
-                > u64::from(capacity.context_tokens)
-            {
-                return Err(Error::Invalid(
-                    "summary input exceeds selected model capacity".into(),
-                ));
-            }
-=======
         let (_, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
             .await?;
@@ -842,7 +837,6 @@ impl StockExecutor {
             return Err(Error::Invalid(
                 "summary input exceeds selected model capacity".into(),
             ));
->>>>>>> a57730c452 (Enforce explicit summary capacity with original native preflight)
         }
         Ok(())
     }

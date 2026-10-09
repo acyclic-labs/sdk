@@ -753,10 +753,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let expected = InheritedConversationPrefix::select(
                 seed.parent.clone(),
                 seed.parent_revision,
-                parent_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
-                &conversation.messages,
+                conversation,
             )?;
             if actual != expected || actual.canonical_bytes()?.as_slice() != bytes.as_ref() {
                 return Err(Error::Conflict(

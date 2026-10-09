@@ -5,8 +5,8 @@
 //! captured refs visible; project merge remains a separate Filesystem action.
 
 use crate::conversation::{
-    ContentResidencyVerifier, ConversationMessage, FileRef, VolumeClass, VolumeOperation,
-    VolumeOwner, VolumeRef, decode_complete_attachment_manifest,
+    ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    decode_complete_attachment_manifest,
 };
 use crate::core::Authority;
 use crate::resources::{
@@ -53,24 +53,29 @@ pub struct InheritedConversationPrefix {
     pub through_sequence: u64,
     /// Readers bound to this preparation retry identity; grants live in the seed.
     pub attached_agents: Vec<AgentId>,
-    /// Digest of the ordered messages at this exact parent revision.
+    /// Version 3 domain-separated chain of canonical per-message digests.
+    /// The empty prefix is zero; order, metadata and immutable refs are included.
     pub message_digest: [u8; 32],
 }
 
 impl InheritedConversationPrefix {
-    /// Binds one contiguous parent prefix without retaining its message list.
-    /// Reader grants remain in the authoritative fork seed.
+    /// Binds one contiguous bound parent prefix without retaining its message list.
+    /// A full-cut fingerprint is already maintained by the conversation; an
+    /// explicit earlier cut hashes records individually. Reader grants remain
+    /// in the authoritative fork seed. This descriptor grants no authority.
     pub fn select(
         parent: Authority,
         parent_revision: u64,
-        parent_agent: AgentId,
         through_sequence: u64,
         attached_agents: &[AgentId],
-        messages: &[ConversationMessage],
+        conversation: &crate::conversation::ConversationState,
     ) -> Result<Self> {
+        let parent_agent = conversation
+            .agent
+            .ok_or_else(|| Error::Invalid("inherited prefix parent is unbound".into()))?;
         let count = usize::try_from(through_sequence)
             .map_err(|_| Error::Invalid("inherited prefix is too large".into()))?;
-        if count > messages.len() {
+        if count > conversation.messages().len() {
             return Err(Error::Invalid(
                 "inherited prefix exceeds parent history".into(),
             ));
@@ -86,17 +91,15 @@ impl InheritedConversationPrefix {
                 "inherited attached agents are invalid".into(),
             ));
         }
-        let selected = messages
-            .get(..count)
-            .ok_or_else(|| Error::Invalid("inherited prefix exceeds parent history".into()))?;
+        let message_digest = conversation.history_prefix_digest(through_sequence)?;
         Ok(Self {
-            format_version: 2,
+            format_version: 3,
             parent,
             parent_revision,
             parent_agent,
             through_sequence,
             attached_agents: attached_agents.to_vec(),
-            message_digest: crate::contract::canonical_json_digest(&selected)?,
+            message_digest,
         })
     }
 
@@ -1794,6 +1797,8 @@ mod tests {
                 AgentId::from_bytes(bytes)
             })
             .collect::<Vec<_>>();
+        let mut conversation = crate::conversation::ConversationState::default();
+        conversation.bind(AgentId::from_bytes([255; 16]))?;
         assert!(
             InheritedConversationPrefix::select(
                 Authority {
@@ -1801,10 +1806,9 @@ mod tests {
                     id: "parent".into()
                 },
                 0,
-                AgentId::from_bytes([255; 16]),
                 0,
                 &readers,
-                &[],
+                &conversation,
             )
             .is_ok()
         );

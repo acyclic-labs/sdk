@@ -2176,10 +2176,9 @@ impl Reducer {
             let prefix = InheritedConversationPrefix::select(
                 self.authority.clone(),
                 self.revision,
-                parent_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
-                &self.conversation.messages,
+                &self.conversation,
             )?;
             let bytes = prefix.canonical_bytes()?;
             let expected = FileDescriptor::from_bytes(

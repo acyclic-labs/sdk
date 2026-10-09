@@ -667,7 +667,7 @@ where
                             "inherited conversation is not canonical".into(),
                         ));
                     }
-                    if inherited.format_version != 2
+                    if inherited.format_version != 3
                         || inherited.parent != seed.parent
                         || inherited.parent_revision != seed.parent_revision
                         || inherited.parent_agent == seed.child_agent
@@ -1342,12 +1342,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let prefix = InheritedConversationPrefix::select(
             self.parent.clone(),
             parent.revision(),
-            history
-                .agent
-                .ok_or_else(|| Error::Conflict("parent conversation is unbound".into()))?,
             through_sequence,
             attached_agents,
-            &history.messages,
+            history,
         )?;
         let mut direct = BTreeMap::<String, FileRef>::new();
         let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();

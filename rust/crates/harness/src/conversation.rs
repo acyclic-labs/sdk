@@ -1451,6 +1451,8 @@ pub struct ConversationState {
     outcomes: BTreeMap<Uuid, usize>,
     #[serde(skip)]
     model_positions: Vec<usize>,
+    #[serde(skip)]
+    history_digest: [u8; 32],
 }
 
 #[derive(Deserialize)]
@@ -1466,6 +1468,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
     fn try_from(wire: ConversationStateWire) -> Result<Self> {
         let mut by_id = BTreeMap::new();
         let mut previous = 0;
+        let mut history_digest = [0; 32];
         for (position, message) in wire.messages.iter().enumerate() {
             message.validate()?;
             if message.sequence <= previous || by_id.insert(message.id, position).is_some() {
@@ -1474,6 +1477,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
                 ));
             }
             previous = message.sequence;
+            history_digest = advance_history_digest(history_digest, message)?;
         }
         let pending_user = wire
             .messages
@@ -1486,6 +1490,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
             messages: wire.messages,
             by_id,
             pending_user,
+            history_digest,
             ..Self::default()
         };
         for position in 0..state.messages.len() {
@@ -1538,6 +1543,28 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
+    /// Fingerprints an exact dense logical prefix. The current head is already
+    /// maintained by append/decode; an explicit older prefix hashes one record
+    /// at a time without constructing a whole-history JSON value or byte buffer.
+    pub(crate) fn history_prefix_digest(&self, through_sequence: u64) -> Result<[u8; 32]> {
+        if self.messages.last().map_or(0, |message| message.sequence) != self.messages.len() as u64
+            || through_sequence > self.messages.len() as u64
+        {
+            return Err(Error::Invalid(
+                "history fingerprint requires a dense logical prefix".into(),
+            ));
+        }
+        if through_sequence == self.messages.len() as u64 {
+            return Ok(self.history_digest);
+        }
+        let count = usize::try_from(through_sequence)
+            .map_err(|_| Error::Invalid("history prefix exceeds platform bounds".into()))?;
+        self.messages
+            .iter()
+            .take(count)
+            .try_fold([0; 32], advance_history_digest)
+    }
+
     /// Rebuilds only a bounded, already attested selection for byte projection.
     /// This unbound sparse view cannot authorize append or stand in for history.
     pub(crate) fn selected_view(messages: Vec<ConversationMessage>) -> Result<Self> {
@@ -1688,12 +1715,15 @@ impl ConversationState {
     /// Appends one ordered, validated message.
     pub fn append(&mut self, message: ConversationMessage) -> Result<()> {
         self.validate_append(&message)?;
-        // Publish rebuildable indexes only after complete append validation.
+        let history_digest = advance_history_digest(self.history_digest, &message)?;
+        // Foreign-owned refs may be carried globally. Their bytes are gated by
+        // the provider's owner-mediated read grant at event admission/resolution.
         self.by_id.insert(message.id, self.messages.len());
         if message.kind == MessageKind::User {
             self.pending_user = Some(message.id);
         }
         self.messages.push(message);
+        self.history_digest = history_digest;
         self.index_turn(self.messages.len() - 1);
         Ok(())
     }
@@ -1745,6 +1775,22 @@ impl ConversationState {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static HISTORY_HASH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn advance_history_digest(previous: [u8; 32], message: &ConversationMessage) -> Result<[u8; 32]> {
+    #[cfg(test)]
+    HISTORY_HASH_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let digest = crate::contract::canonical_json_digest(message)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"harness:conversation-prefix:v3\0");
+    hash.update(&previous);
+    hash.update(&digest);
+    Ok(*hash.finalize().as_bytes())
+}
+
 fn validate_label(value: &str, limit: usize) -> Result<()> {
     if value.is_empty()
         || value.len() > limit
@@ -1779,6 +1825,103 @@ pub fn validate_content_path(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one actual fork fingerprint fixture checks append work, zero-work head reuse, decode, later cuts and invalid sources"
+    )]
+    fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {
+        let agent = AgentId::new();
+        let content = file(agent, "fingerprint.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        for sequence in 1..=10_000_u64 {
+            state.append(ConversationMessage {
+                id: Uuid::from_u128(u128::from(sequence)),
+                sequence,
+                kind: if sequence % 2 == 0 {
+                    MessageKind::Interaction
+                } else {
+                    MessageKind::User
+                },
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to: None,
+                tool_call_id: None,
+                extensions: BTreeMap::new(),
+            })?;
+        }
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 10_000);
+        let authority = crate::core::Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: "fingerprint-parent".into(),
+        };
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        let pinned = crate::fork::InheritedConversationPrefix::select(
+            authority.clone(),
+            10_001,
+            10_000,
+            &[],
+            &state,
+        )?;
+        for _ in 0..32 {
+            assert_eq!(
+                crate::fork::InheritedConversationPrefix::select(
+                    authority.clone(),
+                    10_001,
+                    10_000,
+                    &[],
+                    &state
+                )?,
+                pinned
+            );
+        }
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
+        assert_eq!(pinned.format_version, 3);
+        let old = state.history_prefix_digest(2)?;
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 2);
+        let encoded = crate::contract::canonical_json_bytes(&state)?;
+        let mut reopened: ConversationState =
+            serde_json::from_slice(&encoded).map_err(|error| Error::Invalid(error.to_string()))?;
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        assert_eq!(
+            reopened.history_prefix_digest(10_000)?,
+            pinned.message_digest
+        );
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
+        let mut next = reopened
+            .messages()
+            .last()
+            .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
+            .clone();
+        next.sequence += 1;
+        next.id = Uuid::from_u128(10_001);
+        reopened.append(next.clone())?;
+        assert_ne!(
+            reopened.history_prefix_digest(10_001)?,
+            pinned.message_digest
+        );
+        assert_eq!(
+            reopened.history_prefix_digest(10_000)?,
+            pinned.message_digest
+        );
+        assert_eq!(reopened.history_prefix_digest(2)?, old);
+        let before = reopened.history_prefix_digest(10_001)?;
+        assert!(reopened.append(next).is_err());
+        assert_eq!(reopened.history_prefix_digest(10_001)?, before);
+        let sparse = ConversationState::selected_view(vec![
+            reopened
+                .messages()
+                .last()
+                .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
+                .clone(),
+        ])?;
+        assert!(sparse.history_prefix_digest(1).is_err());
+        assert!(state.history_prefix_digest(10_001).is_err());
+        Ok(())
+    }
 
     #[test]
     fn pending_turn_rebuilds_without_retaining_settled_turn_identities() -> Result<()> {
