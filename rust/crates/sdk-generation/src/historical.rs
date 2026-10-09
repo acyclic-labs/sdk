@@ -1062,7 +1062,7 @@ fn read_git_source_blobs(
             output
                 .read_exact(&mut separator)
                 .map_err(|e| e.to_string())?;
-            if separator != [b'\n'] {
+            if separator != *b"\n" {
                 return Err("invalid Git batch object boundary".into());
             }
             consume(path, &bytes)?;

@@ -1335,7 +1335,7 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
 }
 
 fn write_registry_transport(support: &Path) {
-    let mut responses = fs::read_dir(support.join("registry")).unwrap().map(|entry| {
+    let mut responses = fs::read_dir(support.join("registry")).unwrap().flat_map(|entry| {
         let archive = entry.unwrap().path();
         let package = archive.file_stem().unwrap().to_str().unwrap().strip_suffix("-1.0.0").unwrap().to_owned();
         let version = json!({"crate":package,"num":"1.0.0","checksum":hash_file(&archive).trim_start_matches("sha256:"),"yanked":false});
@@ -1343,7 +1343,7 @@ fn write_registry_transport(support: &Path) {
             (format!("/{package}/1.0.0"), serde_json::to_string(&json!({"version":version})).unwrap()),
             (format!("/{package}/versions"), serde_json::to_string(&json!({"versions":[version],"meta":{"total":1,"next_page":null}})).unwrap()),
         ]
-    }).flatten().collect::<Vec<_>>();
+    }).collect::<Vec<_>>();
     responses.sort();
     // Subprocess fixture for the real registry command boundary. No network
     // requests or authored documentation JSON enter this qualification test.

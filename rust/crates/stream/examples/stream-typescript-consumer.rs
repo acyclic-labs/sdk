@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             json!({"start": receipt.start, "end": receipt.end, "tail": receipt.tail})
         }
         AppendOutcome::TailConflict { actual_tail } => {
-            return Err(format!("unexpected tail conflict at {actual_tail}").into())
+            return Err(format!("unexpected tail conflict at {actual_tail}").into());
         }
     };
     let tail = provider.tail(path.clone()).await?;
