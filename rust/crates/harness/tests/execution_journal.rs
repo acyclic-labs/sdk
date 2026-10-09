@@ -404,6 +404,31 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             "application/json",
         )
         .await?;
+    assert!(
+        journal_a
+            .append(
+                paged,
+                "model-without-execution".into(),
+                ExecutionEvent::ModelStarted {
+                    step: 0,
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
+                    request_digest,
+                    request: paged_request.clone(),
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    journal_a
+        .append(
+            paged,
+            "paged-execution-start".into(),
+            ExecutionEvent::Started {
+                request_digest: [57; 32],
+            },
+        )
+        .await?;
     for step in 0..70 {
         journal_a
             .append(
@@ -421,7 +446,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     let first_page = journal_b.replay(paged, 0, 64).await?;
     let second_page = journal_b.replay(paged, 64, 64).await?;
     assert_eq!(first_page.len(), 64);
-    assert_eq!(second_page.len(), 6);
+    assert_eq!(second_page.len(), 7);
     assert_eq!(first_page[63].sequence, 64);
     assert_eq!(second_page[0].sequence, 65);
     assert_eq!(journal_b.replay(paged, 0, 65).await?.len(), 64);
@@ -438,10 +463,10 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             },
         )
         .await?;
-    assert!(journal_b.replay(paged, 70, 64).await?.is_empty());
+    assert!(journal_b.replay(paged, 71, 64).await?.is_empty());
     let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
     while cursor.next_page(&journal_b).await?.is_some() {}
-    assert_eq!(cursor.tail(), 70);
+    assert_eq!(cursor.tail(), 71);
     assert!(
         journal_a
             .append_if_tail(
@@ -457,7 +482,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             )
             .await?
     );
-    assert_eq!(journal_b.replay(paged, 70, 64).await?.len(), 1);
+    assert_eq!(journal_b.replay(paged, 71, 64).await?.len(), 1);
     Ok(())
 }
 
