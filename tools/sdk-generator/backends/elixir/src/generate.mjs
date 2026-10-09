@@ -80,6 +80,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
     put("authority/rust-authority.json", manifestBytes);
     for (const [name, bytes] of inputs) put("authority/" + name, bytes);
     if (sha256(readFileSync(protoc)) !== compilerHash || sha256(readFileSync(plugin)) !== pluginHash || !readFileSync(runtimeIndex).equals(indexBytes)) throw new Error("generation tool inputs changed");
+    verifyRuntime(runtime, indexBytes, runtimePin);
     for (const [name, bytes] of sourceBytes) if (!readFileSync(join(directory, name)).equals(bytes)) throw new Error("producer source changed");
     for (const name of ["mix.exs", "README.md"]) if (!readFileSync(join(directory, "../templates/package", name)).equals(metadata.get(name))) throw new Error("package template changed");
     const outputs = inventory(output);

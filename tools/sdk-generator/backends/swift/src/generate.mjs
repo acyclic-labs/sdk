@@ -36,6 +36,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
     if (within(input, output) || within(output, input)) throw new Error("output overlaps protected input");
   }
   const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
+  const sourceBytes = new Map(["generate.mjs", "../../../shared/authority.mjs", "../../../shared/protoc.json", "../toolchains/toolchain.json"]
+    .map(name => [name, readFileSync(join(directory, name))]));
   const descriptors = new Map();
   for (const family of manifest.families) {
     if (family.descriptor) descriptors.set(family.descriptor_sha256, inputs.get(family.descriptor));
@@ -103,6 +105,10 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       writeFileSync(join(output, name), bytes, { flag: "wx" });
     }
     writeFileSync(join(resources, "rust-authority.json"), manifestBytes, { flag: "wx" });
+    if (sha256(readFileSync(protoc)) !== compilerHash || sha256(readFileSync(plugin)) !== pluginHash
+      || sha256(readFileSync(grpcPlugin)) !== grpcHash) throw new Error("generation tool inputs changed");
+    for (const [name, digest] of Object.entries(runtimePin.files)) readInput(swiftHome, name, digest);
+    for (const [name, bytes] of sourceBytes) if (!readFileSync(join(directory, name)).equals(bytes)) throw new Error("producer source changed");
     const outputs = inventory(output);
     const receipt = {
       schema: "acyclic.sdk.swift-producer-receipt.v1", authority: "rust", target: "swift",
@@ -112,8 +118,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       grpc_plugin_version: toolchain.grpc_plugin_version, grpc_plugin_coordinate: grpcPin.url,
       swift_version: swiftVersion.stdout.trim(), swift_runtime_sha256: runtimePin.files,
       tool_sha256: { protoc: compilerHash, swift_plugin: pluginHash, grpc_plugin: grpcHash },
-      generator_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
-      authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
+      generator_sha256: sha256(sourceBytes.get("generate.mjs")),
+      authority_reader_sha256: sha256(sourceBytes.get("../../../shared/authority.mjs")),
       toolchain_sha256: sha256(JSON.stringify(toolchain)), node_version: process.version,
       outputs, output_sha256: Object.fromEntries(outputs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     };

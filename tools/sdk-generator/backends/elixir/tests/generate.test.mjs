@@ -120,6 +120,19 @@ test("tool mutation during native generation prevents a success receipt", t => {
   assert.equal(existsSync(join(f.args.output, "generation-receipt.json")), false);
 });
 
+test("mid-generation runtime changes and extra files prevent a success receipt", t => {
+  for (const name of ["OTP/bin/erl", "Elixir/bin/elixir", "OTP/bin/extra"]) {
+    const f = fixture(t);
+    const command = (exe,argv,options) => {
+      const result = f.command(exe,argv,options);
+      if (argv.some(value => value.startsWith("--elixir_out="))) writeFileSync(join(f.runtime,name),"runtime drift");
+      return result;
+    };
+    assert.throws(() => generate(f.args,{...f,command}), /runtime file/);
+    assert.equal(existsSync(join(f.args.output,"generation-receipt.json")),false);
+  }
+});
+
 test("existing and overlapping output paths remain intact", t => {
   const f = fixture(t); mkdirSync(f.args.output); writeFileSync(join(f.args.output, "keep"), "owned");
   assert.throws(() => generate(f.args, f), /absent/); assert.deepEqual(readdirSync(f.args.output), ["keep"]);

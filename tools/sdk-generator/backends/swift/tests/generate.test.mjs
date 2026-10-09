@@ -141,6 +141,19 @@ test("Swift runtime version mismatch fails before protoc execution", t => {
   assert.equal(existsSync(f.args.output), false);
 });
 
+test("mid-generation compiler, plugin and runtime mutations prevent success receipts", t => {
+  for (const name of ["protoc", "swift-plugin", "grpc-plugin", "swift-home"]) {
+    const f = fixture(t);
+    const command = (exe, argv, options) => {
+      const result = f.command(exe,argv,options);
+      if (argv.some(value => value.startsWith("--swift_out="))) writeFileSync(name === "swift-home" ? join(f.args[name],"usr/bin/swift") : f.args[name],"changed during generation");
+      return result;
+    };
+    assert.throws(() => generate(f.args,{...f,command}), /tool inputs changed|digest mismatch/);
+    assert.equal(existsSync(join(f.args.output,"generation-receipt.json")),false);
+  }
+});
+
 test("missing family bindings and unexpected output cannot produce success", t => {
   for (const collision of [false, true]) {
     const f = fixture(t);
