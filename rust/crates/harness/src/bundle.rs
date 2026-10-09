@@ -15,160 +15,9 @@ use crate::{
         InteractionRouter, RuntimeScope, TaskDefinition, TaskRegistry, TaskSpawner,
         TaskStateProvider, ToolPolicy,
     },
-    tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
-        ToolResult,
-    },
+    tool::{Tool, ToolRegistry},
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
-use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
 use std::sync::Arc;
-
-const CODING_TOOLS: &[(&str, &str)] = &[
-    (
-        "acyclic.filesystem",
-        "Read and mutate the durable workspace filesystem.",
-    ),
-    (
-        "acyclic.edit",
-        "Apply bounded structured edits to workspace files.",
-    ),
-    (
-        "acyclic.search",
-        "Search bounded workspace paths and contents.",
-    ),
-    (
-        "acyclic.shell",
-        "Execute an admitted non-interactive shell command.",
-    ),
-    (
-        "acyclic.pty",
-        "Operate an admitted interactive terminal session.",
-    ),
-    (
-        "acyclic.lsp",
-        "Query language-server diagnostics and symbols.",
-    ),
-    ("acyclic.browser", "Operate an admitted browser session."),
-    ("acyclic.web", "Fetch or search admitted network resources."),
-    (
-        "acyclic.mcp",
-        "Invoke an admitted Model Context Protocol tool.",
-    ),
-    (
-        "acyclic.delegation",
-        "Dispatch or coordinate an admitted child task.",
-    ),
-    (
-        "acyclic.compaction",
-        "Persist a deterministic context compaction revision.",
-    ),
-];
-
-/// Single host boundary implementing the complete public coding tool vocabulary.
-pub trait CodingToolHost: acyclic_stream::ProviderPlatform {
-    /// Returns the pinned contract implemented by this host for a stock tool.
-    /// The factory checks its name and registers its exact revision and schemas;
-    /// a generic catch-all schema must not be silently invented by the runtime.
-    fn definition(&self, name: &str, description: &str) -> Result<ToolDefinition>;
-
-    /// Executes one already admitted tool invocation.
-    fn execute<'a>(
-        &'a self,
-        tool: &'a str,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<ToolResult>>;
-
-    /// Reconciles an interrupted invocation without redispatching it.
-    fn reconcile<'a>(
-        &'a self,
-        tool: &'a str,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>>;
-
-    /// Projects a successful result into model-visible structured context.
-    fn project(
-        &self,
-        tool: &str,
-        invocation: &ToolInvocation,
-        result: &ToolResult,
-    ) -> Result<Value>;
-}
-
-struct HostedCodingTool {
-    name: &'static str,
-    host: Arc<dyn CodingToolHost>,
-}
-
-impl ToolExecutor for HostedCodingTool {
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        self.host.execute(self.name, invocation)
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        self.host.reconcile(self.name, invocation)
-    }
-}
-
-impl ToolProjection for HostedCodingTool {
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        self.host.project(self.name, invocation, result)
-    }
-}
-
-/// Constructs the complete validated coding registry over one explicit host boundary.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the registry owns cloned host handles"
-)]
-pub fn coding_tools(host: Arc<dyn CodingToolHost>) -> Result<ToolRegistry> {
-    let mut registry = ToolRegistry::new();
-    for &(name, description) in CODING_TOOLS {
-        let definition = host.definition(name, description)?;
-        if definition.name != name {
-            return Err(Error::Invalid(format!(
-                "coding host returned {} for {name}",
-                definition.name
-            )));
-        }
-        validate_coding_schema(&definition.input_schema, name, "input")?;
-        validate_coding_schema(&definition.output_schema, name, "output")?;
-        registry.register(Tool {
-            definition,
-            executor: Arc::new(HostedCodingTool {
-                name,
-                host: host.clone(),
-            }),
-            projection: Arc::new(HostedCodingTool {
-                name,
-                host: host.clone(),
-            }),
-        })?;
-    }
-    Ok(registry)
-}
-
-fn validate_coding_schema(schema: &Value, name: &str, role: &str) -> Result<()> {
-    let strict = schema.as_object().is_some_and(|schema| {
-        schema.get("type").and_then(Value::as_str) == Some("object")
-            && schema.get("additionalProperties") == Some(&Value::Bool(false))
-            && schema
-                .get("properties")
-                .and_then(Value::as_object)
-                .is_some_and(|properties| !properties.is_empty())
-    });
-    if !strict {
-        return Err(Error::Invalid(format!(
-            "coding tool {name} requires a closed, nonempty object {role} schema"
-        )));
-    }
-    Ok(())
-}
 
 /// Immutable code-defined runtime composition.
 #[derive(Clone)]
@@ -703,7 +552,10 @@ impl HarnessBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::{ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
+    use acyclic_stream::BoxProviderFuture as BoxFuture;
     use futures::FutureExt as _;
+    use serde_json::{Value, json};
 
     struct UnusedForkPreparer(crate::core::Authority, u64);
 
@@ -993,24 +845,17 @@ mod tests {
         let custom = HarnessBuilder::new()
             .executor(Arc::clone(&stock_executor))
             .journal(Arc::new(UnusedJournal))
-            .tools(coding_tools(Arc::new(Host {
-                definition_name: None,
-            }))?)
+            .tool(example_tool())?
             .build()?;
-        assert_eq!(
-            custom.runtime().tool("acyclic.filesystem")?.name,
-            "acyclic.filesystem"
-        );
+        assert_eq!(custom.runtime().tool("example.echo")?.name, "example.echo");
         let scoped_bindings = || -> Result<Bindings> {
             let mut bindings = Bindings::local();
             let root = RuntimeScope::new(
-                Capabilities::new(["tool:call:acyclic.filesystem".to_owned()]),
+                Capabilities::new(["tool:call:example.echo".to_owned()]),
                 Limits::default(),
             )?;
             bindings.scope = root.narrow(root.grants().clone(), root.limits())?;
-            bindings.tools = coding_tools(Arc::new(Host {
-                definition_name: None,
-            }))?;
+            bindings.tools.register(example_tool())?;
             Ok(bindings)
         };
         let composed = HarnessBuilder::new()
@@ -1018,14 +863,10 @@ mod tests {
             .executor(Arc::clone(&stock_executor))
             .journal(Arc::new(UnusedJournal))
             .build()?;
-        assert!(
-            composed
-                .capabilities()
-                .contains("tool:call:acyclic.filesystem")
-        );
+        assert!(composed.capabilities().contains("tool:call:example.echo"));
         assert_eq!(
-            composed.runtime().tool("acyclic.filesystem")?.name,
-            "acyclic.filesystem"
+            composed.runtime().tool("example.echo")?.name,
+            "example.echo"
         );
         assert!(
             HarnessBuilder::new()
@@ -1057,105 +898,74 @@ mod tests {
         Ok(())
     }
 
-    struct Host {
-        definition_name: Option<&'static str>,
-    }
+    struct Echo;
 
-    impl CodingToolHost for Host {
-        fn definition(&self, name: &str, description: &str) -> Result<ToolDefinition> {
-            Ok(ToolDefinition {
-                name: self.definition_name.unwrap_or(name).into(),
-                revision: "2".into(),
-                description: description.into(),
-                input_schema: json!({"type": "object", "properties": {
-                    "request": {"type": "string"}
-                }, "required": ["request"], "additionalProperties": false}),
-                output_schema: json!({"type": "object", "properties": {
-                    "tool": {"type": "string"}
-                }, "required": ["tool"], "additionalProperties": false}),
-                projection_schema: crate::tool::json_projection_schema(
-                    json!({"type": "object", "properties": {
-                    "tool": {"type": "string"}, "result":{"type":"object","properties":{"tool":{"type":"string"}},"required":["tool"],"additionalProperties":false}
-                }, "required": ["tool","result"], "additionalProperties": false}),
-                ),
-            })
-        }
-
-        fn execute<'a>(
-            &'a self,
-            tool: &'a str,
-            _: ToolInvocation,
-        ) -> BoxFuture<'a, Result<ToolResult>> {
+    impl ToolExecutor for Echo {
+        fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
             async move {
                 Ok(ToolResult {
-                    value: json!({"tool": tool}),
+                    value: invocation.arguments,
                 })
             }
             .boxed()
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: &'a str,
-            _: ToolInvocation,
-        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             async { Ok(None) }.boxed()
         }
+    }
 
-        fn project(&self, tool: &str, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(json!({"kind":"json","value":{"tool": tool, "result": result.value}}))
+    struct EchoProjection;
+
+    impl ToolProjection for EchoProjection {
+        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+            Ok(json!({"kind":"json","value":{"echo": result.value}}))
+        }
+    }
+
+    fn example_tool() -> Tool {
+        Tool {
+            definition: ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo one string with a separately assembled projection".into(),
+                input_schema: json!({"type":"string"}),
+                output_schema: json!({"type":"string"}),
+                projection_schema: crate::tool::json_projection_schema(json!({
+                    "type":"object", "properties":{"echo":{"type":"string"}},
+                    "required":["echo"], "additionalProperties":false
+                })),
+            },
+            executor: Arc::new(Echo),
+            projection: Arc::new(EchoProjection),
         }
     }
 
     #[tokio::test]
-    async fn coding_factory_builds_an_executable_complete_registry() -> Result<()> {
-        let host: Arc<dyn CodingToolHost> = Arc::new(Host {
-            definition_name: None,
-        });
-        let registry = coding_tools(host)?;
-        assert_eq!(registry.definitions()?.len(), CODING_TOOLS.len());
-        for &(name, _) in CODING_TOOLS {
-            let tool = registry
-                .get(name)
-                .ok_or_else(|| Error::NotFound(name.into()))?;
-            let invocation = ToolInvocation {
-                operation_id: crate::OperationId::new(),
-                call_id: format!("call-{name}"),
-                name: name.into(),
-                arguments: json!({"request": "test"}),
-            };
-            let result = tool.executor.execute(invocation.clone()).await?;
-            assert_eq!(result.value, json!({"tool": name}));
-            tool.definition
-                .validate_projection(&tool.projection.project(&invocation, &result)?)?;
-            assert_eq!(
-                tool.projection.project(&invocation, &result)?,
-                json!({"kind":"json","value":{"tool": name, "result": {"tool": name}}})
-            );
-        }
+    async fn individually_assembled_tool_preserves_canonical_result_and_projection() -> Result<()> {
+        let mut registry = ToolRegistry::new();
+        registry.register(example_tool())?;
+        assert_eq!(registry.definitions()?.len(), 1);
+        let tool = registry
+            .get("example.echo")
+            .ok_or_else(|| Error::NotFound("example.echo".into()))?;
+        assert!(registry.get("acyclic.shell").is_none());
+        let invocation = ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "echo".into(),
+            name: "example.echo".into(),
+            arguments: json!("original"),
+        };
+        let result = tool.executor.execute(invocation.clone()).await?;
+        crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result")?;
+        assert_eq!(result.value, json!("original"));
+        let projection = tool.projection.project(&invocation, &result)?;
+        tool.definition.validate_projection(&projection)?;
+        assert_eq!(
+            projection,
+            json!({"kind":"json","value":{"echo":"original"}})
+        );
+        assert_eq!(result.value, json!("original"));
         Ok(())
-    }
-
-    #[test]
-    fn coding_contract_rejects_catch_all_and_empty_schemas() {
-        for schema in [
-            json!(true),
-            json!({}),
-            json!({"type": "object"}),
-            json!({"type": "object", "properties": {}, "additionalProperties": false}),
-        ] {
-            assert!(matches!(
-                validate_coding_schema(&schema, "acyclic.shell", "input"),
-                Err(Error::Invalid(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn coding_factory_rejects_a_host_that_renames_a_tool() {
-        let host: Arc<dyn CodingToolHost> = Arc::new(Host {
-            definition_name: Some("acyclic.other"),
-        });
-        assert!(matches!(coding_tools(host), Err(Error::Invalid(_))));
     }
 }

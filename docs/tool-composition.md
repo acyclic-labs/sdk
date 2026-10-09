@@ -42,12 +42,18 @@ on dispatch and terminal replay; and wrong-schema retained prefix payloads with
 valid canonical encoding and digests. These tests have not been executed on
 the recovered source. Generated bindings and installed consumers remain open.
 
-The legacy `coding_tools` constructor requires one host implementing its entire
-vocabulary, including shell/PTY/LSP/browser. Portable defaults need separately
-assembled read/write/exact-edit tools over explicit providers and grants, with
-search and patch editing selected independently. Optional execution must consume
-the landed PR5 provider and its existing approval, selected multi-volume view,
-publication and recovery path. No second execution journal is justified.
+Tools now assemble independently through `Tool { definition, executor, projection }`,
+`ToolRegistry::register` and `HarnessBuilder::tool`. The all-vocabulary
+`CodingToolHost`/`coding_tools` host and its object-only schema restriction are
+removed. Selecting a read tool does not require a shell, PTY, LSP or browser
+implementation. Definitions retain their exact names, revisions and compiled
+input, canonical output and projection schemas. The updated builder fixture
+uses one explicit string-valued tool and preserves original binding checks.
+
+Portable defaults select the owner-bound read/write/exact-edit adapters.
+Bounded search, read options and patch editing remain open. Optional execution
+consumes the landed PR5 provider and its existing approval, selected multi-volume
+view, publication and recovery path; no second execution journal is justified.
 
 ## Approved native multimodal scope
 
