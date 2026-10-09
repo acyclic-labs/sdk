@@ -241,6 +241,8 @@ case "$lane" in
         allow_webflow=true
       fi
     fi
+    commits="$(git rev-list --reverse "$range")"
+    [[ -n "$commits" ]] || { echo 'qualification range contains no commits' >&2; exit 1; }
     webflow_home=""
     while read -r commit; do
       verification=$(git \
@@ -272,7 +274,7 @@ case "$lane" in
       fi
       echo "Commit $commit lacks an authorized cryptographic signature." >&2
       exit 1
-    done < <(git rev-list --reverse "$range")
+    done <<<"$commits"
     if [[ -n "$webflow_home" ]]; then
       rm -rf -- "$webflow_home"
       trap - EXIT
@@ -282,8 +284,18 @@ case "$lane" in
       https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
       551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb \
       "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
-    "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
-      --log-opts "$range"
+    # Pinned 8.30.1 can exit zero after Git errors; require nonempty scan evidence.
+    # First-parent merge diffs include authored/resolution changes; counts remain evidence, not a proof.
+    scan_log="$observability/gitleaks.log"
+    "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --no-color --redact \
+      --log-opts "--diff-merges=first-parent $range" 2>&1 | tee "$scan_log"
+    if grep -Eqi '(^|[[:space:]])ERR[[:space:]]|fatal:|error:' "$scan_log" ||
+      ! grep -Eq ' INF [1-9][0-9]* commits? scanned\.$' "$scan_log" ||
+      ! grep -Eq ' INF scanned ~[1-9][0-9]* bytes ' "$scan_log" ||
+      ! grep -Eq ' INF no leaks found$' "$scan_log"; then
+      echo 'gitleaks did not establish a successful nonempty source scan' >&2
+      exit 1
+    fi
     ;;
   linux)
     bash scripts/test-ensure-rust-target.sh
