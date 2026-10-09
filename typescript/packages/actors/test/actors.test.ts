@@ -86,7 +86,7 @@ describe("Rust-backed Actors client", () => {
     expect(events.every(event => event.requestBytes !== undefined)).toBe(true);
   });
 
-  test("materializes absent optional scalar response properties", async () => {
+  test("preserves absence of optional scalar response properties", async () => {
     const client = new ActorsClient({
       endpoint: "https://actors.example.test",
       token: "secret",
@@ -109,7 +109,7 @@ describe("Rust-backed Actors client", () => {
     });
 
     const response = await client.inspectActor({ actorId: "actor-a" as semantic.ActorId });
-    expect(Object.hasOwn(response.actor!, "checkpointUnixMillis")).toBe(true);
+    expect(Object.hasOwn(response.actor!, "checkpointUnixMillis")).toBe(false);
     expect(response.actor?.checkpointUnixMillis).toBeUndefined();
   });
 
