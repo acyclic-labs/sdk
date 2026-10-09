@@ -1762,7 +1762,8 @@ mod tests {
             })
             .await?;
         let pinned = reader.pin(0).await?;
-        let future = message(10_001);
+        let mut future = message(10_001);
+        future.kind = crate::conversation::MessageKind::Interaction;
         writer
             .execute(Command {
                 operation_id: OperationId::from_bytes([99; 16]),
@@ -1808,7 +1809,138 @@ mod tests {
             ))?
             .append(crate::contract::canonical_json_bytes(&forged)?)
             .await?;
+        let mut forged_sequence: Value = crate::executor::decode_json(
+            &records
+                .first()
+                .ok_or_else(|| Error::Storage("message index missing".into()))?
+                .value,
+        )?;
+        forged_sequence["sequence"] = json!(20_001);
+        client
+            .stream("harness/v2/conversation-sequences/conversations/conversation-1/20001")?
+            .append(crate::contract::canonical_json_bytes(&forged_sequence)?)
+            .await?;
         provider.forbid_writes.store(true, Ordering::SeqCst);
+        let range_limits = HistoryReadLimits {
+            maximum_events: 3,
+            maximum_bytes: 65_536,
+        };
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert_eq!(
+            reader
+                .conversation_range(&pinned, 9_997, 10_000, range_limits)
+                .await?,
+            [9_998, 9_999, 10_000]
+                .into_iter()
+                .map(message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 6);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .conversation_range(
+                    &pinned,
+                    9_997,
+                    10_000,
+                    HistoryReadLimits {
+                        maximum_events: 2,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            reader
+                .conversation_range(&pinned, 10_000, 10_001, range_limits)
+                .await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        // Exact aggregate byte exhaustion stops before the third locator read.
+        let mut two_record_bytes = 0u64;
+        for sequence in [9_998u64, 9_999] {
+            let index = client
+                .stream(format!(
+                    "harness/v2/conversation-sequences/conversations/conversation-1/{sequence}"
+                ))?
+                .read(0, 1)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            let event = client
+                .stream(authority().stream_path()?)?
+                .read(sequence, 1)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            two_record_bytes += index
+                .first()
+                .ok_or_else(|| Error::Storage("sequence index missing".into()))?
+                .value
+                .len() as u64
+                + event
+                    .first()
+                    .ok_or_else(|| Error::Storage("message event missing".into()))?
+                    .value
+                    .len() as u64;
+        }
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .conversation_range(
+                    &pinned,
+                    9_997,
+                    10_000,
+                    HistoryReadLimits {
+                        maximum_bytes: two_record_bytes,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 4);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .conversation_range(&pinned, 19_999, 20_000, range_limits)
+                .await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 1);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .conversation_range(&pinned, 20_000, 20_001, range_limits)
+                .await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        let mixed_cut = reader.pin(0).await?;
+        assert_eq!(
+            reader
+                .conversation_range(&mixed_cut, 10_000, 10_001, range_limits)
+                .await?,
+            vec![future.clone()]
+        );
+        assert!(matches!(
+            reader
+                .conversation_range(
+                    &mixed_cut,
+                    10_000,
+                    10_001,
+                    HistoryReadLimits {
+                        maximum_events: 0,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
         for sequence in [1, 5_000, 10_000] {
             provider.observation_reads.store(0, Ordering::SeqCst);
             assert_eq!(

@@ -101,6 +101,63 @@ impl<P: StreamProvider> HistoryReader<P> {
         .await
     }
 
+    /// Reads an exact contiguous canonical message range at one event cutoff.
+    /// All message kinds count toward the explicit work bound. The byte bound
+    /// includes every locator and canonical record, checked before decoding.
+    /// Missing or future records fail; no aggregate replay or scan is attempted.
+    pub async fn conversation_range(
+        &self,
+        cursor: &HistoryCursor,
+        after_sequence: u64,
+        through_sequence: u64,
+        limits: HistoryReadLimits,
+    ) -> Result<Vec<crate::conversation::ConversationMessage>> {
+        self.verifier.verify_audience(&cursor.authority)?;
+        if limits.maximum_events == 0
+            || limits.maximum_bytes == 0
+            || after_sequence > through_sequence
+            || through_sequence - after_sequence > u64::from(limits.maximum_events)
+            || cursor.after_revision > cursor.through_revision
+        {
+            return Err(Error::Invalid(
+                "conversation range bounds or cursor are invalid".into(),
+            ));
+        }
+        if cursor.through_revision > self.committed_tail().await? {
+            return Err(Error::Invalid(
+                "conversation range exceeds committed event cutoff".into(),
+            ));
+        }
+        let mut messages = Vec::new();
+        let mut consumed = 0_u64;
+        if after_sequence == through_sequence {
+            return Ok(messages);
+        }
+        for sequence in after_sequence + 1..=through_sequence {
+            let remaining = limits
+                .maximum_bytes
+                .checked_sub(consumed)
+                .filter(|bytes| *bytes > 0)
+                .ok_or_else(|| Error::Invalid("conversation range exceeds byte bound".into()))?;
+            let (message, bytes) = super::operations::find_message_sequence(
+                &self.client,
+                &cursor.authority,
+                &self.verifier,
+                sequence,
+                cursor.through_revision,
+                remaining,
+            )
+            .await?;
+            consumed = consumed
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("conversation range byte count overflows".into()))?;
+            messages.push(message.ok_or_else(|| {
+                Error::Storage("conversation range is incomplete at its pinned cutoff".into())
+            })?);
+        }
+        Ok(messages)
+    }
+
     /// Captures a committed boundary once for explicit archival traversal.
     pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
         let through_revision = self.committed_tail().await?;

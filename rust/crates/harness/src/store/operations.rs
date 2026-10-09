@@ -44,6 +44,21 @@ fn message_path(authority: &Authority, message: uuid::Uuid) -> Result<StreamPath
     ))?)
 }
 
+fn message_sequence_path(authority: &Authority, sequence: u64) -> Result<StreamPath> {
+    if sequence == 0 || authority.kind != crate::core::AggregateKind::Conversation {
+        return Err(Error::Invalid(
+            "message sequence index requires a positive conversation sequence".into(),
+        ));
+    }
+    let path = authority.stream_path()?;
+    let suffix = path
+        .strip_prefix("harness/v2/")
+        .ok_or_else(|| Error::Invalid("message sequence authority path is invalid".into()))?;
+    Ok(StreamPath::new(format!(
+        "harness/v2/conversation-sequences/{suffix}/{sequence}"
+    ))?)
+}
+
 pub(crate) fn operation_path(authority: &Authority, operation: OperationId) -> Result<StreamPath> {
     let path = authority.stream_path()?;
     let suffix = path
@@ -80,13 +95,19 @@ impl IndexedPublication {
             Bytes::from(crate::contract::canonical_json_bytes(&location)?),
         )];
         if let crate::core::EventPayload::ConversationMessageAppended { message } = &event.payload {
-            indexes.push((
-                message_path(authority, message.id)?,
+            let message_location =
                 Bytes::from(crate::contract::canonical_json_bytes(&MessageLocation {
                     location,
                     message_id: message.id,
                     sequence: message.sequence,
-                })?),
+                })?);
+            indexes.push((
+                message_path(authority, message.id)?,
+                message_location.clone(),
+            ));
+            indexes.push((
+                message_sequence_path(authority, message.sequence)?,
+                message_location,
             ));
         }
         Ok(Self {
@@ -262,16 +283,66 @@ pub(crate) async fn find_message<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<Option<crate::conversation::ConversationMessage>> {
+    let path = message_path(authority, message_id)?;
+    let (message, _) = find_message_at_locator(
+        client,
+        authority,
+        verifier,
+        path,
+        Some(message_id),
+        None,
+        through_revision,
+        maximum_bytes,
+    )
+    .await?;
+    Ok(message)
+}
+
+pub(crate) async fn find_message_sequence<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    sequence: u64,
+    through_revision: u64,
+    maximum_bytes: u64,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
+    let path = message_sequence_path(authority, sequence)?;
+    find_message_at_locator(
+        client,
+        authority,
+        verifier,
+        path,
+        None,
+        Some(sequence),
+        through_revision,
+        maximum_bytes,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one atomic locator verifier binds its exact ID or sequence and pinned byte/read boundary"
+)]
+async fn find_message_at_locator<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    path: StreamPath,
+    expected_id: Option<uuid::Uuid>,
+    expected_sequence: Option<u64>,
+    through_revision: u64,
+    maximum_bytes: u64,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     verifier.verify_audience(authority)?;
     if maximum_bytes == 0 {
         return Err(Error::Invalid(
             "message lookup byte bound must be positive".into(),
         ));
     }
-    let path = message_path(authority, message_id)?;
     let Some(index) = one_record(client, &path, 0).await? else {
         return match client.stream(path.as_str())?.tail().await {
-            Err(acyclic_stream::StreamError::NotFound) => Ok(None),
+            Err(acyclic_stream::StreamError::NotFound) => Ok((None, 0)),
             Ok(_) => Err(Error::Storage(
                 "message location is missing before its committed tail".into(),
             )),
@@ -286,7 +357,8 @@ pub(crate) async fn find_message<P: StreamProvider>(
     }
     let location: MessageLocation = crate::executor::decode_json(&index.value)?;
     if &location.location.authority != authority
-        || location.message_id != message_id
+        || expected_id.is_some_and(|id| location.message_id != id)
+        || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
         || location.location.revision == 0
         || location.sequence == 0
     {
@@ -299,12 +371,10 @@ pub(crate) async fn find_message<P: StreamProvider>(
     let record = one_record(client, &canonical, sequence)
         .await?
         .ok_or_else(|| Error::Storage("indexed canonical message is missing".into()))?;
-    if (index.value.len() as u64)
+    let consumed_bytes = (index.value.len() as u64)
         .checked_add(record.value.len() as u64)
-        .is_none_or(|bytes| bytes > maximum_bytes)
-    {
-        return Err(Error::Invalid("message lookup exceeds byte bound".into()));
-    }
+        .filter(|bytes| *bytes <= maximum_bytes)
+        .ok_or_else(|| Error::Invalid("message lookup exceeds byte bound".into()))?;
     let event = super::history::verify_history_record(verifier, authority, sequence, &record)?;
     if event.operation_id != location.location.operation_id
         || event.intent_digest != location.location.intent_digest
@@ -319,10 +389,13 @@ pub(crate) async fn find_message<P: StreamProvider>(
             "message location points to another event kind".into(),
         ));
     };
-    if message.id != message_id || message.sequence != location.sequence {
+    if message.id != location.message_id || message.sequence != location.sequence {
         return Err(Error::Storage(
             "message location differs from its canonical message".into(),
         ));
     }
-    Ok((event.revision <= through_revision).then_some(*message))
+    Ok((
+        (event.revision <= through_revision).then_some(*message),
+        consumed_bytes,
+    ))
 }

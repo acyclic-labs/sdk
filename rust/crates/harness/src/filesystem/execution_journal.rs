@@ -243,6 +243,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
+    history_read_limits: Option<crate::store::HistoryReadLimits>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
@@ -524,27 +525,69 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .input_verifier
             .as_ref()
             .ok_or_else(|| Error::Unsupported("canonical source reader is not bound".into()))?;
-        let aggregate = self.conversation_projection(limits).await?;
-        if aggregate
-            .context_selection_for_operation(envelope.operation_id)
+        limits.validate()?;
+        let reader = crate::store::HistoryReader::new(
+            &self.stream,
+            self.verifier.audience(),
+            self.verifier.clone(),
+        )?;
+        let event = reader
+            .operation_event(envelope.operation_id)
             .await?
-            .as_ref()
-            != Some(&envelope.selection)
-        {
+            .ok_or_else(|| {
+                Error::Conflict("checkpoint source selection is not the committed admission".into())
+            })?;
+        let crate::core::EventPayload::ModelContextSelected { selection } = event.payload else {
+            return Err(Error::Conflict(
+                "checkpoint operation is not a model-context selection".into(),
+            ));
+        };
+        if selection != envelope.selection {
             return Err(Error::Conflict(
                 "checkpoint source selection is not the committed admission".into(),
             ));
         }
-        let history = aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Invalid("canonical source has no conversation".into()))?;
-        let ids = history
-            .model_messages_between(
+        let cursor = crate::store::HistoryCursor {
+            authority: self.verifier.audience().clone(),
+            after_revision: 0,
+            through_revision: event.revision,
+        };
+        let history_limits = match self.history_read_limits {
+            Some(limits) => limits,
+            None => {
+                let maximum_events = u32::try_from(limits.context_messages).map_err(|_| {
+                    Error::Invalid("canonical delta count exceeds portable history bound".into())
+                })?;
+                let maximum_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
+                    .checked_mul(2)
+                    .and_then(|bytes| bytes.checked_mul(u64::from(maximum_events)))
+                    .ok_or_else(|| Error::Invalid("canonical delta byte bound overflows".into()))?;
+                crate::store::HistoryReadLimits {
+                    maximum_events,
+                    maximum_bytes,
+                }
+            }
+        };
+        let loaded = reader
+            .conversation_range(
+                &cursor,
                 after,
                 envelope.selection.conversation_revision,
-                limits.context_messages,
-            )?
+                history_limits,
+            )
+            .await?;
+        let ids = loaded
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message.kind,
+                    crate::conversation::MessageKind::System
+                        | crate::conversation::MessageKind::User
+                        | crate::conversation::MessageKind::Assistant
+                        | crate::conversation::MessageKind::ToolCall
+                        | crate::conversation::MessageKind::ToolResult
+                )
+            })
             .map(|message| message.id)
             .collect::<Vec<_>>();
         if ids != envelope.selection.message_ids {
@@ -552,8 +595,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 "checkpoint skips uncovered canonical history".into(),
             ));
         }
+        let history = crate::conversation::ConversationState::selected_view(loaded)?;
         let selected = select_model_context_at_revision(
-            history,
+            &history,
             envelope.selection.clone(),
             verifier.as_ref(),
             limits.context_messages,
@@ -831,6 +875,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             owner: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
+            history_read_limits: None,
         })
     }
 
@@ -867,6 +912,22 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             private_volume,
             self.maximum_payload_bytes,
         )?);
+        Ok(self)
+    }
+
+    /// Sets a separate finite work/byte allowance for cold canonical deltas.
+    /// All canonical message kinds count toward this work limit. Without an
+    /// override, the admitted context-message limit also bounds delta reads.
+    pub fn with_history_read_limits(
+        mut self,
+        limits: crate::store::HistoryReadLimits,
+    ) -> Result<Self> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "cold history read bounds must be positive".into(),
+            ));
+        }
+        self.history_read_limits = Some(limits);
         Ok(self)
     }
 
