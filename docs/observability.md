@@ -147,7 +147,7 @@ The plugin never writes tracing output to stdout, which carries JSON-RPC.
 
 | Variable | Effect |
 | --- | --- |
-| `ACYCLIC_LOG` | `EnvFilter` directives for a `fmt` layer on stderr. In `__service` mode it writes to `<state dir>/logs/service-{pid}.log` instead. |
+| `ACYCLIC_LOG` | `EnvFilter` directives for a `fmt` layer on stderr. In `__service` mode it writes to `<state dir>/logs/service.log` instead. |
 | `ACYCLIC_LOG_FILE` | Overrides the `ACYCLIC_LOG` destination |
 | `ACYCLIC_TRACE_FILE` | Writes a Perfetto-compatible Chrome trace. `{pid}` is replaced by the process id. |
 | `ACYCLIC_TRACE_FILTER` | Filter for the trace file. The default is `acyclic_fs=debug,acyclic_stream=debug,acyclic_objects=debug,acyclic_native_runtime=debug,acyclic_plugin=debug`. |
@@ -155,6 +155,13 @@ The plugin never writes tracing output to stdout, which carries JSON-RPC.
 
 The plugin service inherits its environment when it is spawned. Drain it to
 apply a change. `doctor` prints the active filter.
+
+File logs are best-effort diagnostics: the active file and one `.1` archive are
+each bounded to 4 MiB, with one bounded `.1.next` staging file during rollover.
+Writers attempt the shared active-file lock once; contention rejects a record
+without waiting, and a writer opened while busy remains usable afterward.
+Oversized records are rejected. I/O failure can leave a partial record; accepted
+writes and `flush()` provide no durability guarantee.
 
 ## Tests
 

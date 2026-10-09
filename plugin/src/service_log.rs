@@ -1,10 +1,13 @@
 //! Bounded, best-effort diagnostics. Never use this writer for durable data.
 //!
+//! Writers try to lock the active file once; contention rejects the record with
+//! `WouldBlock` instead of delaying the caller. A busy open retains a live writer.
 //! All writers lock the active file itself. Copy-and-truncate rollover keeps
 //! its identity, so even aliases share the same lock across restarts. Each
 //! file is at most `limit` bytes; an oversized write is rejected.
 //! Copy into one bounded staging file before atomically publishing the archive.
 //! Logs are diagnostic output, so copying does not imply a durability guarantee.
+//! Successful admission is an OS write, not a flush; failed I/O may leave a partial record.
 //! Destinations are trusted host configuration. Writers must reserve the active
 //! archive and staging names; replacing/unlinking an active file is unsupported.
 
@@ -45,27 +48,34 @@ impl ServiceLog {
             file: file_options().create(true).open(path)?,
             limit,
         };
-        log.locked(|log| {
-            match file_options().open(&log.archive) {
-                Ok(file) => {
-                    size(&file, limit)?;
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+        match file_options().open(&log.archive) {
+            Ok(file) => {
+                size(&file, limit)?;
             }
-            size(&log.file, limit)?;
-            remove_staged(&log.staged)
-        })?;
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        size(&log.file, limit)?;
+        log.locked(|log| remove_staged(&log.staged))?;
         Ok(log)
     }
 
-    fn locked<T>(&mut self, action: impl FnOnce(&mut Self) -> io::Result<T>) -> io::Result<T> {
-        fs2::FileExt::lock_exclusive(&self.file)?;
+    fn locked<T>(
+        &mut self,
+        action: impl FnOnce(&mut Self) -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        match fs2::FileExt::try_lock_exclusive(&self.file) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.kind().into()),
+        }
         let result = action(self);
         let unlocked = fs2::FileExt::unlock(&self.file);
         // The formatter can report errors to stderr; strip user paths.
         result
-            .and_then(|value| unlocked.map(|()| value))
+            .and_then(|value| unlocked.map(|()| Some(value)))
             .map_err(|error| error.kind().into())
     }
 
@@ -94,7 +104,9 @@ impl ServiceLog {
 
 impl Write for ServiceLog {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.locked(|log| log.append(bytes)).map(|()| bytes.len())
+        self.locked(|log| log.append(bytes))?
+            .map(|()| bytes.len())
+            .ok_or_else(|| io::ErrorKind::WouldBlock.into())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -410,26 +422,36 @@ mod tests {
                 let path = path.clone();
                 std::thread::spawn(move || {
                     let mut log = writer(&path, 64);
+                    let mut accepted = Vec::new();
                     for record in 0..100 {
-                        log.write_all(format!("{writer_id}:{record:03}\n").as_bytes())
-                            .expect("write record");
+                        let record = format!("{writer_id}:{record:03}\n");
+                        match log.write_all(record.as_bytes()) {
+                            Ok(()) => accepted.push(record),
+                            Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+                        }
                     }
+                    accepted
                 })
             })
             .collect();
-        for thread in threads {
-            thread.join().expect("writer thread");
-        }
+        let accepted: std::collections::BTreeSet<_> = threads
+            .into_iter()
+            .flat_map(|thread| thread.join().expect("writer thread"))
+            .collect();
+        assert!(!accepted.is_empty());
         for file in [&path, &suffix(&path, ".1")] {
-            let bytes = fs::read(file).expect("retained file");
-            assert!(bytes.len() <= 64);
-            assert_eq!(bytes.len() % 6, 0, "torn record");
-            for record in bytes.as_chunks::<6>().0 {
-                assert!((b'0'..=b'7').contains(&record[0]));
-                assert_eq!(record[1], b':');
-                assert!(record[2..5].iter().all(u8::is_ascii_digit));
-                assert_eq!(record[5], b'\n');
+            let bytes = match fs::read(file) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => panic!("retained file: {error}"),
+            };
+            for record in String::from_utf8(bytes.clone())
+                .expect("records")
+                .split_inclusive('\n')
+            {
+                assert!(accepted.contains(record), "unaccepted record");
             }
+            assert!(bytes.len() <= 64);
         }
     }
 
@@ -536,10 +558,87 @@ mod tests {
         let mut log = writer(&path, 50_000);
         fs::write(start.with_extension(&id), b"ready").expect("ready marker");
         wait_for(&start);
+        let mut accepted = String::new();
         for record in 0..1000 {
-            log.write_all(format!("{id}:{record:04}\n").as_bytes())
-                .expect("record");
+            let record = format!("{id}:{record:04}\n");
+            match log.write_all(record.as_bytes()) {
+                Ok(()) => accepted.push_str(&record),
+                Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+            }
         }
+        fs::write(start.with_extension(&id), accepted).expect("accepted records");
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for contended_open_and_write_recover_without_waiting"]
+    fn contended_writer() {
+        let path = PathBuf::from(std::env::var_os("ACYCLIC_TEST_LOG_PATH").expect("log path"));
+        let start = PathBuf::from(std::env::var_os("ACYCLIC_TEST_LOG_START").expect("start path"));
+        let mut log = writer(&path, 4);
+        assert_eq!(
+            log.write_all(b"next").expect_err("busy writer").kind(),
+            io::ErrorKind::WouldBlock
+        );
+        fs::write(start.with_extension("ready"), b"ready").expect("ready marker");
+        wait_for(&start);
+        log.write_all(b"next").expect("same writer recovers");
+    }
+
+    #[test]
+    fn startup_cleanup_errors_are_not_lock_contention() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("service.log");
+        let stage = suffix(&path, ".1.next");
+        fs::create_dir(&stage).expect("invalid stage");
+        assert!(ServiceLog::open(&path, 4).is_err());
+        assert!(stage.is_dir(), "failed cleanup preserves destination");
+    }
+
+    #[test]
+    fn contended_open_and_write_recover_without_waiting() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("service.log");
+        fs::write(&path, b"full").expect("active");
+        let alias = directory.path().join("alias.log");
+        fs::hard_link(&path, &alias).expect("active alias");
+        fs::write(suffix(&alias, ".1"), b"old").expect("published archive");
+        fs::write(suffix(&alias, ".1.next"), b"stage").expect("reserved stage");
+        let lock = file_options().open(&path).expect("lock handle");
+        fs2::FileExt::lock_exclusive(&lock).expect("hold lock");
+        let start = directory.path().join("start");
+        let mut child = ChildGuard(
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "service_log::tests::contended_writer",
+                    "--ignored",
+                ])
+                .env("ACYCLIC_TEST_LOG_PATH", &alias)
+                .env("ACYCLIC_TEST_LOG_START", &start)
+                .spawn()
+                .expect("probe child"),
+        );
+        // The holder remains locked until the child proves both calls returned.
+        // A blocking mutant is killed/reaped by ChildGuard on barrier timeout.
+        wait_for(&start.with_extension("ready"));
+        assert_eq!(
+            fs::read(suffix(&alias, ".1.next")).expect("untouched stage"),
+            b"stage"
+        );
+        fs2::FileExt::unlock(&lock).expect("release lock");
+        // Windows prevents reads through another handle while byte-locked.
+        // The child still waits at its barrier, so recovery cannot race this check.
+        assert_eq!(fs::read(&path).expect("unchanged active"), b"full");
+        fs::write(&start, b"recover").expect("release child");
+        assert!(
+            child
+                .wait_until(std::time::Instant::now() + std::time::Duration::from_secs(10))
+                .expect("child completion")
+                .success()
+        );
+        assert_eq!(fs::read(&path).expect("active"), b"next");
+        assert_eq!(fs::read(suffix(&alias, ".1")).expect("archive"), b"full");
+        assert!(!suffix(&alias, ".1.next").exists());
     }
 
     fn wait_for(path: &Path) {
@@ -648,11 +747,14 @@ mod tests {
         }
         let records = fs::read_to_string(&path).expect("log");
         let observed: std::collections::BTreeSet<_> = records.lines().collect();
-        assert_eq!(records.lines().count(), 4000);
-        for id in 0..4 {
-            for record in 0..1000 {
-                assert!(observed.contains(format!("{id}:{record:04}").as_str()));
-            }
-        }
+        let accepted: String = (0..4)
+            .map(|id| {
+                fs::read_to_string(start.with_extension(id.to_string())).expect("accepted records")
+            })
+            .collect();
+        let expected: std::collections::BTreeSet<_> = accepted.lines().collect();
+        assert!(!expected.is_empty());
+        assert_eq!(records.lines().count(), expected.len());
+        assert_eq!(observed, expected);
     }
 }
