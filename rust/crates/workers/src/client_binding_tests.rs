@@ -479,7 +479,7 @@ fn response_conversion_rejects_unknown_enum_and_preserves_optional_result_bytes(
         };
         let failure = response::<wire::InspectJobResponse, domain::InspectJobResponse>(value, 1024)
             .unwrap_err();
-        assert_eq!(failure.code, "invalid_argument");
+        assert_eq!(failure.code, "malformed_response");
         assert!(failure.message.contains(&state.to_string()));
     }
     for result in [
