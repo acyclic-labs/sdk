@@ -420,6 +420,29 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok(messages)
     }
 
+    /// Reconstructs one exact effect at the pinned canonical cut. Only that
+    /// effect's atomically indexed transitions are read; all locator and event
+    /// bytes share the declared allowance. This read grants no execution authority.
+    pub async fn effect(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+    ) -> Result<Option<crate::core::EffectState>> {
+        let events =
+            super::effects::read(&self.client, &self.verifier, cursor, effect, limits).await?;
+        if events.is_empty() {
+            return Ok(None);
+        }
+        crate::core::Reducer::project_effect(
+            cursor.authority.clone(),
+            self.verifier.clone(),
+            effect,
+            &events,
+        )
+        .map(Some)
+    }
+
     /// Captures a committed boundary once for explicit archival traversal.
     pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
         let through_revision = self.committed_tail().await?;
