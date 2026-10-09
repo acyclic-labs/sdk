@@ -363,6 +363,71 @@ pub fn profiles_for_package(
     Ok(profiles)
 }
 
+/// Select the browser profile from Cargo declarations without enabling native
+/// provider features. The caller evaluates target predicates using rustc cfg.
+pub fn browser_profile_for_package(
+    package: &Package,
+    has_browser_target_dependencies: bool,
+    available_targets: &BTreeSet<String>,
+) -> Result<Option<ProfileSpec>, ProfileError> {
+    if package
+        .targets
+        .iter()
+        .any(|target| target.kind.contains(&TargetKind::ProcMacro))
+    {
+        return Ok(None);
+    }
+    let napi = package.metadata.get("napi");
+    let own_binding = napi
+        .and_then(|value| value.get("wasm-package"))
+        .and_then(serde_json::Value::as_str)
+        == Some(package.name.as_str());
+    let mut features = BTreeSet::new();
+    let mut default_features = false;
+    if own_binding {
+        let napi = napi.expect("binding policy was found");
+        if let Some(value) = napi.get("wasm-features") {
+            let values = value.as_array().ok_or_else(|| {
+                ProfileError::InvalidRustdoc("wasm-features must be an array".into())
+            })?;
+            for value in values {
+                let feature = value.as_str().ok_or_else(|| {
+                    ProfileError::InvalidRustdoc("wasm-features must contain strings".into())
+                })?;
+                if !package.features.contains_key(feature) {
+                    return Err(ProfileError::InvalidFeature {
+                        package: package.name.to_string(),
+                        feature: feature.into(),
+                    });
+                }
+                features.extend(feature_closure(&package.features, feature));
+            }
+        }
+        default_features = !match napi.get("wasm-no-default-features") {
+            Some(value) => value.as_bool().ok_or_else(|| {
+                ProfileError::InvalidRustdoc("wasm-no-default-features must be a boolean".into())
+            })?,
+            None => false,
+        };
+    } else if package.features.contains_key("wasm") {
+        features = feature_closure(&package.features, "wasm");
+    } else if !has_browser_target_dependencies {
+        return Ok(None);
+    }
+    let target = "wasm32-unknown-unknown";
+    if !available_targets.contains(target) {
+        return Err(ProfileError::UnsupportedTarget {
+            target: target.into(),
+        });
+    }
+    Ok(Some(ProfileSpec {
+        package: package.name.to_string(),
+        target: target.into(),
+        default_features,
+        features,
+    }))
+}
+
 fn feature_closure(features: &BTreeMap<String, Vec<String>>, root: &str) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
     let mut pending = vec![root.to_owned()];
@@ -1171,6 +1236,56 @@ mod tests {
             "build_directory": null, "metadata": null, "version": 1
         });
         serde_json::from_value(json).expect("valid Cargo metadata fixture")
+    }
+
+    #[test]
+    fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
+        let mut metadata = metadata();
+        let package = &metadata.packages[0];
+        let targets = BTreeSet::from(["wasm32-unknown-unknown".into()]);
+        let profile = browser_profile_for_package(package, false, &targets)
+            .unwrap()
+            .unwrap();
+        assert!(!profile.default_features);
+        assert_eq!(
+            profile.features,
+            BTreeSet::from(["wasm".into(), "codec".into()])
+        );
+        assert!(matches!(
+            browser_profile_for_package(package, false, &BTreeSet::new()),
+            Err(ProfileError::UnsupportedTarget { .. })
+        ));
+        metadata.packages[0].features.clear();
+        assert!(
+            browser_profile_for_package(&metadata.packages[0], false, &targets)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            browser_profile_for_package(&metadata.packages[0], true, &targets)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() {
+        let mut metadata = metadata();
+        let targets = BTreeSet::from(["wasm32-unknown-unknown".into()]);
+        metadata.packages[0].metadata = serde_json::json!({"napi":{
+            "wasm-package":"feature-rich", "wasm-features":["wasm"], "wasm-no-default-features":true}});
+        let profile = browser_profile_for_package(&metadata.packages[0], true, &targets)
+            .unwrap()
+            .unwrap();
+        assert!(!profile.default_features);
+        assert!(!profile.features.contains("json"));
+        metadata.packages[0].metadata["napi"]["wasm-features"] = serde_json::json!(["absent"]);
+        assert!(matches!(
+            browser_profile_for_package(&metadata.packages[0], true, &targets),
+            Err(ProfileError::InvalidFeature { .. })
+        ));
+        metadata.packages[0].metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
+        assert!(browser_profile_for_package(&metadata.packages[0], true, &targets).is_err());
     }
 
     #[test]

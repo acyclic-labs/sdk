@@ -1578,6 +1578,41 @@ fn execute_default_profiles(
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
+    let cfg_output = Command::new(
+        cargo_path
+            .parent()
+            .ok_or_else(|| CliError("Cargo has no parent".into()))?
+            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
+    )
+    .args(["--print", "cfg", "--target", wasm_target])
+    .output()
+    .map_err(io_error)?;
+    if !cfg_output.status.success() {
+        return Err(CliError("rustc could not report browser target cfg".into()));
+    }
+    let browser_cfg = String::from_utf8_lossy(&cfg_output.stdout)
+        .lines()
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CliError(format!("invalid rustc browser cfg: {error}")))?;
+
+    let host_cfg_output = Command::new(
+        cargo_path
+            .parent()
+            .ok_or_else(|| CliError("Cargo has no parent".into()))?
+            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
+    )
+    .args(["--print", "cfg", "--target", &host])
+    .output()
+    .map_err(io_error)?;
+    if !host_cfg_output.status.success() {
+        return Err(CliError("rustc could not report host target cfg".into()));
+    }
+    let host_cfg = String::from_utf8_lossy(&host_cfg_output.stdout)
+        .lines()
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CliError(format!("invalid rustc host cfg: {error}")))?;
     let published = published_packages(root)?
         .into_iter()
         .collect::<BTreeSet<_>>();
@@ -1666,22 +1701,50 @@ fn execute_default_profiles(
             .is_some_and(|owner| owner.kind == ApiOwnerKind::WasmBinding);
         let execution_target = if wasm_binding {
             if !installed_targets.contains(wasm_target) {
-                continue;
+                return Err(profile_error(
+                    sdk_docs::rustdoc_profiles::ProfileError::UnsupportedTarget {
+                        target: wasm_target.into(),
+                    },
+                ));
             }
             wasm_target
         } else {
             host.as_str()
         };
         let targets = BTreeSet::from([execution_target.to_owned()]);
-        let profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
+        let mut profiles = sdk_docs::rustdoc_profiles::profiles_for_package(
             metadata,
             package.name.as_str(),
             execution_target,
             &targets,
         )
         .map_err(profile_error)?;
+        if published.contains(package.name.as_ref()) && !wasm_binding {
+            // Evaluate Cargo target predicates against actual compiler cfg for
+            // both targets; native-only dependencies do not imply browser support.
+            let browser_dependencies = package.dependencies.iter().any(|dependency| {
+                dependency.kind == cargo_metadata::DependencyKind::Normal
+                    && dependency.target.as_ref().is_some_and(|platform| {
+                        platform.matches(wasm_target, &browser_cfg)
+                            && !platform.matches(&host, &host_cfg)
+                    })
+            });
+            if let Some(profile) = sdk_docs::rustdoc_profiles::browser_profile_for_package(
+                package,
+                browser_dependencies,
+                &installed_targets,
+            )
+            .map_err(profile_error)?
+            {
+                profiles.push(profile);
+            }
+        }
         for profile in profiles {
-            let receipt = if profile.default_features && profile.features.is_empty() {
+            let targets = BTreeSet::from([profile.target.clone()]);
+            let receipt = if profile.default_features
+                && profile.features.is_empty()
+                && profile.target == execution_target
+            {
                 rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")))
             } else {
                 let prefix = if wasm_binding { "wasm-" } else { "" };
