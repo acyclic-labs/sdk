@@ -369,6 +369,9 @@ mod worker_context_tests {
                 let clone = operation.clone();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     tracing::dispatcher::with_default(&foreign, || {
+                        super::scope(&operation, || {
+                            tracing::info!(target: "filesystem.test", context_marker = true);
+                        });
                         drop(clone);
                         if unwind {
                             let _operation = operation;
@@ -379,6 +382,18 @@ mod worker_context_tests {
                 }));
                 assert_eq!(result.is_err(), unwind);
                 let seen = origin_seen.lock().expect("evidence poisoned");
+                assert_eq!(
+                    seen.events
+                        .iter()
+                        .map(|(parent, _)| parent.as_deref())
+                        .collect::<Vec<_>>(),
+                    [Some(if filtered {
+                        "drop_caller"
+                    } else {
+                        "drop_operation"
+                    })],
+                    "nested events lost their retained caller context"
+                );
                 for name in ["drop_root", "drop_caller"] {
                     assert_eq!(
                         seen.closes.iter().filter(|closed| *closed == name).count(),
