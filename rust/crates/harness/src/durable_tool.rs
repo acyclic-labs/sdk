@@ -282,6 +282,11 @@ impl DurableToolRunner {
             attachments: self.limits.attachments.min(scope.limits().attachments),
             ..self.limits
         };
+        if crate::contract::canonical_json_bytes(&invocation)?.len() as u64 > content_limit {
+            return Err(Error::Invalid(
+                "tool invocation exceeds admitted file limit".into(),
+            ));
+        }
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(&(
             &task_id,
             &definition,
@@ -315,6 +320,11 @@ impl DurableToolRunner {
                     && failed.is_none()
                     && *call_id == invocation.call_id =>
                 {
+                    if reference.descriptor().byte_length() > content_limit {
+                        return Err(Error::Conflict(
+                            "durable tool invocation exceeds admitted descriptor limit".into(),
+                        ));
+                    }
                     let pinned: ToolInvocation =
                         load_json(self.journal.as_ref(), reference).await?;
                     if pinned != invocation {
