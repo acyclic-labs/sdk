@@ -24,6 +24,7 @@ pub struct SummaryForkSelection {
     #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub checkpoint: FileRef,
     /// Finite model projection and content bounds, narrowed by receiving scope.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmNativeLimitsWire"))]
     pub limits: Limits,
     /// Shared event/encoded-byte allowance for checkpoint proof and canonical tail.
     pub history_limits: HistoryReadLimits,

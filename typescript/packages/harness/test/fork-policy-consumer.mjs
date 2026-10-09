@@ -36,6 +36,21 @@ export async function exerciseForkPolicy(Harness, parentOptions, contracts) {
     assert(inherited.preparation.inherited_through_sequence === 1n, "default did not pin logical tail");
     assert(harness.prepareForkRequest(request, "fresh").preparation.inherited_through_sequence === 0n, "fresh inherited history");
     rejects(() => harness.prepareForkRequest(request, "summary"), "unimplemented summary was silently substituted");
+    const summary = { checkpoint: { ...file, path: "checkpoint.json",
+      descriptor: contracts.fileDescriptor(new TextEncoder().encode("{}"), "application/json") },
+      limits: { file_bytes: BigInt(Number.MAX_SAFE_INTEGER), path_bytes: 0xffff_ffffn, attachments: 0xffff_ffffn,
+        render_bytes: BigInt(Number.MAX_SAFE_INTEGER), model_steps: 0xffff_ffffn, model_events_per_step: 0xffff_ffffn,
+        tool_calls_per_step: 0xffff_ffffn, context_messages: 0xffff_ffffn },
+      history_limits: { maximum_events: 16, maximum_bytes: 65536n } };
+    const summarized = harness.prepareForkRequest(request, { summary });
+    for (const [field, value] of Object.entries(summary.limits)) {
+      const admitted = summarized.preparation.summary.limits[field];
+      assert(typeof admitted === "number" && BigInt(admitted) === value, `Summary ${field} lost exact numeric limits`);
+      assert(typeof summary.limits[field] === "bigint", "Summary policy mutated caller limits");
+    }
+    rejects(() => harness.prepareForkRequest(request, { summary: { ...summary, limits: {
+      ...summary.limits, file_bytes: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+    } } }), "unsafe Summary limit was rounded");
     const restored = await Harness.restore(harness.snapshot(), options);
     try { assert(contracts.canonicalEqual(restored.prepareForkRequest(request), inherited), "checkpoint changed selected boundary"); }
     finally { restored.free(); }

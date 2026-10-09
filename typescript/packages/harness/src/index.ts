@@ -319,7 +319,28 @@ export class Harness {
    * The default inherits logical history; fresh history is explicitly selected.
    * Providers, child volumes, grants and finite bounds remain caller supplied. */
   prepareForkRequest(request: ForkRequest, policy: ForkHistoryPolicy | null = null): ForkRequest {
-    return this.#core.prepareForkRequest(request, policy) as ForkRequest;
+    const prepared = this.#core.prepareForkRequest(request, policy);
+    const summary = prepared.preparation.summary;
+    // Rust validates every limit within JavaScript's exact integer range. The
+    // native wire retains bigint; the public Limits boundary uses numbers.
+    const numericLimit = (value: bigint): number => {
+      if (typeof value !== "bigint" || value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new RangeError("native Summary limit is not an exact positive integer");
+      }
+      return Number(value);
+    };
+    return { ...prepared, preparation: { ...prepared.preparation, summary: summary == null ? null : {
+      ...summary, limits: {
+        file_bytes: numericLimit(summary.limits.file_bytes),
+        path_bytes: numericLimit(summary.limits.path_bytes),
+        attachments: numericLimit(summary.limits.attachments),
+        render_bytes: numericLimit(summary.limits.render_bytes),
+        model_steps: numericLimit(summary.limits.model_steps),
+        model_events_per_step: numericLimit(summary.limits.model_events_per_step),
+        tool_calls_per_step: numericLimit(summary.limits.tool_calls_per_step),
+        context_messages: numericLimit(summary.limits.context_messages),
+      },
+    } } } as ForkRequest;
   }
 
   /** Returns a detached provider-owned resource address admitted by Rust. */

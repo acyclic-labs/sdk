@@ -200,6 +200,7 @@ pub struct McpCatalog {
     pub discovery: McpDiscoveryPolicy,
     /// Host-selected schema for complete model-facing result envelopes.
     /// Pinned independently of remote canonical outputs with this catalog revision.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonSchema"))]
     pub projection_schema: Value,
     /// Complete bounded catalog, not a partially fetched `tools/list` page.
     pub tools: Vec<McpToolDefinition>,
