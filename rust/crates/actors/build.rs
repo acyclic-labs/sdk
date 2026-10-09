@@ -1,6 +1,6 @@
 //! Build the Actors descriptor and transport directly from the Rust contract.
 
-/// Build-time marker used by fallible Protify contract conversions.
+/// Build-time marker used by fallible semantic conversions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ContractError {
     /// A required value was absent or malformed.
@@ -37,7 +37,7 @@ impl From<std::convert::Infallible> for ContractError {
 // in the library crate and are never used while rendering metadata.
 #[allow(
     unused_imports,
-    reason = "Protify's build-time registration resolves these aliases from generated declarations"
+    reason = "contract's build-time registration resolves these aliases from generated declarations"
 )]
 mod wire {
     pub use crate::contract::{
@@ -68,21 +68,21 @@ mod wire {
 
 #[allow(
     dead_code,
-    reason = "The build-time Protify schema references these validator hooks by path"
+    reason = "The build-time contract schema references these validator hooks by path"
 )]
 fn validate_create(_: &wire::CreateActorRequest) -> Result<(), ContractError> {
     Ok(())
 }
 #[allow(
     dead_code,
-    reason = "The build-time Protify schema references these validator hooks by path"
+    reason = "The build-time contract schema references these validator hooks by path"
 )]
 fn validate_update(_: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     Ok(())
 }
 #[allow(
     dead_code,
-    reason = "The build-time Protify schema references these validator hooks by path"
+    reason = "The build-time contract schema references these validator hooks by path"
 )]
 fn validate_add_subscription(_: &wire::AddSubscriptionRequest) -> Result<(), ContractError> {
     Ok(())

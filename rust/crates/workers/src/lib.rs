@@ -33,7 +33,7 @@ pub mod http;
     clippy::all,
     clippy::pedantic,
     clippy::allow_attributes_without_reason,
-    reason = "maintained Protify/tonic generated wire surface"
+    reason = "maintained contract/tonic generated wire surface"
 )]
 pub mod wire {
     pub use crate::contract::*;
@@ -238,7 +238,7 @@ mod tests {
     fn alias_selection_requires_positive_revision_when_present() {
         let mut request = wire::SelectDeploymentRequest {
             alias: "current".into(),
-            version_sha256: vec![1; 32].into(),
+            version_sha256: vec![1; 32],
             idempotency_key: "select-a".into(),
             expected_revision: None,
         };
@@ -256,14 +256,14 @@ mod tests {
     fn publication_is_bound_to_exact_bytes() {
         let bytes = b"export default { fetch() { return new Response('ok') } }";
         let mut request = wire::PublishVersionRequest {
-            javascript_module: bytes.to_vec().into(),
-            expected_sha256: Sha256::digest(bytes).to_vec().into(),
+            javascript_module: bytes.to_vec(),
+            expected_sha256: Sha256::digest(bytes).to_vec(),
             idempotency_key: "publish-a".into(),
         };
         assert_eq!(validate_publish(&request), Ok(()));
         let mut modified = request.javascript_module.to_vec();
         modified.push(b' ');
-        request.javascript_module = modified.into();
+        request.javascript_module = modified;
         assert_eq!(
             validate_publish(&request),
             Err(ContractError::DigestMismatch)
@@ -277,7 +277,7 @@ mod tests {
                 target: Some(wire::job_target::Target::DeploymentAlias("current".into())),
             }),
             input: Some(wire::Payload {
-                source: Some(wire::payload::Source::InlineBytes(vec![].into())),
+                source: Some(wire::payload::Source::InlineBytes(vec![])),
             }),
             limits: Some(wire::JobLimits {
                 timeout_millis: 1000,
@@ -318,18 +318,13 @@ mod tests {
             output_bytes: 2,
         };
         assert_eq!(
-            validate_result(
-                &wire::JobResult {
-                    body: vec![1, 2].into()
-                },
-                &limits
-            ),
+            validate_result(&wire::JobResult { body: vec![1, 2] }, &limits),
             Ok(())
         );
         assert_eq!(
             validate_result(
                 &wire::JobResult {
-                    body: vec![1, 2, 3].into()
+                    body: vec![1, 2, 3]
                 },
                 &limits
             ),

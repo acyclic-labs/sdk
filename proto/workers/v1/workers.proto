@@ -106,10 +106,6 @@ message JobObservation {
 }
 
 message JobResult {
-  reserved "object_version";
-
-  reserved 2;
-
   bytes body = 1;
 }
 
@@ -121,10 +117,6 @@ message JobTarget {
 }
 
 message ObjectRef {
-  reserved "version_id";
-
-  reserved 3;
-
   string bucket = 1;
   string key = 2;
 }

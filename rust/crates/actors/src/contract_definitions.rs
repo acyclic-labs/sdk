@@ -1,16 +1,5 @@
-proto_package!(
-    ACTORS_PACKAGE,
-    name = "acyclic.actors.v1",
-    files = [ACTORS_FILE]
-);
-define_proto_file!(
-    ACTORS_FILE,
-    name = "actors/v1/actors.proto",
-    package = ACTORS_PACKAGE,
-    options =
-        [proto_option!("go_package" => "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1")],
-    messages = [
-        BindingProto,
+
+#[acyclic_contract_derive::file(family = "actors", messages(BindingProto,
         ActorLimitsProto,
         SubscriptionStartProto,
         SubscriptionSpecProto,
@@ -33,13 +22,10 @@ define_proto_file!(
         HeaderProto,
         InvokeActorRequestProto,
         InvokeActorResponseProto,
-        ServiceErrorProto,
-    ],
-    enums = [SubscriptionState, ActorState, ErrorCode],
-    services = [ActorsService],
-);
+        ServiceErrorProto), enums(SubscriptionState, ActorState, ErrorCode), services(ActorsService))]
+pub struct ActorsFile;
 
-#[proto_service]
+#[acyclic_contract_derive::service(file = ActorsFile)]
 pub enum ActorsService {
     CreateActor { request: CreateActorRequestProto, response: CreateActorResponseProto },
     UpdateActor { request: UpdateActorRequestProto, response: UpdateActorResponseProto },
