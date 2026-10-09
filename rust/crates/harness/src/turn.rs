@@ -227,7 +227,7 @@ fn prepare_turn_inherited(
         ));
     }
 
-    let user_sequence = current.map_or(conversation.messages.len() as u64 + 1, |message| {
+    let user_sequence = current.map_or(conversation.logical_revision() + 1, |message| {
         message.sequence
     });
     let user_message = ConversationMessage {
@@ -262,7 +262,7 @@ fn prepare_turn_inherited(
             // conversation, so validate its provenance against that anchor
             // rather than requiring the current tail length to remain equal.
             if selection.conversation_revision < user_message.sequence
-                || selection.conversation_revision > conversation.messages.len() as u64
+                || selection.conversation_revision > conversation.logical_revision()
             {
                 return Err(Error::Conflict(
                     "model context selection has a stale conversation revision".into(),

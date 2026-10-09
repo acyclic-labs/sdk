@@ -11,7 +11,10 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 /// Borrowed asynchronous result returned by content-provider extension hooks.
@@ -1476,8 +1479,12 @@ impl ConversationMessage {
 pub struct ConversationState {
     /// Set once at admission.
     pub agent: Option<AgentId>,
-    /// Ordered canonical history.
+    /// Loaded canonical suffix; older records remain in the authoritative Stream.
     pub(crate) messages: Vec<ConversationMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_prefix: Option<ArchivedConversationPrefix>,
+    #[serde(skip)]
+    prefix_digests: Vec<[u8; 32]>,
     #[serde(skip)]
     by_id: BTreeMap<Uuid, usize>,
     #[serde(skip)]
@@ -1490,11 +1497,23 @@ pub struct ConversationState {
     history_digest: [u8; 32],
 }
 
+/// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
+/// The checkpoint pin is a projection boundary, never replacement history.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArchivedConversationPrefix {
+    through_sequence: u64,
+    history_digest: [u8; 32],
+    checkpoint: FileRef,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConversationStateWire {
     agent: Option<AgentId>,
     messages: Vec<ConversationMessage>,
+    #[serde(default)]
+    archived_prefix: Option<ArchivedConversationPrefix>,
 }
 
 impl TryFrom<ConversationStateWire> for ConversationState {
@@ -1502,17 +1521,37 @@ impl TryFrom<ConversationStateWire> for ConversationState {
 
     fn try_from(wire: ConversationStateWire) -> Result<Self> {
         let mut by_id = BTreeMap::new();
-        let mut previous = 0;
-        let mut history_digest = [0; 32];
+        if let Some(prefix) = &wire.archived_prefix {
+            prefix.checkpoint.validate()?;
+            if wire.agent.is_none() || prefix.through_sequence == 0 {
+                return Err(Error::Invalid(
+                    "archived conversation prefix is unbound".into(),
+                ));
+            }
+        }
+        let mut previous = wire
+            .archived_prefix
+            .as_ref()
+            .map_or(0, |prefix| prefix.through_sequence);
+        let mut history_digest = wire
+            .archived_prefix
+            .as_ref()
+            .map_or([0; 32], |prefix| prefix.history_digest);
+        let mut prefix_digests = Vec::with_capacity(wire.messages.len());
         for (position, message) in wire.messages.iter().enumerate() {
             message.validate()?;
-            if message.sequence <= previous || by_id.insert(message.id, position).is_some() {
+            if message.sequence <= previous
+                || (wire.archived_prefix.is_some()
+                    && previous.checked_add(1) != Some(message.sequence))
+                || by_id.insert(message.id, position).is_some()
+            {
                 return Err(Error::Invalid(
                     "conversation order or identity is invalid".into(),
                 ));
             }
             previous = message.sequence;
             history_digest = advance_history_digest(history_digest, message)?;
+            prefix_digests.push(history_digest);
         }
         let pending_user = wire
             .messages
@@ -1523,6 +1562,8 @@ impl TryFrom<ConversationStateWire> for ConversationState {
         let mut state = Self {
             agent: wire.agent,
             messages: wire.messages,
+            archived_prefix: wire.archived_prefix,
+            prefix_digests,
             by_id,
             pending_user,
             history_digest,
@@ -1552,7 +1593,7 @@ pub struct ModelContextSelection {
 impl ModelContextSelection {
     /// Rejects stale, missing, duplicated, or out-of-order source identities.
     pub fn validate(&self, conversation: &ConversationState) -> Result<()> {
-        if self.conversation_revision != conversation.messages.len() as u64 {
+        if self.conversation_revision != conversation.logical_revision() {
             return Err(Error::Conflict(
                 "model context selection has a stale conversation revision".into(),
             ));
@@ -1578,26 +1619,115 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
-    /// Fingerprints an exact dense logical prefix. The current head is already
-    /// maintained by append/decode; an explicit older prefix hashes one record
-    /// at a time without constructing a whole-history JSON value or byte buffer.
+    /// Logical history head, independent of the number of resident records.
+    /// A sparse read-only selection may end before its separately pinned source cut.
+    #[must_use]
+    pub fn logical_revision(&self) -> u64 {
+        self.messages
+            .last()
+            .map_or(self.archived_through(), |message| message.sequence)
+    }
+
+    /// Canonical records through this cut are archived, not resident.
+    /// Use the authoritative history reader for requests beginning before it.
+    #[must_use]
+    pub fn resident_after_sequence(&self) -> u64 {
+        self.archived_through()
+    }
+
+    fn archived_through(&self) -> u64 {
+        self.archived_prefix
+            .as_ref()
+            .map_or(0, |prefix| prefix.through_sequence)
+    }
+
+    /// Fingerprints an exact loaded logical prefix without revisiting older records.
+    /// An archived cut is authenticated by the containing issuer snapshot; older
+    /// cuts require an explicit read from the canonical history reader.
     pub(crate) fn history_prefix_digest(&self, through_sequence: u64) -> Result<[u8; 32]> {
-        if self.messages.last().map_or(0, |message| message.sequence) != self.messages.len() as u64
-            || through_sequence > self.messages.len() as u64
+        let base = self.archived_through();
+        if self.logical_revision() != base.saturating_add(self.messages.len() as u64)
+            || through_sequence < base
+            || through_sequence > self.logical_revision()
         {
             return Err(Error::Invalid(
-                "history fingerprint requires a dense logical prefix".into(),
+                "history fingerprint requires a loaded dense logical prefix".into(),
             ));
         }
-        if through_sequence == self.messages.len() as u64 {
-            return Ok(self.history_digest);
+        if through_sequence == base {
+            return Ok(self
+                .archived_prefix
+                .as_ref()
+                .map_or([0; 32], |prefix| prefix.history_digest));
         }
-        let count = usize::try_from(through_sequence)
+        let position = usize::try_from(through_sequence - base - 1)
             .map_err(|_| Error::Invalid("history prefix exceeds platform bounds".into()))?;
-        self.messages
+        self.prefix_digests
+            .get(position)
+            .copied()
+            .ok_or_else(|| Error::Invalid("history prefix digest is missing".into()))
+    }
+
+    pub(crate) fn checkpoint_covers_archived_prefix(
+        &self,
+        reference: &FileRef,
+        through: u64,
+    ) -> bool {
+        self.archived_prefix.as_ref().is_some_and(|prefix| {
+            prefix.checkpoint == *reference && prefix.through_sequence == through
+        })
+    }
+
+    /// Builds the snapshot suffix only after a committed checkpoint and closed
+    /// user/tool exchange. The canonical Stream and identity indexes are untouched.
+    pub(crate) fn checkpointed_suffix(&self, selection: &ModelContextSelection) -> Result<Self> {
+        let reference = selection
+            .checkpoint
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("history retirement requires a checkpoint pin".into()))?;
+        let cut = selection.conversation_revision;
+        if cut <= self.archived_through() || self.pending_user.is_some() {
+            return Ok(self.clone());
+        }
+        crate::projection::validate_model_context_selection_at_revision(self, selection, cut)?;
+        let mut calls = BTreeSet::new();
+        for message in self
+            .messages
             .iter()
-            .take(count)
-            .try_fold([0; 32], advance_history_digest)
+            .take_while(|message| message.sequence <= cut)
+        {
+            match message.kind {
+                MessageKind::ToolCall => {
+                    calls.insert(message.id);
+                }
+                MessageKind::ToolResult => {
+                    if let Some(parent) = message.reply_to {
+                        calls.remove(&parent);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !calls.is_empty() {
+            return Ok(self.clone());
+        }
+        let digest = self.history_prefix_digest(cut)?;
+        let start = self
+            .messages
+            .partition_point(|message| message.sequence <= cut);
+        Self::try_from(ConversationStateWire {
+            agent: self.agent,
+            messages: self
+                .messages
+                .get(start..)
+                .ok_or_else(|| Error::Invalid("history retirement cut is invalid".into()))?
+                .to_vec(),
+            archived_prefix: Some(ArchivedConversationPrefix {
+                through_sequence: cut,
+                history_digest: digest,
+                checkpoint: reference.clone(),
+            }),
+        })
     }
 
     /// Rebuilds only a bounded, already attested selection for byte projection.
@@ -1606,6 +1736,7 @@ impl ConversationState {
         Self::try_from(ConversationStateWire {
             agent: None,
             messages,
+            archived_prefix: None,
         })
     }
 
@@ -1658,8 +1789,8 @@ impl ConversationState {
     /// Reads a bounded archive page at a caller-pinned logical tail. Later appends
     /// are excluded; continue with the last returned sequence, preserving `through`.
     pub fn page(&self, after: u64, through: u64, maximum: usize) -> Result<&[ConversationMessage]> {
-        let tail = self.messages.last().map_or(0, |message| message.sequence);
-        if maximum == 0 || after > through || through > tail {
+        let tail = self.logical_revision();
+        if maximum == 0 || after < self.archived_through() || after > through || through > tail {
             return Err(Error::Invalid(
                 "conversation page cursor or bound is invalid".into(),
             ));
@@ -1717,7 +1848,7 @@ impl ConversationState {
         through: u64,
         maximum: usize,
     ) -> Result<impl Iterator<Item = &ConversationMessage>> {
-        if after > through || through > self.messages.last().map_or(0, |message| message.sequence) {
+        if after < self.archived_through() || after > through || through > self.logical_revision() {
             return Err(Error::Invalid(
                 "model history delta bounds are invalid".into(),
             ));
@@ -1759,6 +1890,7 @@ impl ConversationState {
         }
         self.messages.push(message);
         self.history_digest = history_digest;
+        self.prefix_digests.push(history_digest);
         self.index_turn(self.messages.len() - 1);
         Ok(())
     }
@@ -1769,16 +1901,18 @@ impl ConversationState {
         self.agent
             .ok_or_else(|| Error::Conflict("conversation is unbound".into()))?;
         message.validate()?;
-        if self
-            .messages
-            .last()
-            .is_some_and(|last| last.sequence != self.messages.len() as u64)
-        {
+        if self.messages.last().is_some_and(|last| {
+            last.sequence
+                != self
+                    .archived_through()
+                    .saturating_add(self.messages.len() as u64)
+        }) {
             return Err(Error::Invalid(
                 "sparse conversation history is read-only".into(),
             ));
         }
-        let expected = (self.messages.len() as u64)
+        let expected = self
+            .logical_revision()
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))?;
         if message.sequence != expected || self.by_id.contains_key(&message.id) {
@@ -1862,6 +1996,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checkpoint_suffix_preserves_logical_head_digest_and_next_turn() -> Result<()> {
+        let agent = AgentId::new();
+        let content = file(agent, "history.txt")?;
+        let checkpoint = file(agent, "checkpoint.json")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        for sequence in 1..=1_000_u64 {
+            state.append(ConversationMessage {
+                id: Uuid::from_u128(u128::from(sequence)),
+                sequence,
+                kind: if sequence % 2 == 1 {
+                    MessageKind::User
+                } else {
+                    MessageKind::Assistant
+                },
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to: (sequence % 2 == 0).then(|| Uuid::from_u128(u128::from(sequence - 1))),
+                tool_call_id: None,
+                extensions: BTreeMap::new(),
+            })?;
+        }
+        let digest = state.history_prefix_digest(1_000)?;
+        let selection = ModelContextSelection {
+            conversation_revision: 998,
+            message_ids: vec![Uuid::from_u128(997), Uuid::from_u128(998)],
+            checkpoint: Some(checkpoint.clone()),
+        };
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        let suffix = state.checkpointed_suffix(&selection)?;
+        assert_eq!(suffix.messages().len(), 2);
+        assert_eq!(suffix.logical_revision(), 1_000);
+        assert_eq!(suffix.resident_after_sequence(), 998);
+        assert_eq!(suffix.history_prefix_digest(1_000)?, digest);
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 2);
+        assert!(suffix.history_prefix_digest(997).is_err());
+        assert!(suffix.page(0, 1_000, 10).is_err());
+        assert!(suffix.model_messages_between(0, 1_000, 10).is_err());
+        assert_eq!(suffix.page(998, 1_000, 10)?.len(), 2);
+        assert!(suffix.checkpoint_covers_archived_prefix(&checkpoint, 998));
+        assert!(!suffix.checkpoint_covers_archived_prefix(&content, 998));
+        let bytes = crate::contract::canonical_json_bytes(&suffix)?;
+        let mut restored: ConversationState =
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(restored, suffix);
+        assert_eq!(restored.history_prefix_digest(1_000)?, digest);
+        let next = ConversationMessage {
+            id: Uuid::from_u128(1_001),
+            sequence: 1_001,
+            kind: MessageKind::User,
+            content,
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        restored.append(next)?;
+        assert_eq!(restored.logical_revision(), 1_001);
+        assert_eq!(restored.messages().len(), 3);
+        assert_eq!(restored.unresolved_user(), Some(Uuid::from_u128(1_001)));
+        assert_eq!(restored.checkpointed_suffix(&selection)?, restored);
+        Ok(())
+    }
+
+    #[test]
     fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {
         let agent = AgentId::new();
         let content = file(agent, "fingerprint.txt")?;
@@ -1912,7 +2111,7 @@ mod tests {
         assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
         assert_eq!(pinned.format_version, 3);
         let old = state.history_prefix_digest(2)?;
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 2);
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
         let encoded = crate::contract::canonical_json_bytes(&state)?;
         let mut reopened: ConversationState =
             serde_json::from_slice(&encoded).map_err(|error| Error::Invalid(error.to_string()))?;

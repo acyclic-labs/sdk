@@ -2167,7 +2167,7 @@ impl Reducer {
                 "fork child must have a distinct agent identity".into(),
             ));
         }
-        if seed.inherited_through_sequence > self.conversation.messages.len() as u64 {
+        if seed.inherited_through_sequence > self.conversation.logical_revision() {
             return Err(Error::Invalid(
                 "fork inherited prefix exceeds parent conversation".into(),
             ));
@@ -2201,6 +2201,11 @@ impl Reducer {
                     "inherited conversation differs from authoritative parent history".into(),
                 ));
             }
+        }
+        if self.conversation.resident_after_sequence() > 0 && inherited_count > 0 {
+            return Err(Error::Invalid(
+                "fork grant capture requires authenticated archived history".into(),
+            ));
         }
         let mut published_refs = std::collections::BTreeMap::new();
         let mut published_manifests = std::collections::BTreeSet::new();
