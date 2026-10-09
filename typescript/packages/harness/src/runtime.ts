@@ -5,9 +5,9 @@ import { NativeContracts, type BatchAdmissionProjectionInput, type DiscoveredCon
 import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
-import type { WasmModelContent, WasmModelContentPart, WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
-import type { SelectedModelContext } from "./projection.js";
+import { publicModelContent, type SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
 import type { ProjectWorkspaceProvider } from "./project.js";
 import type { GroupPolicy } from "./enums.js";
@@ -278,18 +278,6 @@ type RuntimeAgentInput = AgentInput<UserContentPart> & { readonly selectedContex
 
 function validateSelectedContext(selected: SelectedModelContext, limits: Limits): void {
   validateSelectedModelContextWasm(selected, limits);
-}
-
-/** Builds the one canonical model content value for a direct user turn. */
-function publicModelContent(content: WasmModelContent): ModelContent {
-  if (typeof content === "string") return content;
-  const part = (value: WasmModelContentPart) => {
-    if (value.kind === "file") return { ...value, file: value.file as FileRef };
-    if (value.kind !== "tool_call" && value.kind !== "tool_result") return value;
-    const { call_id: callId, ...rest } = value;
-    return { ...rest, callId };
-  };
-  return Array.isArray(content) ? content.map(part) : part(content);
 }
 
 function directUserContent(input: AgentInput<UserContentPart>): ModelContent {

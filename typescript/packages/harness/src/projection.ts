@@ -227,12 +227,8 @@ async function captureProjectionFiles(
   return files;
 }
 
-function projectNativeContext(value: NativeSelectedModelContext): SelectedModelContext {
-  const mapContent = (content: NativeModelContent): ModelContent => {
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) return content.map(part => mapContentPart(part as NativeModelContentPart));
-    return mapContentPart(content as NativeModelContentPart);
-  };
+/** Convert Rust-admitted content without reinterpreting option/event identities. */
+export function publicModelContent(content: NativeModelContent): ModelContent {
   const publicFile = (file: Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef => ({
     ...file, descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
   } as FileRef);
@@ -252,12 +248,18 @@ function projectNativeContext(value: NativeSelectedModelContext): SelectedModelC
     }
     return part;
   };
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.map(part => mapContentPart(part as NativeModelContentPart))
+    : mapContentPart(content as NativeModelContentPart);
+}
+
+function projectNativeContext(value: NativeSelectedModelContext): SelectedModelContext {
   return Object.freeze({
     selection: Object.freeze({
       conversationRevision: value.selection.conversation_revision,
       messageIds: Object.freeze([...value.selection.message_ids]),
     }),
-    messages: Object.freeze(value.messages.map(message => Object.freeze({ role: message.role, content: mapContent(message.content) }))),
+    messages: Object.freeze(value.messages.map(message => Object.freeze({ role: message.role, content: publicModelContent(message.content) }))),
   });
 }
 
