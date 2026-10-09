@@ -672,8 +672,18 @@ where
         cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
+        mcp_stdio: None,
         view: view.manifest().clone(),
     };
+    if mode == "mcp-approval" {
+        request.mcp_stdio = Some(crate::mcp::stdio::McpStdioRequest {
+            initialization: OperationId::from_bytes([71; 16]),
+            operation: OperationId::from_bytes([72; 16]),
+            method: crate::mcp::stdio::McpStdioMethod::CallTool,
+            params: serde_json::json!({"name":"echo","arguments":{}}),
+            maximum_bytes: 4096,
+        });
+    }
     if mode == "bash" || mode == "mutate-source-bash" || mode == "many-bash" {
         request.executable = if cfg!(windows) {
             "C:/Program Files/Git/bin/bash.exe"
@@ -1570,8 +1580,22 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         "bounds",
         "authority",
         "volume-order",
+        "mcp-initialization",
+        "mcp-operation",
+        "mcp-method",
+        "mcp-params",
+        "mcp-bytes",
     ] {
-        let mut fixture = process_fixture("write", true).await?;
+        let mut fixture = process_fixture(
+            if change.starts_with("mcp-") {
+                "mcp-approval"
+            } else {
+                "write"
+            },
+            true,
+        )
+        .await?;
+        drop(fixture.provider().await?);
         let mut request = fixture.request().await?;
         match change {
             "argv" => request.argv.swap(0, 1),
@@ -1584,6 +1608,24 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
             "bounds" => request.timeout_ms += 1,
             "authority" => request.view.volumes[0].authority_revision[0] ^= 1,
             "volume-order" => request.view.volumes.swap(0, 1),
+            change if change.starts_with("mcp-") => {
+                let exchange = request
+                    .mcp_stdio
+                    .as_mut()
+                    .ok_or_else(|| Error::NotFound("MCP descriptor".into()))?;
+                match change {
+                    "mcp-initialization" => {
+                        exchange.initialization = OperationId::from_bytes([73; 16]);
+                    }
+                    "mcp-operation" => exchange.operation = OperationId::from_bytes([74; 16]),
+                    "mcp-method" => exchange.method = crate::mcp::stdio::McpStdioMethod::ListTools,
+                    "mcp-params" => {
+                        exchange.params = serde_json::json!({"name":"changed","arguments":{}});
+                    }
+                    "mcp-bytes" => exchange.maximum_bytes += 1,
+                    _ => unreachable!(),
+                }
+            }
             _ => unreachable!(),
         }
         let original = fixture.request().await?;
@@ -1606,6 +1648,63 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
                 .exists()
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn absent_stdio_preserves_legacy_approval_and_stopped_mcp_remains_uncertain() -> Result<()> {
+    let fixture = process_fixture("write", true).await?;
+    let mut request = fixture.request().await?;
+    let legacy =
+        serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(legacy.get("mcp_stdio").is_none());
+    let decoded: NativeProcessRequest = serde_json::from_value(legacy.clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(decoded.mcp_stdio.is_none());
+    assert_eq!(
+        request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
+        crate::contract::canonical_json_digest(&(
+            NATIVE_PROCESS_EFFECT_KIND,
+            fixture.owner.task_binding().0,
+            fixture.command,
+            legacy
+        ))?
+    );
+    let initialization = OperationId::from_bytes([75; 16]);
+    let operation = OperationId::from_bytes([76; 16]);
+    request.mcp_stdio = Some(crate::mcp::stdio::McpStdioRequest {
+        initialization,
+        operation,
+        method: crate::mcp::stdio::McpStdioMethod::CallTool,
+        params: serde_json::json!({"name":"echo","arguments":{}}),
+        maximum_bytes: 4096,
+    });
+    let value = serde_json::json!({"content":[],"structuredContent":{"sequence":u64::MAX}});
+    let mut stdout = crate::contract::canonical_json_bytes(&serde_json::json!({"jsonrpc":"2.0",
+        "id":initialization.to_string(),"result":{"protocolVersion":crate::mcp::PROTOCOL_VERSION,
+        "capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}))?;
+    stdout.push(b'\n');
+    stdout.extend(crate::contract::canonical_json_bytes(
+        &serde_json::json!({"jsonrpc":"2.0",
+        "id":operation.to_string(),"result":value}),
+    )?);
+    stdout.push(b'\n');
+    let mut result = NativeProcessResult {
+        success: false,
+        exit_code: Some(1),
+        stdout,
+        stderr: vec![],
+        stop: None,
+    };
+    assert_eq!(request.mcp_response(&result)?, value);
+    result.stop = Some(crate::filesystem::NativeProcessStop {
+        kind: NativeProcessStopKind::Timeout,
+        message: "stopped capture".into(),
+        cleanup_completed: true,
+    });
+    assert!(
+        matches!(request.mcp_response(&result), Err(Error::Indeterminate(id)) if id == operation)
+    );
     Ok(())
 }
 

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>MCP HTTP browser, worker, tab and reload controls</title>
+<body data-result="pending">
+<pre id="result" data-status="pending"></pre>
+<script type="module">
+import init from "../generated/wasm/acyclic_harness_wasm.js";
+import { createBrowserMcpHttpProvider } from "../dist/mcp-http.js";
+import { exerciseMcpHttp, verifyReopenedMcpHttp } from "./mcp-http-consumer.mjs";
+
+const query = new URL(location.href).searchParams;
+const origin = query.get("fixture");
+const actor = query.get("actor");
+const result = document.querySelector("#result");
+const retainedKey = `mcp-browser:${origin}`;
+let worker;
+let tab;
+try {
+  if (!origin || new URL(origin).hostname !== "127.0.0.1") throw new Error("local MCP fixture required");
+  await init();
+  if (actor) {
+    const observed = await exerciseMcpHttp(origin, actor, "json", createBrowserMcpHttpProvider);
+    opener.postMessage({ actor, observed }, location.origin);
+  } else if (sessionStorage.getItem(retainedKey)) {
+    const observed = JSON.parse(sessionStorage.getItem(retainedKey));
+    await Promise.all(observed.map(peer => verifyReopenedMcpHttp(origin, peer, createBrowserMcpHttpProvider)));
+    sessionStorage.removeItem(retainedKey);
+    result.textContent = "PASS: JSON/SSE, selected/hidden schemas, full-width result, concurrent tab/worker, reload; 18 POSTs, 6 applies, zero reconciliation POSTs";
+    result.dataset.status = "passed";
+  } else {
+    const run = crypto.randomUUID();
+    worker = new Worker(new URL("./browser-mcp-worker.mjs", import.meta.url), { type: "module" });
+    const workerDone = new Promise((resolve, reject) => {
+      worker.onmessage = event => event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.observed);
+      worker.onerror = event => reject(new Error(event.message));
+    });
+    worker.postMessage({ origin, client: `${run}-worker` });
+    const tabActor = `${run}-tab`;
+    const tabDone = new Promise((resolve, reject) => {
+      addEventListener("message", event => {
+        if (event.origin !== location.origin || event.source !== tab || event.data.actor !== tabActor) return;
+        event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.observed);
+      });
+    });
+    const tabUrl = new URL(location.href); tabUrl.searchParams.set("actor", tabActor);
+    tab = open(tabUrl, "_blank");
+    if (!tab) throw new Error("fixture tab was blocked");
+    const observed = await Promise.all([exerciseMcpHttp(origin, `${run}-page`, "json", createBrowserMcpHttpProvider), workerDone, tabDone]);
+    if (new Set(observed.map(peer => peer.session)).size !== 3) throw new Error("concurrent client sessions were shared");
+    worker.terminate(); worker = undefined; tab.close(); tab = undefined;
+    // Retain only host binding observations for the reload control, not an SDK
+    // operation journal or remote receipt. Durable task recovery is qualified
+    // separately through the existing task/execution journal owner.
+    sessionStorage.setItem(retainedKey, JSON.stringify(observed));
+    location.reload();
+  }
+} catch (error) {
+  if (actor) opener.postMessage({ actor, error: String(error.stack ?? error) }, location.origin);
+  result.textContent = String(error.stack ?? error); result.dataset.status = "failed";
+} finally { worker?.terminate(); tab?.close(); }
+</script>

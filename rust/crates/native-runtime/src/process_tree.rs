@@ -1,6 +1,6 @@
 #![allow(
     unsafe_code,
-    reason = "process containment uses platform process-group and Job Object calls"
+    reason = "process containment and bounded pipes use platform OS calls"
 )]
 
 use crate::obs;
@@ -33,6 +33,95 @@ pub struct ProcessCaptureFailure {
     /// Whether containment cleanup succeeded and the direct child was reaped.
     /// Unix confirms group signal delivery, not reaping of every descendant.
     pub cleanup_completed: bool,
+}
+
+/// Transient protocol action within the existing process capture owner.
+/// It is not an admission, receipt, scheduler or recovery instruction.
+#[derive(Default)]
+pub struct ProcessInput {
+    /// Exact additional bytes, ordered after all previously queued input.
+    pub bytes: Vec<u8>,
+    /// After queued input is written, close stdin and terminate containment.
+    /// Captured output is still drained within the original output/deadline bounds.
+    pub complete: bool,
+}
+
+struct PendingStdin {
+    bytes: Vec<u8>,
+    written: usize,
+    maximum: usize,
+    complete: bool,
+    stopped: bool,
+}
+
+impl PendingStdin {
+    fn new(initial: &[u8], maximum: usize) -> io::Result<Self> {
+        if maximum == 0 || initial.len() > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid process input allowance",
+            ));
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve(initial.len()).map_err(io::Error::other)?;
+        bytes.extend_from_slice(initial);
+        Ok(Self {
+            bytes,
+            written: 0,
+            maximum,
+            complete: false,
+            stopped: false,
+        })
+    }
+
+    fn poll(&mut self, tree: &mut ProcessTree) -> io::Result<bool> {
+        let mut progressed = false;
+        if self.written < self.bytes.len() {
+            let suffix = self
+                .bytes
+                .get(self.written..)
+                .ok_or_else(|| io::Error::other("invalid queued process input"))?;
+            if let Some(written) = tree.write_stdin(suffix)? {
+                if written == 0 || written > suffix.len() {
+                    return Err(io::Error::other("invalid process write length"));
+                }
+                self.written += written;
+                progressed = true;
+            }
+        }
+        if self.complete && self.written == self.bytes.len() && !self.stopped {
+            tree.close_stdin();
+            tree.terminate_descendants()?;
+            self.stopped = true;
+            progressed = true;
+        }
+        Ok(progressed)
+    }
+
+    fn observe(
+        &mut self,
+        chunk: &[u8],
+        observe: &mut impl FnMut(&[u8]) -> io::Result<ProcessInput>,
+    ) -> io::Result<()> {
+        let action = observe(chunk)?;
+        let total = self
+            .bytes
+            .len()
+            .checked_add(action.bytes.len())
+            .filter(|total| *total <= self.maximum)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "process input limit exceeded; effects may have occurred",
+                )
+            })?;
+        self.bytes
+            .try_reserve(total - self.bytes.len())
+            .map_err(io::Error::other)?;
+        self.bytes.extend_from_slice(&action.bytes);
+        self.complete = action.complete;
+        Ok(())
+    }
 }
 
 impl ProcessCaptureFailure {
@@ -107,6 +196,32 @@ impl ProcessTree {
             return Ok(Some(0));
         };
         platform::read_pipe(pipe, buffer)
+    }
+
+    /// Writes to owned stdin without waiting for pipe capacity. `None` means
+    /// backpressure; a positive count may be smaller than the supplied slice.
+    /// The host must retain the unwritten suffix and own admission, total input
+    /// bounds, deadlines, intent checks and mandatory tree cleanup.
+    pub fn write_stdin(&mut self, bytes: &[u8]) -> io::Result<Option<usize>> {
+        if bytes.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty process write buffer",
+            ));
+        }
+        let pipe = self
+            .child
+            .as_mut()
+            .and_then(|child| child.stdin.as_mut())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "no owned process stdin"))?;
+        platform::write_pipe(pipe, bytes)
+    }
+
+    /// Closes only the retained stdin pipe. Tree containment remains owned here.
+    pub fn close_stdin(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            drop(child.stdin.take());
+        }
     }
 
     /// Polls the direct child without releasing ownership of its descendants.
@@ -190,7 +305,44 @@ impl ProcessTree {
         &mut self,
         timeout: Duration,
         max_bytes: usize,
+        check: impl FnMut() -> io::Result<()>,
+    ) -> Result<Output, ProcessCaptureFailure> {
+        self.capture_output(timeout, max_bytes, None, check, |_| {
+            Ok(ProcessInput::default())
+        })
+    }
+
+    /// Performs a bounded streaming exchange in the same capture/cleanup loop.
+    /// The host supplies an admitted protocol and checks durable intent. Neither
+    /// callback may block or perform unbounded work. Input bounds cover the
+    /// initial bytes plus every callback write, including already written bytes.
+    /// Completion closes stdin and terminates the owned tree; exit status may
+    /// therefore be unsuccessful even after the protocol received its result.
+    pub fn wait_with_exchange_observed(
+        &mut self,
+        timeout: Duration,
+        max_output_bytes: usize,
+        max_input_bytes: usize,
+        initial: &[u8],
+        check: impl FnMut() -> io::Result<()>,
+        observe: impl FnMut(&[u8]) -> io::Result<ProcessInput>,
+    ) -> Result<Output, ProcessCaptureFailure> {
+        self.capture_output(
+            timeout,
+            max_output_bytes,
+            Some((initial, max_input_bytes)),
+            check,
+            observe,
+        )
+    }
+
+    fn capture_output(
+        &mut self,
+        timeout: Duration,
+        max_bytes: usize,
+        input: Option<(&[u8], usize)>,
         mut check: impl FnMut() -> io::Result<()>,
+        mut observe: impl FnMut(&[u8]) -> io::Result<ProcessInput>,
     ) -> Result<Output, ProcessCaptureFailure> {
         if self.output_taken {
             return Err(ProcessCaptureFailure::before_capture(io::Error::other(
@@ -203,13 +355,19 @@ impl ProcessTree {
                 "process deadline overflow",
             ))
         })?;
+        let mut input = input
+            .map(|(initial, maximum)| PendingStdin::new(initial, maximum))
+            .transpose()
+            .map_err(ProcessCaptureFailure::before_capture)?;
         let child = self.child.as_mut().ok_or_else(|| {
             ProcessCaptureFailure::before_capture(io::Error::other(
                 "process output was already collected",
             ))
         })?;
         self.output_taken = true;
-        drop(child.stdin.take());
+        if input.is_none() {
+            drop(child.stdin.take());
+        }
         let mut stdout = child.stdout.take();
         let mut stderr = child.stderr.take();
         let mut output = [Vec::new(), Vec::new()];
@@ -218,8 +376,22 @@ impl ProcessTree {
         let result = (|| {
             loop {
                 check()?;
-                let progressed = drain_pipe(&mut stdout, &mut output[0], &mut remaining)?
+                let mut progressed = false;
+                if let Some(input) = input.as_mut() {
+                    progressed = input.poll(self)?;
+                }
+                let before_stdout = output[0].len();
+                progressed |= drain_pipe(&mut stdout, &mut output[0], &mut remaining)?
                     | drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
+                if let Some(input) = input.as_mut()
+                    && !input.complete
+                    && output[0].len() > before_stdout
+                {
+                    let chunk = output[0]
+                        .get(before_stdout..)
+                        .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
+                    input.observe(chunk, &mut observe)?;
+                }
                 if status.is_none() {
                     status = self.try_wait()?;
                     if status.is_some() {
@@ -397,7 +569,7 @@ impl Drop for ProcessTree {
 #[cfg(unix)]
 mod platform {
     use std::io;
-    use std::io::Read;
+    use std::io::{Read, Write};
     pub(super) use std::os::fd::AsRawFd as Pipe;
     use std::os::unix::process::CommandExt as _;
     use std::os::unix::process::ExitStatusExt as _;
@@ -443,17 +615,7 @@ mod platform {
         pipe: &mut (impl Read + Pipe),
         buffer: &mut [u8],
     ) -> io::Result<Option<usize>> {
-        // SAFETY: this owned pipe is used exclusively by the collector. Setting
-        // O_NONBLOCK prevents an escaped descendant from holding up cleanup.
-        let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
-        if flags == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the same owned pipe; only O_NONBLOCK is added to the flags
-        // just read from it.
-        if unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        nonblocking(pipe)?;
         match pipe.read(buffer) {
             Err(error)
                 if matches!(
@@ -465,6 +627,44 @@ mod platform {
             }
             result => result.map(Some),
         }
+    }
+
+    pub(super) fn write_pipe(
+        pipe: &mut (impl Write + Pipe),
+        bytes: &[u8],
+    ) -> io::Result<Option<usize>> {
+        nonblocking(pipe)?;
+        match pipe.write(bytes) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(None)
+            }
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "process pipe write stopped",
+            )),
+            result => result.map(Some),
+        }
+    }
+
+    fn nonblocking(pipe: &impl Pipe) -> io::Result<()> {
+        // SAFETY: this owned pipe is used exclusively by the collector. Setting
+        // O_NONBLOCK prevents backpressure or an escaped descendant from holding
+        // up intent checks, deadline observation or cleanup.
+        let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
+        if flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the same owned pipe; only O_NONBLOCK is added to the flags
+        // just read from it.
+        if unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub(super) struct Guard {
@@ -732,8 +932,58 @@ mod tests {
                 }
                 std::process::exit(0);
             }
+            "stdin-stall" | "stdin-echo" | "stdin-handshake" => stdin_helper(&mode, &root),
             "exit-code" => std::process::exit(7),
             _ => assert_eq!(mode, "known helper mode"),
+        }
+    }
+
+    fn stdin_helper(mode: &str, root: &std::path::Path) {
+        match mode {
+            "stdin-stall" => {
+                std::io::stdout()
+                    .write_all(b"stdin-stall-marker")
+                    .expect("stall marker");
+                std::io::stdout().flush().expect("flush stall marker");
+                fs::write(root.join("stdin-stall-ready"), b"ready").expect("stall ready");
+                thread::sleep(Duration::from_secs(30));
+            }
+            "stdin-echo" => {
+                let mut input = Vec::new();
+                std::io::stdin()
+                    .read_to_end(&mut input)
+                    .expect("input through EOF");
+                std::io::stdout()
+                    .write_all(&input)
+                    .expect("echo exact input");
+                std::process::exit(0);
+            }
+            "stdin-handshake" => {
+                let mut first = [0; 6];
+                std::io::stdin()
+                    .read_exact(&mut first)
+                    .expect("first input");
+                assert_eq!(&first, b"first\n");
+                std::io::stdout()
+                    .write_all(b"first-ack\n")
+                    .expect("first ack");
+                std::io::stdout().flush().expect("flush first ack");
+                let mut second = [0; 7];
+                std::io::stdin()
+                    .read_exact(&mut second)
+                    .expect("second input");
+                assert_eq!(&second, b"second\n");
+                std::io::stderr()
+                    .write_all(b"exchange-stderr\n")
+                    .expect("exchange stderr");
+                std::io::stderr().flush().expect("flush exchange stderr");
+                std::io::stdout()
+                    .write_all(b"second-ack\n")
+                    .expect("second ack");
+                std::io::stdout().flush().expect("flush second ack");
+                thread::sleep(Duration::from_secs(30));
+            }
+            _ => panic!("unknown stdin helper mode"),
         }
     }
 
@@ -1043,6 +1293,224 @@ mod tests {
     }
 
     #[test]
+    fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("stdin-stall", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
+        ready(temporary.path(), "stdin-stall-ready", || {
+            tree_exited(&mut tree)
+        });
+        let input = vec![b'i'; BULK_BYTES];
+        let mut offset = 0;
+        let started = Instant::now();
+        loop {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "write must not block"
+            );
+            match tree
+                .write_stdin(input.get(offset..).expect("unwritten suffix"))
+                .expect("nonblocking stdin write")
+            {
+                Some(written) => {
+                    assert!(written > 0 && written <= input.len() - offset);
+                    offset += written;
+                }
+                None => break,
+            }
+        }
+        assert!(offset > 0 && offset < input.len());
+        let mut checks = 0;
+        let failure = tree
+            .wait_with_output_observed(Duration::from_secs(5), 4096, || {
+                checks += 1;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "host stopped",
+                ))
+            })
+            .expect_err("intent stops stalled exchange");
+        assert_eq!(checks, 1);
+        assert_eq!(failure.error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(failure.cleanup_completed);
+        assert!(tree.is_reaped());
+        assert_eq!(
+            tree.write_stdin(b"after cleanup")
+                .expect_err("no stdin")
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+    }
+
+    #[test]
+    fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("stdin-echo", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn input echo");
+        assert_eq!(
+            tree.write_stdin(&[]).expect_err("empty write").kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let input: Vec<u8> = (0..BULK_BYTES)
+            .map(|index| u8::try_from(index % 251).expect("byte pattern"))
+            .collect();
+        let mut offset = 0;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while offset < input.len() {
+            assert!(Instant::now() < deadline, "bounded input transfer");
+            if let Some(written) = tree
+                .write_stdin(input.get(offset..).expect("unwritten suffix"))
+                .expect("write input")
+            {
+                assert!(written > 0 && written <= input.len() - offset);
+                offset += written;
+            } else {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        tree.close_stdin();
+        tree.close_stdin();
+        assert_eq!(
+            tree.write_stdin(b"after EOF")
+                .expect_err("closed stdin")
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        let output = tree
+            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES)
+            .expect("collect echoed input");
+        assert!(output.status.success());
+        assert!(output.stdout.ends_with(&input));
+        assert!(output.stderr.is_empty());
+        assert!(tree.is_reaped());
+    }
+
+    #[test]
+    fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
+        use super::ProcessInput;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("stdin-handshake", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
+        let mut seen = Vec::new();
+        let mut phase = 0;
+        let output = tree
+            .wait_with_exchange_observed(
+                Duration::from_secs(5),
+                4096,
+                13,
+                b"first\n",
+                || Ok(()),
+                |chunk| {
+                    seen.extend_from_slice(chunk);
+                    if phase == 0 && seen.ends_with(b"first-ack\n") {
+                        seen.clear();
+                        phase = 1;
+                        Ok(ProcessInput {
+                            bytes: b"second\n".to_vec(),
+                            complete: false,
+                        })
+                    } else if phase == 1 && seen.ends_with(b"second-ack\n") {
+                        phase = 2;
+                        Ok(ProcessInput {
+                            complete: true,
+                            ..ProcessInput::default()
+                        })
+                    } else {
+                        Ok(ProcessInput::default())
+                    }
+                },
+            )
+            .expect("complete streaming exchange");
+        assert_eq!(phase, 2);
+        assert!(output.stdout.ends_with(b"first-ack\nsecond-ack\n"));
+        assert_eq!(output.stderr, b"exchange-stderr\n");
+        assert!(
+            !output.status.success(),
+            "protocol completion terminates the stalled server"
+        );
+        assert!(tree.is_reaped());
+    }
+
+    #[test]
+    fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
+        use super::ProcessInput;
+        for parser_failure in [false, true] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let mut command = command("stdin-handshake", temporary.path());
+            command.stdin(Stdio::piped());
+            let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
+            let mut seen = Vec::new();
+            let failure = tree
+                .wait_with_exchange_observed(
+                    Duration::from_secs(5),
+                    4096,
+                    6,
+                    b"first\n",
+                    || Ok(()),
+                    |chunk| {
+                        seen.extend_from_slice(chunk);
+                        if seen.ends_with(b"first-ack\n") {
+                            if parser_failure {
+                                Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "invalid protocol",
+                                ))
+                            } else {
+                                Ok(ProcessInput {
+                                    bytes: b"second\n".to_vec(),
+                                    complete: false,
+                                })
+                            }
+                        } else {
+                            Ok(ProcessInput::default())
+                        }
+                    },
+                )
+                .expect_err("stop streaming exchange");
+            assert_eq!(
+                failure.error.kind(),
+                if parser_failure {
+                    std::io::ErrorKind::InvalidData
+                } else {
+                    std::io::ErrorKind::FileTooLarge
+                }
+            );
+            assert!(failure.stdout.ends_with(b"first-ack\n"));
+            assert!(failure.cleanup_completed);
+            assert!(tree.is_reaped());
+        }
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("stdin-stall", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
+        ready(temporary.path(), "stdin-stall-ready", || {
+            tree_exited(&mut tree)
+        });
+        let mut checks = 0;
+        let failure = tree
+            .wait_with_exchange_observed(
+                Duration::from_millis(20),
+                4096,
+                BULK_BYTES,
+                &vec![b'i'; BULK_BYTES],
+                || {
+                    checks += 1;
+                    Ok(())
+                },
+                |_| Ok(ProcessInput::default()),
+            )
+            .expect_err("deadline stops stalled input");
+        assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
+        assert!(checks > 1);
+        assert!(failure.cleanup_completed);
+        assert!(tree.is_reaped());
+    }
+
+    #[test]
     fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
@@ -1197,7 +1665,7 @@ mod tests {
 #[cfg(windows)]
 mod platform {
     use std::io;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::mem::{size_of, zeroed};
     use std::os::windows::process::CommandExt as _;
     use std::process::{Child, Command};
@@ -1213,12 +1681,50 @@ mod platform {
         JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
         QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     };
-    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState};
     use windows_sys::Win32::System::Threading::{
         CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
     };
 
     pub(super) use std::os::windows::io::AsRawHandle as Pipe;
+
+    pub(super) fn write_pipe(
+        pipe: &mut (impl Write + Pipe),
+        bytes: &[u8],
+    ) -> io::Result<Option<usize>> {
+        let mode = PIPE_NOWAIT;
+        // SAFETY: the exclusively owned anonymous byte pipe supports changing
+        // this writer's wait mode. No background I/O or borrowed buffer survives
+        // the call. Nonblocking WriteFile may write only the available capacity.
+        if unsafe {
+            SetNamedPipeHandleState(
+                pipe.as_raw_handle().cast(),
+                &mode,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut candidate = bytes;
+        loop {
+            match pipe.write(candidate) {
+                // Windows may accept zero bytes when a large write cannot fit,
+                // even with capacity for a smaller prefix. Probe progressively
+                // smaller prefixes, bounded logarithmically by this input slice;
+                // a zero-byte single-byte write establishes backpressure.
+                Ok(0) if candidate.len() > 1 => {
+                    candidate = candidate
+                        .get(..candidate.len() / 2)
+                        .ok_or_else(|| io::Error::other("invalid process write prefix"))?;
+                }
+                Ok(0) => return Ok(None),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(None),
+                result => return result.map(Some),
+            }
+        }
+    }
 
     pub(super) fn read_pipe(
         pipe: &mut (impl Read + Pipe),

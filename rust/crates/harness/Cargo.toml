@@ -22,6 +22,8 @@ required-features = ["filesystem"]
 [[example]]
 name = "approved-native-process"
 required-features = ["native-execution"]
+test = true
+harness = false
 
 [[bench]]
 name = "harness"
@@ -34,6 +36,8 @@ filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "dep:acyclic-native-runtime"]
+# Optional native HTTP I/O. Browser hosts implement the same portable boundary.
+mcp-http = ["dep:reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
@@ -47,14 +51,18 @@ blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
 hex = { workspace = true, optional = true }
+http.workspace = true
 jsonschema.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["unbounded_depth"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
 serde-saphyr = { version = "=1.3.0", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
 thiserror.workspace = true
+sse-stream.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
@@ -79,6 +87,7 @@ tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
+reqwest = { workspace = true, optional = true }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

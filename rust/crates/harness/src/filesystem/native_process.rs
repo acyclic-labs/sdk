@@ -29,6 +29,9 @@ use std::{
 
 impl NativeProcessRequest {
     fn validate(&self) -> Result<()> {
+        if let Some(exchange) = &self.mcp_stdio {
+            exchange.validate()?;
+        }
         if !self.executable.is_absolute()
             || !self.cwd.is_absolute()
             || !self.view.options.root.is_absolute()
@@ -517,7 +520,11 @@ async fn capture<P: StreamProvider + 'static>(
             .current_dir(&invocation.cwd)
             .env_clear()
             .envs(&invocation.environment)
-            .stdin(Stdio::null())
+            .stdin(if invocation.mcp_stdio.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let check = || {
@@ -536,18 +543,39 @@ async fn capture<P: StreamProvider + 'static>(
         check()?;
         let mut process = acyclic_native_runtime::spawn_process_tree(&mut command)?;
         let mut next_check = std::time::Instant::now();
-        let output = process.wait_with_output_observed(
-            Duration::from_millis(u64::from(invocation.timeout_ms)),
-            invocation.maximum_output_bytes as usize,
-            || {
-                if std::time::Instant::now() >= next_check {
-                    check()?;
-                    next_check = std::time::Instant::now()
-                        + Duration::from_millis(u64::from(invocation.cancellation_poll_ms));
-                }
-                Ok(())
-            },
-        );
+        let poll = || {
+            if std::time::Instant::now() >= next_check {
+                check()?;
+                next_check = std::time::Instant::now()
+                    + Duration::from_millis(u64::from(invocation.cancellation_poll_ms));
+            }
+            Ok(())
+        };
+        let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
+        let maximum_output = invocation.maximum_output_bytes as usize;
+        let output = if let Some(request) = &invocation.mcp_stdio {
+            let (mut exchange, first) = request.exchange().map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+            })?;
+            process.wait_with_exchange_observed(
+                timeout,
+                maximum_output,
+                request.maximum_bytes as usize,
+                &first,
+                poll,
+                |chunk| {
+                    let bytes = exchange.push(chunk).map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                    })?;
+                    Ok(acyclic_native_runtime::ProcessInput {
+                        bytes,
+                        complete: exchange.is_complete(),
+                    })
+                },
+            )
+        } else {
+            process.wait_with_output_observed(timeout, maximum_output, poll)
+        };
         Ok::<_, std::io::Error>(output)
     })
     .await
