@@ -3648,9 +3648,17 @@ mod tests {
     async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() -> Result<()> {
         // The executor returns an object. Each case invalidates exactly one
         // contract, and replay must retain that terminal failure.
-        for (output_schema, projection_schema) in [
-            (json!({"type":"string"}), json!({"type":"object"})),
-            (json!({"type":"object"}), json!({"type":"string"})),
+        for (output_schema, projection_schema, expected) in [
+            (
+                json!({"type":"string"}),
+                json!({"type":"object"}),
+                ToolFailureKind::InvalidOutput,
+            ),
+            (
+                json!({"type":"object"}),
+                json!({"type":"string"}),
+                ToolFailureKind::ProjectionRejected,
+            ),
         ] {
             let model = Arc::new(FakeModel {
                 calls: AtomicUsize::new(0),
@@ -3691,9 +3699,9 @@ mod tests {
                 max_steps: 4,
             };
             assert!(matches!(executor.execute(input.clone(), &journal).await,
-            Err(Error::Invalid(message)) if message.contains("pinned schema")));
+            Err(Error::Invalid(message)) if message == expected.message()));
             assert!(matches!(executor.execute(input, &journal).await,
-            Err(Error::Invalid(message)) if message.contains("pinned schema")));
+            Err(Error::Invalid(message)) if message == expected.message()));
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         }
         Ok(())
