@@ -89,7 +89,7 @@ const wasmPackages = [
   ["inference", "acyclic_inference_wasm"],
   ["machines", "acyclic_machines_wasm"],
   ["objects", "acyclic_objects_wasm"],
-  ...["actors", "workers", "stream"].map(key => [key, nativeFamily(key).wasm.outName]),
+  ...["actors", "workers", "stream"].map(key => /** @type {[string, string]} */ ([key, nativeFamily(key).wasm.outName])),
 ];
 const checkWasmPackage = async ([packageName, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);

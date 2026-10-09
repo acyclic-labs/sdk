@@ -38,7 +38,7 @@ function run(command, args, options = {}) {
   return result.trim();
 }
 
-/** @param {string} path */
+/** @param {string} directory */
 async function nativeInputs(directory, /** @type {{bundles: string[], receipts: string[]}} */ found = { bundles: [], receipts: [] }) {
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
@@ -222,7 +222,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  /** @type {{bundles: string[], output?: string, sourceSha?: string, help?: boolean}} */
+  /** @type {{bundles: string[], receipts: string[], output?: string, sourceSha?: string, help?: boolean}} */
   const options = { bundles: [], receipts: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -291,7 +291,7 @@ async function main() {
   const { rustPackage, targets } = rustMetadata();
   const manifest = JSON.parse(await readFile(join(packagePath, "package.json"), "utf8"));
   if (manifest.version !== rustPackage.version || manifest.private !== false) fail("parent package identity differs from Rust");
-  const bundles = await Promise.all(options.bundles.map(async path => ({ path: resolve(path), ...await assertBundle(resolve(path)) })));
+  const bundles = await Promise.all(options.bundles.map(async path => ({ path: resolve(path), receipt: "", ...await assertBundle(resolve(path)) })));
   const receipts = await Promise.all(options.receipts.map(async path => ({ path: resolve(path), value: JSON.parse(await readFile(resolve(path), "utf8")) })));
   if (receipts.length !== bundles.length) fail("assembly requires exactly one original compiler receipt per bundle");
   for (const bundle of bundles) {

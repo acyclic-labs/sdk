@@ -57,9 +57,9 @@ test("publication verifies all companion archives and retained attestations befo
   const meta = { ...metadata(), schema: "acyclic.stream.native-targets.v1", targets: [target], artifacts, artifact: artifacts[2] };
   const generation = { ...meta, schema: "acyclic.stream.native-generation.v1", revision };
   const generationBytes = JSON.stringify(generation);
-  Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
+  const attestedMeta = Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
   const receipt = { schema: "acyclic.stream.native-build-inputs-receipt.v1", published_build_inputs_sha256: hash(meta.build_inputs), raw_build_inputs: inputs() };
-  const entry = { name: companionName, version: "0.2.0", asset: "native/companion.tgz", selected_target: target, os: ["win32"], cpu: ["x64"], artifact: meta.artifact, generation_sha256: meta.generation_sha256, sha256: "", metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) };
+  const entry = { name: companionName, version: "0.2.0", asset: "native/companion.tgz", selected_target: target, os: ["win32"], cpu: ["x64"], artifact: meta.artifact, generation_sha256: attestedMeta.generation_sha256, sha256: "", metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) };
   const expectedInventory = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, source_sha256: meta.source_sha256, source_files: structuredClone(meta.source_files), parent: { name: "@acyclic-labs/stream", version: "0.2.0", private: false, optionalDependencies: { [companionName]: "0.2.0" } }, targets: [target], generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, meta.build_inputs.generator[field]])), companions: [{ selected_target: target, name: companionName, main: addon, os: ["win32"], cpu: ["x64"], manifest: { name: companionName, version: "0.2.0", private: false, main: addon, os: ["win32"], cpu: ["x64"] } }] };
   try {
     await mkdir(join(output, "native"), { recursive: true });
@@ -194,7 +194,7 @@ test("real maintained companions for every Rust target pack as public and pass p
       const meta = { ...metadata(selected), schema: "acyclic.stream.native-targets.v1", targets, artifacts, artifact: artifacts[2], build_inputs: normalizeBuildInputs(raw, { sourceRoot: "C:/producer/sdk", platform: "win32", targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir }) };
       const generation = { ...meta, schema: "acyclic.stream.native-generation.v1", revision };
       const generationBytes = JSON.stringify(generation);
-      Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
+      const attestedMeta = Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
       const receipt = { schema: "acyclic.stream.native-build-inputs-receipt.v1", published_build_inputs_sha256: hash(meta.build_inputs), raw_build_inputs: raw };
       const attestation = join(parent, "generated/native/attestations", selected);
       await mkdir(attestation, { recursive: true });
@@ -212,7 +212,7 @@ test("real maintained companions for every Rust target pack as public and pass p
       const args = ["pack", "--ignore-scripts", "--pack-destination", join(output, "native"), "--silent"];
       const packed = execFileSync(process.platform === "win32" && existsSync(npmCli) ? process.execPath : "npm", process.platform === "win32" && existsSync(npmCli) ? [npmCli, ...args] : args, { cwd: companion, encoding: "utf8" }).trim();
       await rename(join(output, "native", packed), join(output, asset));
-      entries.push({ name: manifest.name, version: manifest.version, asset, selected_target: selected, os: manifest.os, cpu: manifest.cpu, libc: manifest.libc, artifact: meta.artifact, generation_sha256: meta.generation_sha256, sha256: bytesHash(await readFile(join(output, asset))), metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) });
+      entries.push({ name: manifest.name, version: manifest.version, asset, selected_target: selected, os: manifest.os, cpu: manifest.cpu, libc: manifest.libc, artifact: meta.artifact, generation_sha256: attestedMeta.generation_sha256, sha256: bytesHash(await readFile(join(output, asset))), metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) });
     }
     await rm(npmDir, { recursive: true });
     for (const name of ["binding.cjs", "binding.d.ts"]) await writeFile(join(parent, "generated/native", name), name);
