@@ -429,7 +429,9 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         if reopened {
             assert_eq!(journal.writes.load(Ordering::SeqCst), 0);
         }
-        for (index, (tool, arguments)) in bounded_text.iter().enumerate() {
+        for (index, ((tool, arguments), bounded_executor)) in
+            bounded_text.iter().zip(&bounded_executors).enumerate()
+        {
             let operation = OperationId::from_bytes([if index == 0 { 87 } else { 88 }; 16]);
             let invocation = ToolInvocation {
                 operation_id: operation,
@@ -470,24 +472,22 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             else {
                 panic!("admitted bounded text must complete")
             };
-            assert_eq!(
-                bounded_executors[index].executions.load(Ordering::SeqCst),
-                1
-            );
-            assert_eq!(
-                bounded_executors[index]
-                    .reconciliations
-                    .load(Ordering::SeqCst),
-                0
-            );
+            assert_eq!(bounded_executor.executions.load(Ordering::SeqCst), 1);
+            assert_eq!(bounded_executor.reconciliations.load(Ordering::SeqCst), 0);
             assert_eq!(value.get("file"), Some(&json!(source)));
             if index == 0 {
-                assert_eq!(value["selection"]["text"], "original");
-                assert_eq!(value["selection"]["range"], json!({"start":0,"end":8}));
+                assert_eq!(value.pointer("/selection/text"), Some(&json!("original")));
+                assert_eq!(
+                    value.pointer("/selection/range"),
+                    Some(&json!({"start":0,"end":8}))
+                );
             } else {
-                assert_eq!(value["matches"]["matches"], json!([{"start":15,"end":20}]));
-                assert_eq!(value["matches"]["total_matches"], 1);
-                assert_eq!(value["matches"]["omitted_matches"], 0);
+                assert_eq!(
+                    value.pointer("/matches/matches"),
+                    Some(&json!([{"start":15,"end":20}]))
+                );
+                assert_eq!(value.pointer("/matches/total_matches"), Some(&json!(1)));
+                assert_eq!(value.pointer("/matches/omitted_matches"), Some(&json!(0)));
             }
             if reopened {
                 assert_eq!(Some(&value), retained_text_results.get(index));
