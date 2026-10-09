@@ -65,6 +65,94 @@ impl<P: StreamProvider> HistoryReader<P> {
         })
     }
 
+    /// Captures an admitted Summary fork through cold authenticated indexes.
+    /// Parent publication and the child's original causal binding share the
+    /// supplied history allowance: two canonical events and four bounded records.
+    /// The signed receiving scope must already grant every inherited file read.
+    /// Content reads use the separate admitted context/file limits. No aggregate
+    /// is restored, file authority granted or model operation dispatched.
+    pub async fn summary_fork_stage(
+        &self,
+        parent: &Self,
+        seed: &crate::fork::ForkSeed,
+        scope: &crate::core::Scope,
+        reader: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        limits: crate::conversation::Limits,
+        history_limits: HistoryReadLimits,
+    ) -> Result<crate::context::PinnedContextStage> {
+        if history_limits.maximum_events < 2 || history_limits.maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "summary fork history allowance is insufficient".into(),
+            ));
+        }
+        crate::contract::validate_json_byte_bound(seed, history_limits.maximum_bytes)?;
+        seed.validate()?;
+        self.verifier.verify(scope)?;
+        if parent.verifier.audience() != &seed.parent
+            || self.verifier.audience() != &seed.child
+            || scope.agent() != Some(seed.child_agent)
+        {
+            return Err(Error::Unauthorized(
+                "summary source is not this admitted child fork".into(),
+            ));
+        }
+        let capture = seed
+            .summary
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("fork has no Summary projection".into()))?;
+        let limits = crate::context::restrict_context_limits(capture.selection.limits, limits)?;
+        for file in capture.inherited_files().chain(&capture.references) {
+            limits.validate_file(file)?;
+            crate::conversation::ContentGrant::verify_read(&self.verifier, scope, file)?;
+        }
+        let child_cut = self.pin(0).await?;
+        if child_cut.through_revision == 0 {
+            return Err(Error::Unauthorized("summary child is not bound".into()));
+        }
+        let (operation_id, causal_parent) = super::fork_child_binding(seed)?;
+        let (publication, consumed) = parent
+            .operation_event_bounded(seed.operation_id, history_limits.maximum_bytes)
+            .await?;
+        let publication = publication
+            .ok_or_else(|| Error::Conflict("summary source has no parent publication".into()))?;
+        if publication.revision != causal_parent.revision
+            || !matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+        {
+            return Err(Error::Conflict(
+                "summary source differs from parent publication".into(),
+            ));
+        }
+        let remaining = history_limits
+            .maximum_bytes
+            .checked_sub(consumed)
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| Error::Invalid("summary fork history exceeds byte bound".into()))?;
+        let (binding, _) = self
+            .operation_event_bounded(operation_id, remaining)
+            .await?;
+        let binding = binding.ok_or_else(|| {
+            Error::Conflict("summary child lacks its original fork binding".into())
+        })?;
+        if binding.revision != 1
+            || binding.revision > child_cut.through_revision
+            || binding.causal_parent != Some(causal_parent)
+            || !matches!(binding.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent)
+        {
+            return Err(Error::Conflict(
+                "summary child lacks its original fork binding".into(),
+            ));
+        }
+        crate::context::PinnedContextStage::capture(
+            "fork-summary",
+            "1",
+            capture.context.clone(),
+            reader,
+            crate::context::ContextPlacement::Prepend,
+            limits,
+        )
+        .await
+    }
+
     /// Resolves a globally unique admitted operation without restoring its aggregate.
     /// This identity lookup is independent of a paginated traversal's pinned boundary.
     pub async fn operation_event(&self, operation: crate::OperationId) -> Result<Option<Event>> {

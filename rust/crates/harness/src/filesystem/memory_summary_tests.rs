@@ -393,9 +393,22 @@ async fn assert_summary_child_import(
         SchemaRegistry::new(),
     )
     .await?;
+    let parent_history = parent.history_reader()?;
+    let child_history = child.history_reader()?;
+    let history_limits = HistoryReadLimits {
+        maximum_events: 2,
+        maximum_bytes: 262_144,
+    };
     assert!(matches!(
-        child
-            .summary_fork_stage(parent, seed, &scope, reader.clone(), limits)
+        child_history
+            .summary_fork_stage(
+                &parent_history,
+                seed,
+                &scope,
+                reader.clone(),
+                limits,
+                history_limits
+            )
             .await,
         Err(Error::Unauthorized(_))
     ));
@@ -416,22 +429,30 @@ async fn assert_summary_child_import(
         ])),
     );
     assert!(matches!(
-        child
-            .summary_fork_stage(parent, seed, &denied, reader.clone(), limits)
+        child_history
+            .summary_fork_stage(
+                &parent_history,
+                seed,
+                &denied,
+                reader.clone(),
+                limits,
+                history_limits
+            )
             .await,
         Err(Error::Unauthorized(_))
     ));
     assert!(matches!(
-        child
+        child_history
             .summary_fork_stage(
-                parent,
+                &parent_history,
                 seed,
                 &scope,
                 reader.clone(),
                 Limits {
                     file_bytes: 1,
                     ..limits
-                }
+                },
+                history_limits,
             )
             .await,
         Err(Error::Invalid(_))
@@ -439,8 +460,15 @@ async fn assert_summary_child_import(
     let mut changed = seed.clone();
     changed.parent_revision += 1;
     assert!(
-        child
-            .summary_fork_stage(parent, &changed, &scope, reader.clone(), limits)
+        child_history
+            .summary_fork_stage(
+                &parent_history,
+                &changed,
+                &scope,
+                reader.clone(),
+                limits,
+                history_limits
+            )
             .await
             .is_err()
     );
@@ -467,14 +495,29 @@ async fn assert_summary_child_import(
         .await?;
     assert!(matches!(
         unrelated
-            .summary_fork_stage(parent, seed, &scope, reader.clone(), limits)
+            .history_reader()?
+            .summary_fork_stage(
+                &parent_history,
+                seed,
+                &scope,
+                reader.clone(),
+                limits,
+                history_limits
+            )
             .await,
         Err(Error::Conflict(_))
     ));
     let stage = Arc::new(
-        child
-            .summary_fork_stage(parent, seed, &scope, reader.clone(), limits)
-            .await?,
+        assert_cold_summary_reads(
+            storage,
+            parent,
+            seed,
+            &issuer,
+            &scope,
+            reader.clone(),
+            limits,
+        )
+        .await?,
     );
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
@@ -520,4 +563,276 @@ async fn assert_summary_child_import(
         Some(&input.input)
     );
     Ok(())
+}
+
+// Observe the real provider through the public client; every mutation is denied.
+struct ColdSummaryStream {
+    client: StreamClient<MemoryStream>,
+    reads: std::sync::atomic::AtomicUsize,
+    maximum: std::sync::atomic::AtomicU32,
+    fail_read: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl acyclic_stream::StreamProvider for ColdSummaryStream {
+    async fn inspect_idempotency(
+        &self,
+        _: acyclic_stream::IdempotencyKey,
+    ) -> std::result::Result<
+        Option<acyclic_stream::IdempotencyObservation>,
+        acyclic_stream::StreamError,
+    > {
+        Err(acyclic_stream::StreamError::Unsupported)
+    }
+    async fn tail(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> std::result::Result<u64, acyclic_stream::StreamError> {
+        self.client.stream(path.as_str())?.tail().await
+    }
+    async fn bounds(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
+        self.client.bounds(path.as_str()).await
+    }
+    async fn read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+    ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        use std::sync::atomic::Ordering;
+        let number = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum.fetch_max(request.limit, Ordering::SeqCst);
+        if number == self.fail_read.load(Ordering::SeqCst) {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.client
+            .stream(request.path.as_str())?
+            .read(request.from, request.limit)
+            .await
+    }
+    async fn read_commit(
+        &self,
+        commit: acyclic_stream::CommitId,
+    ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
+        self.client.read_commit(commit).await
+    }
+    async fn append(
+        &self,
+        _: acyclic_stream::AppendRequest,
+    ) -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError> {
+        Err(acyclic_stream::StreamError::Unsupported)
+    }
+    async fn fork(
+        &self,
+        _: acyclic_stream::ForkRequest,
+    ) -> std::result::Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> {
+        Err(acyclic_stream::StreamError::Unsupported)
+    }
+    async fn commit(
+        &self,
+        _: acyclic_stream::CommitRequest,
+    ) -> std::result::Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
+        Err(acyclic_stream::StreamError::Unsupported)
+    }
+    async fn follow(
+        &self,
+        _: acyclic_stream::StreamPath,
+        _: u64,
+    ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        Err(acyclic_stream::StreamError::Unsupported)
+    }
+    async fn children(
+        &self,
+        _: acyclic_stream::ChildrenRequest,
+    ) -> std::result::Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
+        Err(acyclic_stream::StreamError::Unsupported)
+    }
+}
+
+async fn append_later_summary_parent_messages(
+    storage: &MemoryHarnessStorage,
+    parent: &StreamAggregate<MemoryStream>,
+    count: usize,
+) -> Result<()> {
+    let content = parent
+        .reducer()
+        .conversation()
+        .and_then(|state| state.messages().last())
+        .ok_or_else(|| Error::Invalid("missing parent message".into()))?
+        .content
+        .clone();
+    let mut writer = StreamAggregate::open(
+        &storage.stream,
+        storage.conversation.clone(),
+        storage.verifier(),
+        SchemaRegistry::new(),
+    )
+    .await?
+    .with_content_verifier(storage.content_verifier.clone());
+    for index in 0..count {
+        let sequence = writer
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("missing conversation".into()))?
+            .messages()
+            .len() as u64
+            + 1;
+        writer
+            .execute(Command {
+                operation_id: OperationId::new(),
+                idempotency_key: IdempotencyKey::new(format!("later-summary-parent:{index}"))?,
+                expected_revision: writer.reducer().revision(),
+                scope: storage.scope.clone(),
+                causal_parent: None,
+                action: Action::AppendConversationMessage {
+                    message: Box::new(ConversationMessage {
+                        id: Uuid::new_v4(),
+                        sequence,
+                        kind: MessageKind::System,
+                        content: content.clone(),
+                        attachments: Vec::new().into(),
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: BTreeMap::new(),
+                    }),
+                },
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cold import with exact byte/work bounds, read failure and retained-history scaling"
+)]
+async fn assert_cold_summary_reads(
+    storage: &MemoryHarnessStorage,
+    parent: &StreamAggregate<MemoryStream>,
+    seed: &crate::fork::ForkSeed,
+    issuer: &AuthorityIssuer,
+    scope: &Scope,
+    reader: Arc<dyn ContentResidencyVerifier>,
+    limits: Limits,
+) -> Result<crate::context::PinnedContextStage> {
+    use std::sync::atomic::Ordering;
+    let parent_history = parent.history_reader()?;
+    let child_history = HistoryReader::new(&storage.stream, &seed.child, issuer.verifier())?;
+    let binding = child_history
+        .read_page(
+            &child_history.pin(0).await?,
+            HistoryReadLimits {
+                maximum_events: 1,
+                maximum_bytes: 262_144,
+            },
+        )
+        .await?
+        .events
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Invalid("missing binding".into()))?;
+    let (_, parent_bytes) = parent_history
+        .operation_event_bounded(seed.operation_id, 262_144)
+        .await?;
+    let (_, binding_bytes) = child_history
+        .operation_event_bounded(binding.operation_id, 262_144)
+        .await?;
+    let history_limits = HistoryReadLimits {
+        maximum_events: 2,
+        maximum_bytes: parent_bytes + binding_bytes,
+    };
+    let mut stage = None;
+    for later_messages in [0, 1_000] {
+        append_later_summary_parent_messages(storage, parent, later_messages).await?;
+        let observed = Arc::new(ColdSummaryStream {
+            client: storage.stream.clone(),
+            reads: 0.into(),
+            maximum: 0.into(),
+            fail_read: 0.into(),
+        });
+        let client = StreamClient::new(observed.clone());
+        let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier())?;
+        let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier())?;
+        if later_messages == 0 {
+            for allowance in [
+                HistoryReadLimits {
+                    maximum_events: 1,
+                    ..history_limits
+                },
+                HistoryReadLimits {
+                    maximum_bytes: 0,
+                    ..history_limits
+                },
+            ] {
+                assert!(matches!(
+                    cold_child
+                        .summary_fork_stage(
+                            &cold_parent,
+                            seed,
+                            scope,
+                            reader.clone(),
+                            limits,
+                            allowance
+                        )
+                        .await,
+                    Err(Error::Invalid(_))
+                ));
+                assert_eq!(observed.reads.load(Ordering::SeqCst), 0);
+            }
+            assert!(matches!(
+                cold_child
+                    .summary_fork_stage(
+                        &cold_parent,
+                        seed,
+                        scope,
+                        reader.clone(),
+                        limits,
+                        HistoryReadLimits {
+                            maximum_bytes: history_limits.maximum_bytes - 1,
+                            ..history_limits
+                        }
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            assert_eq!(observed.reads.load(Ordering::SeqCst), 4);
+            observed.reads.store(0, Ordering::SeqCst);
+            observed.fail_read.store(3, Ordering::SeqCst);
+            assert!(
+                cold_child
+                    .summary_fork_stage(
+                        &cold_parent,
+                        seed,
+                        scope,
+                        reader.clone(),
+                        limits,
+                        history_limits
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(observed.reads.load(Ordering::SeqCst), 3);
+            observed.reads.store(0, Ordering::SeqCst);
+            observed.fail_read.store(0, Ordering::SeqCst);
+        }
+        // Fresh reader objects after failed observation: no restored reducer or cache.
+        let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier())?;
+        let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier())?;
+        stage = Some(
+            cold_child
+                .summary_fork_stage(
+                    &cold_parent,
+                    seed,
+                    scope,
+                    reader.clone(),
+                    limits,
+                    history_limits,
+                )
+                .await?,
+        );
+        assert_eq!(observed.reads.load(Ordering::SeqCst), 4);
+        assert_eq!(observed.maximum.load(Ordering::SeqCst), 1);
+    }
+    stage.ok_or_else(|| Error::Invalid("cold Summary fixture did not run".into()))
 }
