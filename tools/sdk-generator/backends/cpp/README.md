@@ -33,8 +33,11 @@ callers must admit those sources before running the recipe.
 
 Two independent maintained generations against accepted foundation
 `5f13157414a5f48425007ffd957ea7d09611e5fe` emit identical 17-file package
-payloads and identical receipts. The SDK builds and installs through CMake.
-An independent consumer finds only the installed package and matched runtime.
+payloads and identical receipts. A fresh source tree staged only from admitted
+archive bytes builds and installs
+through CMake. An independent consumer finds the installed package and a private
+copy of the matched runtime. All 1,618 runtime files and all SDK source bytes
+match their admitted inputs after execution.
 It passes complete Rust file descriptors after removing source comments and
 Buf image tag 8042, populated serialization for all 25 RPC message pairs,
 bytes, unsigned maximum wire values, optional zero and oneof switching/clearing.
@@ -46,14 +49,14 @@ fail with their intended compiler type errors. The executed fixture sources
 live in `tests/fixtures/consumer/`.
 
 This establishes installed CMake consumption and native loopback transport for
-the accepted Actors, Workers and Stream exports. Two deterministic archives have identical SHA256
+the accepted Actors, Workers and Stream exports. Two deterministic archives
+have identical SHA256
 `8bfb26bfadb6a328df08d35192e25f12edf162ed3fd9da6caf032163830fd7de`.
 `src/package.mjs` admits that archive against an external digest, the generation
 receipt, complete payload inventory, maintained producer/tool/template pins and
 accepted Rust authority. Admission rejects links, traversal, missing/extra files
 and payload or receipt drift. A reusable installed qualifier remains pending,
-as do Rust-backed RPC,
-TLS/authentication, cancellation/recovery, remaining families/platforms and
+as do Rust-backed RPC, TLS/authentication, cancellation/recovery, remaining families/platforms and
 embedded runtime qualification. Historical protoc 28.3 source-only evidence is
 retained separately from the matched native runtime evidence.
 

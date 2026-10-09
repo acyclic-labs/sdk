@@ -340,7 +340,14 @@ streaming clients check two distinct responses in order. A positive type control
 compiles. Three separate invalid assignments reject with the intended C2665
 byte-field and C2664 optional-integer compiler errors.
 
-Deterministic archive admission and a reusable installed qualifier remain
-pending. These checks do not establish Rust-backed RPC, TLS/authentication,
+Two deterministic package archives have identical SHA256
+`8bfb26bfadb6a328df08d35192e25f12edf162ed3fd9da6caf032163830fd7de`.
+The maintained archive reader verifies the exact Rust/producer/tool/template
+inputs and complete 17-file payload. A fresh build staged only from admitted
+archive bytes passes the same installed native controls with a private matched
+runtime. All 1,618 runtime files, SDK payload bytes, six compiled SDK source
+paths and installed header/resource bytes are verified after execution.
+A reusable installed qualifier remains pending. These checks do not establish
+Rust-backed RPC, TLS/authentication,
 cancellation/recovery, remaining families/platforms or embedded runtime behavior.
 The earlier protoc 28.3 source-only milestone remains separate historical evidence.
