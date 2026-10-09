@@ -1589,6 +1589,15 @@ mod tests {
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 
+    fn native_retention_policy() -> FileProjectionPolicy {
+        FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
+            intent: crate::model::NativeMediaIntent::Document { maximum_pages: 1 },
+            maximum_bytes: 1_048_576,
+            maximum_work: 1,
+            configuration: None,
+        }))
+    }
+
     fn validate_native_call_fixture(context: &Context) -> Result<()> {
         crate::model::PreparedModelRequest::prepare(
             crate::model::ModelRequest {
@@ -1605,12 +1614,83 @@ mod tests {
                     description: "Native retention fixture".into(),
                     input_schema: serde_json::json!({"type":"null"}),
                     output_schema: serde_json::json!({"type":"null"}),
+                    projection_schema: serde_json::json!({"oneOf": [
+                        crate::tool::json_projection_schema(serde_json::json!({"type":"null"})),
+                        {"type":"object", "required":["kind","parts"],
+                         "properties":{"kind":{"const":"parts"}, "parts":{"type":"array", "minItems":1, "maxItems":1, "items":{"type":"object"}}},
+                         "additionalProperties":false}
+                    ]}),
                 }],
                 max_output_tokens: Some(128),
             },
             Limits::default(),
         )?;
         Ok(())
+    }
+
+    fn native_call_context(
+        file: &FileRef,
+        results: usize,
+        native_in_result: bool,
+    ) -> Result<Context> {
+        let mut calls: Vec<_> = (0..results)
+            .map(|index| ModelContentPart::ToolCall {
+                call_id: format!("native-{index}"),
+                name: "native.tool".into(),
+                arguments: Value::Null,
+            })
+            .collect();
+        if !native_in_result {
+            calls.push(ModelContentPart::File {
+                file: file.clone(),
+                policy: native_retention_policy(),
+            });
+        }
+        let mut messages = vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("old".into()),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Parts(calls),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("gap".into()),
+            },
+        ];
+        for index in 0..results {
+            messages.push(ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: format!("native-{index}"),
+                    name: "native.tool".into(),
+                    content: if native_in_result && index == 0 {
+                        crate::model::ToolResultContent::Parts {
+                            parts: vec![crate::model::ModelDataPart::File {
+                                file: file.clone(),
+                                policy: native_retention_policy(),
+                            }],
+                        }
+                    } else {
+                        crate::model::ToolResultContent::Json { value: Value::Null }
+                    },
+                }),
+            });
+        }
+        messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("current".into()),
+        });
+        Ok(Context {
+            current_input_index: Some(
+                u32::try_from(messages.len() - 1)
+                    .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?,
+            ),
+            messages,
+            metadata: BTreeMap::new(),
+        })
     }
 
     #[test]
@@ -1622,56 +1702,12 @@ mod tests {
             .next()
             .ok_or_else(|| crate::Error::Invalid("media reference missing".into()))?
             .clone();
-        // Main's typed native files are valid Assistant content. Retaining the
-        // call message must retain every JSON result in its exchange component.
-        for results in 1..=3 {
-            let mut calls: Vec<_> = (0..results)
-                .map(|index| ModelContentPart::ToolCall {
-                    call_id: format!("native-{index}"),
-                    name: "native.tool".into(),
-                    arguments: Value::Null,
-                })
-                .collect();
-            calls.push(ModelContentPart::File {
-                file: file.clone(),
-                policy: FileProjectionPolicy::Native,
-            });
-            let mut messages = vec![
-                ModelMessage {
-                    role: ModelRole::User,
-                    content: ModelContent::Text("old".into()),
-                },
-                ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: ModelContent::Parts(calls),
-                },
-                ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: ModelContent::Text("gap".into()),
-                },
-            ];
-            for index in 0..results {
-                messages.push(ModelMessage {
-                    role: ModelRole::Tool,
-                    content: ModelContent::Part(ModelContentPart::ToolResult {
-                        call_id: format!("native-{index}"),
-                        name: "native.tool".into(),
-                        value: Value::Null,
-                    }),
-                });
-            }
-            messages.push(ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("current".into()),
-            });
-            let source = Context {
-                current_input_index: Some(
-                    u32::try_from(messages.len() - 1)
-                        .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?,
-                ),
-                messages,
-                metadata: BTreeMap::new(),
-            };
+        // Native data in either the call message or its first result retains
+        // the complete multi-call exchange, including every other result.
+        for (results, native_in_result) in
+            (1..=3).flat_map(|results| [false, true].map(move |nested| (results, nested)))
+        {
+            let source = native_call_context(&file, results, native_in_result)?;
             validate_native_call_fixture(&source)?;
             let summary = ContextSummary {
                 operation_id: crate::OperationId::new(),
@@ -1751,7 +1787,7 @@ mod tests {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "call".into(),
                         name: "example.tool".into(),
-                        value: Value::Null,
+                        content: crate::model::ToolResultContent::Json { value: Value::Null },
                     }),
                 },
                 ModelMessage {
@@ -1856,7 +1892,7 @@ mod tests {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::File {
                         file: summary.output.clone(),
-                        policy: crate::model::FileProjectionPolicy::Native,
+                        policy: native_retention_policy(),
                     }),
                 },
                 source.messages[5].clone(),
@@ -2479,7 +2515,7 @@ mod tests {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "current-call".into(),
                         name: "tool".into(),
-                        value: Value::Null,
+                        content: crate::model::ToolResultContent::Json { value: Value::Null },
                     }),
                 },
             ],

@@ -3999,7 +3999,16 @@ mod tests {
                         file: journal
                             .stage(operation_id, "media".into(), vec![1; 50_000], "image/png")
                             .await?,
-                        policy: crate::model::FileProjectionPolicy::Native,
+                        policy: crate::model::FileProjectionPolicy::Native(Box::new(
+                            crate::model::NativeMediaPolicy {
+                                intent: crate::model::NativeMediaIntent::Image {
+                                    detail: crate::model::ImageDetail::Auto,
+                                },
+                                maximum_bytes: 50_000,
+                                maximum_work: 1,
+                                configuration: None,
+                            },
+                        )),
                     }),
                 }
             } else {
@@ -5601,6 +5610,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             },
             executor: tool.clone(),
             projection: Arc::new(Projection),

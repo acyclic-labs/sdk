@@ -418,7 +418,9 @@ fn typed_payload_source() -> Context {
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: "previous-call".into(),
                     name: "echo".into(),
-                    value: serde_json::json!({"value":"é🦀"}),
+                    content: acyclic_harness::model::ToolResultContent::Json {
+                        value: serde_json::json!({"value":"é🦀"}),
+                    },
                 }),
             },
             ModelMessage {
@@ -507,6 +509,9 @@ async fn large_context_payload_preserves_instruction_and_typed_tool_exchange() -
                 description: "Echo".into(),
                 input_schema: serde_json::json!({"type":"object"}),
                 output_schema: serde_json::json!({"type":"object"}),
+                projection_schema: acyclic_harness::tool::json_projection_schema(
+                    serde_json::json!({"type":"object"}),
+                ),
             }],
             max_output_tokens: Some(1_024),
         },
