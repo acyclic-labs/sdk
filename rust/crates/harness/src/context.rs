@@ -1589,19 +1589,32 @@ mod tests {
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 
-    fn native_retention_policy() -> crate::model::NativeMediaPolicy {
-        crate::model::NativeMediaPolicy {
-            intent: crate::model::NativeMediaIntent::Image {
-                detail: crate::model::ImageDetail::Auto,
+    fn validate_native_call_fixture(context: &Context) -> Result<()> {
+        crate::model::PreparedModelRequest::prepare(
+            crate::model::ModelRequest {
+                model: crate::model::Model::new(
+                    "test",
+                    "native-retention",
+                    "1",
+                    serde_json::json!({}),
+                )?,
+                messages: context.messages.clone(),
+                tools: vec![crate::tool::ToolDefinition {
+                    name: "native.tool".into(),
+                    revision: "1".into(),
+                    description: "Native retention fixture".into(),
+                    input_schema: serde_json::json!({"type":"null"}),
+                    output_schema: serde_json::json!({"type":"null"}),
+                }],
+                max_output_tokens: Some(128),
             },
-            maximum_bytes: 64,
-            maximum_work: 64,
-            configuration: None,
-        }
+            Limits::default(),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn native_result_retention_closes_tool_pair_before_compaction_budget() -> Result<()> {
+    fn native_call_retention_closes_tool_pair_before_compaction_budget() -> Result<()> {
         let file: FileRef = message(ModelRole::Assistant, "media reference")?
             .content
             .file_refs()
@@ -1609,16 +1622,20 @@ mod tests {
             .next()
             .ok_or_else(|| crate::Error::Invalid("media reference missing".into()))?
             .clone();
-        // A shared call message makes every result part of the same retained
-        // exchange component, even when only its first result contains media.
+        // Main's typed native files are valid Assistant content. Retaining the
+        // call message must retain every JSON result in its exchange component.
         for results in 1..=3 {
-            let calls = (0..results)
+            let mut calls: Vec<_> = (0..results)
                 .map(|index| ModelContentPart::ToolCall {
                     call_id: format!("native-{index}"),
                     name: "native.tool".into(),
                     arguments: Value::Null,
                 })
                 .collect();
+            calls.push(ModelContentPart::File {
+                file: file.clone(),
+                policy: FileProjectionPolicy::Native,
+            });
             let mut messages = vec![
                 ModelMessage {
                     role: ModelRole::User,
@@ -1634,24 +1651,12 @@ mod tests {
                 },
             ];
             for index in 0..results {
-                let content = if index == 0 {
-                    crate::model::ToolResultContent::Parts {
-                        parts: vec![crate::model::ModelDataPart::File {
-                            file: file.clone(),
-                            policy: crate::model::FileProjectionPolicy::Native(
-                                native_retention_policy(),
-                            ),
-                        }],
-                    }
-                } else {
-                    crate::model::ToolResultContent::Json { value: Value::Null }
-                };
                 messages.push(ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: format!("native-{index}"),
                         name: "native.tool".into(),
-                        content,
+                        value: Value::Null,
                     }),
                 });
             }
@@ -1667,6 +1672,7 @@ mod tests {
                 messages,
                 metadata: BTreeMap::new(),
             };
+            validate_native_call_fixture(&source)?;
             let summary = ContextSummary {
                 operation_id: crate::OperationId::new(),
                 step: 0,
@@ -1692,6 +1698,7 @@ mod tests {
                 )
             );
             validate_compaction(&reference, &source, &compacted)?;
+            validate_native_call_fixture(&compacted)?;
             assert!(
                 DurableContextProvider::compact(
                     &source,
@@ -1744,7 +1751,7 @@ mod tests {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "call".into(),
                         name: "example.tool".into(),
-                        content: crate::model::ToolResultContent::Json { value: Value::Null },
+                        value: Value::Null,
                     }),
                 },
                 ModelMessage {
@@ -1849,9 +1856,7 @@ mod tests {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::File {
                         file: summary.output.clone(),
-                        policy: crate::model::FileProjectionPolicy::Native(
-                            native_retention_policy(),
-                        ),
+                        policy: crate::model::FileProjectionPolicy::Native,
                     }),
                 },
                 source.messages[5].clone(),
@@ -2092,11 +2097,12 @@ mod tests {
         let file = message(ModelRole::System, "instruction")?
             .content
             .file_refs()
-            .first()
-            .ok_or_else(|| crate::Error::Invalid("fixture instruction is missing".into()))?
-            .clone();
+            .into_iter()
+            .next()
+            .cloned()
+            .ok_or_else(|| crate::Error::Invalid("fixture instruction is missing".into()))?;
         let discovered = DiscoveredContext {
-            instructions: vec![file.clone(), file],
+            instructions: vec![file.clone(), file.clone()],
             skills: Vec::new(),
         };
         assert!(matches!(
@@ -2165,9 +2171,10 @@ mod tests {
         let file = message(ModelRole::System, "0123456789")?
             .content
             .file_refs()
-            .first()
-            .ok_or_else(|| crate::Error::Invalid("fixture source is missing".into()))?
-            .clone();
+            .into_iter()
+            .next()
+            .cloned()
+            .ok_or_else(|| crate::Error::Invalid("fixture source is missing".into()))?;
         let pinned = Limits {
             render_bytes: 2_048,
             ..payload_limits()
@@ -2175,7 +2182,7 @@ mod tests {
         let stage = SelectionStage::new(
             "selection".into(),
             ContextSelection {
-                source: ContextSourceValue::File { file },
+                source: ContextSourceValue::File { file: file.clone() },
                 extent: ContextExtent::Whole,
                 representation: ContextRepresentation::Full,
             },
@@ -2472,7 +2479,7 @@ mod tests {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "current-call".into(),
                         name: "tool".into(),
-                        content: crate::model::ToolResultContent::Json { value: Value::Null },
+                        value: Value::Null,
                     }),
                 },
             ],

@@ -229,13 +229,13 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             },
         })
         .await?;
-    assert_eq!(aggregate.reducer().events().len(), 1);
+    assert_eq!(aggregate.reducer().events_after(0, 2)?.len(), 1);
     let restored_parent = Reducer::restore(
         aggregate.reducer().snapshot()?,
         issuer.verifier(),
         SchemaRegistry::new(),
     )?;
-    assert_eq!(restored_parent.events().len(), 1);
+    assert_eq!(restored_parent.events_after(0, 2)?.len(), 1);
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         restored_parent.clone(),

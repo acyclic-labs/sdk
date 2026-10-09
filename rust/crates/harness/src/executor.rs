@@ -3238,7 +3238,7 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
     ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
         Box::pin(async move {
             self.authorize(manifest)?;
-            if item_count as u64 > self.limits.attachments as u64
+            if u64::from(item_count) > self.limits.attachments as u64
                 || manifest.descriptor().byte_length() > self.limits.render_bytes
             {
                 return Err(Error::Invalid(
@@ -3307,10 +3307,12 @@ async fn load_canonical_checkpoint_scoped(
     }
     for file in retained.metadata.values() {
         limits.validate_file(file)?;
-        if let Some(scope) = scope {
-            if !crate::runtime::read_granted(scope.grants(), file)? {
-                return Err(Error::Unauthorized("attenuated task cannot read checkpoint metadata".into()));
-            }
+        if let Some(scope) = scope
+            && !crate::runtime::read_granted(scope.grants(), file)?
+        {
+            return Err(Error::Unauthorized(
+                "attenuated task cannot read checkpoint metadata".into(),
+            ));
         }
     }
     for message in &retained.messages {
@@ -3334,24 +3336,37 @@ async fn load_canonical_checkpoint_scoped(
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits) -> Result<()> {
     limits.validate_file(reference)?;
     if reference.descriptor().byte_length() > limits.render_bytes {
-        return Err(Error::Invalid("checkpoint JSON exceeds effective render limit".into()));
+        return Err(Error::Invalid(
+            "checkpoint JSON exceeds effective render limit".into(),
+        ));
     }
     Ok(())
 }
 
-fn validate_model_content_scope(content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>) -> Result<()> {
+fn validate_model_content_scope(
+    content: &ModelContent,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<()> {
     content.validate_limits(limits)?;
     if let Some(scope) = scope {
         for file in content.file_refs() {
             if !crate::runtime::read_granted(scope.grants(), file)? {
-                return Err(Error::Unauthorized("attenuated task cannot read model content".into()));
+                return Err(Error::Unauthorized(
+                    "attenuated task cannot read model content".into(),
+                ));
             }
         }
     }
     Ok(())
 }
 
-async fn verify_model_content_scoped(journal: &dyn ExecutionJournal, content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>) -> Result<()> {
+async fn verify_model_content_scoped(
+    journal: &dyn ExecutionJournal,
+    content: &ModelContent,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<()> {
     validate_model_content_scope(content, limits, scope)?;
     for file in content.file_refs() {
         journal.verify_input_file(file).await?;
@@ -4633,6 +4648,7 @@ mod tests {
         let provider = Arc::new(RecoverableModel {
             generate_calls: AtomicUsize::new(0),
             reconcile_calls: AtomicUsize::new(0),
+            dispatches: Mutex::new(Vec::new()),
         });
         let executor = uncompacted_executor(
             Model::new("test", "summary", "1", Value::Null)?,
@@ -4694,6 +4710,7 @@ mod tests {
         let provider = Arc::new(RecoverableModel {
             generate_calls: AtomicUsize::new(0),
             reconcile_calls: AtomicUsize::new(0),
+            dispatches: Mutex::new(Vec::new()),
         });
         let executor = uncompacted_executor(
             Model::new("test", "summary", "1", Value::Null)?,
@@ -5563,7 +5580,6 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
-                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             },
             executor: tool.clone(),
             projection: Arc::new(Projection),
@@ -5645,6 +5661,7 @@ mod tests {
             Mutex::new(records.clone()),
             Mutex::new(artifacts.clone()),
             Mutex::new(interactions.clone()),
+            AtomicUsize::new(0),
         );
         assert_eq!(
             executor
@@ -5672,6 +5689,7 @@ mod tests {
                 Mutex::new(partial),
                 Mutex::new(artifacts.clone()),
                 Mutex::new(interactions.clone()),
+                AtomicUsize::new(0),
             );
             assert_eq!(
                 executor
@@ -5713,6 +5731,7 @@ mod tests {
             Mutex::new(records.clone()),
             Mutex::new(missing),
             Mutex::new(interactions),
+            AtomicUsize::new(0),
         );
         assert!(
             executor

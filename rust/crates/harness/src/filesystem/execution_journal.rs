@@ -552,20 +552,19 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             after_revision: 0,
             through_revision: event.revision,
         };
-        let history_limits = match self.history_read_limits {
-            Some(limits) => limits,
-            None => {
-                let maximum_events = u32::try_from(limits.context_messages).map_err(|_| {
-                    Error::Invalid("canonical delta count exceeds portable history bound".into())
-                })?;
-                let maximum_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
-                    .checked_mul(2)
-                    .and_then(|bytes| bytes.checked_mul(u64::from(maximum_events)))
-                    .ok_or_else(|| Error::Invalid("canonical delta byte bound overflows".into()))?;
-                crate::store::HistoryReadLimits {
-                    maximum_events,
-                    maximum_bytes,
-                }
+        let history_limits = if let Some(limits) = self.history_read_limits {
+            limits
+        } else {
+            let maximum_events = u32::try_from(limits.context_messages).map_err(|_| {
+                Error::Invalid("canonical delta count exceeds portable history bound".into())
+            })?;
+            let maximum_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
+                .checked_mul(2)
+                .and_then(|bytes| bytes.checked_mul(u64::from(maximum_events)))
+                .ok_or_else(|| Error::Invalid("canonical delta byte bound overflows".into()))?;
+            crate::store::HistoryReadLimits {
+                maximum_events,
+                maximum_bytes,
             }
         };
         let loaded = reader
@@ -576,53 +575,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 history_limits,
             )
             .await?;
-        let ids = loaded
-            .iter()
-            .filter(|message| {
-                matches!(
-                    message.kind,
-                    crate::conversation::MessageKind::System
-                        | crate::conversation::MessageKind::User
-                        | crate::conversation::MessageKind::Assistant
-                        | crate::conversation::MessageKind::ToolCall
-                        | crate::conversation::MessageKind::ToolResult
-                )
-            })
-            .map(|message| message.id)
-            .collect::<Vec<_>>();
-        if ids != envelope.selection.message_ids {
-            return Err(Error::Conflict(
-                "checkpoint skips uncovered canonical history".into(),
-            ));
-        }
-        let history = crate::conversation::ConversationState::selected_view(loaded)?;
-        let selected = select_model_context_at_revision(
-            &history,
-            envelope.selection.clone(),
-            verifier.as_ref(),
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
-            limits.attachments,
-        )
-        .await?;
-        let input = selected
-            .messages
-            .last()
-            .ok_or_else(|| Error::Invalid("canonical input is missing".into()))?
-            .content
-            .clone();
-        let mut selected_delta = selected;
-        selected_delta.selection.checkpoint = None;
-        let delta = crate::context::ContextPipeline::base_context(
-            &crate::context::ContextInput {
-                input,
-                selected_context: Some(selected_delta),
-                step: 0,
-                prior_messages: Vec::new(),
-            },
-            limits,
-        )?;
+        let delta =
+            project_canonical_delta(loaded, &envelope.selection, verifier.as_ref(), limits).await?;
         let expected = match previous {
             Some((_, retained)) => {
                 crate::context::ContextPipeline::continue_base(retained, delta, limits)?
@@ -1714,6 +1668,61 @@ fn interaction_operation(id: InteractionId, phase: &str) -> OperationId {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+async fn project_canonical_delta(
+    loaded: Vec<crate::conversation::ConversationMessage>,
+    selection: &crate::conversation::ModelContextSelection,
+    verifier: &dyn ContentResidencyVerifier,
+    limits: Limits,
+) -> Result<crate::context::Context> {
+    let ids = loaded
+        .iter()
+        .filter(|message| {
+            matches!(
+                message.kind,
+                crate::conversation::MessageKind::System
+                    | crate::conversation::MessageKind::User
+                    | crate::conversation::MessageKind::Assistant
+                    | crate::conversation::MessageKind::ToolCall
+                    | crate::conversation::MessageKind::ToolResult
+            )
+        })
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    if ids != selection.message_ids {
+        return Err(Error::Conflict(
+            "checkpoint skips uncovered canonical history".into(),
+        ));
+    }
+    let history = crate::conversation::ConversationState::selected_view(loaded)?;
+    let selected = select_model_context_at_revision(
+        &history,
+        selection.clone(),
+        verifier,
+        limits.context_messages,
+        limits.attachments,
+        limits.render_bytes,
+        limits.attachments,
+    )
+    .await?;
+    let input = selected
+        .messages
+        .last()
+        .ok_or_else(|| Error::Invalid("canonical input is missing".into()))?
+        .content
+        .clone();
+    let mut selected_delta = selected;
+    selected_delta.selection.checkpoint = None;
+    crate::context::ContextPipeline::base_context(
+        &crate::context::ContextInput {
+            input,
+            selected_context: Some(selected_delta),
+            step: 0,
+            prior_messages: Vec::new(),
+        },
+        limits,
+    )
 }
 
 #[cfg(test)]

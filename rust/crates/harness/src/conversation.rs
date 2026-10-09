@@ -1827,10 +1827,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one actual fork fingerprint fixture checks append work, zero-work head reuse, decode, later cuts and invalid sources"
-    )]
     fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {
         let agent = AgentId::new();
         let content = file(agent, "fingerprint.txt")?;

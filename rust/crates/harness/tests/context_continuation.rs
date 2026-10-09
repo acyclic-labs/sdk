@@ -895,6 +895,209 @@ async fn assert_checkpoint_history_cut(
     Ok(())
 }
 
+struct TailCheckpointRead<'a, P> {
+    operation_id: OperationId,
+    budget: acyclic_harness::store::HistoryReadLimits,
+    journal: &'a dyn acyclic_harness::executor::ExecutionJournal,
+    reference: &'a FileRef,
+    limits: Limits,
+    history: &'a acyclic_harness::store::HistoryReader<P>,
+    cursor: &'a acyclic_harness::store::HistoryCursor,
+    content: &'a StoredContent,
+}
+
+impl<P: StreamProvider> TailCheckpointRead<'_, P> {
+    async fn assert_read_controls(
+        &self,
+        original: &acyclic_harness::runtime::RuntimeScope,
+        retained: &Context,
+        tail_message: &acyclic_harness::conversation::ConversationMessage,
+        imported: &Context,
+    ) -> Result<acyclic_harness::runtime::RuntimeScope> {
+        use acyclic_harness::executor::load_canonical_checkpoint_through;
+        use acyclic_harness::store::HistoryReadLimits;
+        use acyclic_harness::{Capabilities, runtime::RuntimeScope};
+        let Self {
+            operation_id,
+            budget,
+            journal,
+            reference,
+            limits,
+            history,
+            cursor,
+            content,
+        } = *self;
+        let (_, proof_bytes) = history
+            .operation_event_bounded(operation_id, budget.maximum_bytes)
+            .await?;
+        for (through, allowance) in [
+            (18, budget),
+            (
+                20,
+                HistoryReadLimits {
+                    maximum_events: 1,
+                    ..budget
+                },
+            ),
+            (
+                20,
+                HistoryReadLimits {
+                    maximum_bytes: proof_bytes,
+                    ..budget
+                },
+            ),
+            (
+                20,
+                HistoryReadLimits {
+                    maximum_events: 0,
+                    ..budget
+                },
+            ),
+        ] {
+            assert!(matches!(
+                load_canonical_checkpoint_through(
+                    journal, reference, limits, original, history, cursor, through, allowance,
+                    content,
+                )
+                .await,
+                Err(Error::Invalid(_))
+            ));
+        }
+        let grants = retained
+            .messages
+            .iter()
+            .flat_map(|message| message.content.file_refs())
+            .chain(retained.metadata.values())
+            .map(FileRef::read_capability)
+            .collect::<Result<Vec<_>>>()?;
+        let denied = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
+        assert!(matches!(
+            load_canonical_checkpoint_through(
+                journal, reference, limits, &denied, history, cursor, 20, budget, content,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let exact = RuntimeScope::new(
+            Capabilities::new(
+                grants
+                    .into_iter()
+                    .chain([tail_message.content.read_capability()?]),
+            ),
+            limits,
+        )?;
+        assert_eq!(
+            load_canonical_checkpoint_through(
+                journal,
+                reference,
+                Limits::default(),
+                &exact,
+                history,
+                cursor,
+                20,
+                budget,
+                content,
+            )
+            .await?
+            .1,
+            *imported
+        );
+        Ok(exact)
+    }
+    async fn assert_later_cut_controls(
+        &self,
+        reducer: &acyclic_harness::core::Reducer,
+        original: &acyclic_harness::runtime::RuntimeScope,
+        exact: &acyclic_harness::runtime::RuntimeScope,
+        imported: &Context,
+        prepared_summary: &acyclic_harness::fork::PreparedSummaryFork,
+    ) -> Result<()> {
+        use acyclic_harness::executor::load_canonical_checkpoint_through;
+        use acyclic_harness::store::HistoryReadLimits;
+        let Self {
+            journal,
+            reference,
+            limits,
+            history,
+            cursor,
+            content,
+            budget,
+            ..
+        } = *self;
+        assert_eq!(
+            load_canonical_checkpoint_through(
+                journal, reference, limits, exact, history, cursor, 20, budget, content,
+            )
+            .await?
+            .1,
+            *imported
+        );
+        assert!(
+            load_canonical_checkpoint_through(
+                journal,
+                reference,
+                limits,
+                original,
+                history,
+                cursor,
+                21,
+                HistoryReadLimits {
+                    maximum_events: 3,
+                    ..budget
+                },
+                content,
+            )
+            .await
+            .is_err()
+        );
+        // A changed parent cannot silently relabel an old authenticated capture.
+        assert!(matches!(
+            acyclic_harness::fork::prepare_summary_fork_context(
+                reducer,
+                prepared_summary.selection().clone(),
+                journal,
+                original,
+                history,
+                cursor,
+                content,
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(prepared_summary.through_sequence(), 20);
+        assert_eq!(prepared_summary.context(), imported);
+        let later = history.pin(0).await?;
+        assert_eq!(
+            load_canonical_checkpoint_through(
+                journal,
+                reference,
+                limits,
+                exact,
+                history,
+                &later,
+                21,
+                HistoryReadLimits {
+                    maximum_events: 3,
+                    ..budget
+                },
+                content,
+            )
+            .await?
+            .1,
+            *imported,
+            "canonical interaction record consumes work but is not a model message"
+        );
+        assert!(matches!(
+            load_canonical_checkpoint_through(
+                journal, reference, limits, exact, history, &later, 21, budget, content,
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "actual published checkpoint plus exact tail, shared budgets, narrowed grants and ordinary source admission controls"
@@ -907,7 +1110,6 @@ async fn assert_checkpoint_tail_source(
     retained: &Context,
 ) -> Result<()> {
     use acyclic_harness::{
-        Capabilities,
         executor::load_canonical_checkpoint_through,
         runtime::RuntimeScope,
         store::{HistoryReadLimits, HistoryReader},
@@ -951,81 +1153,19 @@ async fn assert_checkpoint_tail_source(
             }]),
         })
     );
-    let (_, proof_bytes) = history
-        .operation_event_bounded(checkpoint.operation_id, budget.maximum_bytes)
-        .await?;
-    for (through, allowance) in [
-        (18, budget),
-        (
-            20,
-            HistoryReadLimits {
-                maximum_events: 1,
-                ..budget
-            },
-        ),
-        (
-            20,
-            HistoryReadLimits {
-                maximum_bytes: proof_bytes,
-                ..budget
-            },
-        ),
-        (
-            20,
-            HistoryReadLimits {
-                maximum_events: 0,
-                ..budget
-            },
-        ),
-    ] {
-        assert!(matches!(
-            load_canonical_checkpoint_through(
-                journal, reference, limits, &original, &history, &cursor, through, allowance,
-                &content,
-            )
-            .await,
-            Err(Error::Invalid(_))
-        ));
-    }
-    let grants = retained
-        .messages
-        .iter()
-        .flat_map(|message| message.content.file_refs())
-        .chain(retained.metadata.values())
-        .map(FileRef::read_capability)
-        .collect::<Result<Vec<_>>>()?;
-    let denied = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
-    assert!(matches!(
-        load_canonical_checkpoint_through(
-            journal, reference, limits, &denied, &history, &cursor, 20, budget, &content,
-        )
-        .await,
-        Err(Error::Unauthorized(_))
-    ));
-    let exact = RuntimeScope::new(
-        Capabilities::new(
-            grants
-                .into_iter()
-                .chain([tail_message.content.read_capability()?]),
-        ),
+    let read = TailCheckpointRead {
+        operation_id: checkpoint.operation_id,
+        budget,
+        journal,
+        reference,
         limits,
-    )?;
-    assert_eq!(
-        load_canonical_checkpoint_through(
-            journal,
-            reference,
-            Limits::default(),
-            &exact,
-            &history,
-            &cursor,
-            20,
-            budget,
-            &content,
-        )
-        .await?
-        .1,
-        imported
-    );
+        history: &history,
+        cursor: &cursor,
+        content: &content,
+    };
+    let exact = read
+        .assert_read_controls(&original, retained, tail_message, &imported)
+        .await?;
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
         Model::new(
@@ -1058,7 +1198,11 @@ async fn assert_checkpoint_tail_source(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(requests.len(), 1);
-        let messages = &requests[0].request().messages;
+        let messages = &requests
+            .first()
+            .ok_or_else(|| Error::Invalid("missing admitted request".into()))?
+            .request()
+            .messages;
         assert_eq!(
             messages.get(..imported.messages.len()),
             Some(imported.messages.as_slice())
@@ -1122,76 +1266,14 @@ async fn assert_checkpoint_tail_source(
             },
         })
         .await?;
-    assert_eq!(
-        load_canonical_checkpoint_through(
-            journal, reference, limits, &exact, &history, &cursor, 20, budget, &content,
-        )
-        .await?
-        .1,
-        imported
-    );
-    assert!(
-        load_canonical_checkpoint_through(
-            journal,
-            reference,
-            limits,
-            &original,
-            &history,
-            &cursor,
-            21,
-            HistoryReadLimits {
-                maximum_events: 3,
-                ..budget
-            },
-            &content,
-        )
-        .await
-        .is_err()
-    );
-    // A changed parent cannot silently relabel an old authenticated capture.
-    assert!(matches!(
-        acyclic_harness::fork::prepare_summary_fork_context(
-            aggregate.reducer(),
-            prepared_summary.selection().clone(),
-            journal,
-            &original,
-            &history,
-            &cursor,
-            &content,
-        )
-        .await,
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(prepared_summary.through_sequence(), 20);
-    assert_eq!(prepared_summary.context(), &imported);
-    let later = history.pin(0).await?;
-    assert_eq!(
-        load_canonical_checkpoint_through(
-            journal,
-            reference,
-            limits,
-            &exact,
-            &history,
-            &later,
-            21,
-            HistoryReadLimits {
-                maximum_events: 3,
-                ..budget
-            },
-            &content,
-        )
-        .await?
-        .1,
-        imported,
-        "canonical interaction record consumes work but is not a model message"
-    );
-    assert!(matches!(
-        load_canonical_checkpoint_through(
-            journal, reference, limits, &exact, &history, &later, 21, budget, &content,
-        )
-        .await,
-        Err(Error::Invalid(_))
-    ));
+    read.assert_later_cut_controls(
+        aggregate.reducer(),
+        &original,
+        &exact,
+        &imported,
+        &prepared_summary,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1222,7 +1304,9 @@ async fn assert_scoped_checkpoint_source(
     let denied = scope.narrow(
         scope
             .grants()
-            .without(&Capabilities::new([grants[0].clone()])),
+            .without(&Capabilities::new([grants.first().cloned().ok_or_else(
+                || Error::Invalid("missing retained read grant".into()),
+            )?])),
         limits,
     )?;
     assert!(matches!(
@@ -1270,7 +1354,11 @@ async fn assert_scoped_checkpoint_source(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(requests.len(), 1);
-        let messages = &requests[0].request().messages;
+        let messages = &requests
+            .first()
+            .ok_or_else(|| Error::Invalid("missing admitted request".into()))?
+            .request()
+            .messages;
         assert_eq!(
             messages.get(..retained.messages.len()),
             Some(retained.messages.as_slice())
@@ -2274,123 +2362,147 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
             Limits::default(),
         )
         .await?;
-        // Canonical metadata between model messages must be read and verified,
-        // but must not become provider-visible instruction or turn content.
-        let metadata = storage
-            .stage(
-                OperationId::new(),
-                "fault/metadata.txt",
-                b"private timeline metadata",
-                "text/plain",
-                "metadata.txt",
-            )
-            .await?;
-        let mut history = acyclic_harness::store::StreamAggregate::open(
-            storage.stream(),
-            storage.conversation().clone(),
-            storage.verifier(),
-            acyclic_harness::core::SchemaRegistry::new(),
-        )
-        .await?
-        .with_content_verifier(Arc::new(StoredContent(storage.clone())));
-        let mut metadata_ids = Vec::new();
-        for kind in [
-            acyclic_harness::conversation::MessageKind::Interaction,
-            acyclic_harness::conversation::MessageKind::Permission,
-        ] {
-            let sequence = history
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::NotFound("canonical conversation".into()))?
-                .messages()
-                .len() as u64
-                + 1;
-            let id = uuid::Uuid::new_v4();
-            metadata_ids.push(id);
-            history
-                .execute(acyclic_harness::core::Command {
-                    operation_id: OperationId::new(),
-                    idempotency_key: acyclic_harness::IdempotencyKey::new(format!(
-                        "cold-metadata:{id}"
-                    ))?,
-                    expected_revision: history.reducer().revision(),
-                    scope: storage.owner_scope().clone(),
-                    causal_parent: None,
-                    action: acyclic_harness::core::Action::AppendConversationMessage {
-                        message: Box::new(acyclic_harness::conversation::ConversationMessage {
-                            id,
-                            sequence,
-                            kind,
-                            content: metadata.clone(),
-                            attachments: Vec::new().into(),
-                            reply_to: None,
-                            tool_call_id: None,
-                            extensions: Default::default(),
-                        }),
-                    },
-                })
-                .await?;
-        }
-        let next_operation = OperationId::new();
-        let next_file = storage
-            .stage(
-                next_operation,
-                "fault/next.txt",
-                "q".repeat(60_000).as_bytes(),
-                "text/plain",
-                "next.txt",
-            )
-            .await?;
-        let next_output = storage
-            .run_conversation(&bundle, next_operation, next_file, Vec::new(), 1)
-            .await?;
-        assert_eq!(next_output.text, "retained summary");
-        let next_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
-            storage.journal().as_ref(),
-            next_operation,
-            Limits::default(),
-        )
-        .await?
-        .ok_or_else(|| Error::NotFound("next published checkpoint".into()))?;
-        let (next_envelope, _) = acyclic_harness::executor::load_canonical_checkpoint(
-            storage.journal().as_ref(),
-            &next_reference,
-            Limits::default(),
+        assert_checkpoint_metadata_continuation(
+            &storage,
+            &bundle,
+            &previous_reference,
+            &previous_retained,
         )
         .await?;
-        assert_eq!(
-            next_envelope.selection.checkpoint.as_ref(),
-            Some(&previous_reference)
-        );
-        assert!(
-            metadata_ids
-                .iter()
-                .all(|id| !next_envelope.selection.message_ids.contains(id))
-        );
-        let source: Context =
-            serde_json::from_slice(&storage.journal().load(&next_envelope.source).await?)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(
-            source.messages.get(..previous_retained.messages.len()),
-            Some(previous_retained.messages.as_slice())
-        );
-        assert!(
-            source
-                .messages
-                .iter()
-                .flat_map(|message| message.content.file_refs())
-                .all(|file| file != &metadata)
-        );
-        assert_eq!(
-            storage
-                .journal()
-                .replay(next_operation, 0, 64)
-                .await?
-                .iter()
-                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
-                .count(),
-            1
-        );
     }
+    Ok(())
+}
+
+async fn append_private_checkpoint_metadata(
+    storage: &Arc<MemoryHarnessStorage>,
+) -> Result<(FileRef, Vec<uuid::Uuid>)> {
+    // Canonical metadata between model messages must be read and verified,
+    // but must not become provider-visible instruction or turn content.
+    let metadata = storage
+        .stage(
+            OperationId::new(),
+            "fault/metadata.txt",
+            b"private timeline metadata",
+            "text/plain",
+            "metadata.txt",
+        )
+        .await?;
+    let mut history = acyclic_harness::store::StreamAggregate::open(
+        storage.stream(),
+        storage.conversation().clone(),
+        storage.verifier(),
+        acyclic_harness::core::SchemaRegistry::new(),
+    )
+    .await?
+    .with_content_verifier(Arc::new(StoredContent(storage.clone())));
+    let mut metadata_ids = Vec::new();
+    for kind in [
+        acyclic_harness::conversation::MessageKind::Interaction,
+        acyclic_harness::conversation::MessageKind::Permission,
+    ] {
+        let sequence = history
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::NotFound("canonical conversation".into()))?
+            .messages()
+            .len() as u64
+            + 1;
+        let id = uuid::Uuid::new_v4();
+        metadata_ids.push(id);
+        history
+            .execute(acyclic_harness::core::Command {
+                operation_id: OperationId::new(),
+                idempotency_key: acyclic_harness::IdempotencyKey::new(format!(
+                    "cold-metadata:{id}"
+                ))?,
+                expected_revision: history.reducer().revision(),
+                scope: storage.owner_scope().clone(),
+                causal_parent: None,
+                action: acyclic_harness::core::Action::AppendConversationMessage {
+                    message: Box::new(acyclic_harness::conversation::ConversationMessage {
+                        id,
+                        sequence,
+                        kind,
+                        content: metadata.clone(),
+                        attachments: Vec::new().into(),
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: Default::default(),
+                    }),
+                },
+            })
+            .await?;
+    }
+    Ok((metadata, metadata_ids))
+}
+
+async fn assert_checkpoint_metadata_continuation(
+    storage: &Arc<MemoryHarnessStorage>,
+    bundle: &acyclic_harness::Harness,
+    previous_reference: &FileRef,
+    previous_retained: &Context,
+) -> Result<()> {
+    use acyclic_harness::executor::ExecutionEvent;
+    let (metadata, metadata_ids) = append_private_checkpoint_metadata(storage).await?;
+    let next_operation = OperationId::new();
+    let next_file = storage
+        .stage(
+            next_operation,
+            "fault/next.txt",
+            "q".repeat(60_000).as_bytes(),
+            "text/plain",
+            "next.txt",
+        )
+        .await?;
+    let next_output = storage
+        .run_conversation(bundle, next_operation, next_file, Vec::new(), 1)
+        .await?;
+    assert_eq!(next_output.text, "retained summary");
+    let next_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
+        storage.journal().as_ref(),
+        next_operation,
+        Limits::default(),
+    )
+    .await?
+    .ok_or_else(|| Error::NotFound("next published checkpoint".into()))?;
+    let (next_envelope, _) = acyclic_harness::executor::load_canonical_checkpoint(
+        storage.journal().as_ref(),
+        &next_reference,
+        Limits::default(),
+    )
+    .await?;
+    assert_eq!(
+        next_envelope.selection.checkpoint.as_ref(),
+        Some(previous_reference)
+    );
+    assert!(
+        metadata_ids
+            .iter()
+            .all(|id| !next_envelope.selection.message_ids.contains(id))
+    );
+    let source: Context =
+        serde_json::from_slice(&storage.journal().load(&next_envelope.source).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(
+        source.messages.get(..previous_retained.messages.len()),
+        Some(previous_retained.messages.as_slice())
+    );
+    assert!(
+        source
+            .messages
+            .iter()
+            .flat_map(|message| message.content.file_refs())
+            .all(|file| file != &metadata)
+    );
+    assert_eq!(
+        storage
+            .journal()
+            .replay(next_operation, 0, 64)
+            .await?
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+            .count(),
+        1
+    );
     Ok(())
 }
