@@ -2,7 +2,7 @@
   "cpp_plugin_version": "1.82.0",
   "cpp_plugin": {
     "win32-x64": {
-      "sha256": "470c59c68a11911002bf58aba25d1ab53087c31bc834a293b4df95d90864280f",
+      "sha256": "ee827d46c403fcf46cf32fc2d499862d54f14f45451c3d108ea1bc9ed9a4268a",
       "url": "https://api.github.com/repos/grpc/grpc/tarball/742600a76f5717044cde93ba424500c680e2002a",
       "sources": {
         "grpc": {
@@ -10,18 +10,45 @@
           "archive": "grpc-source.tar.gz",
           "archive_sha256": "6efc839e73cbbddd13c31f1b87171bd220061ea92babcd3045733e22fdfe7b7e"
         },
-        "protobuf": {
-          "version": "28.3",
-          "archive": "protobuf-28.3.tar.gz",
-          "archive_sha256": "7c3ebd7aaedd86fa5dc479a0fda803f602caaf78d8aff7ce83b89e1b8ae7442a"
-        },
         "abseil": {
-          "commit": "4a2c63365eff8823a5221db86ef490e828306f9d",
-          "archive": "abseil.tar.gz",
-          "archive_sha256": "c9ce636ffd20fe5a7f8e448e0c84bbc7f0eb9d0408611944bfc8d18b1ed9b0dd"
+          "commit": "76bb24329e8bf5f39704eb10d21b9a80befa7c81",
+          "url": "https://api.github.com/repos/abseil/abseil-cpp/tarball/76bb24329e8bf5f39704eb10d21b9a80befa7c81",
+          "archive_sha256": "6b0d3da9f1ef3360e8ad691953a04e8515b11f5c250939405eb9c4fd7665fdcf"
+        },
+        "protobuf": {
+          "commit": "e59364c38e10de3686a3305ff11fbfc59a10dbd8",
+          "url": "https://api.github.com/repos/protocolbuffers/protobuf/tarball/e59364c38e10de3686a3305ff11fbfc59a10dbd8",
+          "archive_sha256": "6a8c0631d02aa7c1c40ab8939cd0e6ee65909084987b7d982fdd58ec7f65ce83"
+        },
+        "boringssl": {
+          "commit": "2b44a3701a4788e1ef866ddc7f143060a3d196c9",
+          "url": "https://api.github.com/repos/google/boringssl/tarball/2b44a3701a4788e1ef866ddc7f143060a3d196c9",
+          "archive_sha256": "7598c7071979f6301ed738dc2347b7dd23158fe568a7a462d29c031457dd4cea"
+        },
+        "cares": {
+          "commit": "d3a507e920e7af18a5efb7f9f1d8044ed4750013",
+          "url": "https://api.github.com/repos/c-ares/c-ares/tarball/d3a507e920e7af18a5efb7f9f1d8044ed4750013",
+          "archive_sha256": "574f70af16e0c9013b194df83e5be812832698be55b2761611e3125dbd501100"
+        },
+        "re2": {
+          "commit": "0c5616df9c0aaa44c9440d87422012423d91c7d1",
+          "url": "https://api.github.com/repos/google/re2/tarball/0c5616df9c0aaa44c9440d87422012423d91c7d1",
+          "archive_sha256": "6e9301b7627c7b7a8d8b7eecd7111f3d142ecaea574d618838580a2657aa18ee"
+        },
+        "zlib": {
+          "commit": "f1f503da85d52e56aae11557b4d79a42bcaa2b86",
+          "url": "https://api.github.com/repos/madler/zlib/tarball/f1f503da85d52e56aae11557b4d79a42bcaa2b86",
+          "archive_sha256": "be910b1b65569b94d35c1a5d4cde7c193c3847aa61864044d2f4ee465038187c"
         }
       },
-      "build_manifest_sha256": "1b9e3bf06038545724c6f72a2e6b6a43deb0754d78e0c0b002862cd8260f4e23"
+      "build_manifest_sha256": "d3f6655d3b821a1adf5c3a054864028eb9ec0a17ea19811e30d485192b9985a0",
+      "build_manifest_file": "build-runtime.cmake"
+    }
+  },
+  "protoc_version": "libprotoc 35.0",
+  "protoc": {
+    "win32-x64": {
+      "sha256": "a87d21eb012059d3c2055f688ef1eaf708f355720b0957c17ff16bec1fbfa402"
     }
   }
 }

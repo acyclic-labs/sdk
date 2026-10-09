@@ -7,8 +7,7 @@ import { parseArgs } from "node:util";
 import { loadAuthority, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
-  ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
+const pinned = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8"));
 
 function inventory(root, prefix = "") {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
@@ -39,6 +38,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
     if (family.descriptor) descriptors.set(family.descriptor_sha256, inputs.get(family.descriptor));
   }
   const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
+  const producerFiles = ["generate.mjs", "../../../shared/authority.mjs", "../toolchains/toolchain.json", "../toolchains/build-runtime.cmake"];
+  const producerBytes = Object.fromEntries(producerFiles.map(name => [name, readFileSync(join(directory, name))]));
   const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
   for (const name of ["CMakeLists.txt", "AcyclicTransportConfig.cmake.in"]) metadata[name] = readFileSync(join(directory, "../templates/package", name));
   const host = `${process.platform}-${process.arch}`;
@@ -89,6 +90,14 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       writeFileSync(join(output, name), bytes, { flag: "wx" });
     }
     writeFileSync(join(resources, "rust-authority.json"), manifestBytes, { flag: "wx" });
+    if (!readFileSync(join(authority, "rust-authority.json")).equals(manifestBytes)
+      || [...inputs].some(([name, bytes]) => !readFileSync(join(authority, name)).equals(bytes))) throw new Error("authority changed during generation");
+    if (sha256(readFileSync(protoc)) !== compilerHash || sha256(readFileSync(plugin)) !== pluginHash) throw new Error("generation tool changed during generation");
+    if (Object.entries(producerBytes).some(([name, bytes]) => !readFileSync(join(directory, name)).equals(bytes))) throw new Error("producer source changed during generation");
+    for (const [name, bytes] of Object.entries(metadata)) {
+      const original = ["LICENSE", "NOTICE"].includes(name) ? join(source, name) : join(directory, "../templates/package", name);
+      if (!readFileSync(original).equals(bytes)) throw new Error("package metadata changed during generation");
+    }
     const outputs = inventory(output);
     const receipt = {
       schema: "acyclic.sdk.cpp-producer-receipt.v1", authority: "rust", target: "cpp",
@@ -98,6 +107,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       tool_sha256: { protoc: compilerHash, cpp_plugin: pluginHash },
       generator_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
       authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
+      source_sha256: Object.fromEntries(Object.entries(producerBytes).map(([name, bytes]) => [name, sha256(bytes)])),
+      template_sha256: Object.fromEntries(["CMakeLists.txt", "AcyclicTransportConfig.cmake.in"].map(name => [name, sha256(metadata[name])])),
       toolchain_sha256: sha256(JSON.stringify(toolchain)), node_version: process.version,
       outputs, output_sha256: Object.fromEntries(outputs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     };

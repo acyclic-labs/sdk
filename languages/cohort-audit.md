@@ -320,3 +320,27 @@ invalid assignments produce their intended runtime TypeErrors. Ruby's dynamic
 checks do not establish compile-time typing. Receipts retain all runtime/cache
 file hashes, controls and logs. Remaining families/platforms, Rust-backed RPC,
 TLS/authentication, cancellation/recovery and embedded runtime remain pending.
+
+### C++ matched runtime and installed native transport
+
+The maintained C++ backend now uses protoc 35.0 and gRPC 1.82.0 with the same
+upstream protobuf, Abseil and supporting dependency revisions for generation
+and runtime compilation. Its one-worker runtime recipe disables downloads and
+uses the shared MSVC runtime consistently. Two native generations against
+accepted foundation `5f13157414a5f48425007ffd957ea7d09611e5fe` produce identical
+17-file payloads and receipts. Generation rejects mid-run authority, tool,
+producer source and package metadata drift before writing success evidence.
+
+A CMake-installed SDK and independent consumer on Windows x64 pass complete
+Rust file descriptors after removing source comments and Buf image tag 8042,
+all 25 populated RPC message pairs, bytes, unsigned bounds, optional zero and
+oneof controls. Generated clients and servers execute all 25 methods over local
+TCP; server interceptors verify actual paths, stream types and call counts, and
+streaming clients check two distinct responses in order. A positive type control
+compiles. Three separate invalid assignments reject with the intended C2665
+byte-field and C2664 optional-integer compiler errors.
+
+Deterministic archive admission and a reusable installed qualifier remain
+pending. These checks do not establish Rust-backed RPC, TLS/authentication,
+cancellation/recovery, remaining families/platforms or embedded runtime behavior.
+The earlier protoc 28.3 source-only milestone remains separate historical evidence.

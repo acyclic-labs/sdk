@@ -132,3 +132,23 @@ test("missing family bindings and unexpected output cannot produce success", t =
     assert.equal(existsSync(join(f.args.output, "generation-receipt.json")), false);
   }
 });
+
+
+test("mid-generation authority, tool and package metadata drift cannot write a receipt", t => {
+  for (const mutate of [
+    f => writeFileSync(f.args["cpp-plugin"], "changed plugin"),
+    f => writeFileSync(f.args.protoc, "changed compiler"),
+    f => writeFileSync(join(f.args.authority, "a.proto"), "changed authority"),
+    f => writeFileSync(join(f.args["source-root"], "NOTICE"), "changed notice"),
+  ]) {
+    const f = fixture(t);
+    let changed = false;
+    const command = (...args) => {
+      const result = f.command(...args);
+      if (args[1][0] !== "--version" && !changed) { mutate(f); changed = true; }
+      return result;
+    };
+    assert.throws(() => generate(f.args, { command, toolchain: f.toolchain }), /changed during generation/);
+    assert.equal(existsSync(join(f.args.output, "generation-receipt.json")), false);
+  }
+});

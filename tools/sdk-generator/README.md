@@ -14,7 +14,7 @@ tools/sdk-generator/
     ruby/               Ruby producer, pinned gem and installed controls
     dart/               Dart producer, pinned package and installed controls
     php/                PHP producer, offline Composer install and client controls
-    cpp/                C++ producer and native message controls; installation pending
+    cpp/                C++ producer and installed native loopback RPC controls
     swift/              Swift producer, archive admission and installed native RPC controls
     elixir/             Elixir producer and installed message prototype controls
 ```
