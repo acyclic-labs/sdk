@@ -125,8 +125,8 @@ combined source. No build slot or coordination permission approval is outstandin
 
 The full D branch now combines its portable file tools, bounded text variants,
 canonical/projection split, original native option admission, and current
-TypeScript consumers with actual main `d6500586d9a5`, including PR314's
-producer merge `4bba8f3b0dc5`. Earlier development receipts
+TypeScript consumers with actual main `e219fd244f33`, including PR314's
+producer merge `4bba8f3b0dc5` and D's PR319 native producer landing. Earlier development receipts
 above describe their named source snapshots; they do not qualify this combined
 source. PR304's dispatch fix landed independently at `98c272e8d2`.
 
@@ -190,9 +190,20 @@ for the default LocalHarness context path or the complete goal.
 PR319 head `0cd892ed834acbefdeac5834e46478d5814bc553` independently passed
 required SDK Qualification run 37963332851, Linux 326 tests and strict lint,
 Windows 304 tests, WASM build/strict lint, 267 source tests and type checks,
-and 51 fresh installed-package tests plus consumer types/exports. Mac native
-semantic qualification still awaits the existing ivar Tailscale authentication;
-no transfer, Mac pass, merge or landing is claimed.
+and 51 fresh installed-package tests plus consumer types/exports. After the
+user completed ivar authentication, the same frozen source passed all 326 Mac
+arm64 tests and strict lint. PR319 merged directly to main at
+`e219fd244f330be36bb275fd748924c9f5849ac4`; a fresh fetch verified all 48 owned
+file blobs match the qualified head with zero mismatches.
+
+The full D branch integrates that actual main landing via `12a131b2c333`.
+Squash-history conflicts were resolved while preserving portable original-context
+execution, exact envelope byte bounds and stronger replay controls. Frozen
+post-integration source matched all 1638 archive files. Both boundary tests,
+all 13 portable/native/replay tests and strict library/test/example lint passed.
+The default LocalHarness path still requires the qualified shared original
+TaskContext producer and D consumer adaptation; these subset passes do not
+substitute for that integration.
 
 The default portable consumer adaptation, browser and full context/compaction
 integration, combined final platform/adversarial and installed-artifact checks,
