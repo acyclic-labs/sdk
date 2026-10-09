@@ -16,7 +16,7 @@ tools/sdk-generator/
     php/                PHP producer, offline Composer install and client controls
     cpp/                C++ producer and installed native loopback RPC controls
     swift/              Swift producer, archive admission and installed native RPC controls
-    elixir/             Elixir producer and installed message prototype controls
+    elixir/             Elixir producer, archive admission and installed message qualification
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.

@@ -94,7 +94,7 @@ in-process RPC evidence for Actors, Workers and Stream. They do not qualify
 network transport, Rust-backed RPC, remaining families/platforms,
 TLS/authentication, cancellation/recovery or the embedded runtime.
 
-### Elixir maintained producer and installed prototype
+### Elixir maintained archive and installed qualification
 
 The maintained Elixir producer executes unchanged protobuf 0.17.1 tooling against
 accepted foundation `5f13157414a5f48425007ffd957ea7d09611e5fe`, with protoc 28.3,
@@ -112,7 +112,14 @@ archives. Changed source, extra source and substituted package metadata faults
 reject without changing the original compiled sources. The executed consumer
 fixture is maintained in the Elixir backend and routine CI uses offline checks.
 
-The reusable installed qualifier and actual RPC calls remain outstanding.
+The maintained installed qualifier passes a fresh archive installation with
+Hex offline mode, a frozen six-package lock and private home/build paths. It
+verifies 135 qualification-tool/registry input files, the complete admitted
+runtime, and every dependency source before and after compilation. Native
+controls verify exact loaded SDK module inventories, compiled source paths and
+BEAM paths in addition to the installed message/type checks. Unexpected Hex
+code and post-run input drift reject before success evidence. Actual RPC calls
+remain outstanding.
 These controls do not qualify network transport, Rust-backed RPC, remaining
 families/platforms or the embedded runtime. See `tools/sdk-generator/backends/elixir`.
 
@@ -347,7 +354,11 @@ inputs and complete 17-file payload. A fresh build staged only from admitted
 archive bytes passes the same installed native controls with a private matched
 runtime. All 1,618 runtime files, SDK payload bytes, six compiled SDK source
 paths and installed header/resource bytes are verified after execution.
-A reusable installed qualifier remains pending. These checks do not establish
-Rust-backed RPC, TLS/authentication,
+The maintained installed qualifier passes the same fresh archive workflow,
+including exact compiled SDK/consumer source inventories and private dependency
+prefixes. It admits and rechecks 7,377 MSVC/Windows SDK and build-tool files
+and all 1,618 runtime files. The maintained inventory command reproduces both
+external inventory byte streams exactly. System OS files remain outside that
+host inventory. These checks do not establish Rust-backed RPC, TLS/authentication,
 cancellation/recovery, remaining families/platforms or embedded runtime behavior.
 The earlier protoc 28.3 source-only milestone remains separate historical evidence.
