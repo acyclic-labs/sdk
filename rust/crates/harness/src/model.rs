@@ -282,6 +282,10 @@ impl ModelContent {
 /// One provider-neutral part requiring an explicit provider projection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
+)]
 pub enum ModelContentPart {
     /// Plain text.
     Text {
@@ -331,6 +335,10 @@ pub enum FileProjectionPolicy {
 /// Data in a tool result cannot contain another call or result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
+)]
 pub enum ModelDataPart {
     /// Exact text.
     Text {
