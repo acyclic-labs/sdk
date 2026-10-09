@@ -784,7 +784,7 @@ mod tests {
             crate::core::AuthorityIssuer::new("builder-owner", [81; 32], authority.clone());
         let mut schemas = crate::core::SchemaRegistry::new();
         schemas.register_configured(
-            "example.builder".into(),
+            "example.builder",
             1,
             json!({"type":"object"}),
             [82; 32],

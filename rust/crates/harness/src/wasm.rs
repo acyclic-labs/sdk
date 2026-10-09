@@ -2624,14 +2624,41 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
 pub fn validate_tool_projection(
     #[wasm_bindgen(unchecked_param_type = "WasmToolDefinitionInput")] definition: JsValue,
     #[wasm_bindgen(unchecked_param_type = "WasmModelToolResultContentInput")] projection: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
     definition.validate().map_err(js_error)?;
     let projection: serde_json::Value = from_js(projection)?;
+    let limits: Limits = from_js(limits)?;
     definition
         .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(Limits::default()))
+        .and_then(|content| content.validate_limits(limits))
         .map_err(js_error)
+}
+
+/// Wraps a consumer's JSON value schema in the complete typed projection envelope.
+#[wasm_bindgen(js_name = jsonToolProjectionSchema, unchecked_return_type = "WasmToolJsonSchema")]
+pub fn json_tool_projection_schema(
+    #[wasm_bindgen(unchecked_param_type = "WasmToolJsonSchema")] value_schema: JsValue,
+) -> Result<JsValue, JsValue> {
+    let schema = crate::tool::json_projection_schema(from_js(value_schema)?);
+    crate::contract::compile_json_schema(&schema, "tool projection").map_err(js_error)?;
+    schema
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Returns the complete ordered media and native option inventory without IO or authority.
+#[wasm_bindgen(js_name = modelContentFileRefs, unchecked_return_type = "WasmFileRefWire[]")]
+pub fn model_content_file_refs(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<JsValue, JsValue> {
+    let content: ModelContent = from_js(content)?;
+    content
+        .validate_limits(from_js(limits)?)
+        .map_err(js_error)?;
+    to_js_admitted(&content.file_refs())
 }
 
 /// Public facade input for the shared request constructor.
@@ -2772,8 +2799,73 @@ fn context_part_to_js(
     part: &JsValue,
     native: &crate::model::ModelContentPart,
 ) -> Result<(), JsValue> {
-    if let crate::model::ModelContentPart::File { file, .. } = native {
-        js_sys::Reflect::set(part, &JsValue::from_str("file"), &to_js_admitted(file)?)?;
+    match native {
+        crate::model::ModelContentPart::File { file, policy } => {
+            model_file_part_to_js(part, file, policy)?;
+        }
+        crate::model::ModelContentPart::ToolResult {
+            content: crate::model::ToolResultContent::Parts { parts },
+            ..
+        } => {
+            let content = js_sys::Reflect::get(part, &JsValue::from_str("content"))?;
+            let values = js_sys::Reflect::get(&content, &JsValue::from_str("parts"))?;
+            for (index, data) in parts.iter().enumerate() {
+                if let crate::model::ModelDataPart::File { file, policy } = data {
+                    let value = js_sys::Reflect::get(&values, &JsValue::from_f64(index as f64))?;
+                    model_file_part_to_js(&value, file, policy)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+// Normalize only typed portable quantities. Opaque JSON and full-width original
+// admission/event identities retain their existing serialization contracts.
+fn model_file_part_to_js(
+    part: &JsValue,
+    file: &FileRef,
+    policy: &crate::model::FileProjectionPolicy,
+) -> Result<(), JsValue> {
+    js_sys::Reflect::set(part, &JsValue::from_str("file"), &to_js_admitted(file)?)?;
+    if let crate::model::FileProjectionPolicy::Native(policy) = policy {
+        let projected = js_sys::Reflect::get(part, &JsValue::from_str("policy"))?;
+        let native = js_sys::Reflect::get(&projected, &JsValue::from_str("native"))?;
+        for (name, value) in [
+            ("maximum_bytes", policy.maximum_bytes),
+            ("maximum_work", policy.maximum_work),
+        ] {
+            js_sys::Reflect::set(&native, &JsValue::from_str(name), &exact_js_number(value)?)?;
+        }
+        let duration = match &policy.intent {
+            crate::model::NativeMediaIntent::Audio {
+                maximum_duration_ms,
+            }
+            | crate::model::NativeMediaIntent::Video {
+                maximum_duration_ms,
+                ..
+            } => Some(*maximum_duration_ms),
+            _ => None,
+        };
+        if let Some(duration) = duration {
+            let intent = js_sys::Reflect::get(&native, &JsValue::from_str("intent"))?;
+            js_sys::Reflect::set(
+                &intent,
+                &JsValue::from_str("maximum_duration_ms"),
+                &exact_js_number(duration)?,
+            )?;
+        }
+        if let Some(binding) = &policy.configuration {
+            let configuration = js_sys::Reflect::get(&native, &JsValue::from_str("configuration"))?;
+            let options =
+                js_sys::Reflect::get(&configuration, &JsValue::from_str("configuration"))?;
+            js_sys::Reflect::set(
+                &options,
+                &JsValue::from_str("content"),
+                &to_js_admitted(&binding.configuration.content)?,
+            )?;
+        }
     }
     Ok(())
 }

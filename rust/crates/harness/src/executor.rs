@@ -1153,9 +1153,9 @@ impl StockExecutor {
                 .file_bytes
                 .min(self.tool_scope.limits().file_bytes),
         )?;
-        let tool_context = self.invocation_context(&invocation)?;
-        if let Some(context) = &tool_context {
-            tool.executor.authorize_with_context(context, &invocation)?;
+        if let Some(context) = self.invocation_context(&invocation)? {
+            tool.executor
+                .authorize_with_context(&context, &invocation)?;
         } else {
             tool.executor
                 .authorize(Some(&self.tool_scope), &invocation)?;
@@ -1539,10 +1539,19 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         request: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
-        for message in &request.request().messages {
-            self.verify_model_content(journal, &message.content).await?;
-        }
-        Ok(())
+        verify_model_contents_scoped(
+            journal,
+            request
+                .request()
+                .messages
+                .iter()
+                .map(|message| &message.content),
+            self.limits,
+            self.task_context
+                .as_ref()
+                .map(|(context, _)| context.scope()),
+        )
+        .await
     }
 
     async fn validate_turn_input(
@@ -1557,13 +1566,21 @@ impl StockExecutor {
             ));
         }
         input.input.validate_user_input()?;
-        input.input.validate_limits(self.limits)?;
+        let scope = self
+            .task_context
+            .as_ref()
+            .map(|(context, _)| context.scope());
+        validate_model_content_scope(&input.input, self.limits, scope)?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
             if selected.messages.len() > self.limits.context_messages {
                 return Err(Error::Invalid(
                     "selected context exceeds configured message limit".into(),
                 ));
+            }
+            // Reject all structural and attenuated read claims before journal IO.
+            for message in &selected.messages {
+                validate_model_content_scope(&message.content, self.limits, scope)?;
             }
             journal
                 .verify_selected_context(input.operation_id, selected)
@@ -1842,8 +1859,22 @@ async fn verify_model_content_scoped(
     limits: Limits,
     scope: Option<&RuntimeScope>,
 ) -> Result<()> {
-    validate_model_content_scope(content, limits, scope)?;
-    journal.verify_model_content(content).await
+    verify_model_contents_scoped(journal, std::iter::once(content), limits, scope).await
+}
+
+async fn verify_model_contents_scoped<'a>(
+    journal: &dyn ExecutionJournal,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<()> {
+    for content in contents.clone() {
+        validate_model_content_scope(content, limits, scope)?;
+    }
+    for content in contents {
+        journal.verify_model_content(content).await?;
+    }
+    Ok(())
 }
 
 fn validate_model_content_scope(
@@ -1853,12 +1884,24 @@ fn validate_model_content_scope(
 ) -> Result<()> {
     content.validate_limits(limits)?;
     if let Some(scope) = scope {
+        content.validate_limits(scope.limits())?;
         for file in content.file_refs() {
             if !crate::runtime::read_granted(scope.grants(), file)? {
                 return Err(Error::Unauthorized(
                     "attenuated task cannot read model content".into(),
                 ));
             }
+        }
+    }
+    let bindings = content.native_configurations();
+    if !bindings.is_empty() {
+        let scope = scope.ok_or_else(|| {
+            Error::Unsupported("original native task scope is unavailable".into())
+        })?;
+        let schemas = scope.extension_schema_registry();
+        let runtime = scope.extension_runtime();
+        for binding in bindings {
+            binding.verify_original(scope.extensions(), schemas.as_ref(), runtime.as_deref())?;
         }
     }
     Ok(())
@@ -2193,6 +2236,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             },
             executor: tool.clone(),
             projection: Arc::new(Projection),
@@ -4095,7 +4139,7 @@ mod tests {
         ));
         // A real admitted context without a content binding cannot acquire a writer
         // from the stock loop's generic tool grants.
-        let contextual = base.with_task_context(context, operation)?;
+        let contextual = base.with_task_context(&context, operation)?;
         assert!(matches!(
             contextual
                 .settle_tool_call(&journal, operation, 0, invocation, &mut messages)
@@ -4316,5 +4360,308 @@ mod tests {
         assert_eq!(captures[0].0.request_digest, captures[1].0.request_digest);
         assert_eq!(captures[0].1, captures[1].1);
         Ok(())
+    }
+    #[tokio::test]
+    async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Result<()> {
+        let journal = ModelReadSpy::default();
+        let file = journal
+            .stage(
+                OperationId::new(),
+                "media".into(),
+                vec![1, 2, 3, 4],
+                "image/png",
+            )
+            .await?;
+        let options = journal
+            .stage(
+                OperationId::new(),
+                "options".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        let content = ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: "media".into(),
+            name: "test.media".into(),
+            content: crate::model::ToolResultContent::Parts {
+                parts: vec![crate::model::ModelDataPart::File {
+                    file: file.clone(),
+                    policy: crate::model::FileProjectionPolicy::Native(
+                        crate::model::NativeMediaPolicy {
+                            intent: crate::model::NativeMediaIntent::Image {
+                                detail: crate::model::ImageDetail::Auto,
+                            },
+                            maximum_bytes: 4,
+                            maximum_work: 4,
+                            configuration: Some(crate::model::NativeConfigurationBinding {
+                                source: crate::core::EventReference {
+                                    authority: crate::core::Authority {
+                                        kind: crate::core::AggregateKind::Agent,
+                                        id: "test-agent".into(),
+                                    },
+                                    revision: 1,
+                                },
+                                configuration: crate::core::ExtensionConfiguration {
+                                    extension: crate::core::ExtensionDependency {
+                                        name: "test.media".into(),
+                                        version: 1,
+                                    },
+                                    schema_digest: [1; 32],
+                                    content: options.clone(),
+                                },
+                                implementation_digest: [2; 32],
+                            }),
+                        },
+                    ),
+                }],
+            },
+        });
+        let denied = RuntimeScope::new(crate::Capabilities::default(), Limits::default())?;
+        assert!(matches!(
+            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&denied)).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let media_only = RuntimeScope::new(
+            crate::Capabilities::new([file.read_capability()?]),
+            Limits::default(),
+        )?;
+        assert!(matches!(
+            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&media_only))
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let allowed = RuntimeScope::new(
+            crate::Capabilities::new([file.read_capability()?, options.read_capability()?]),
+            Limits::default(),
+        )?;
+        assert!(matches!(
+            verify_model_content_scoped(
+                &journal,
+                &content,
+                Limits {
+                    file_bytes: 3,
+                    ..Limits::default()
+                },
+                Some(&allowed)
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        // Read grants alone cannot authenticate a claimed native configuration.
+        assert!(matches!(
+            verify_model_contents_scoped(
+                &journal,
+                [
+                    ModelContent::Part(ModelContentPart::File {
+                        file: file.clone(),
+                        policy: crate::model::FileProjectionPolicy::Reference
+                    }),
+                    content
+                ]
+                .iter(),
+                Limits::default(),
+                Some(&allowed)
+            )
+            .await,
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        let references = ModelContent::Parts(
+            [file, options]
+                .map(|file| ModelContentPart::File {
+                    file,
+                    policy: crate::model::FileProjectionPolicy::Reference,
+                })
+                .to_vec(),
+        );
+        verify_model_content_scoped(&journal, &references, Limits::default(), Some(&allowed))
+            .await?;
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
+        let wide = RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "bounded".into(),
+            name: "example.echo".into(),
+            arguments: json!({"text":"x".repeat(256)}),
+        };
+        let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
+        // This generic adapter accepts the original scope without a TaskContext.
+        // The SDK's effective byte bound must independently stop journal access.
+        crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
+        crate::contract::validate_json_byte_bound(&invocation, wide.limits().file_bytes)?;
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
+            },
+            executor: adapter.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let narrow = Limits {
+            file_bytes: 128,
+            ..wide.limits()
+        };
+        let executor = StockExecutor::new(
+            Model::new("test", "scoped", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(wide, None)?
+        .with_limits(narrow);
+        assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
+        let journal = ModelReadSpy::default();
+        let mut messages = Vec::new();
+        assert!(matches!(
+            executor
+                .settle_tool_call(&journal, OperationId::new(), 0, invocation, &mut messages)
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        assert!(journal.journal.0.lock().unwrap().is_empty());
+        assert!(journal.journal.1.lock().unwrap().is_empty());
+        assert!(messages.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn later_model_references_fail_preflight_before_earlier_content_reads() -> Result<()> {
+        let journal = ModelReadSpy::default();
+        let first = journal
+            .stage(OperationId::new(), "first".into(), vec![1, 2], "image/png")
+            .await?;
+        let second = journal
+            .stage(OperationId::new(), "second".into(), vec![3; 8], "image/png")
+            .await?;
+        let contents = [first.clone(), second.clone()].map(|file| {
+            ModelContent::Part(ModelContentPart::File {
+                file,
+                policy: crate::model::FileProjectionPolicy::Reference,
+            })
+        });
+        let first_only = RuntimeScope::new(
+            Capabilities::new([first.read_capability()?]),
+            Limits::default(),
+        )?;
+        assert!(matches!(
+            verify_model_contents_scoped(
+                &journal,
+                contents.iter(),
+                Limits::default(),
+                Some(&first_only)
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        let grants = Capabilities::new([first.read_capability()?, second.read_capability()?]);
+        let narrow = RuntimeScope::new(
+            grants.clone(),
+            Limits {
+                file_bytes: 4,
+                ..Limits::default()
+            },
+        )?;
+        assert!(matches!(
+            verify_model_contents_scoped(
+                &journal,
+                contents.iter(),
+                Limits::default(),
+                Some(&narrow)
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        let allowed = RuntimeScope::new(grants, Limits::default())?;
+        verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&allowed))
+            .await?;
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct ModelReadSpy {
+        journal: Journal,
+        reads: AtomicUsize,
+        replays: AtomicUsize,
+    }
+
+    impl ExecutionJournal for ModelReadSpy {
+        fn replay<'a>(
+            &'a self,
+            operation: OperationId,
+            after: u64,
+            maximum: u32,
+        ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+            self.replays.fetch_add(1, Ordering::SeqCst);
+            self.journal.replay(operation, after, maximum)
+        }
+        fn append<'a>(
+            &'a self,
+            operation: OperationId,
+            key: String,
+            event: ExecutionEvent,
+        ) -> BoxFuture<'a, Result<()>> {
+            self.journal.append(operation, key, event)
+        }
+        fn stage<'a>(
+            &'a self,
+            operation: OperationId,
+            key: String,
+            bytes: Vec<u8>,
+            media: &'static str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            self.journal.stage(operation, key, bytes, media)
+        }
+        fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.journal.load(file)
+        }
+        fn open_interaction<'a>(
+            &'a self,
+            id: InteractionId,
+            interaction: Interaction,
+        ) -> BoxFuture<'a, Result<()>> {
+            self.journal.open_interaction(id, interaction)
+        }
+        fn interaction_outcome<'a>(
+            &'a self,
+            id: InteractionId,
+        ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
+            self.journal.interaction_outcome(id)
+        }
+        // This spy exercises the real pre-reader scope barrier, not option authentication.
+        fn verify_model_content<'a>(
+            &'a self,
+            content: &'a ModelContent,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                for file in content.file_refs() {
+                    file.descriptor().verify(&self.load(file).await?)?;
+                }
+                Ok(())
+            })
+        }
     }
 }

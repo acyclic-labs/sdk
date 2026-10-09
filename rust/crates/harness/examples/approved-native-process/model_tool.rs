@@ -163,6 +163,7 @@ fn catalog() -> McpCatalog {
         server: "example".into(),
         revision: "approved-1".into(),
         schema_exposure: McpSchemaExposure::Eager,
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
         discovery: McpDiscoveryPolicy::Search,
         tools: vec![McpToolDefinition {
             name: "echo".into(),

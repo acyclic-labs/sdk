@@ -23,7 +23,7 @@ import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, E
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
 import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
-import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
+import type { ModelContent, ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult, ToolResultContent } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 import { assertHarnessWasmExports, ensureHarnessWasm, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
@@ -248,7 +248,7 @@ export class NativeContracts {
   }
 
   /** Rust owns the complete model-visible tool definition contract. */
-  validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">): void {
+  validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">): void {
     this.native.validateToolDefinition(nativeToolDefinition(definition));
   }
 
@@ -275,7 +275,7 @@ export class NativeContracts {
 
   /** Rust owns tool invocation identity and argument schema validation. */
   validateToolInvocation(
-    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">,
     invocation: Pick<ToolInvocation, "callId" | "name" | "arguments">,
   ): void {
     this.native.validateToolInvocation(nativeToolDefinition(definition), invocation);
@@ -283,10 +283,28 @@ export class NativeContracts {
 
   /** Rust owns tool result output schema validation. */
   validateToolResult(
-    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">,
     result: ToolResult,
   ): void {
     this.native.validateToolResult(nativeToolDefinition(definition), result);
+  }
+
+  jsonToolProjectionSchema(schema: ToolJsonSchema): ToolJsonSchema {
+    return normalizeNativeValue(this.native.jsonToolProjectionSchema(schema), true) as ToolJsonSchema;
+  }
+
+  /** Validate the complete projection using its own schema and caller-selected bounds. */
+  validateToolProjection(
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">,
+    projection: ToolResultContent,
+    limits: Limits,
+  ): void {
+    this.native.validateToolProjection(nativeToolDefinition(definition), projection, limits);
+  }
+
+  /** The Rust inventory includes tool media and immutable native option references. */
+  modelContentFileRefs(content: ModelContent, limits: Limits): readonly FileRef[] {
+    return freezeNative(normalizeTypedNativeValue(this.native.modelContentFileRefs(content, limits))) as readonly FileRef[];
   }
 
   /** Rust owns model stream event, tool-call, completion, and UTF-8 byte admission. */
@@ -533,14 +551,15 @@ export class NativeContracts {
 
 /** Strip executable parser/handler members before crossing the serde WASM ABI. */
 function nativeToolDefinition(
-  definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
-): Readonly<{ name: string; revision: string; description: string; inputSchema: ToolJsonSchema; outputSchema: ToolJsonSchema }> {
+  definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">,
+): Readonly<{ name: string; revision: string; description: string; inputSchema: ToolJsonSchema; outputSchema: ToolJsonSchema; projectionSchema: ToolJsonSchema }> {
   return {
     name: definition.name,
     revision: definition.revision,
     description: definition.description,
     inputSchema: definition.inputSchema,
     outputSchema: definition.outputSchema,
+    projectionSchema: definition.projection.schema,
   };
 }
 
