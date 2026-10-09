@@ -128,3 +128,60 @@ async fn parent_group_cancels_browser_descendants_and_closes_admission() -> Resu
     assert!(!polled.get(), "closed subtree executed rejected work");
     Ok(())
 }
+
+struct DelegatingBrowserLoop;
+
+impl acyclic_harness::agent_loop::AgentLoop for DelegatingBrowserLoop {
+    fn run(
+        &self,
+        context: acyclic_harness::runtime::TaskContext,
+        input: acyclic_harness::agent_loop::AgentInput,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'static,
+        acyclic_harness::Result<acyclic_harness::agent_loop::AgentOutput>,
+    > {
+        Box::pin(async move {
+            let definition = context.task::<String, String>("browser.builder.echo")?;
+            let task = context.spawn(&definition, input.prompt).await?;
+            match task.result().await? {
+                Outcome::Succeeded(text) => {
+                    Ok(acyclic_harness::agent_loop::AgentOutput::text(text))
+                }
+                outcome => Err(acyclic_harness::Error::Invalid(format!(
+                    "unexpected browser child outcome: {outcome:?}"
+                ))),
+            }
+        })
+    }
+}
+
+#[wasm_bindgen_test]
+async fn public_builder_registers_and_runs_browser_local_typed_tasks() -> Result<(), JsValue> {
+    let calls = Rc::new(Cell::new(0));
+    let observed = calls.clone();
+    let task = TaskDefinition::live("browser.builder.echo", "1", move |_, input: String| {
+        let observed = observed.clone();
+        async move {
+            observed.set(observed.get() + 1);
+            Ok(input)
+        }
+    })
+    .map_err(js_error)?;
+    let bundle = acyclic_harness::HarnessBuilder::new()
+        .agent_loop(std::sync::Arc::new(DelegatingBrowserLoop))
+        .grant("task:spawn:browser.builder.echo@1")
+        .task(task)
+        .map_err(js_error)?
+        .build()
+        .map_err(js_error)?;
+    let result = bundle
+        .run_agent(acyclic_harness::agent_loop::AgentInput::text(
+            "browser child",
+        ))
+        .await
+        .map_err(js_error)?;
+    assert!(matches!(result.outcome, Outcome::Succeeded(output) if output.text == "browser child"));
+    assert_eq!(calls.get(), 1);
+    assert!(!result.task_id.is_empty());
+    Ok(())
+}
