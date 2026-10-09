@@ -2293,3 +2293,68 @@ fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog()
         let _ = fs::remove_dir_all(fixture.output);
     }
 }
+
+#[test]
+fn proc_macro_owner_with_custom_library_name_has_executed_api_and_drift() {
+    let fixture = feature_profile_fixture();
+    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
+    let original = fs::read_to_string(&manifest).unwrap();
+    fs::write(
+        &manifest,
+        original.replace(
+            "[lib]\npath = \"src/lib.rs\"",
+            "[lib]\nname = \"renamed_macro_target\"\nproc-macro = true\npath = \"src/lib.rs\"",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/demo/src/lib.rs"),
+        r#"//! Public procedural macro documentation.
+extern crate proc_macro;
+use proc_macro::TokenStream;
+/// Return the supplied tokens unchanged.
+#[proc_macro]
+pub fn demo_macro(input: TokenStream) -> TokenStream { input }
+/// Preserve an attributed item.
+#[proc_macro_attribute]
+pub fn demo_attribute(_args: TokenStream, input: TokenStream) -> TokenStream { input }
+/// Add no derived implementation.
+#[proc_macro_derive(DemoDerive)]
+pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
+"#,
+    )
+    .unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "procedural macro owner fixture"],
+    );
+
+    let generated = run_generate_execute_profiles(&fixture);
+    assert!(generated.status.success(), "{}", output_message(&generated));
+    assert!(fixture.rustdoc.join("renamed_macro_target.json").is_file());
+    let availability: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
+    )
+    .unwrap();
+    for name in ["demo_macro", "demo_attribute", "DemoDerive"] {
+        let expected = format!("renamed_macro_target::{name}");
+        assert!(
+            availability["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| {
+                    entry["path"].as_str() == Some(expected.as_str())
+                        && entry["profiles"]
+                            .as_array()
+                            .is_some_and(|profiles| !profiles.is_empty())
+                }),
+            "the actual procedural macro API {expected} must have executed profile coverage"
+        );
+    }
+    let drift = run_drift_execute_profiles(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+    let _ = fs::remove_dir_all(fixture.root);
+    let _ = fs::remove_dir_all(fixture.output);
+}

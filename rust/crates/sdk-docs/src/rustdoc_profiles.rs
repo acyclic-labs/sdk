@@ -647,21 +647,20 @@ pub fn execute_target_profile_with_context(
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    let library_name = package
-        .targets
-        .iter()
-        .find(|target| {
-            target.kind.iter().any(|kind| {
-                matches!(
-                    kind,
-                    TargetKind::Lib
-                        | TargetKind::RLib
-                        | TargetKind::DyLib
-                        | TargetKind::CDyLib
-                        | TargetKind::StaticLib
-                )
-            })
+    let library_target = package.targets.iter().find(|target| {
+        target.kind.iter().any(|kind| {
+            matches!(
+                kind,
+                TargetKind::ProcMacro
+                    | TargetKind::Lib
+                    | TargetKind::RLib
+                    | TargetKind::DyLib
+                    | TargetKind::CDyLib
+                    | TargetKind::StaticLib
+            )
         })
+    });
+    let library_name = library_target
         .map(|target| target.name.as_str())
         .unwrap_or(profile.package.as_str());
     let receipt_name = match rustdoc_target {
@@ -669,7 +668,16 @@ pub fn execute_target_profile_with_context(
         RustdocTarget::Binary(name) => name,
     };
     let filename = format!("{}.json", receipt_name.replace('-', "_"));
-    let generated = target_dir.join(&profile.target).join("doc").join(filename);
+    // Procedural macros are host tools. Cargo writes their JSON in the host
+    // documentation directory even when --target is explicitly supplied.
+    let generated = if matches!(rustdoc_target, RustdocTarget::Library)
+        && library_target.is_some_and(|target| target.kind.contains(&TargetKind::ProcMacro))
+    {
+        target_dir.join("doc")
+    } else {
+        target_dir.join(&profile.target).join("doc")
+    }
+    .join(filename);
     if !generated.is_file() {
         return Err(ProfileError::InvalidRustdoc(format!(
             "Cargo succeeded but did not produce {}",
@@ -682,10 +690,17 @@ pub fn execute_target_profile_with_context(
             output_json.as_ref().display()
         ))
     })?;
-    match rustdoc_target {
+    let observation = match rustdoc_target {
         RustdocTarget::Library => observe_rustdoc(output_json),
         RustdocTarget::Binary(_) => observe_binary_rustdoc(output_json),
+    }?;
+    if observation.target != profile.target {
+        return Err(ProfileError::InvalidRustdoc(format!(
+            "Rustdoc target {} differs from declared profile target {}",
+            observation.target, profile.target
+        )));
     }
+    Ok(observation)
 }
 
 pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, ProfileError> {
@@ -773,14 +788,21 @@ pub fn extract_owned_api_for_crate(
             if item.crate_id != 0 || item.visibility != Visibility::Public {
                 return None;
             }
-            let summary = receipt.paths.get(&public_item.id)?;
+            // Rustdoc format 60 omits derive macros from its path index. Their
+            // typed local item and public-api occurrence still identify the
+            // public macro exactly; retain its profile availability.
+            let kind = if matches!(item.inner, rustdoc_types::ItemEnum::ProcMacro(_)) {
+                crate::kind_name(item.inner.item_kind()).to_owned()
+            } else {
+                format!("{:?}", receipt.paths.get(&public_item.id)?.kind).to_lowercase()
+            };
             Some(OwnedApiItem {
                 rustdoc_package: owner.rustdoc_package.clone(),
                 published_owner: owner.published_package.clone(),
                 profile: profile.clone(),
                 key: ProjectionKey {
                     path: public_item.path.join("::"),
-                    kind: format!("{:?}", summary.kind).to_lowercase(),
+                    kind,
                     signature: public_item.display,
                 },
                 rustdoc_version: receipt.crate_version.clone(),

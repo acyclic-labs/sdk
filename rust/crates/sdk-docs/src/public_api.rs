@@ -97,8 +97,17 @@ fn adapt(mut value: Value, krate: &Crate) -> Result<Value, Error> {
 
 fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<String>, String> {
     let tokens = tokens.collect::<Vec<_>>();
+    let proc_macro = tokens.windows(3).any(|tokens| {
+        matches!(
+            tokens,
+            [Token::Kind(proc_kind), Token::Whitespace, Token::Kind(macro_kind)]
+                if proc_kind == "proc" && macro_kind == "macro"
+        )
+    });
     let Some(start) = tokens.iter().enumerate().find_map(|(index, token)| {
-        if matches!(token, Token::Kind(_)) {
+        if proc_macro && matches!(token, Token::Kind(kind) if kind == "proc") {
+            None
+        } else if matches!(token, Token::Kind(_)) {
             Some(index + 1)
         } else if matches!(token, Token::Keyword(kind) if kind == "impl") {
             tokens
@@ -143,6 +152,13 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
         }
         match token {
             Token::Whitespace if need_component => {
+                index += 1;
+            }
+            // public-api wraps attribute and derive macro names after the
+            // crate path; these delimiters are not exported path components.
+            Token::Symbol(open)
+                if proc_macro && need_component && (open == "#[" || open == "#[derive(") =>
+            {
                 index += 1;
             }
             // public-api renders receiver-qualified methods whose receiver is
@@ -341,6 +357,39 @@ mod tests {
             value["index"]["8"]["inner"]["module"]["default_unstable"],
             "keep"
         );
+    }
+
+    #[test]
+    fn token_path_handles_all_procedural_macro_kinds() {
+        for (open, close) in [("", "!()"), ("#[", "]"), ("#[derive(", ")]")] {
+            let mut tokens = vec![
+                Token::Qualifier("pub".into()),
+                Token::Whitespace,
+                Token::Kind("proc".into()),
+                Token::Whitespace,
+                Token::Kind("macro".into()),
+                Token::Whitespace,
+                Token::Identifier("crate_name".into()),
+                Token::Symbol("::".into()),
+            ];
+            if !open.is_empty() {
+                tokens.push(Token::Symbol(open.into()));
+            }
+            tokens.push(Token::Identifier("Exported".into()));
+            tokens.push(Token::Symbol(close.into()));
+            assert_eq!(
+                exported_path(tokens.iter()).expect("procedural macro path"),
+                ["crate_name", "Exported"]
+            );
+        }
+        let unsupported = [
+            Token::Kind("proc".into()),
+            Token::Whitespace,
+            Token::Kind("fn".into()),
+            Token::Whitespace,
+            Token::Identifier("invented".into()),
+        ];
+        assert!(exported_path(unsupported.iter()).is_err());
     }
 
     #[test]

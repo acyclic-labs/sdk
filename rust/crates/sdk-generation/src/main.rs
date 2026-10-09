@@ -1391,7 +1391,8 @@ fn execute_historical_profiles(
             target.kind.iter().any(|kind| {
                 matches!(
                     kind,
-                    TargetKind::Lib
+                    TargetKind::ProcMacro
+                        | TargetKind::Lib
                         | TargetKind::RLib
                         | TargetKind::CDyLib
                         | TargetKind::StaticLib
@@ -1520,7 +1521,8 @@ fn execute_default_profiles(
             target.kind.iter().any(|kind| {
                 matches!(
                     kind,
-                    TargetKind::Lib
+                    TargetKind::ProcMacro
+                        | TargetKind::Lib
                         | TargetKind::RLib
                         | TargetKind::CDyLib
                         | TargetKind::StaticLib
@@ -1782,7 +1784,8 @@ fn package_for_crate<'a>(
                 target.kind.iter().any(|kind| {
                     matches!(
                         kind,
-                        TargetKind::Lib
+                        TargetKind::ProcMacro
+                            | TargetKind::Lib
                             | TargetKind::RLib
                             | TargetKind::CDyLib
                             | TargetKind::StaticLib
