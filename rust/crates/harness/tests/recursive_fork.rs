@@ -1353,9 +1353,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         matches!(selected.messages[0].content, ModelContent::Parts(ref parts)
         if matches!(parts.get(1), Some(ModelContentPart::File { file, policy: FileProjectionPolicy::Native }) if file == &image))
     );
-    assert_eq!(state.messages.len(), 2);
+    assert_eq!(state.messages().len(), 2);
     assert!(matches!(
-        aggregate.reducer().conversation().map(|state| &state.messages[0].attachments),
+        aggregate.reducer().conversation().map(|state| &state.messages()[0].attachments),
         Some(ReferencedAttachments::Inline { items }) if items.len() == 1,
     ));
     assert!(
@@ -1390,7 +1390,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let merge_operation = OperationId::from_bytes([93; 16]);
     let notice_file = final_parent_reducer
         .conversation()
-        .and_then(|conversation| conversation.messages.last())
+        .and_then(|conversation| conversation.messages().last())
         .map(|message| message.content.clone())
         .ok_or_else(|| {
             acyclic_harness::Error::Invalid("parent merge notice content is missing".into())

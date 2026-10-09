@@ -1473,23 +1473,18 @@ fn conversation_page_data(
         .conversation()
         .ok_or_else(|| JsValue::from_str("aggregate is not a conversation"))?;
     let total_messages = conversation.messages.len() as u64;
-    if after_sequence > total_messages {
-        return Err(JsValue::from_str("conversation cursor is beyond the tail"));
-    }
-    let start = usize::try_from(after_sequence)
-        .map_err(|_| JsValue::from_str("conversation cursor exceeds the platform limit"))?;
-    let end = start
-        .saturating_add(limit as usize)
-        .min(conversation.messages.len());
+    let messages = conversation
+        .page(after_sequence, total_messages, limit as usize)
+        .map_err(js_error)?;
+    let end = messages
+        .last()
+        .map_or(after_sequence, |message| message.sequence);
     Ok(ConversationPage {
         agent: conversation.agent,
         event_revision: reducer.revision(),
         total_messages,
-        messages: conversation
-            .messages
-            .get(start..end)
-            .ok_or_else(|| JsValue::from_str("conversation page range is invalid"))?,
-        next_sequence: (end < conversation.messages.len()).then_some(end as u64),
+        messages,
+        next_sequence: (end < total_messages).then_some(end),
     })
 }
 

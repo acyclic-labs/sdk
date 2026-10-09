@@ -17,7 +17,7 @@ use crate::{
     executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
     interaction::{InteractionOutcome, InteractionResponse},
     model::{Model, ModelProvider},
-    projection::select_model_context,
+    projection::select_model_context_at_revision,
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
     store::StreamAggregate,
@@ -828,11 +828,10 @@ impl MemoryHarnessStorage {
             .await?;
         }
         let selection = preparation.selection;
-        let mut historical = aggregate
+        let historical = aggregate
             .reducer()
             .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?
-            .clone();
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
         let selected_revision = usize::try_from(selection.conversation_revision)
             .map_err(|_| Error::Storage("selection revision exceeds platform size".into()))?;
         if selected_revision > historical.messages.len() {
@@ -840,19 +839,19 @@ impl MemoryHarnessStorage {
                 "selection revision exceeds conversation history".into(),
             ));
         }
-        historical.messages.truncate(selected_revision);
         if selection.message_ids.last() != Some(&user_id) {
             return Err(Error::Conflict(
                 "turn identity is bound to another context selection".into(),
             ));
         }
-        let selected = select_model_context(
-            &historical,
+        let selected = select_model_context_at_revision(
+            historical,
             selection,
             self.content_verifier.as_ref(),
             limits.context_messages,
             limits.attachments,
             limits.render_bytes,
+            limits.attachments,
         )
         .await?;
         let output = bundle
