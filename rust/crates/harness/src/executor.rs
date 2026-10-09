@@ -95,6 +95,41 @@ pub struct ExecutionRecord {
 }
 
 /// Canonical executor observation suitable for a durable journal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPurpose {
+    /// The caller's ordinary response/tool loop.
+    Response,
+    /// A retained context summary inside that same execution.
+    Summary,
+}
+
+impl ModelPurpose {
+    /// Stable shared-budget attempt identity. This creates no journal or task.
+    #[must_use]
+    pub fn attempt_operation(self, execution: OperationId) -> OperationId {
+        match self {
+            Self::Response => execution,
+            Self::Summary => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"harness:summary-attempt:v1");
+                hasher.update(&execution.into_bytes());
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+                OperationId::from_bytes(bytes)
+            }
+        }
+    }
+
+    fn key(self, step: u32) -> String {
+        match self {
+            Self::Response => format!("model:{step}"),
+            Self::Summary => format!("summary:{step}"),
+        }
+    }
+}
+
+/// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[allow(
@@ -111,6 +146,8 @@ pub enum ExecutionEvent {
     ModelStarted {
         /// Zero-based executor step.
         step: u32,
+        /// Distinguishes response and summary admissions in the same journal.
+        purpose: ModelPurpose,
         /// Digest of the exact model request.
         request_digest: [u8; 32],
         /// Pinned private artifact containing the exact provider-neutral request bytes.
@@ -120,6 +157,8 @@ pub enum ExecutionEvent {
     Model {
         /// Zero-based executor step.
         step: u32,
+        /// Must match the corresponding admitted request.
+        purpose: ModelPurpose,
         /// Pinned, private JSON file containing one observed model event.
         event: FileRef,
     },
@@ -440,6 +479,156 @@ pub struct StockExecutor {
 }
 
 impl StockExecutor {
+    /// Summarizes an explicit projection through ordinary admission, accounting,
+    /// exact request retention and reconciliation. The caller persists the returned
+    /// provenance in its existing context revision; uncertain attempts never redispatch.
+    pub async fn summarize(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        source: crate::context::Context,
+        instruction: ModelContent,
+    ) -> Result<crate::context::ContextSummary> {
+        self.summarize_admitted(journal, None, operation_id, 0, source, instruction)
+            .await
+    }
+
+    /// Summarizes within the parent's existing execution journal. A pending
+    /// summary remains visible to its ordinary recovery and quiescence checks.
+    pub async fn summarize_in_turn(
+        &self,
+        journal: &dyn ExecutionJournal,
+        parent: &TurnInput,
+        step: u32,
+        source: crate::context::Context,
+        instruction: ModelContent,
+    ) -> Result<crate::context::ContextSummary> {
+        if step >= parent.max_steps {
+            return Err(Error::Invalid(
+                "summary step exceeds parent turn bounds".into(),
+            ));
+        }
+        self.summarize_admitted(
+            journal,
+            Some(parent),
+            parent.operation_id,
+            step,
+            source,
+            instruction,
+        )
+        .await
+    }
+
+    async fn summarize_admitted(
+        &self,
+        journal: &dyn ExecutionJournal,
+        parent: Option<&TurnInput>,
+        operation_id: OperationId,
+        step: u32,
+        source: crate::context::Context,
+        instruction: ModelContent,
+    ) -> Result<crate::context::ContextSummary> {
+        if self.max_output_tokens.is_none() {
+            return Err(Error::Invalid(
+                "summary requires a caller-selected output token budget".into(),
+            ));
+        }
+        let source_bytes = crate::contract::canonical_json_bytes(&source)?;
+        let source_hash = blake3::hash(&source_bytes);
+        let source_digest = *source_hash.as_bytes();
+        let source_messages = u32::try_from(source.messages.len())
+            .map_err(|_| Error::Invalid("summary source exceeds portable message count".into()))?;
+        if source_messages == 0 {
+            return Err(Error::Invalid("summary source is empty".into()));
+        }
+        let revision = source_hash.to_hex().to_string();
+        let mut executor = self.clone();
+        executor.inherited_prefix = None;
+        executor.context = ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "summary-source",
+            revision,
+            Arc::new(source),
+            crate::context::ContextPlacement::Prepend,
+        ))
+            as Arc<dyn crate::context::ContextStage>]);
+        let input = TurnInput {
+            operation_id,
+            input: instruction,
+            selected_context: None,
+            max_steps: parent.map_or(1, |parent| parent.max_steps),
+        };
+        executor.validate_turn_input(journal, &input).await?;
+        self.verify_execution_owner().await?;
+        if let Some(parent) = parent {
+            self.validate_turn_input(journal, parent).await?;
+            self.ensure_started(journal, parent).await?;
+        } else {
+            executor.ensure_started(journal, &input).await?;
+        }
+        // Pin even metadata omitted from the provider request. A retry cannot
+        // relabel an uncertain summary with a different source projection.
+        journal
+            .stage(
+                operation_id,
+                format!("summary:{step}:source"),
+                source_bytes,
+                "application/json",
+            )
+            .await?;
+        let events = executor
+            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)
+            .await?;
+        let mut text = String::new();
+        for event in events {
+            match event {
+                ModelEvent::Content { delta } => {
+                    if (text.len() as u64)
+                        .checked_add(delta.len() as u64)
+                        .is_none_or(|length| length > self.limits.render_bytes)
+                    {
+                        return Err(Error::Invalid(
+                            "summary output exceeds caller render budget".into(),
+                        ));
+                    }
+                    text.push_str(&delta);
+                }
+                ModelEvent::ToolCall { .. } => {
+                    return Err(Error::Invalid("summary requested a tool operation".into()));
+                }
+                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
+            }
+        }
+        if text.is_empty() {
+            return Err(Error::Invalid(
+                "summary operation returned no content".into(),
+            ));
+        }
+        let output = journal
+            .stage(
+                operation_id,
+                format!("summary:{step}:output"),
+                text.into_bytes(),
+                "text/plain",
+            )
+            .await?;
+        let summary = crate::context::ContextSummary {
+            operation_id,
+            step,
+            source_messages,
+            source_digest,
+            output,
+        };
+        journal
+            .stage(
+                operation_id,
+                format!("summary:{step}:provenance"),
+                crate::contract::canonical_json_bytes(&summary)?,
+                "application/json",
+            )
+            .await?;
+        Ok(summary)
+    }
+
     /// Creates the stock loop without installing hidden stages or tools.
     #[must_use]
     pub fn new(
@@ -485,6 +674,13 @@ impl StockExecutor {
     ) -> Self {
         self.task = Some((host, task_id, fence));
         self
+    }
+
+    async fn verify_execution_owner(&self) -> Result<()> {
+        if let Some((host, task_id, fence)) = &self.task {
+            host.verify_execution_owner(*task_id, fence.clone()).await?;
+        }
+        Ok(())
     }
 
     /// Applies the composition's checked bounds to the stock loop.
@@ -541,7 +737,9 @@ impl StockExecutor {
                 "tool prefix has another execution identity".into(),
             ));
         }
-        let retained = retained_model_step(journal, &records, step, self.limits).await?;
+        let retained =
+            retained_model_step(journal, &records, step, ModelPurpose::Response, self.limits)
+                .await?;
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
@@ -781,7 +979,7 @@ impl StockExecutor {
             ));
         }
         self.ensure_started(journal, input).await?;
-        self.run_model_step(journal, input, step, prior_messages)
+        self.run_model_step(journal, input, step, prior_messages, ModelPurpose::Response)
             .await
     }
 
@@ -791,6 +989,7 @@ impl StockExecutor {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
     ) -> Result<Vec<ModelEvent>> {
         let span = obs_span!(
             "acyclic.harness.executor.model_step",
@@ -801,9 +1000,55 @@ impl StockExecutor {
         );
         traced(
             span,
-            self.dispatch_model_step(journal, input, step, prior_messages),
+            self.dispatch_model_step(journal, input, step, prior_messages, purpose),
         )
         .await
+    }
+
+    async fn prepare_request(
+        &self,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let context = self
+            .context
+            .run_bounded(
+                &ContextInput {
+                    input: input.input.clone(),
+                    selected_context: input.selected_context.clone(),
+                    step,
+                    prior_messages: prior_messages.to_vec(),
+                },
+                self.limits,
+            )
+            .await?;
+        let request = ModelRequest {
+            model: self.model.clone(),
+            messages: context.messages,
+            tools: self
+                .tools
+                .definitions()?
+                .into_iter()
+                .filter(|tool| {
+                    self.tool_scope
+                        .grants()
+                        .contains(&capability::tool_call(&tool.name))
+                })
+                .collect(),
+            max_output_tokens: self.max_output_tokens,
+        };
+        if let Some((prefix, verifier)) = &self.inherited_prefix {
+            crate::model::PreparedModelRequest::inherit(
+                request,
+                prefix,
+                verifier.as_ref(),
+                self.limits,
+            )
+            .await
+        } else {
+            crate::model::PreparedModelRequest::prepare(request, self.limits)
+        }
     }
 
     /// Resolves one model step's events, replaying an already completed or started attempt
@@ -821,60 +1066,30 @@ impl StockExecutor {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
     ) -> Result<Vec<ModelEvent>> {
-        if let Some((host, task_id, fence)) = &self.task {
-            host.verify_execution_owner(*task_id, fence.clone()).await?;
-        }
+        self.verify_execution_owner().await?;
         let (_, records) = self
-            .model_records(journal, input.operation_id, step)
+            .model_records(journal, input.operation_id, step, purpose)
             .await?;
         let RetainedModelStep {
             request: retained_request,
             mut admission,
             events: replayed_model,
-        } = retained_model_step(journal, &records, step, self.limits).await?;
+        } = retained_model_step(journal, &records, step, purpose, self.limits).await?;
         let started = retained_request.is_some();
         let request = if let Some(recorded) = retained_request {
+            if purpose == ModelPurpose::Summary {
+                let current = self.prepare_request(input, step, prior_messages).await?;
+                if current.manifest().request_digest != recorded.manifest().request_digest {
+                    return Err(Error::Conflict(
+                        "summary source or instruction differs from retained admission".into(),
+                    ));
+                }
+            }
             recorded
         } else {
-            let context = self
-                .context
-                .run_bounded(
-                    &ContextInput {
-                        input: input.input.clone(),
-                        selected_context: input.selected_context.clone(),
-                        step,
-                        prior_messages: prior_messages.to_vec(),
-                    },
-                    self.limits,
-                )
-                .await?;
-            let request = ModelRequest {
-                model: self.model.clone(),
-                messages: context.messages,
-                tools: self
-                    .tools
-                    .definitions()?
-                    .into_iter()
-                    .filter(|tool| {
-                        self.tool_scope
-                            .grants()
-                            .contains(&capability::tool_call(&tool.name))
-                    })
-                    .collect(),
-                max_output_tokens: self.max_output_tokens,
-            };
-            if let Some((prefix, verifier)) = &self.inherited_prefix {
-                crate::model::PreparedModelRequest::inherit(
-                    request,
-                    prefix,
-                    verifier.as_ref(),
-                    self.limits,
-                )
-                .await?
-            } else {
-                crate::model::PreparedModelRequest::prepare(request, self.limits)?
-            }
+            self.prepare_request(input, step, prior_messages).await?
         };
         self.verify_model_request_content(journal, &request).await?;
         let request_digest = request.manifest().request_digest;
@@ -892,7 +1107,7 @@ impl StockExecutor {
             let Some(mut continuation) = self
                 .provider
                 .reconcile(ModelAttempt {
-                    operation_id: input.operation_id,
+                    operation_id: purpose.attempt_operation(input.operation_id),
                     step,
                     request_digest,
                     observed: replayed_model.clone(),
@@ -904,7 +1119,7 @@ impl StockExecutor {
             let mut observed = replayed_model;
             for event in continuation.drain(..) {
                 admission.observe(&event, self.limits)?;
-                let key = format!("model:{step}:{}", observed.len());
+                let key = format!("{}:{}", purpose.key(step), observed.len());
                 let reference = stage_json(journal, input.operation_id, &key, &event).await?;
                 journal
                     .append(
@@ -912,6 +1127,7 @@ impl StockExecutor {
                         key,
                         ExecutionEvent::Model {
                             step,
+                            purpose,
                             event: reference,
                         },
                     )
@@ -921,7 +1137,7 @@ impl StockExecutor {
             observed
         } else {
             let (tail, current) = self
-                .model_records(journal, input.operation_id, step)
+                .model_records(journal, input.operation_id, step, purpose)
                 .await?;
             if let Some(existing) = current.iter().find_map(|record| match &record.event {
                 ExecutionEvent::ModelStarted {
@@ -941,14 +1157,14 @@ impl StockExecutor {
             let request_ref = stage_bytes(
                 journal,
                 input.operation_id,
-                &format!("model:{step}:request"),
+                &format!("{}:request", purpose.key(step)),
                 request.bytes().to_vec(),
             )
             .await?;
             if let Some((host, task_id, fence)) = &self.task {
                 host.claim_model_dispatch(
                     *task_id,
-                    input.operation_id,
+                    purpose.attempt_operation(input.operation_id),
                     step,
                     request_digest,
                     fence.clone(),
@@ -959,9 +1175,10 @@ impl StockExecutor {
                 .append_if_tail(
                     input.operation_id,
                     tail,
-                    format!("model:{step}:claim:{}", OperationId::new()),
+                    format!("{}:claim:{}", purpose.key(step), OperationId::new()),
                     ExecutionEvent::ModelStarted {
                         step,
+                        purpose,
                         request_digest,
                         request: request_ref,
                     },
@@ -986,7 +1203,7 @@ impl StockExecutor {
             while let Some(event) = stream.next().await {
                 let event = event?;
                 admission.observe(&event, self.limits)?;
-                let key = format!("model:{step}:{}", observed.len());
+                let key = format!("{}:{}", purpose.key(step), observed.len());
                 let reference = stage_json(journal, input.operation_id, &key, &event).await?;
                 journal
                     .append(
@@ -994,6 +1211,7 @@ impl StockExecutor {
                         key,
                         ExecutionEvent::Model {
                             step,
+                            purpose,
                             event: reference,
                         },
                     )
@@ -1019,11 +1237,20 @@ impl StockExecutor {
             .saturating_add(2);
         let (_, records) = replay_execution(journal, operation_id, maximum, |event| match event {
             ExecutionEvent::Started { .. } => true,
-            ExecutionEvent::ModelStarted { step: recorded, .. }
-            | ExecutionEvent::Model { step: recorded, .. }
+            ExecutionEvent::ModelStarted {
+                step: recorded,
+                purpose: ModelPurpose::Response,
+                ..
+            }
+            | ExecutionEvent::Model {
+                step: recorded,
+                purpose: ModelPurpose::Response,
+                ..
+            }
             | ExecutionEvent::ToolStarted { step: recorded, .. }
             | ExecutionEvent::ToolCompleted { step: recorded, .. }
             | ExecutionEvent::ToolFailed { step: recorded, .. } => *recorded == step,
+            ExecutionEvent::ModelStarted { .. } | ExecutionEvent::Model { .. } => false,
         })
         .await?;
         Ok(records)
@@ -1034,6 +1261,7 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         step: u32,
+        purpose: ModelPurpose,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
         replay_execution(
             journal,
@@ -1041,8 +1269,9 @@ impl StockExecutor {
             self.limits.model_events_per_step.saturating_add(1),
             |event| {
                 matches!(event,
-                ExecutionEvent::ModelStarted { step: event_step, .. }
-                | ExecutionEvent::Model { step: event_step, .. } if *event_step == step)
+                ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
+                | ExecutionEvent::Model { step: event_step, purpose: event_purpose, .. }
+                if *event_step == step && *event_purpose == purpose)
             },
         )
         .await
@@ -1604,9 +1833,7 @@ impl StockExecutor {
         let span = obs_span!(INFO, "acyclic.harness.executor.execute");
         traced(span, async move {
             self.verify_task_context_binding(input.operation_id)?;
-            if let Some((host, task_id, fence)) = &self.task {
-                host.verify_execution_owner(*task_id, fence.clone()).await?;
-            }
+            self.verify_execution_owner().await?;
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
@@ -1615,8 +1842,14 @@ impl StockExecutor {
                 let mut calls = Vec::new();
                 let mut completed = None;
                 // Keep nested durable provider futures within native worker stacks.
-                let model_events =
-                    Box::pin(self.run_model_step(journal, &input, step, &prior_messages)).await?;
+                let model_events = Box::pin(self.run_model_step(
+                    journal,
+                    &input,
+                    step,
+                    &prior_messages,
+                    ModelPurpose::Response,
+                ))
+                .await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
@@ -1806,6 +2039,7 @@ pub(crate) async fn retained_model_step(
     journal: &dyn ExecutionJournal,
     records: &[ExecutionRecord],
     step: u32,
+    purpose: ModelPurpose,
     limits: Limits,
 ) -> Result<RetainedModelStep> {
     let mut events = Vec::new();
@@ -1813,9 +2047,11 @@ pub(crate) async fn retained_model_step(
     for record in records {
         if let ExecutionEvent::Model {
             step: event_step,
+            purpose: event_purpose,
             event,
         } = &record.event
             && *event_step == step
+            && *event_purpose == purpose
         {
             let event = load_json::<ModelEvent>(journal, event).await?;
             admission.observe(&event, limits)?;
@@ -1825,9 +2061,10 @@ pub(crate) async fn retained_model_step(
     let started = records.iter().find_map(|record| match &record.event {
         ExecutionEvent::ModelStarted {
             step: event_step,
+            purpose: event_purpose,
             request_digest,
             request,
-        } if *event_step == step => Some((*request_digest, request)),
+        } if *event_step == step && *event_purpose == purpose => Some((*request_digest, request)),
         _ => None,
     });
     if started.is_none() && !events.is_empty() {
@@ -2426,6 +2663,170 @@ mod tests {
     }
 
     struct FakeTool(AtomicUsize);
+
+    #[tokio::test]
+    async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
+        let provider = Arc::new(RecoverableModel {
+            generate_calls: AtomicUsize::new(0),
+            reconcile_calls: AtomicUsize::new(0),
+        });
+        let executor = StockExecutor::new(
+            Model::new("test", "summary", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_max_output_tokens(1024)?;
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("preserve é\\0🦀 and uncertainty".into()),
+            }],
+            metadata: Default::default(),
+        };
+        let instruction = ModelContent::Text("Summarize the preceding projection.".into());
+        assert!(
+            executor
+                .summarize(&journal, operation, source.clone(), instruction.clone())
+                .await
+                .is_err()
+        );
+        let mut changed = source.clone();
+        changed.messages[0].content = ModelContent::Text("different source".into());
+        assert!(
+            executor
+                .summarize(&journal, operation, changed, instruction.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        let summary = executor
+            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .await?;
+        assert_eq!(
+            summary.source_digest,
+            crate::contract::canonical_json_digest(&source)?
+        );
+        assert_eq!(
+            journal.load(&summary.output).await?,
+            format!("{}restored", "partial-".repeat(70)).into_bytes()
+        );
+        assert_eq!(
+            executor
+                .summarize(&journal, operation, source, instruction)
+                .await?,
+            summary
+        );
+        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
+        let provider = Arc::new(RecoverableModel {
+            generate_calls: AtomicUsize::new(0),
+            reconcile_calls: AtomicUsize::new(0),
+        });
+        let executor = StockExecutor::new(
+            Model::new("test", "summary", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_max_output_tokens(1024)?;
+        let journal = Journal::default();
+        let parent = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("parent response".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("history to summarize".into()),
+            }],
+            metadata: Default::default(),
+        };
+        let instruction = ModelContent::Text("summarize history".into());
+        assert!(
+            executor
+                .summarize_in_turn(&journal, &parent, 0, source.clone(), instruction.clone())
+                .await
+                .is_err()
+        );
+        let mut changed = source.clone();
+        changed.messages[0].content = ModelContent::Text("changed history".into());
+        assert!(
+            executor
+                .summarize_in_turn(&journal, &parent, 0, changed, instruction.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            executor
+                .summarize_in_turn(
+                    &journal,
+                    &parent,
+                    0,
+                    source.clone(),
+                    ModelContent::Text("different instruction".into())
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        let summary = executor
+            .summarize_in_turn(&journal, &parent, 0, source.clone(), instruction.clone())
+            .await?;
+        assert_eq!(summary.operation_id, parent.operation_id);
+        assert_eq!(summary.step, 0);
+        assert!(
+            executor
+                .model_step(&journal, &parent, 0, &[])
+                .await
+                .is_err()
+        );
+        let response = executor.model_step(&journal, &parent, 0, &[]).await?;
+        assert!(matches!(
+            response.last(),
+            Some(ModelEvent::Completed { .. })
+        ));
+        assert_eq!(
+            executor
+                .summarize_in_turn(&journal, &parent, 0, source, instruction)
+                .await?,
+            summary
+        );
+        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 2);
+        let (_, admissions) = replay_execution(&journal, parent.operation_id, 3, |event| {
+            matches!(
+                event,
+                ExecutionEvent::Started { .. } | ExecutionEvent::ModelStarted { .. }
+            )
+        })
+        .await?;
+        assert_eq!(admissions.len(), 3);
+        assert!(matches!(
+            admissions.get(1).map(|record| &record.event),
+            Some(ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Summary,
+                ..
+            })
+        ));
+        assert!(matches!(
+            admissions.get(2).map(|record| &record.event),
+            Some(ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Response,
+                ..
+            })
+        ));
+        Ok(())
+    }
 
     impl crate::tool::ToolExecutor for FakeTool {
         fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
@@ -3838,6 +4239,29 @@ mod tests {
         assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 10);
         assert!(journal.replay(input.operation_id, 74, 64).await?.is_empty());
         host.owned.store(false, Ordering::SeqCst);
+        let records_before = journal.0.lock().unwrap().len();
+        let artifacts_before = journal.1.lock().unwrap().len();
+        assert!(matches!(
+            executor
+                .clone()
+                .with_max_output_tokens(1024)?
+                .summarize(
+                    &journal,
+                    OperationId::new(),
+                    crate::context::Context {
+                        messages: vec![ModelMessage {
+                            role: ModelRole::User,
+                            content: ModelContent::Text("retained source".into()),
+                        }],
+                        metadata: Default::default(),
+                    },
+                    ModelContent::Text("summarize".into()),
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(journal.0.lock().unwrap().len(), records_before);
+        assert_eq!(journal.1.lock().unwrap().len(), artifacts_before);
         assert!(matches!(
             executor.execute(input, &journal).await,
             Err(Error::Conflict(_))
@@ -3859,6 +4283,7 @@ mod tests {
                     format!("step-{step}"),
                     ExecutionEvent::ModelStarted {
                         step,
+                        purpose: crate::executor::ModelPurpose::Response,
                         request_digest: [1; 32],
                         request: journal
                             .stage(

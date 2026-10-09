@@ -374,6 +374,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 format!("paged-{step}"),
                 ExecutionEvent::ModelStarted {
                     step,
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest: [57; 32],
                     request: paged_request.clone(),
                 },
@@ -394,6 +395,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             "paged-0".into(),
             ExecutionEvent::ModelStarted {
                 step: 0,
+                purpose: acyclic_harness::executor::ModelPurpose::Response,
                 request_digest: [57; 32],
                 request: paged_request.clone(),
             },
@@ -411,6 +413,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 "paged-cas-70".into(),
                 ExecutionEvent::ModelStarted {
                     step: 70,
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest: [57; 32],
                     request: paged_request.clone(),
                 },

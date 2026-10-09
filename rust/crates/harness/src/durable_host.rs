@@ -322,10 +322,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         match event {
             ExecutionEvent::ModelStarted {
                 step,
+                purpose,
                 request_digest,
                 ..
             } => JournalWrite::Model {
-                attempt_id: operation,
+                attempt_id: purpose.attempt_operation(operation),
                 step: *step,
                 request_digest: *request_digest,
             },
@@ -543,13 +544,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         for record in records {
             if let crate::executor::ExecutionEvent::ModelStarted {
                 step,
+                purpose,
                 request_digest,
                 ..
             } = &record.event
             {
                 coordinator.scheduler().require_model_claim(
                     task_operation,
-                    operation,
+                    purpose.attempt_operation(operation),
                     *step,
                     request_digest,
                 )?;
@@ -3653,6 +3655,7 @@ mod tests {
                         "wrong-claim".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
+                            purpose: crate::executor::ModelPurpose::Response,
                             request_digest: [4; 32],
                             request: model_request.clone(),
                         }
@@ -3667,6 +3670,7 @@ mod tests {
                         "absent-claim".into(),
                         ExecutionEvent::ModelStarted {
                             step: 1,
+                            purpose: crate::executor::ModelPurpose::Response,
                             request_digest: [3; 32],
                             request: model_request.clone(),
                         }
@@ -3676,6 +3680,7 @@ mod tests {
             );
             let start = ExecutionEvent::ModelStarted {
                 step: 0,
+                purpose: crate::executor::ModelPurpose::Response,
                 request_digest: [3; 32],
                 request: model_request.clone(),
             };
@@ -3688,6 +3693,24 @@ mod tests {
                 journal
                     .append_if_tail(attempt, 1, "model".into(), start)
                     .await?
+            );
+            assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
+            assert!(
+                journal
+                    .append_if_tail(
+                        attempt,
+                        2,
+                        "uncharged-summary".into(),
+                        ExecutionEvent::ModelStarted {
+                            step: 0,
+                            purpose: crate::executor::ModelPurpose::Summary,
+                            request_digest: [3; 32],
+                            request: model_request.clone(),
+                        },
+                    )
+                    .await
+                    .is_err(),
+                "a response claim must not authorize a summary admission"
             );
             assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
             assert!(matches!(
@@ -3750,6 +3773,7 @@ mod tests {
                     "model".into(),
                     ExecutionEvent::ModelStarted {
                         step: 0,
+                        purpose: crate::executor::ModelPurpose::Response,
                         request_digest: [3; 32],
                         request: model_request.clone(),
                     },
@@ -3777,6 +3801,18 @@ mod tests {
                 .await
                 .is_err(),
             "the task ceiling is one despite the larger session ceiling"
+        );
+        assert!(
+            host.claim_model_dispatch(
+                task_id,
+                crate::executor::ModelPurpose::Summary.attempt_operation(attempt),
+                0,
+                [5; 32],
+                fence.clone(),
+            )
+            .await
+            .is_err(),
+            "summary admissions must consume the same exhausted task ceiling"
         );
         assert!(
             host.claim_model_dispatch(task_id, attempt, 0, [4; 32], fence.clone())
@@ -4152,6 +4188,7 @@ mod tests {
                         "model".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
+                            purpose: crate::executor::ModelPurpose::Response,
                             request_digest: [3; 32],
                             request: model_request.clone(),
                         }
@@ -4191,6 +4228,7 @@ mod tests {
                         "model".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
+                            purpose: crate::executor::ModelPurpose::Response,
                             request_digest: [3; 32],
                             request: model_request.clone(),
                         }
@@ -4215,6 +4253,7 @@ mod tests {
                 .await?;
             let observation = ExecutionEvent::Model {
                 step: 0,
+                purpose: crate::executor::ModelPurpose::Response,
                 event: reference.clone(),
             };
             assert!(
@@ -4277,6 +4316,7 @@ mod tests {
                         "settlement-69".into(),
                         ExecutionEvent::Model {
                             step: 1,
+                            purpose: crate::executor::ModelPurpose::Response,
                             event: reference,
                         }
                     )
@@ -4305,6 +4345,7 @@ mod tests {
                     "model-completed".into(),
                     ExecutionEvent::Model {
                         step: 0,
+                        purpose: crate::executor::ModelPurpose::Response,
                         event: completed,
                     },
                 )

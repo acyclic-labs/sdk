@@ -40,7 +40,7 @@ struct ExecutionSummary {
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
     // None is a completed dispatch. Its event/call bodies are no longer needed.
-    models: BTreeMap<u32, Option<ModelEventAdmission>>,
+    models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
 }
 
@@ -52,12 +52,18 @@ impl ExecutionSummary {
             }
             ExecutionEvent::ModelStarted {
                 step,
+                purpose,
                 request_digest,
                 ..
-            } => self.tail > 0 && *request_digest != [0; 32] && !self.models.contains_key(step),
-            ExecutionEvent::Model { step, .. } => {
-                self.models.get(step).is_some_and(Option::is_some)
+            } => {
+                self.tail > 0
+                    && *request_digest != [0; 32]
+                    && !self.models.contains_key(&(*step, *purpose))
             }
+            ExecutionEvent::Model { step, purpose, .. } => self
+                .models
+                .get(&(*step, *purpose))
+                .is_some_and(Option::is_some),
             ExecutionEvent::ToolStarted { step, call_id, .. } => {
                 self.tail > 0
                     && !call_id.is_empty()
@@ -88,9 +94,9 @@ impl ExecutionSummary {
         limits: Limits,
     ) -> Result<()> {
         self.require_next(event)?;
-        if let ExecutionEvent::Model { step, .. } = event {
+        if let ExecutionEvent::Model { step, purpose, .. } = event {
             self.models
-                .get(step)
+                .get(&(*step, *purpose))
                 .and_then(Option::as_ref)
                 .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?
                 .validate_next(
@@ -119,14 +125,14 @@ impl ExecutionSummary {
         self.validate_next(&record.event, model, limits)?;
         let digest = crate::contract::canonical_json_digest(&record.event)?;
         match &record.event {
-            ExecutionEvent::ModelStarted { step, .. } => {
+            ExecutionEvent::ModelStarted { step, purpose, .. } => {
                 self.models
-                    .insert(*step, Some(ModelEventAdmission::default()));
+                    .insert((*step, *purpose), Some(ModelEventAdmission::default()));
             }
-            ExecutionEvent::Model { step, .. } => {
+            ExecutionEvent::Model { step, purpose, .. } => {
                 let state = self
                     .models
-                    .get_mut(step)
+                    .get_mut(&(*step, *purpose))
                     .ok_or_else(|| Error::Storage("model dispatch is missing".into()))?;
                 let admission = state
                     .as_mut()
@@ -208,6 +214,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
+    conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
@@ -463,6 +470,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             interactions,
             owner: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            conversation_projection: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -666,6 +674,43 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             )
             .await
             .map(|_| ())
+    }
+
+    /// Shares the existing authoritative reducer between turn admission and
+    /// selected-context verification; refresh never rebuilds its retained prefix.
+    pub(super) async fn conversation_projection(
+        &self,
+        limits: Limits,
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<P>>>
+    where
+        P: StreamProvider,
+    {
+        limits.validate()?;
+        let verifier = self.input_verifier.as_ref().ok_or_else(|| {
+            Error::Unsupported("conversation content verifier is not bound".into())
+        })?;
+        let mut cached = self.conversation_projection.lock().await;
+        if cached.is_none() {
+            *cached = Some(
+                StreamAggregate::open(
+                    &self.stream,
+                    self.verifier.audience().clone(),
+                    self.verifier.clone(),
+                    self.schemas.clone(),
+                )
+                .await?
+                .with_content_verifier(Arc::clone(verifier)),
+            );
+        }
+        let mut aggregate = tokio::sync::MutexGuard::try_map(cached, Option::as_mut)
+            .map_err(|_| Error::Storage("conversation projection is absent".into()))?;
+        aggregate.set_limits(limits)?;
+        let through = aggregate.tail_revision().await?;
+        while !aggregate
+            .refresh_through(through, EXECUTION_REPLAY_PAGE_RECORDS)
+            .await?
+        {}
+        Ok(aggregate)
     }
 
     async fn replay_verified(
@@ -1078,13 +1123,11 @@ where
             let verifier = self.input_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("conversation content verifier is not bound".into())
             })?;
-            let aggregate = StreamAggregate::open(
-                &self.stream,
-                self.verifier.audience().clone(),
-                self.verifier.clone(),
-                self.schemas.clone(),
-            )
-            .await?;
+            let limits = self
+                .owner
+                .as_ref()
+                .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+            let aggregate = self.conversation_projection(limits).await?;
             let committed = aggregate
                 .reducer()
                 .context_selection_for_operation(operation_id)
@@ -1230,4 +1273,118 @@ fn interaction_operation(id: InteractionId, phase: &str) -> OperationId {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AgentId,
+        conversation::{FileDescriptor, VolumeOwner},
+        executor::ModelPurpose,
+        resources::ProviderRef,
+    };
+
+    #[test]
+    fn summary_and_response_share_quiescence_without_aliasing_admissions() -> Result<()> {
+        let operation = OperationId::new();
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test", "filesystem", "1")?,
+                "private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            )?,
+            "request.json",
+            "1",
+            FileDescriptor::from_bytes(b"null", "application/json")?,
+            "request.json",
+        )?;
+        let limits = Limits::default();
+        for first_start in [ModelPurpose::Response, ModelPurpose::Summary] {
+            for first_completion in [ModelPurpose::Response, ModelPurpose::Summary] {
+                let mut state = ExecutionSummary::default();
+                state.accept(
+                    &ExecutionRecord {
+                        operation_id: operation,
+                        sequence: 1,
+                        idempotency_key: "started".into(),
+                        event: ExecutionEvent::Started {
+                            request_digest: [1; 32],
+                        },
+                    },
+                    None,
+                    limits,
+                )?;
+                for purpose in [first_start, other(first_start)] {
+                    let start = ExecutionEvent::ModelStarted {
+                        step: 0,
+                        purpose,
+                        request_digest: [2; 32],
+                        request: file.clone(),
+                    };
+                    state.accept(
+                        &ExecutionRecord {
+                            operation_id: operation,
+                            sequence: state.tail + 1,
+                            idempotency_key: format!("start:{purpose:?}"),
+                            event: start.clone(),
+                        },
+                        None,
+                        limits,
+                    )?;
+                    assert!(state.require_next(&start).is_err());
+                    assert!(!state.quiescent());
+                }
+                for purpose in [first_completion, other(first_completion)] {
+                    state.accept(
+                        &ExecutionRecord {
+                            operation_id: operation,
+                            sequence: state.tail + 1,
+                            idempotency_key: format!("complete:{purpose:?}"),
+                            event: ExecutionEvent::Model {
+                                step: 0,
+                                purpose,
+                                event: file.clone(),
+                            },
+                        },
+                        Some(&ModelEvent::Completed {
+                            metadata: serde_json::json!({}),
+                        }),
+                        limits,
+                    )?;
+                    assert_eq!(state.quiescent(), purpose != first_completion);
+                    assert!(
+                        state
+                            .require_next(&ExecutionEvent::Model {
+                                step: 0,
+                                purpose,
+                                event: file.clone()
+                            })
+                            .is_err()
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            ModelPurpose::Response.attempt_operation(operation),
+            operation
+        );
+        assert_ne!(
+            ModelPurpose::Summary.attempt_operation(operation),
+            operation
+        );
+        assert_ne!(
+            ModelPurpose::Summary.attempt_operation(operation),
+            ModelPurpose::Summary.attempt_operation(OperationId::new())
+        );
+        Ok(())
+    }
+
+    fn other(purpose: ModelPurpose) -> ModelPurpose {
+        match purpose {
+            ModelPurpose::Response => ModelPurpose::Summary,
+            ModelPurpose::Summary => ModelPurpose::Response,
+        }
+    }
 }

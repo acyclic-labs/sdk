@@ -872,6 +872,9 @@ impl MemoryHarnessStorage {
             limits.attachments,
         )
         .await?;
+        // The execution journal verifies selection through this same projection.
+        // Release its guard before entering the executor.
+        drop(aggregate);
         let output = bundle
             .run(TurnInput::from_selected_context(
                 operation_id,
@@ -918,16 +921,11 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    async fn open_conversation(&self, limits: Limits) -> Result<StreamAggregate<MemoryStream>> {
-        StreamAggregate::open(
-            &self.stream,
-            self.conversation.clone(),
-            self.issuer.verifier(),
-            SchemaRegistry::new(),
-        )
-        .await?
-        .with_content_verifier(self.content_verifier.clone())
-        .with_limits(limits)
+    async fn open_conversation(
+        &self,
+        limits: Limits,
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<MemoryStream>>> {
+        self.journal.conversation_projection(limits).await
     }
 
     async fn append_conversation(
@@ -1976,6 +1974,7 @@ mod tests {
             first_user.id,
             crate::turn::canonical_user_message_id(operation_id)
         );
+        drop(first_aggregate);
         let replayed = storage
             .run_conversation(
                 &bundle,
@@ -2000,6 +1999,7 @@ mod tests {
             2
         );
         assert_eq!(aggregate.reducer().context_selections().len(), 1);
+        drop(aggregate);
         storage.run_prompt(&bundle, "follow-up").await?;
         assert_eq!(
             storage

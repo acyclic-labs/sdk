@@ -26,15 +26,72 @@ pub use selection::*;
 mod discovery;
 pub use discovery::*;
 
+/// Durable output of an ordinary admitted summary model operation.
+/// The operation's execution journal retains its exact request and observations.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSummary {
+    /// Caller-owned operation identity; retries use the same admitted request.
+    pub operation_id: crate::OperationId,
+    /// Logical parent step of the summary admission.
+    pub step: u32,
+    /// Number of ordered source messages covered by this summary.
+    pub source_messages: u32,
+    /// Digest of the exact source projection, including immutable content refs.
+    pub source_digest: [u8; 32],
+    /// Immutable summary text staged through the execution journal.
+    pub output: FileRef,
+}
+
+/// Consumer-declared content that compaction must preserve verbatim.
+/// The current input is always retained, regardless of this policy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionRetention {
+    /// Roles retained in full. Defaults to instructions (`System`).
+    pub roles: Vec<ModelRole>,
+    /// Retains messages containing native media references in full.
+    pub native_media: bool,
+}
+
+impl Default for CompactionRetention {
+    fn default() -> Self {
+        Self {
+            roles: vec![ModelRole::System],
+            native_media: true,
+        }
+    }
+}
+
+impl CompactionRetention {
+    /// Rejects ambiguous repeated role declarations.
+    pub fn validate(&self) -> Result<()> {
+        for (position, role) in self.roles.iter().enumerate() {
+            if self
+                .roles
+                .get(..position)
+                .is_some_and(|prior| prior.contains(role))
+            {
+                return Err(crate::Error::Invalid(
+                    "compaction retention repeats a role".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompactionReference {
     /// BLAKE3 digest of the exact serialized source context.
     pub source_digest: [u8; 32],
-    /// Number of source messages before compaction.
-    pub source_messages: u32,
-    /// Number of model-visible messages retained after compaction.
-    pub retained_messages: u32,
+    /// Caller-selected projection budget; replay reconstructs the same selection.
+    pub maximum_messages: u32,
+    /// Exact consumer retention policy used by this admission.
+    pub retention: CompactionRetention,
+    /// Summary operation and immutable output, when a projection was compressed.
+    pub summary: Option<ContextSummary>,
 }
 
 /// One versioned durable context revision.
@@ -60,23 +117,26 @@ pub struct DurableContextProvider {
     path: StreamPath,
     source: String,
     source_revision: String,
-    maximum_revisions: u32,
+    maximum_page_records: u32,
     content_verifier: Arc<dyn ContentResidencyVerifier>,
 }
 
 impl DurableContextProvider {
-    /// Creates a bounded durable provider over one permanent Stream path.
+    /// Creates a durable provider with a positive per-page work bound over one Stream path.
     pub fn new(
         provider: Arc<dyn StreamProvider>,
         path: StreamPath,
         source: impl Into<String>,
         source_revision: impl Into<String>,
-        maximum_revisions: u32,
+        maximum_page_records: u32,
         content_verifier: Arc<dyn ContentResidencyVerifier>,
     ) -> Result<Self> {
         let source = source.into();
         let source_revision = source_revision.into();
-        if source.trim().is_empty() || source_revision.trim().is_empty() || maximum_revisions == 0 {
+        if source.trim().is_empty()
+            || source_revision.trim().is_empty()
+            || maximum_page_records == 0
+        {
             return Err(crate::Error::Invalid(
                 "durable context source, revision, and bound are required".into(),
             ));
@@ -86,7 +146,7 @@ impl DurableContextProvider {
             path,
             source,
             source_revision,
-            maximum_revisions,
+            maximum_page_records,
             content_verifier,
         })
     }
@@ -101,17 +161,12 @@ impl DurableContextProvider {
     ) -> Result<ContextRevision> {
         validate_context_refs(&context, self.content_verifier.as_ref()).await?;
         let revision = next_revision(expected_revision)?;
-        if revision > u64::from(self.maximum_revisions) {
-            return Err(crate::Error::Invalid(
-                "durable context revision bound exceeded".into(),
-            ));
-        }
         if let Some(reference) = &compaction {
             let source = self.read_revision(expected_revision).await?;
             validate_compaction(reference, &source.context, &context)?;
         }
         let record = ContextRevision {
-            format_version: 2,
+            format_version: 3,
             revision,
             source: self.source.clone(),
             source_revision: self.source_revision.clone(),
@@ -147,58 +202,98 @@ impl DurableContextProvider {
         }
     }
 
-    /// Replays and validates the complete bounded revision history.
-    pub async fn revisions(&self) -> Result<Vec<ContextRevision>> {
-        let tail = match self.provider.tail(self.path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(crate::Error::Storage(error.to_string())),
-        };
-        if tail > u64::from(self.maximum_revisions) {
-            return Err(crate::Error::Storage(
-                "durable context history exceeds configured revision bound".into(),
+    /// Captures an immutable read boundary; later appends do not extend this revision.
+    pub async fn tail_revision(&self) -> Result<u64> {
+        match self.provider.tail(self.path.clone()).await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(crate::Error::Storage(error.to_string())),
+        }
+    }
+
+    /// Reads one verified page after a cursor through a captured revision.
+    /// Work and returned records are bounded by the configured page allowance,
+    /// independent of total retained history. A page beginning with compaction
+    /// reads its immediate source once in addition to the bounded page.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.context.page",
+            level = "debug",
+            skip_all,
+            fields(rev = through, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
+    pub async fn revisions(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
+        crate::obs::outcome(self.revisions_inner(after, through).await)
+    }
+
+    async fn revisions_inner(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
+        if after > through || through > self.tail_revision().await? {
+            return Err(crate::Error::Invalid(
+                "context page cursor is invalid".into(),
             ));
         }
-        if tail == 0 {
+        let count = (through - after).min(u64::from(self.maximum_page_records));
+        if count == 0 {
             return Ok(Vec::new());
         }
         let mut stream = self
             .provider
             .read(ReadRequest {
                 path: self.path.clone(),
-                from: 0,
-                limit: self.maximum_revisions,
+                from: after,
+                limit: u32::try_from(count)
+                    .map_err(|_| crate::Error::Invalid("context page bound overflow".into()))?,
             })
             .await
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         let mut revisions: Vec<ContextRevision> = Vec::new();
         while let Some(record) = stream.next().await {
             let record = record.map_err(|error| crate::Error::Storage(error.to_string()))?;
+            if revisions.len() as u64 >= count || record.sequence != after + revisions.len() as u64
+            {
+                return Err(crate::Error::Storage(
+                    "context page returned an invalid range".into(),
+                ));
+            }
             let revision = self.decode_revision(record.sequence, &record.value).await?;
             if let Some(reference) = &revision.compaction {
-                let source = revisions.last().ok_or_else(|| {
-                    crate::Error::Storage(
-                        "durable context compaction has no preceding source".into(),
-                    )
+                let preceding = if revisions.is_empty() {
+                    if after == 0 {
+                        return Err(crate::Error::Storage(
+                            "context compaction has no preceding source".into(),
+                        ));
+                    }
+                    Some(self.read_revision(after).await?)
+                } else {
+                    None
+                };
+                let source = revisions.last().or(preceding.as_ref()).ok_or_else(|| {
+                    crate::Error::Storage("context compaction source is absent".into())
                 })?;
                 validate_compaction(reference, &source.context, &revision.context)
                     .map_err(|error| crate::Error::Storage(error.to_string()))?;
             }
             revisions.push(revision);
         }
-        if revisions.len() as u64 != tail {
-            return Err(crate::Error::Storage(
-                "durable context tail changed during replay".into(),
-            ));
+        if revisions.len() as u64 != count {
+            return Err(crate::Error::Storage("context page is incomplete".into()));
         }
+        crate::obs::obs_record!("items" = revisions.len() as u64);
         Ok(revisions)
     }
 
     async fn decode_revision(&self, sequence: u64, bytes: &[u8]) -> Result<ContextRevision> {
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Err(crate::Error::Storage(
+                "context record exceeds Stream limit".into(),
+            ));
+        }
         let revision: ContextRevision = crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&revision)? != bytes
-            || revision.format_version != 2
+            || revision.format_version != 3
             || revision.revision != next_revision(sequence)?
             || revision.source != self.source
             || revision.source_revision != self.source_revision
@@ -212,9 +307,9 @@ impl DurableContextProvider {
     }
 
     async fn read_revision(&self, revision: u64) -> Result<ContextRevision> {
-        if revision == 0 || revision > u64::from(self.maximum_revisions) {
+        if revision == 0 {
             return Err(crate::Error::Invalid(
-                "context revision is outside configured bounds".into(),
+                "context revision must be positive".into(),
             ));
         }
         let mut stream = self
@@ -240,13 +335,9 @@ impl DurableContextProvider {
     }
 
     /// Returns a captured latest revision with at most two record reads, independent
-    /// of retained revision count. Explicit `revisions()` remains bounded archival replay.
+    /// of retained revision count. `revisions(after, through)` provides bounded archival pages.
     pub async fn latest(&self) -> Result<Context> {
-        let tail = match self.provider.tail(self.path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(crate::Error::Storage(error.to_string())),
-        };
+        let tail = self.tail_revision().await?;
         if tail == 0 {
             return Ok(Context::default());
         }
@@ -262,33 +353,143 @@ impl DurableContextProvider {
     pub fn compact(
         context: &Context,
         max_messages: usize,
-        summary: Option<ModelMessage>,
+        summary: Option<ContextSummary>,
+        retention: CompactionRetention,
     ) -> Result<(Context, CompactionReference)> {
+        retention.validate()?;
         if max_messages == 0 {
             return Err(crate::Error::Invalid(
                 "compaction max_messages must be positive".into(),
             ));
         }
         let source = crate::contract::canonical_json_bytes(context)?;
-        let mut compacted = context.clone();
-        if compacted.messages.len() > max_messages {
-            let keep = max_messages.saturating_sub(usize::from(summary.is_some()));
-            let split = compacted.messages.len().saturating_sub(keep);
-            let mut retained = compacted.messages.split_off(split);
-            if let Some(summary) = summary {
-                retained.insert(0, summary);
+        let source_digest = *blake3::hash(&source).as_bytes();
+        if let Some(summary) = &summary {
+            let covered = context
+                .messages
+                .get(..summary.source_messages as usize)
+                .ok_or_else(|| {
+                    crate::Error::Invalid("summary extent exceeds source projection".into())
+                })?;
+            let summarized = Context {
+                messages: covered.to_vec(),
+                metadata: context.metadata.clone(),
+            };
+            if summary.source_messages == 0
+                || summary.source_digest != crate::contract::canonical_json_digest(&summarized)?
+                || summary.output.descriptor().media_type() != "text/plain"
+            {
+                return Err(crate::Error::Invalid(
+                    "summary does not bind its source prefix".into(),
+                ));
             }
-            compacted.messages = retained;
         }
+        let compacted = if context.messages.len() > max_messages {
+            let summary = summary.as_ref().ok_or_else(|| {
+                crate::Error::Invalid(
+                    "compaction requires a durable summary; context cannot be silently dropped"
+                        .into(),
+                )
+            })?;
+            compact_projection(context, max_messages, summary, &retention)?
+        } else {
+            context.clone()
+        };
         let reference = CompactionReference {
-            source_digest: *blake3::hash(&source).as_bytes(),
-            source_messages: u32::try_from(context.messages.len())
-                .map_err(|_| crate::Error::Invalid("too many context messages".into()))?,
-            retained_messages: u32::try_from(compacted.messages.len())
-                .map_err(|_| crate::Error::Invalid("too many retained messages".into()))?,
+            source_digest,
+            maximum_messages: u32::try_from(max_messages).map_err(|_| {
+                crate::Error::Invalid("compaction budget exceeds portable count".into())
+            })?,
+            summary,
+            retention,
         };
         Ok((compacted, reference))
     }
+}
+
+fn compact_projection(
+    context: &Context,
+    max_messages: usize,
+    summary: &ContextSummary,
+    retention: &CompactionRetention,
+) -> Result<Context> {
+    if max_messages < 2 {
+        return Err(crate::Error::Invalid(
+            "compaction must retain the current input and summary".into(),
+        ));
+    }
+    let mandatory = context
+        .messages
+        .iter()
+        .enumerate()
+        .filter_map(|(position, message)| {
+            let parts = message.content.parts();
+            (position + 1 == context.messages.len()
+                || position >= summary.source_messages as usize
+                || retention.roles.contains(&message.role)
+                || (retention.native_media
+                    && parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            ModelContentPart::File {
+                                policy: crate::model::FileProjectionPolicy::Native,
+                                ..
+                            }
+                        )
+                    })))
+            .then_some(position)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if mandatory.len() >= max_messages {
+        return Err(crate::Error::Invalid(
+            "mandatory context exceeds compaction message budget".into(),
+        ));
+    }
+    let mut selected = mandatory;
+    for position in (0..context.messages.len()).rev() {
+        if selected.len() + 1 == max_messages {
+            break;
+        }
+        selected.insert(position);
+    }
+    let mut calls = std::collections::BTreeSet::new();
+    let mut retained = vec![ModelMessage {
+        role: ModelRole::System,
+        content: ModelContent::Part(ModelContentPart::File {
+            file: summary.output.clone(),
+            policy: crate::model::FileProjectionPolicy::BoundedFull,
+        }),
+    }];
+    for position in selected {
+        let message = context
+            .messages
+            .get(position)
+            .ok_or_else(|| crate::Error::Invalid("compaction position is missing".into()))?;
+        let parts = message.content.parts();
+        for part in parts {
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    calls.insert(call_id);
+                }
+                ModelContentPart::ToolResult { call_id, .. } if !calls.remove(call_id) => {
+                    return Err(crate::Error::Invalid(
+                        "compaction boundary splits a tool exchange".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        retained.push(message.clone());
+    }
+    if !calls.is_empty() {
+        return Err(crate::Error::Invalid(
+            "compaction boundary splits a tool exchange".into(),
+        ));
+    }
+    Ok(Context {
+        messages: retained,
+        metadata: context.metadata.clone(),
+    })
 }
 
 fn validate_compaction(
@@ -297,14 +498,14 @@ fn validate_compaction(
     compacted: &Context,
 ) -> Result<()> {
     let encoded = crate::contract::canonical_json_bytes(source)?;
-    let source_messages = u32::try_from(source.messages.len())
-        .map_err(|_| crate::Error::Invalid("too many context messages".into()))?;
-    let retained_messages = u32::try_from(compacted.messages.len())
-        .map_err(|_| crate::Error::Invalid("too many retained messages".into()))?;
     if reference.source_digest != *blake3::hash(&encoded).as_bytes()
-        || reference.source_messages != source_messages
-        || reference.retained_messages != retained_messages
-        || reference.retained_messages > reference.source_messages
+        || DurableContextProvider::compact(
+            source,
+            reference.maximum_messages as usize,
+            reference.summary.clone(),
+            reference.retention.clone(),
+        )?
+        .0 != *compacted
     {
         return Err(crate::Error::Invalid(
             "compaction reference does not bind the source and retained context".into(),
@@ -443,11 +644,14 @@ pub struct CompactionStage {
     /// Maximum messages retained after compaction.
     pub max_messages: usize,
     /// Optional caller-produced summary prepended when compaction occurs.
-    pub summary: Option<ModelMessage>,
+    pub summary: Option<ContextSummary>,
+    /// Consumer-declared mandatory roles and native media retention.
+    pub retention: CompactionRetention,
 }
 
 impl ContextStage for CompactionStage {
     fn validate(&self) -> Result<()> {
+        self.retention.validate()?;
         if self.max_messages == 0 {
             return Err(crate::Error::Invalid(
                 "compaction max_messages must be positive".into(),
@@ -463,31 +667,27 @@ impl ContextStage for CompactionStage {
     fn contract(&self) -> Value {
         serde_json::json!({
             "name": self.name(),
-            "revision": "1",
+            "revision": "2",
             "max_messages": self.max_messages,
             "summary": self.summary,
+            "retention": self.retention,
         })
     }
 
     fn apply<'a>(
         &'a self,
         _: &'a ContextInput,
-        mut context: Context,
+        context: Context,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
             self.validate()?;
-            if context.messages.len() > self.max_messages {
-                let keep = self
-                    .max_messages
-                    .saturating_sub(usize::from(self.summary.is_some()));
-                let split = context.messages.len().saturating_sub(keep);
-                let mut retained = context.messages.split_off(split);
-                if let Some(summary) = &self.summary {
-                    retained.insert(0, summary.clone());
-                }
-                context.messages = retained;
-            }
-            Ok(context)
+            Ok(DurableContextProvider::compact(
+                &context,
+                self.max_messages,
+                self.summary.clone(),
+                self.retention.clone(),
+            )?
+            .0)
         })
     }
 }
@@ -655,7 +855,269 @@ mod tests {
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 
+    #[test]
+    fn compaction_keeps_mandatory_messages_and_never_splits_tool_pairs() -> Result<()> {
+        let source = Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("instructions".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("old".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("old answer".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall {
+                        call_id: "call".into(),
+                        name: "example.tool".into(),
+                        arguments: Value::Null,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call".into(),
+                        name: "example.tool".into(),
+                        value: Value::Null,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("current".into()),
+                },
+            ],
+            metadata: BTreeMap::new(),
+        };
+        let summary = ContextSummary {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            source_messages: 6,
+            source_digest: crate::contract::canonical_json_digest(&source)?,
+            output: message(ModelRole::System, "summary")?
+                .content
+                .file_refs()
+                .into_iter()
+                .next()
+                .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
+                .clone(),
+        };
+        let prefix = Context {
+            messages: source.messages[..3].to_vec(),
+            metadata: source.metadata.clone(),
+        };
+        let prefix_summary = ContextSummary {
+            source_messages: 3,
+            source_digest: crate::contract::canonical_json_digest(&prefix)?,
+            ..summary.clone()
+        };
+        let (prefix_compacted, prefix_reference) = DurableContextProvider::compact(
+            &source,
+            5,
+            Some(prefix_summary.clone()),
+            CompactionRetention::default(),
+        )?;
+        assert_eq!(prefix_compacted.messages.get(2..), source.messages.get(3..));
+        validate_compaction(&prefix_reference, &source, &prefix_compacted)?;
+        assert!(
+            DurableContextProvider::compact(
+                &source,
+                4,
+                Some(prefix_summary.clone()),
+                CompactionRetention::default(),
+            )
+            .is_err(),
+            "unsummarized messages cannot be dropped to meet the budget"
+        );
+        for extent in [0, 2, 7] {
+            assert!(
+                DurableContextProvider::compact(
+                    &source,
+                    5,
+                    Some(ContextSummary {
+                        source_messages: extent,
+                        ..prefix_summary.clone()
+                    }),
+                    CompactionRetention::default(),
+                )
+                .is_err()
+            );
+        }
+        for budget in 1..=6 {
+            let result = DurableContextProvider::compact(
+                &source,
+                budget,
+                Some(summary.clone()),
+                CompactionRetention::default(),
+            );
+            if matches!(budget, 1 | 2 | 4) {
+                assert!(result.is_err());
+                continue;
+            }
+            let (projected, reference) = result?;
+            assert!(projected.messages.contains(&source.messages[0]));
+            assert_eq!(projected.messages.last(), source.messages.last());
+            assert_eq!(
+                projected.messages.contains(&source.messages[3]),
+                projected.messages.contains(&source.messages[4])
+            );
+            validate_compaction(&reference, &source, &projected)?;
+            let mut corrupt = projected;
+            corrupt
+                .messages
+                .last_mut()
+                .ok_or_else(|| crate::Error::Invalid("empty context".into()))?
+                .content = ModelContent::Text("substitution".into());
+            assert!(validate_compaction(&reference, &source, &corrupt).is_err());
+        }
+        assert!(
+            DurableContextProvider::compact(&source, 3, None, CompactionRetention::default())
+                .is_err()
+        );
+        let configurable = Context {
+            messages: vec![
+                source.messages[0].clone(),
+                source.messages[1].clone(),
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::File {
+                        file: summary.output.clone(),
+                        policy: crate::model::FileProjectionPolicy::Native,
+                    }),
+                },
+                source.messages[5].clone(),
+            ],
+            metadata: BTreeMap::new(),
+        };
+        let configured_summary = ContextSummary {
+            source_digest: crate::contract::canonical_json_digest(&configurable)?,
+            source_messages: 4,
+            ..summary
+        };
+        assert!(
+            DurableContextProvider::compact(
+                &configurable,
+                3,
+                Some(configured_summary.clone()),
+                CompactionRetention::default(),
+            )
+            .is_err()
+        );
+        let retention = CompactionRetention {
+            roles: vec![ModelRole::User],
+            native_media: false,
+        };
+        let (projected, mut reference) = DurableContextProvider::compact(
+            &configurable,
+            3,
+            Some(configured_summary),
+            retention.clone(),
+        )?;
+        assert_eq!(
+            projected.messages.get(1..),
+            Some(
+                &[
+                    configurable.messages[1].clone(),
+                    configurable.messages[3].clone(),
+                ][..]
+            )
+        );
+        assert_eq!(reference.retention, retention);
+        validate_compaction(&reference, &configurable, &projected)?;
+        reference.retention = CompactionRetention::default();
+        assert!(validate_compaction(&reference, &configurable, &projected).is_err());
+        assert!(
+            CompactionRetention {
+                roles: vec![ModelRole::User, ModelRole::User],
+                native_media: true
+            }
+            .validate()
+            .is_err()
+        );
+        Ok(())
+    }
+
     struct RefVerifier;
+
+    #[tokio::test]
+    async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Result<()> {
+        let context = Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("pinned".into()),
+            }],
+            metadata: BTreeMap::new(),
+        };
+        let record = ContextRevision {
+            format_version: 3,
+            revision: 1,
+            source: "instructions".into(),
+            source_revision: "1".into(),
+            context: context.clone(),
+            compaction: None,
+        };
+        let mut records = Vec::new();
+        for (field, value) in [
+            ("format_version", serde_json::json!(0)),
+            ("revision", serde_json::json!(2)),
+            ("source", serde_json::json!("another-source")),
+            ("source_revision", serde_json::json!("another-revision")),
+            ("unknown", serde_json::json!(true)),
+        ] {
+            let mut corrupt = serde_json::to_value(&record)
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            corrupt[field] = value;
+            records.push(crate::contract::canonical_json_bytes(&corrupt)?);
+        }
+        records.push(
+            serde_json::to_vec_pretty(&record)
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+        );
+        records.push(b"not-json".to_vec());
+        let mut missing_source = record;
+        missing_source.compaction = Some(CompactionReference {
+            source_digest: crate::contract::canonical_json_digest(&context)?,
+            maximum_messages: 2,
+            retention: CompactionRetention::default(),
+            summary: None,
+        });
+        records.push(crate::contract::canonical_json_bytes(&missing_source)?);
+        for bytes in records {
+            let stream = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("corrupt/context")
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::from(bytes)],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await
+                .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let provider = DurableContextProvider::new(
+                stream,
+                path,
+                "instructions",
+                "1",
+                1,
+                Arc::new(RefVerifier),
+            )?;
+            assert!(provider.revisions(0, 1).await.is_err());
+            assert!(
+                provider
+                    .decode_revision(0, &vec![b' '; MAX_RECORD_BYTES + 1])
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
 
     struct CountingVerifier(std::sync::atomic::AtomicUsize);
     impl ContentResidencyVerifier for CountingVerifier {
@@ -677,7 +1139,7 @@ mod tests {
                     .map_err(|error| crate::Error::Invalid(error.to_string()))?,
                 "instructions",
                 "1",
-                128,
+                7,
                 verifier.clone(),
             )?;
             let context = Context {
@@ -703,6 +1165,33 @@ mod tests {
                 crate::contract::canonical_json_bytes(&context)?.len(),
                 started.elapsed().as_micros()
             );
+            let through = provider.tail_revision().await?;
+            provider
+                .append(
+                    through,
+                    context.clone(),
+                    None,
+                    Bytes::from_static(b"later-revision"),
+                )
+                .await?;
+            let mut after = 0;
+            let mut visited = 0;
+            loop {
+                let page = provider.revisions(after, through).await?;
+                assert!(page.len() <= 7);
+                if page.is_empty() {
+                    break;
+                }
+                for revision in &page {
+                    assert_eq!(revision.revision, after + 1);
+                    assert!(revision.revision <= through);
+                    after = revision.revision;
+                    visited += 1;
+                }
+            }
+            assert_eq!(visited, retained);
+            assert!(provider.revisions(through + 1, through).await.is_err());
+            assert!(provider.revisions(0, through + 2).await.is_err());
         }
         Ok(())
     }
@@ -821,6 +1310,7 @@ mod tests {
             old.reload(ContextPipeline::new([Arc::new(CompactionStage {
                 max_messages: 0,
                 summary: None,
+                retention: CompactionRetention::default(),
             })
                 as Arc<dyn ContextStage>]))
                 .is_err()
@@ -956,7 +1446,20 @@ mod tests {
         let (compacted, reference) = DurableContextProvider::compact(
             &original,
             2,
-            Some(message(ModelRole::System, "summary")?),
+            Some(ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: 3,
+                source_digest: crate::contract::canonical_json_digest(&original)?,
+                output: message(ModelRole::System, "summary")?
+                    .content
+                    .file_refs()
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
+                    .clone(),
+            }),
+            CompactionRetention::default(),
         )?;
         let mut forged = reference.clone();
         forged.source_digest[0] ^= 1;
@@ -987,12 +1490,9 @@ mod tests {
                 Bytes::from_static(b"context-2"),
             )
             .await?;
-        assert!(
-            provider
-                .append(2, compacted.clone(), None, Bytes::from_static(b"context-3"),)
-                .await
-                .is_err()
-        );
+        provider
+            .append(2, compacted.clone(), None, Bytes::from_static(b"context-3"))
+            .await?;
 
         let reopened = Arc::new(DurableContextProvider::new(
             stream.clone(),
@@ -1002,9 +1502,10 @@ mod tests {
             2,
             Arc::new(RefVerifier),
         )?);
-        let revisions = reopened.revisions().await?;
+        let revisions = reopened.revisions(0, 2).await?;
         assert_eq!(revisions.len(), 2);
         assert_eq!(revisions[1].compaction, Some(reference));
+        assert_eq!(reopened.revisions(1, 2).await?, revisions[1..]);
         assert_eq!(reopened.latest().await?, compacted);
 
         let pipeline = ContextPipeline::new([Arc::new(SourceStage::new(
@@ -1025,7 +1526,11 @@ mod tests {
         assert_eq!(assembled.messages[3], message(ModelRole::User, "current")?);
         let undersized =
             DurableContextProvider::new(stream, path, "memory", "1", 1, Arc::new(RefVerifier))?;
-        assert!(undersized.latest().await.is_err());
+        assert_eq!(undersized.latest().await?, compacted);
+        assert_eq!(undersized.revisions(0, 2).await?.len(), 1);
+        let second = undersized.revisions(1, 2).await?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].context, compacted);
         Ok(())
     }
 }

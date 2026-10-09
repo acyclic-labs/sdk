@@ -674,15 +674,79 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Configures content and projection bounds for future admissions.
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
+        self.set_limits(limits)?;
+        Ok(self)
+    }
+
+    /// Updates admission bounds without discarding the verified projection.
+    pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
         limits.validate()?;
         self.limits = limits;
-        Ok(self)
+        Ok(())
     }
 
     /// Returns the current deterministic projection.
     #[must_use]
     pub const fn reducer(&self) -> &Reducer {
         &self.reducer
+    }
+
+    /// Captures the authoritative tail for a finite incremental refresh.
+    pub async fn tail_revision(&self) -> Result<u64> {
+        Ok(self.stream.tail().await?)
+    }
+
+    /// Advances the existing verified projection by at most one caller-sized page.
+    /// Returns whether the captured `through_revision` has been reached. Later
+    /// appends are excluded; callers may continue paging without a total-work cap.
+    /// On failure, any successfully applied prefix remains authoritative.
+    pub async fn refresh_through(
+        &mut self,
+        through_revision: u64,
+        maximum_events: u32,
+    ) -> Result<bool> {
+        let current = self.reducer.revision();
+        if maximum_events == 0 || through_revision < current {
+            return Err(Error::Invalid("aggregate refresh cursor is invalid".into()));
+        }
+        if through_revision == current {
+            return Ok(true);
+        }
+        if through_revision > self.stream.tail().await? {
+            return Err(Error::Invalid(
+                "aggregate refresh exceeds committed tail".into(),
+            ));
+        }
+        let count = u32::try_from((through_revision - current).min(u64::from(maximum_events)))
+            .map_err(|_| Error::Invalid("aggregate refresh page exceeds platform size".into()))?;
+        let mut records = self.stream.read(current, count).await?;
+        let mut consumed = 0;
+        while let Some(record) = records.try_next().await? {
+            if consumed >= count || record.sequence != self.reducer.revision() {
+                return Err(Error::Storage(
+                    "aggregate refresh page is not contiguous".into(),
+                ));
+            }
+            let (authority, event) = decode_event(&record.value)?;
+            if &authority != self.reducer.authority()
+                || event.revision
+                    != record.sequence.checked_add(1).ok_or_else(|| {
+                        Error::Storage("aggregate refresh revision overflows".into())
+                    })?
+            {
+                return Err(Error::Storage(
+                    "aggregate refresh event binding is invalid".into(),
+                ));
+            }
+            self.reducer.apply_committed(event)?;
+            consumed += 1;
+        }
+        if consumed == 0 {
+            return Err(Error::Storage(
+                "aggregate refresh stopped before captured tail".into(),
+            ));
+        }
+        Ok(self.reducer.revision() == through_revision)
     }
 
     /// Plans, CAS-appends, and only then applies one command.
@@ -1516,6 +1580,45 @@ mod tests {
                 .is_ok()
         );
         schemas
+    }
+
+    #[tokio::test]
+    async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut reader =
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        for identity in 1..=5 {
+            let mut next = command(identity)?;
+            next.expected_revision = writer.reducer().revision();
+            writer.execute(next).await?;
+        }
+        let through = reader.tail_revision().await?;
+        assert_eq!(through, 5);
+        let mut later = command(6)?;
+        later.expected_revision = writer.reducer().revision();
+        writer.execute(later).await?;
+        assert!(reader.refresh_through(through, 0).await.is_err());
+        assert!(!reader.refresh_through(through, 2).await?);
+        assert_eq!(reader.reducer().revision(), 2);
+        assert!(!reader.refresh_through(through, 2).await?);
+        assert_eq!(reader.reducer().revision(), 4);
+        assert!(reader.refresh_through(through, 2).await?);
+        assert_eq!(reader.reducer().revision(), 5);
+        assert!(reader.refresh_through(through, 2).await?);
+        assert!(reader.refresh_through(4, 2).await.is_err());
+        assert!(reader.refresh_through(7, 2).await.is_err());
+        assert!(reader.refresh_through(6, 2).await?);
+        assert_eq!(reader.reducer().revision(), 6);
+        let reopened =
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
+        assert_eq!(
+            reader.reducer().events_after(0, 6)?,
+            reopened.reducer().events_after(0, 6)?
+        );
+        Ok(())
     }
 
     #[tokio::test]
