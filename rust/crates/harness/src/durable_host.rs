@@ -5,7 +5,7 @@ use crate::{
     Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
-    core::{Authority, AuthorityVerifier, Scope},
+    core::{Authority, AuthorityVerifier, SchemaRegistry, Scope},
     distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
     durable_tool::DurableToolRunner,
     executor::ExecutionJournal,
