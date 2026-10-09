@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .read(ReadRequest {
             path: path.clone(),
             from: 0,
-            limit: values.len() as u32,
+            limit: u32::try_from(values.len())?,
         })
         .await?
         .try_collect::<Vec<_>>()

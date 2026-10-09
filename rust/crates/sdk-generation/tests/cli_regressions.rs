@@ -299,17 +299,35 @@ fn write_manifest(output: &Path, value: &Value) {
     .unwrap();
 }
 
+fn drift_command(fixture: &Fixture) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    command.args([
+        "drift",
+        "--root",
+        fixture.root.to_str().unwrap(),
+        "--output",
+        fixture.output.to_str().unwrap(),
+        "--rustdoc-dir",
+        fixture.rustdoc.to_str().unwrap(),
+    ]);
+    command
+}
+
 fn run_drift(fixture: &Fixture) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
-        .args([
-            "drift",
-            "--root",
-            fixture.root.to_str().unwrap(),
-            "--output",
-            fixture.output.to_str().unwrap(),
-            "--rustdoc-dir",
-            fixture.rustdoc.to_str().unwrap(),
-        ])
+    drift_command(fixture).output().unwrap()
+}
+
+fn fixture_path(support: &Path) -> std::ffi::OsString {
+    std::env::join_paths(
+        std::iter::once(support.to_owned())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap()
+}
+
+fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Output {
+    drift_command(fixture)
+        .env("PATH", fixture_path(support))
         .output()
         .unwrap()
 }
@@ -795,7 +813,7 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
     )
     .unwrap();
     let release_relative = generation["releaseManifest"].as_str().unwrap();
-    let release_path = fixture.output.join(release_relative.replace('/', "\\"));
+    let release_path = fixture.output.join(release_relative);
     let release_bytes = fs::read(&release_path).unwrap();
     let release: Value = serde_json::from_slice(&release_bytes).unwrap();
     assert_eq!(release["schema"], "sdk-generation-release-manifest.v1");
@@ -809,9 +827,7 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
         .iter()
         .find(|artifact| artifact["kind"] == "scenario-catalog")
         .expect("release manifest must bind the scenario catalog artifact");
-    let catalog_path = fixture
-        .output
-        .join(catalog["path"].as_str().unwrap().replace('/', "\\"));
+    let catalog_path = fixture.output.join(catalog["path"].as_str().unwrap());
     assert_eq!(catalog["sha256"], hash_file(&catalog_path));
     assert_eq!(
         fs::read_to_string(release_path.with_extension("sha256"))
@@ -1083,8 +1099,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
             .as_str()
             .unwrap()
             .strip_prefix("rustdoc/")
-            .unwrap()
-            .replace('/', "\\"),
+            .unwrap(),
     );
     assert_eq!(
         receipt["rustdocSha256"],
@@ -1445,11 +1460,7 @@ fn run_historical_generate_mode_with_authority(
     override_lock: Option<&Path>,
     automatic_config: Option<(&Path, bool)>,
 ) -> std::process::Output {
-    let path = std::env::join_paths(
-        std::iter::once(support.to_owned())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
+    let path = fixture_path(support);
     let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
     command
         .env("PATH", path)
@@ -1900,11 +1911,14 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     >= 2,
                 "actual Cargo profiles must use distinct OUT_DIR aliases"
             );
-            let drift = run_drift(&Fixture {
-                root: fixture.root.clone(),
-                rustdoc: output.join(".rustdoc"),
-                output,
-            });
+            let drift = run_historical_drift(
+                &Fixture {
+                    root: fixture.root.clone(),
+                    rustdoc: output.join(".rustdoc"),
+                    output,
+                },
+                &support,
+            );
             assert!(drift.status.success(), "{}", output_message(&drift));
         }
         let _ = fs::remove_dir_all(fixture.root);
@@ -1973,11 +1987,14 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
             .join(item["source"]["path"].as_str().unwrap())
             .is_file());
     }
-    let drift = run_drift(&Fixture {
-        root: fixture.root.clone(),
-        rustdoc: output.join(".rustdoc"),
-        output: output.clone(),
-    });
+    let drift = run_historical_drift(
+        &Fixture {
+            root: fixture.root.clone(),
+            rustdoc: output.join(".rustdoc"),
+            output: output.clone(),
+        },
+        support,
+    );
     assert!(drift.status.success(), "{}", output_message(&drift));
     for (fixture, _) in fixtures {
         let _ = fs::remove_dir_all(fixture.root);
@@ -2053,12 +2070,12 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
             let source = output.join("sources/demo-1.0.0").join(path);
             let original = fs::read(&source).unwrap();
             fs::write(&source, b"tampered imported source").unwrap();
-            let drift = run_drift(&imported);
+            let drift = run_historical_drift(&imported, &support);
             assert!(!drift.status.success(), "{path} drift was accepted");
             fs::write(&source, original).unwrap();
         }
         fs::write(output.join("sources/demo-1.0.0/stale-extra.bin"), b"stale").unwrap();
-        assert!(!run_drift(&imported).status.success());
+        assert!(!run_historical_drift(&imported, &support).status.success());
         let _ = fs::remove_dir_all(fixture.root);
         let _ = fs::remove_dir_all(fixture.output);
     }
@@ -2097,7 +2114,15 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
         rustdoc: output.join(".rustdoc"),
         output: output.clone(),
     };
-    let drift = run_drift(&imported);
+    let changed_context = run_drift(&imported);
+    assert!(!changed_context.status.success());
+    assert!(
+        output_message(&changed_context)
+            .contains("historical source frontier or discovery context changed"),
+        "{}",
+        output_message(&changed_context)
+    );
+    let drift = run_historical_drift(&imported, &support);
     assert!(drift.status.success(), "{}", output_message(&drift));
     fs::write(
         output
@@ -2107,7 +2132,7 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
         b"tampered original publisher export",
     )
     .unwrap();
-    let drift = run_drift(&imported);
+    let drift = run_historical_drift(&imported, &support);
     assert!(
         !drift.status.success(),
         "changed original publisher export was admitted"

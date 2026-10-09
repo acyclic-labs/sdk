@@ -1080,6 +1080,43 @@ fn read_git_source_blobs(
     Ok(())
 }
 
+fn discovery_environment_inputs(
+    inputs: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    windows: bool,
+) -> Result<BTreeMap<String, String>, String> {
+    // Retain digests, never raw credential-bearing environment values.
+    let mut environment_sha256 = BTreeMap::new();
+    for (key, value) in inputs {
+        let mut key = key
+            .into_string()
+            .map_err(|_| "non-UTF8 discovery environment key")?;
+        // Windows environment names are case-insensitive and commonly expose
+        // PATH as `Path`; retain the same discovery authority on both hosts.
+        if windows {
+            key.make_ascii_uppercase();
+        }
+        if key == "PATH"
+            || key.starts_with("GIT_")
+            || key.starts_with("CARGO_")
+            || key.starts_with("RUSTUP_")
+            || key == "HOME"
+            || key == "USERPROFILE"
+        {
+            let value = value
+                .into_string()
+                .map_err(|_| "non-UTF8 discovery environment value")?;
+            let digest = super::sha256_bytes(value.as_bytes());
+            if environment_sha256
+                .insert(key, digest.clone())
+                .is_some_and(|previous| previous != digest)
+            {
+                return Err("conflicting case aliases in Cargo discovery environment".into());
+            }
+        }
+    }
+    Ok(environment_sha256)
+}
+
 fn cargo_discovery_inputs(root: &Path, cargo: &Path) -> Result<CargoDiscoveryInputs, String> {
     let mut config_sha256 = BTreeMap::new();
     let home = std::env::var_os("CARGO_HOME")
@@ -1110,25 +1147,7 @@ fn cargo_discovery_inputs(root: &Path, cargo: &Path) -> Result<CargoDiscoveryInp
             config_sha256.insert(super::path_string(&path), digest);
         }
     }
-    // Retain digests, never raw credential-bearing environment values.
-    let mut environment_sha256 = BTreeMap::new();
-    for (key, value) in std::env::vars_os() {
-        let key = key
-            .into_string()
-            .map_err(|_| "non-UTF8 discovery environment key")?;
-        if key == "PATH"
-            || key.starts_with("GIT_")
-            || key.starts_with("CARGO_")
-            || key.starts_with("RUSTUP_")
-            || key == "HOME"
-            || key == "USERPROFILE"
-        {
-            let value = value
-                .into_string()
-                .map_err(|_| "non-UTF8 discovery environment value")?;
-            environment_sha256.insert(key, super::sha256_bytes(value.as_bytes()));
-        }
-    }
+    let environment_sha256 = discovery_environment_inputs(std::env::vars_os(), cfg!(windows))?;
     Ok(CargoDiscoveryInputs {
         git_sha256: super::sha256_file(&frontier_git()?).map_err(|e| e.to_string())?,
         cargo_sha256: super::sha256_file(cargo).map_err(|e| e.to_string())?,
@@ -2793,6 +2812,43 @@ mod tests {
         .contains("declared original history"));
     }
     use super::*;
+
+    #[test]
+    fn windows_discovery_environment_rejects_conflicting_case_aliases() {
+        let values = [
+            ("PATH".into(), "first-toolchain".into()),
+            ("Path".into(), "second-toolchain".into()),
+        ];
+        for inputs in [values.clone(), [values[1].clone(), values[0].clone()]] {
+            let error = discovery_environment_inputs(inputs, true).unwrap_err();
+            assert!(error.contains("conflicting case aliases"));
+        }
+    }
+
+    #[test]
+    fn windows_discovery_environment_retains_equal_path_aliases() {
+        let inputs = [
+            ("Path".into(), "same-toolchain".into()),
+            ("PATH".into(), "same-toolchain".into()),
+        ];
+        let retained = discovery_environment_inputs(inputs, true).unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            retained["PATH"],
+            super::super::sha256_bytes(b"same-toolchain")
+        );
+    }
+
+    #[test]
+    fn posix_discovery_environment_keeps_distinct_case_sensitive_names() {
+        let inputs = [
+            ("CARGO_TEST_VALUE".into(), "upper".into()),
+            ("CARGO_test_value".into(), "lower".into()),
+        ];
+        let retained = discovery_environment_inputs(inputs, false).unwrap();
+        assert_eq!(retained.len(), 2);
+        assert_ne!(retained["CARGO_TEST_VALUE"], retained["CARGO_test_value"]);
+    }
 
     #[test]
     fn crates_io_publish_eligibility_respects_the_registry_allowlist() {
