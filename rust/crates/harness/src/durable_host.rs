@@ -156,42 +156,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         binding: &crate::model::NativeConfigurationBinding,
     ) -> Result<()> {
-        binding.configuration.validate()?;
-        let admission = self.extensions.as_ref().ok_or_else(|| {
-            Error::Unsupported("original task extension admission is unavailable".into())
-        })?;
-        if admission.source() != &binding.source
-            || !admission
-                .selected()
-                .contains(&binding.configuration.extension)
-            || !admission.configurations().contains(&binding.configuration)
-        {
-            return Err(Error::Unauthorized(
-                "native options differ from original task admission".into(),
-            ));
-        }
-        let schemas = self.extension_schemas.as_ref().ok_or_else(|| {
-            Error::Unsupported("original task extension registry is unavailable".into())
-        })?;
-        let runtime = self.extension_runtime.as_ref().ok_or_else(|| {
-            Error::Unsupported("original task linked implementation is unavailable".into())
-        })?;
-        let extension = &binding.configuration.extension;
-        let linked = runtime
-            .selected()
-            .iter()
-            .find(|identity| {
-                identity.name == extension.name && identity.version == extension.version
-            })
-            .ok_or_else(|| {
-                Error::Unsupported("original linked extension version is unavailable".into())
-            })?;
-        let expected = schemas.implementation_digest(&extension.name, extension.version)?;
-        if linked.digest != expected || binding.implementation_digest != expected {
-            return Err(Error::Conflict(
-                "native options implementation binding differs".into(),
-            ));
-        }
+        let (schemas, expected) = binding.verify_original(
+            self.extensions.as_ref(),
+            self.extension_schemas.as_ref(),
+            self.extension_runtime.as_deref(),
+        )?;
         let file = &binding.configuration.content;
         self.validate_input_file(file)?;
         if file.descriptor().byte_length() > self.input_limits.render_bytes {

@@ -372,6 +372,53 @@ pub struct NativeConfigurationBinding {
     pub implementation_digest: [u8; 32],
 }
 
+impl NativeConfigurationBinding {
+    /// Verifies the claim against the original immutable composition before IO.
+    /// File authority, effective bounds and authenticated bytes remain caller-owned.
+    pub(crate) fn verify_original<'a>(
+        &self,
+        admission: Option<&crate::core::ExtensionAdmission>,
+        schemas: Option<&'a crate::core::SchemaRegistry>,
+        runtime: Option<&crate::extension::ExtensionRuntime>,
+    ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
+        self.configuration.validate()?;
+        let admission = admission.ok_or_else(|| {
+            Error::Unsupported("original task extension admission is unavailable".into())
+        })?;
+        if admission.source() != &self.source
+            || !admission.selected().contains(&self.configuration.extension)
+            || !admission.configurations().contains(&self.configuration)
+        {
+            return Err(Error::Unauthorized(
+                "native options differ from original task admission".into(),
+            ));
+        }
+        let schemas = schemas.ok_or_else(|| {
+            Error::Unsupported("original task extension registry is unavailable".into())
+        })?;
+        let runtime = runtime.ok_or_else(|| {
+            Error::Unsupported("original task linked implementation is unavailable".into())
+        })?;
+        let extension = &self.configuration.extension;
+        let linked = runtime
+            .selected()
+            .iter()
+            .find(|identity| {
+                identity.name == extension.name && identity.version == extension.version
+            })
+            .ok_or_else(|| {
+                Error::Unsupported("original linked extension version is unavailable".into())
+            })?;
+        let expected = schemas.implementation_digest(&extension.name, extension.version)?;
+        if linked.digest != expected || self.implementation_digest != expected {
+            return Err(Error::Conflict(
+                "native options implementation binding differs".into(),
+            ));
+        }
+        Ok((schemas, expected))
+    }
+}
+
 /// Explicit common image quality intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
