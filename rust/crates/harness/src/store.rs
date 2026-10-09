@@ -1694,6 +1694,7 @@ mod tests {
             Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
+                "conversation:select_context".to_owned(),
                 file.read_capability()?,
             ]),
         );
@@ -1739,6 +1740,27 @@ mod tests {
             writer.execute(next).await?;
         }
         assert_eq!(writer.reducer().events().len(), 1);
+        let selection_operation = OperationId::from_bytes([98; 16]);
+        let selection = crate::conversation::ModelContextSelection {
+            conversation_revision: 10_000,
+            message_ids: [1, 5_000, 10_000]
+                .into_iter()
+                .map(|sequence| message(sequence).id)
+                .collect(),
+            checkpoint: None,
+        };
+        writer
+            .execute(Command {
+                operation_id: selection_operation,
+                idempotency_key: IdempotencyKey::new("indexed-context-selection")?,
+                expected_revision: writer.reducer().revision(),
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::SelectModelContext {
+                    selection: selection.clone(),
+                },
+            })
+            .await?;
         let pinned = reader.pin(0).await?;
         let future = message(10_001);
         writer
@@ -1829,6 +1851,82 @@ mod tests {
                 .await,
             Err(Error::Storage(_))
         ));
+        #[cfg(feature = "filesystem")]
+        {
+            use crate::executor::ExecutionJournal as _;
+            let filesystem_provider =
+                crate::resources::ProviderRef::new("cold-selected-context", "filesystem", "2")?;
+            let host = Arc::new(crate::filesystem::FilesystemHost::new(
+                acyclic_fs::Fs::memory(),
+                filesystem_provider.clone(),
+            )?);
+            let private = crate::conversation::VolumeRef::new(
+                filesystem_provider,
+                "journal",
+                crate::conversation::VolumeClass::AgentPrivate,
+                crate::conversation::VolumeOwner::Agent(agent),
+            )?;
+            host.create_volume(&private).await?;
+            let journal_scope = issuer().root_for_agent(
+                agent,
+                "cold-selection-journal",
+                Capabilities::new([
+                    private.capability(crate::conversation::VolumeOperation::Read)?,
+                    private.capability(crate::conversation::VolumeOperation::Write)?,
+                ]),
+            );
+            let journal = crate::filesystem::FilesystemExecutionJournal::new_with_schemas(
+                client.clone(),
+                host,
+                private,
+                issuer().verifier(),
+                schemas(),
+                journal_scope,
+                65_536,
+            )?
+            .with_input_verifier(Arc::new(TestContent));
+            let sparse = crate::conversation::ConversationState::selected_view(
+                [1, 5_000, 10_000].into_iter().map(message).collect(),
+            )?;
+            assert_eq!(sparse.messages().len(), 3);
+            assert!(sparse.agent.is_none());
+            let selected = crate::projection::select_model_context_at_revision(
+                &sparse,
+                selection.clone(),
+                &TestContent,
+                3,
+                8,
+                65_536,
+                8,
+            )
+            .await?;
+            provider.observation_reads.store(0, Ordering::SeqCst);
+            journal
+                .verify_selected_context(selection_operation, &selected)
+                .await?;
+            // One operation locator/event and three message locator/event pairs.
+            // Reopening the old reducer would instead read all 10,000 messages.
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 8);
+            assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+            let mut altered = selected.clone();
+            altered.messages.pop();
+            assert!(matches!(
+                journal
+                    .verify_selected_context(selection_operation, &altered)
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+            let mut wrong_selection = selected;
+            wrong_selection.selection.message_ids.pop();
+            provider.observation_reads.store(0, Ordering::SeqCst);
+            assert!(matches!(
+                journal
+                    .verify_selected_context(selection_operation, &wrong_selection)
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        }
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
         Ok(())
     }

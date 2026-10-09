@@ -1536,6 +1536,15 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
+    /// Rebuilds only a bounded, already attested selection for byte projection.
+    /// This unbound sparse view cannot authorize append or stand in for history.
+    pub(crate) fn selected_view(messages: Vec<ConversationMessage>) -> Result<Self> {
+        Self::try_from(ConversationStateWire {
+            agent: None,
+            messages,
+        })
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "only append-after-push and decode's in-bounds enumeration call this private indexer"

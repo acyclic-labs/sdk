@@ -1457,29 +1457,57 @@ where
                 .owner
                 .as_ref()
                 .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
-            let aggregate = self.conversation_projection(limits).await?;
-            let committed = aggregate
-                .context_selection_for_operation(operation_id)
-                .await?
-                .ok_or_else(|| {
-                    Error::Conflict("turn has no committed model-context selection".into())
-                })?;
+            limits.validate()?;
+            if selected.selection.message_ids.len() > limits.context_messages {
+                return Err(Error::Invalid(
+                    "selected history exceeds context message limit".into(),
+                ));
+            }
+            let reader = crate::store::HistoryReader::new(
+                &self.stream,
+                self.verifier.audience(),
+                self.verifier.clone(),
+            )?;
+            let event = reader.operation_event(operation_id).await?.ok_or_else(|| {
+                Error::Conflict("turn has no committed model-context selection".into())
+            })?;
+            let crate::core::EventPayload::ModelContextSelected {
+                selection: committed,
+            } = event.payload
+            else {
+                return Err(Error::Conflict(
+                    "turn operation is not a model-context selection".into(),
+                ));
+            };
             if committed != selected.selection {
                 return Err(Error::Conflict(
                     "model-context selection does not match the committed turn".into(),
                 ));
             }
-            let historical = aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Invalid("journal authority is not a conversation".into()))?;
-            let length = usize::try_from(committed.conversation_revision)
-                .map_err(|_| Error::Storage("selection revision exceeds platform size".into()))?;
-            if length > historical.messages.len() {
-                return Err(Error::Storage(
-                    "selection revision exceeds conversation history".into(),
-                ));
+            // The exact attested selection event fixes the cutoff. Later parent
+            // appends cannot change these indexed immutable records on retry.
+            let cursor = crate::store::HistoryCursor {
+                authority: self.verifier.audience().clone(),
+                after_revision: 0,
+                through_revision: event.revision,
+            };
+            let lookup_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
+                .checked_mul(2)
+                .ok_or_else(|| Error::Invalid("selected history byte bound overflows".into()))?;
+            let mut loaded = Vec::with_capacity(committed.message_ids.len());
+            for id in &committed.message_ids {
+                loaded.push(
+                    reader
+                        .conversation_message(&cursor, *id, lookup_bytes)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::Storage(
+                                "committed selected message is missing at its cutoff".into(),
+                            )
+                        })?,
+                );
             }
+            let historical = crate::conversation::ConversationState::selected_view(loaded)?;
             let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
                 (
                     crate::conversation::MAX_PORTABLE_COUNT,
@@ -1496,7 +1524,7 @@ where
                 },
             );
             let projected = select_model_context_at_revision(
-                historical,
+                &historical,
                 committed.clone(),
                 verifier.as_ref(),
                 messages,
