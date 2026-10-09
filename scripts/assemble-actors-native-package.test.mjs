@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { assertCommonBindings, assertNativeSet, verifyNativeAssembly } from "./assemble-actors-native-package.mjs";
-import { assertSelectedArtifact } from "./build-actors-native.mjs";
+import { assertSelectedArtifact, normalizeBuildInputs, buildInputsReceipt } from "./build-actors-native.mjs";
+import { validBuildInputs } from "./fixtures/native-build-inputs.mjs";
 
 const targets = ["target-a", "target-b", "target-c"];
 const source = "a".repeat(40);
@@ -85,17 +86,31 @@ test("archive verification binds parent, companion, original source and actual a
     const companionManifest = { name, version, private: false, main, os: ["fixture"], cpu: ["fixture"] };
     const parentManifest = { name: "@acyclic-labs/actors", version, private: false, optionalDependencies: { [name]: version } };
     const inventory = { schema: "acyclic.actors.native-source-inventory.v1", source_commit: source, source_sha256: "sha256:source", source_files: [{ path: "contract.rs", sha256: "sha256:contract", bytes: 10 }], parent: parentManifest, targets: [target], companions: [{ selected_target: target, name, main, os: ["fixture"], cpu: ["fixture"], manifest: companionManifest }] };
-    const generation = { schema: "acyclic.actors.native-generation.v1", package: "acyclic-actors-napi", version, revision: source, selected_target: target, targets: [target], source_sha256: inventory.source_sha256, source_files: inventory.source_files, artifacts };
+    const raw = validBuildInputs("actors");
+    raw.target = raw.linker.actual.target = raw.generator.options.target = target;
+    raw.compiler.rustc.command = raw.linker.actual.rustc;
+    raw.linker.actual.args.push("--remap-path-prefix=C:/producer/sdk=/__acyclic_stream_source");
+    const build_inputs = normalizeBuildInputs(raw, { sourceRoot: "C:/producer/sdk", platform: "win32", targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir });
+    const { options: ignored, ...generator } = raw.generator;
+    inventory.generator = generator;
+    const compilerReceipt = buildInputsReceipt(raw, build_inputs);
+    const generation = { schema: "acyclic.actors.native-generation.v1", package: "acyclic-actors-napi", version, revision: source, selected_target: target, targets: [target], source_sha256: inventory.source_sha256, source_files: inventory.source_files, artifacts, build_inputs };
     const generationBytes = JSON.stringify(generation);
     const meta = { ...generation, schema: "acyclic.actors.native-targets.v1", source_revision: source, artifact: artifacts[2], generation_sha256: `sha256:${hash(generationBytes)}` };
     const entry = { name, version, asset: "actors-native/companion.tgz", selected_target: target, os: ["fixture"], cpu: ["fixture"], artifact: meta.artifact, generation_sha256: meta.generation_sha256 };
-    const index = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: source, source_sha256: inventory.source_sha256, targets: [target], companions: [entry] };
+    await mkdir(join(parent, "generated/wasm"), { recursive: true });
+    const wasm = Buffer.from("synthetic module bytes; receipt admission only");
+    await writeFile(join(parent, "generated/wasm/fixture_bg.wasm"), wasm);
+    const wasmReceipt = { schema: "acyclic.wasm-build-receipt.v1", family: "actors", package: "acyclic-actors-wasm", version, source_commit: source, source_sha256: inventory.source_sha256, source_files: inventory.source_files, build: { cargo: { version: "synthetic cargo" }, rustc: { invocation: { source: "rustc-invocation", rustc: "fixture-rustc", target: "wasm32-unknown-unknown" }, identity: { command: "fixture-rustc", output: "synthetic rustc", executable_sha256: `sha256:${"f".repeat(64)}` } }, wasm_bindgen: { version: "synthetic bindgen" }, module_sha256: `sha256:${hash(wasm)}` }, artifacts: [{ path: "generated/wasm/fixture_bg.wasm", bytes: wasm.length, sha256: `sha256:${hash(wasm)}` }] };
+    const wasmReceiptBytes = JSON.stringify(wasmReceipt);
+    await writeFile(join(parent, "generated/wasm/producer-receipt.json"), wasmReceiptBytes);
+    const index = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: source, source_sha256: inventory.source_sha256, targets: [target], companions: [entry], wasm_receipt_sha256: `sha256:${hash(wasmReceiptBytes)}` };
     const parentReceipt = { name: "@acyclic-labs/actors", version, asset: "acyclic-labs-actors-0.2.0.tgz" };
     await json(join(parent, "package.json"), parentManifest);
     await json(join(companion, "package.json"), { name, version, private: false, main, os: entry.os, cpu: entry.cpu });
     for (const path of ["binding.cjs", "binding.d.ts"]) await writeFile(join(parent, "generated/native", path), path);
     await writeFile(join(companion, main), main);
-    for (const [path, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", generationBytes]]) {
+    for (const [path, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", generationBytes], ["producer-receipt.json", JSON.stringify(compilerReceipt)]]) {
       await writeFile(join(companion, path), bytes);
       await writeFile(join(parent, "generated/native/attestations", target, path), bytes);
     }
@@ -107,6 +122,22 @@ test("archive verification binds parent, companion, original source and actual a
       await writeFile(join(output, "SHA256SUMS"), [parentReceipt, entry].map(item => `${item.sha256}  ${item.asset}`).join("\n"));
     };
     const verify = () => verifyNativeAssembly(output, source, version, inventory);
+    await seal(); await verify();
+    await writeFile(join(parent, "generated/wasm/fixture_bg.wasm"), "tampered WASM"); await seal();
+    await assert.rejects(verify(), /WASM artifact digest differs/);
+    await writeFile(join(parent, "generated/wasm/fixture_bg.wasm"), wasm);
+    await writeFile(join(parent, "generated/wasm/extra.js"), "unattested"); await seal();
+    await assert.rejects(verify(), /WASM file inventory differs/);
+    await rm(join(parent, "generated/wasm/extra.js")); await seal(); await verify();
+    for (const mutation of [{ source_commit: "b".repeat(40) }, { source_sha256: "sha256:other" }, { source_files: [] }]) {
+      const bytes = JSON.stringify({ ...wasmReceipt, ...mutation });
+      await writeFile(join(parent, "generated/wasm/producer-receipt.json"), bytes);
+      index.wasm_receipt_sha256 = `sha256:${hash(bytes)}`;
+      await seal();
+      await assert.rejects(verify(), /WASM receipt source or package identity differs/);
+    }
+    await writeFile(join(parent, "generated/wasm/producer-receipt.json"), wasmReceiptBytes);
+    index.wasm_receipt_sha256 = `sha256:${hash(wasmReceiptBytes)}`;
     await seal(); await verify();
     for (const mutation of [{ scripts: { install: "node -e process.exit(1)" } }, { dependencies: { "unqualified-runtime-dependency": "*" } }]) {
       await json(join(parent, "package.json"), { ...parentManifest, ...mutation }); await seal();
