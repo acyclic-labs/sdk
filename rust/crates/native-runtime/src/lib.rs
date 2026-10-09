@@ -1,4 +1,5 @@
 //! Native file and owned-process primitives shared by SDK host consumers.
+#![doc = include_str!("../README.md")]
 
 use bytes::Bytes;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]

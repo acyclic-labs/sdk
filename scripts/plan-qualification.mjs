@@ -111,7 +111,7 @@ export const ignored = {
   // no package reads, and no Rust integration tests.
   typescript: path =>
     !generatedSourceInputs.has(path) && (ignored.product(path) ||
-    /^rust\/crates\/(conformance|harness-codex|machines-daytona|sdk-docs)\//.test(path) ||
+    /^rust\/crates\/(conformance|harness-codex|machines-daytona|sdk-docs|sdk-generation)\//.test(path) ||
     /^rust\/crates\/[^/]+\/(tests|benches)\//.test(path) ||
     ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix))),
   // Rust plus the TypeScript workspace.

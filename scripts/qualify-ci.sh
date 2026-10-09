@@ -154,6 +154,8 @@ case "$lane" in
     # These crates deliberately have independent workspaces; --workspace and
     # llvm-cov cannot cover them, even during full qualification.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
+    cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
+    node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
     if [[ "$full_qualification" != true ]]; then
       # The same suite the full native lanes run, without coverage; the
       # ignored live-mount and fork/join suites stay there.
