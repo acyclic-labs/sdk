@@ -70,7 +70,11 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
             "orphan result was admitted".into(),
         ));
     };
-    assert!(error.to_string().contains("canonical history delta exceeds context limit"));
+    assert!(
+        error
+            .to_string()
+            .contains("canonical history delta exceeds context limit")
+    );
     assert_eq!(
         serde_json::to_vec(&reopened)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,

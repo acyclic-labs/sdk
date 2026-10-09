@@ -1,10 +1,7 @@
 //! Primitive threshold compaction using provider-owned token accounting.
 
 use super::{CompactionRetention, Context, ModelContextCapacity, ModelTokenCount};
-use crate::{
-    Error, Result,
-    model::ModelContentPart,
-};
+use crate::{Error, Result, model::ModelContentPart};
 use serde::{Deserialize, Serialize};
 
 /// Ordinary configurable threshold compaction; no model-family heuristic.
