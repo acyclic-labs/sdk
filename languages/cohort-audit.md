@@ -57,9 +57,11 @@ Protify and Rust ABI changes remain foundation-owned.
 Await the foundation owner's exact reconstructed source commit and accepted
 interface/lock hashes. Prepare one source-attested generation run together with
 the docs owner; reuse its canonical exports and native assets across consumers.
-Then request finite cohort workloads from the integration coordinator, with
-jobs and test threads set to one, per-host disk bounds and owned output paths.
-There is currently no build, runtime, fixture or remote-workload admission.
+Run local cohort checks with jobs and test threads set to one, bounded caches
+and owned output paths. Local builds, tests and locked dependency installation
+are authorized; coordinate contention without a repeated host-approval gate.
+Hosted CI remains coordinator-owned, and separate remote-upload rejections
+remain in force.
 
 For each cohort, retain deterministic generation and artifact hashes, clean
 local installation, positive/negative type controls where supported, and actual
@@ -84,6 +86,18 @@ At lines 146-170, `validation/v1/options.proto` can enter generation by file
 existence without the family-input digest checks. The accepted exporter must
 attest every transitive generator input, including custom options, before reuse.
 These are source findings; no destructive invocation was attempted.
+
+The isolated `scripts/sdk-go-producer` tooling repairs this staging boundary
+without connecting the historical facade to the new SDK interface. It requires
+a fresh disjoint output, validates before creating it, and removes the duplicate
+options generation. Focused Windows Go 1.27.2 tests pass for output admission,
+input/tool failure, lexical input escape and unattested options. The symlink
+escape and request-alias tests are skipped because the sandbox lacks Windows
+symlink privilege. Exact tool versions, absolute tool paths, duplicate source
+rejection and per-family generated-binding presence also have focused controls.
+This evidence covers staging only; plugin generation, installed packages and
+the accepted Rust binding interface still need qualification. Local execution
+is now authorized; the earlier host-grant hold has been superseded.
 
 The historical JVM consumer
 `jvm/src/test/java/dev/acyclic/transport/RpcScenarioEvidenceTest.java`, read with
