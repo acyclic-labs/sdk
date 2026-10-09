@@ -27,7 +27,7 @@ node tools/sdk-generator/backends/java/generate.mjs \
   --source-root /immutable-source --authority /rust-export \
   --protoc /tools/protoc --grpc-java /tools/protoc-gen-grpc-java \
   --output /new-package
-mvn -B -ntp -T 1 -Dmaven.repo.local=/owned-cache -f /new-package/pom.xml install
+mvn -B -ntp -T 1 -Dmaven.repo.local=/owned-cache -f /new-package/pom.xml install dependency:build-classpath
 ```
 
 The output must be absent, have an existing parent and be disjoint from protected
