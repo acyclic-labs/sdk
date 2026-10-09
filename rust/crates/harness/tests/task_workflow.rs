@@ -15,15 +15,15 @@ use acyclic_harness::core::{
 };
 use acyclic_harness::distributed::{DistributedCoordinator, SchedulerPayloadStore, Worker};
 use acyclic_harness::durable_host::CoordinatorTaskHost;
-use acyclic_harness::executor::TurnInput;
+use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemHost, FilesystemInteractionHost,
-    FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, MAIL_RECEIVE_TASK_COMMAND_KIND,
-    MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand,
-    MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
-    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost,
-    TaskCommandProgress, TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
-    TimerTaskCommand, ToolTaskCommand,
+    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
+    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime,
+    MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
+    MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND,
+    TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
+    TaskCommandHost, TaskCommandProgress, TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt,
+    TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -1973,7 +1973,12 @@ use fault_stream::{ExecutionFaultMode, LostSessionAck};
 
 #[tokio::test]
 async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<()> {
-    stock_restart_with_publication_fault(None, false).await
+    stock_restart_with_publication_fault(None, false, false).await
+}
+
+#[tokio::test]
+async fn admitted_stock_turn_without_selected_context_reconciles_after_reopen() -> Result<()> {
+    stock_restart_with_publication_fault(None, false, true).await
 }
 
 #[tokio::test]
@@ -1983,7 +1988,7 @@ async fn stock_model_publication_faults_reconcile_after_provider_reopen() -> Res
         ExecutionFaultMode::AfterVisible,
         ExecutionFaultMode::AfterHidden,
     ] {
-        stock_restart_with_publication_fault(Some(mode), false).await?;
+        stock_restart_with_publication_fault(Some(mode), false, false).await?;
     }
     Ok(())
 }
@@ -1996,7 +2001,7 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
         ExecutionFaultMode::AfterVisible,
         ExecutionFaultMode::AfterHidden,
     ] {
-        stock_restart_with_publication_fault(Some(mode), true).await?;
+        stock_restart_with_publication_fault(Some(mode), true, false).await?;
     }
     Ok(())
 }
@@ -2008,6 +2013,7 @@ async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_
 async fn stock_restart_with_publication_fault(
     fault: Option<ExecutionFaultMode>,
     cancel_after_failure: bool,
+    unselected_context: bool,
 ) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
@@ -2340,9 +2346,9 @@ async fn stock_restart_with_publication_fault(
             if let Some(mode) = fault {
                 stream_provider.arm_execution(2, mode);
             }
-            let interrupted = if pre_context {
-                // Produce the actual earlier stock Started/request bytes and
-                // pending model history through the same fenced disk journal.
+            let interrupted = if unselected_context {
+                // Produce current stock Started/request bytes with explicit
+                // unselected context through the same fenced disk journal.
                 let admission = host.observe_admission(task).await?;
                 let admitted_scope = RuntimeScope::new(admission.grants, admission.limits)?
                     .with_run_limits(admission.run_limits)?;
