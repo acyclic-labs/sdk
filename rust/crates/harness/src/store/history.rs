@@ -79,6 +79,9 @@ impl<P: StreamProvider> HistoryReader<P> {
     /// The returned count includes its atomic locator and canonical event, so
     /// a composite read can deduct both before loading another history range.
     /// Zero rejects before I/O; exhaustion at the locator avoids the event read.
+    /// Stream reads transfer whole protocol-bounded records. This meters their
+    /// accepted encoded bytes before decode, not provider allocation or transfer;
+    /// tail metadata calls are outside the encoded-byte count.
     pub async fn operation_event_bounded(
         &self,
         operation: crate::OperationId,
@@ -90,6 +93,80 @@ impl<P: StreamProvider> HistoryReader<P> {
             &self.verifier,
             operation,
             maximum_bytes,
+        )
+        .await
+    }
+
+    /// Reads one explicit page of a child's published parent-history cut.
+    /// The publication proof and message records share the supplied encoded-byte
+    /// and event budgets. Later parent appends are excluded. Continue with the
+    /// last returned message sequence and the same seed; an empty page is terminal.
+    /// This reads canonical records, not model text, and grants no file access.
+    /// Normal turns must reuse their admitted context/checkpoint rather than
+    /// traverse this archival/bootstrap interface on every request.
+    pub async fn inherited_conversation_page(
+        &self,
+        seed: &crate::fork::ForkSeed,
+        child: crate::AgentId,
+        after_sequence: u64,
+        limits: HistoryReadLimits,
+    ) -> Result<Vec<crate::conversation::ConversationMessage>> {
+        self.verifier.verify_audience(&seed.parent)?;
+        if child != seed.child_agent {
+            return Err(Error::Unauthorized(
+                "inherited history belongs to another child".into(),
+            ));
+        }
+        if limits.maximum_bytes == 0
+            || limits.maximum_events == 0
+            || after_sequence > seed.inherited_through_sequence
+            || (after_sequence < seed.inherited_through_sequence && limits.maximum_events < 2)
+        {
+            return Err(Error::Invalid(
+                "inherited history page bounds are invalid".into(),
+            ));
+        }
+        crate::contract::validate_json_byte_bound(seed, limits.maximum_bytes)?;
+        seed.validate()?;
+        let publication_revision = crate::contract::next_revision(seed.parent_revision)?;
+        let (publication, consumed) = self
+            .operation_event_bounded(seed.operation_id, limits.maximum_bytes)
+            .await?;
+        let publication = publication
+            .ok_or_else(|| Error::Conflict("inherited history has no published fork".into()))?;
+        if publication.revision != publication_revision
+            || !matches!(&publication.payload,
+                crate::core::EventPayload::ForkPublished { seed: published }
+                if published.as_ref() == seed)
+        {
+            return Err(Error::Conflict(
+                "inherited history differs from the published fork".into(),
+            ));
+        }
+        if after_sequence == seed.inherited_through_sequence {
+            return Ok(Vec::new());
+        }
+        let remaining_bytes = limits
+            .maximum_bytes
+            .checked_sub(consumed)
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| Error::Invalid("inherited history page exceeds byte bound".into()))?;
+        let count = (seed.inherited_through_sequence - after_sequence)
+            .min(u64::from(limits.maximum_events - 1));
+        // The count is at most the distance to the pinned cut, so this cannot overflow.
+        let through_sequence = after_sequence + count;
+        self.conversation_range(
+            &HistoryCursor {
+                authority: seed.parent.clone(),
+                after_revision: 0,
+                through_revision: seed.parent_revision,
+            },
+            after_sequence,
+            through_sequence,
+            HistoryReadLimits {
+                maximum_events: limits.maximum_events - 1,
+                maximum_bytes: remaining_bytes,
+            },
         )
         .await
     }
