@@ -306,3 +306,48 @@ This change introduces no storage binding, freshness check, cancellation check
 or second receipt path. Authored pre-replay gate fixtures are not evidence of an
 executed durable replay; that regression and actual default-path recovery remain
 part of shared runtime qualification.
+
+
+## Current source checkpoint (2026-10-09)
+
+The full D branch now combines its portable file tools, bounded text variants,
+canonical/projection split, original native option admission, and current
+TypeScript consumers with actual main `f80ad5d25c`. Earlier development receipts
+above describe their named source snapshots; they do not qualify this combined
+source. PR304's dispatch fix landed independently at `98c272e8d2`.
+
+The source simplification audit removed the capture-based `CodingToolHost`
+factory and local staging/reader wrappers. Portable tools use the existing
+owner-bound `TaskContext` reader, publisher, generation check, and publication
+receipt. Exact editing reuses the pure matcher; patching adds only its bounded
+parser/matcher and uses the same publication path. Borrowed JSON deserialization
+is shared by file/text tools and projection validation. Selected context and
+model dispatch share the TypeScript model-content conversion. File-tool types
+and schemas are produced from Rust rather than maintained in parallel.
+
+Authorization at durable replay and again at provider IO remains deliberate:
+replay must not bypass original authority, and direct provider entry points must
+validate their own boundary. Canonical results and independently selected model
+projections remain separate artifacts. Neither an option claim nor a read grant
+proves original extension admission. Rust verifies the original admission,
+registered schema and linked implementation before reading media/options. The
+local TypeScript composition has no such registry/runtime, so its Rust-produced
+`modelContentInventory` causes claimed native options to fail before hydration
+or custom-provider generation. Plain native inputs remain subject to the
+selected provider's explicit capability checks; production native adapters are
+deferred.
+
+A frozen Linux `--lib --features filesystem --no-run` compile of source
+`36f33fea4012bf8b1525ee39002d133dd3b7858a` eliminated the earlier duplicate fixture
+and import errors, but failed on prerequisites absent from actual main:
+`contract::validate_json_byte_bound`, borrowed `ModelContent::parts`, and
+`ModelProvider::{context_capacity,count_tokens}` with their context result types.
+Related borrowed-content type diagnostics remain unresolved until that producer
+lands. The full browser qualification also needs the runtime owner's browser
+feature. This is compiler diagnostic evidence, not executed semantic tests or a
+platform pass. The schema generator's resolved dependencies are now locked.
+
+Fresh generated WASM/declarations, combined native/browser/adversarial tests,
+installed-artifact checks, the final simplification review, required exact-head
+CI and an owned main merge with verified landing remain open. No full D goal
+completion is claimed.
