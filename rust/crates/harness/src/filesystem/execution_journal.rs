@@ -18,7 +18,7 @@ use crate::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
     model::ModelEvent,
-    projection::{SelectedModelContext, select_model_context},
+    projection::{SelectedModelContext, select_model_context_at_revision},
     store::StreamAggregate,
     tool::ToolApprovalVerifier,
 };
@@ -1060,11 +1060,10 @@ where
                     "model-context selection does not match the committed turn".into(),
                 ));
             }
-            let mut historical = aggregate
+            let historical = aggregate
                 .reducer()
                 .conversation()
-                .ok_or_else(|| Error::Invalid("journal authority is not a conversation".into()))?
-                .clone();
+                .ok_or_else(|| Error::Invalid("journal authority is not a conversation".into()))?;
             let length = usize::try_from(committed.conversation_revision)
                 .map_err(|_| Error::Storage("selection revision exceeds platform size".into()))?;
             if length > historical.messages.len() {
@@ -1072,7 +1071,6 @@ where
                     "selection revision exceeds conversation history".into(),
                 ));
             }
-            historical.messages.truncate(length);
             let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
                 (
                     crate::conversation::MAX_PORTABLE_COUNT,
@@ -1088,13 +1086,14 @@ where
                     )
                 },
             );
-            let projected = select_model_context(
-                &historical,
+            let projected = select_model_context_at_revision(
+                historical,
                 committed.clone(),
                 verifier.as_ref(),
                 messages,
                 attachments,
                 render_bytes,
+                attachments,
             )
             .await?;
             if &projected != selected {

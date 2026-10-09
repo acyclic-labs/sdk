@@ -23,7 +23,9 @@ request schema, provider dispatch and journal remain authoritative.
 Identity lookup costs O(log N), recent selection costs O(log N + K log N), and
 page lookup costs O(log N) plus returned records for N loaded records and K selected
 messages. These are source-derived bounds, not measured performance guarantees.
-Resident messages and derived indexes remain O(N); decode remains linear.
+Resident messages and derived indexes remain O(N); rebuilding ordered indexes
+on decode costs O(N log N). Historical native projection uses the existing
+revision-aware API and borrows the conversation without cloning or truncating it.
 
 Regressions cover index reconstruction, pinned multi-page traversal, duplicate
 identity rejection, failed-append atomicity, sparse-view append rejection, turn
