@@ -163,6 +163,12 @@ impl CanonicalContextCheckpoint {
     /// Encodes one bounded envelope for the owning journal's normal content publisher.
     pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
         self.validate(limits)?;
+        // Count the typed envelope before canonical serialization creates its
+        // Value tree and byte buffer. Both publication and render bounds apply.
+        crate::contract::validate_json_byte_bound(
+            self,
+            limits.file_bytes.min(limits.render_bytes),
+        )?;
         let bytes = crate::contract::canonical_json_bytes(self)?;
         if bytes.len() as u64 > limits.file_bytes || bytes.len() as u64 > limits.render_bytes {
             return Err(crate::Error::Invalid(
