@@ -22,6 +22,7 @@ use futures::StreamExt as _;
 mod accounting;
 pub use accounting::*;
 mod selection;
+pub(crate) use selection::place_messages;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;

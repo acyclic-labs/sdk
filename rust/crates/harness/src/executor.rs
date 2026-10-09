@@ -3008,6 +3008,32 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
 )> {
+    let (envelope, retained, _) = load_canonical_checkpoint_at_counted(
+        journal,
+        reference,
+        limits,
+        scope,
+        history,
+        cursor,
+        maximum_history_bytes,
+    )
+    .await?;
+    Ok((envelope, retained))
+}
+
+async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    scope: &RuntimeScope,
+    history: &crate::store::HistoryReader<P>,
+    cursor: &crate::store::HistoryCursor,
+    maximum_history_bytes: u64,
+) -> Result<(
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::Context,
+    u64,
+)> {
     let limits = crate::context::restrict_context_limits(limits, scope.limits())?;
     validate_checkpoint_json_reference(reference, limits)?;
     if maximum_history_bytes == 0 || cursor.after_revision > cursor.through_revision {
@@ -3036,7 +3062,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     }
     let (envelope, retained) =
         load_canonical_checkpoint_for_scope(journal, reference, limits, scope).await?;
-    let (selection, _) = history
+    let (selection, consumed) = history
         .operation_event_bounded(envelope.operation_id, maximum_history_bytes)
         .await?;
     let selection = selection
@@ -3051,7 +3077,193 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
             "checkpoint selection differs from its history cut".into(),
         ));
     }
+    Ok((envelope, retained, consumed))
+}
+
+/// Imports a checkpoint and its complete canonical delta through a logical cut.
+/// The selection proof and every delta record share one finite history budget;
+/// all record kinds consume work, while only ordinary model message kinds enter
+/// the projection. Later appends are excluded by the owner's event cursor.
+/// No history is dropped to fit: an oversized delta or unavailable reference
+/// fails explicitly. The old parent's current-input marker is cleared so this
+/// context can contribute messages through an ordinary `SourceStage`.
+///
+/// The supplied resolver must authenticate its original content authority.
+/// Receiving scope checks precede its artifact/manifest reads and also cover
+/// every resolved attachment. This function neither grants access nor captures
+/// a checkpoint in a fork request, publishes a seed, or admits a child task.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "combines the existing owner-bound checkpoint, indexed history and content providers without constructing replacement authority"
+)]
+pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    scope: &RuntimeScope,
+    history: &crate::store::HistoryReader<P>,
+    cursor: &crate::store::HistoryCursor,
+    through_sequence: u64,
+    history_limits: crate::store::HistoryReadLimits,
+    resolver: &dyn crate::conversation::ContentResidencyVerifier,
+) -> Result<(
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::Context,
+)> {
+    let limits = crate::context::restrict_context_limits(limits, scope.limits())?;
+    if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
+        return Err(Error::Invalid("checkpoint delta bounds are invalid".into()));
+    }
+    let (envelope, mut retained, consumed) = load_canonical_checkpoint_at_counted(
+        journal,
+        reference,
+        limits,
+        scope,
+        history,
+        cursor,
+        history_limits.maximum_bytes,
+    )
+    .await?;
+    let after_sequence = envelope.selection.conversation_revision;
+    let count = through_sequence
+        .checked_sub(after_sequence)
+        .filter(|count| *count <= u64::from(history_limits.maximum_events - 1))
+        .ok_or_else(|| Error::Invalid("checkpoint delta exceeds history work bound".into()))?;
+    retained.current_input_index = None;
+    if count == 0 {
+        return Ok((envelope, retained));
+    }
+    let remaining_bytes = history_limits
+        .maximum_bytes
+        .checked_sub(consumed)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| Error::Invalid("checkpoint delta exceeds history byte bound".into()))?;
+    let records = history
+        .conversation_range(
+            cursor,
+            after_sequence,
+            through_sequence,
+            crate::store::HistoryReadLimits {
+                maximum_events: history_limits.maximum_events - 1,
+                maximum_bytes: remaining_bytes,
+            },
+        )
+        .await?;
+    let view = crate::conversation::ConversationState::selected_view(records)?;
+    let message_ids = view
+        .messages()
+        .iter()
+        .filter(|message| {
+            matches!(
+                message.kind,
+                crate::conversation::MessageKind::System
+                    | crate::conversation::MessageKind::User
+                    | crate::conversation::MessageKind::Assistant
+                    | crate::conversation::MessageKind::ToolCall
+                    | crate::conversation::MessageKind::ToolResult
+            )
+        })
+        .map(|message| message.id)
+        .collect();
+    let resolver = CheckpointDeltaResolver {
+        inner: resolver,
+        scope,
+        limits,
+    };
+    // Authorize all canonical record references, including non-model records,
+    // before any content resolution. Structured projections use the same gate.
+    for message in view.messages() {
+        resolver.authorize(&message.content)?;
+        match &message.attachments {
+            crate::conversation::ReferencedAttachments::Inline { items } => {
+                for attachment in items {
+                    resolver.authorize(&attachment.file)?;
+                }
+            }
+            crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
+                resolver.authorize(manifest)?;
+            }
+        }
+    }
+    let selected = crate::projection::select_model_context_at_revision(
+        &view,
+        crate::conversation::ModelContextSelection {
+            conversation_revision: through_sequence,
+            message_ids,
+            checkpoint: None,
+        },
+        &resolver,
+        limits.context_messages,
+        limits.attachments,
+        limits.render_bytes,
+        limits.attachments,
+    )
+    .await?;
+    for message in &selected.messages {
+        verify_model_content_scoped(journal, &message.content, limits, Some(scope)).await?;
+    }
+    let retained = crate::context::place_messages(
+        retained,
+        selected.messages,
+        crate::context::ContextPlacement::Append,
+        limits,
+    )?;
     Ok((envelope, retained))
+}
+
+struct CheckpointDeltaResolver<'a> {
+    inner: &'a dyn crate::conversation::ContentResidencyVerifier,
+    scope: &'a RuntimeScope,
+    limits: Limits,
+}
+
+impl CheckpointDeltaResolver<'_> {
+    fn authorize(&self, file: &FileRef) -> Result<()> {
+        self.limits.validate_file(file)?;
+        if !crate::runtime::read_granted(self.scope.grants(), file)? {
+            return Err(Error::Unauthorized(
+                "attenuated task cannot read checkpoint delta".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
+    fn resolve<'a>(
+        &'a self,
+        manifest: &'a FileRef,
+        item_count: u32,
+    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
+        Box::pin(async move {
+            self.authorize(manifest)?;
+            if item_count as u64 > self.limits.attachments as u64
+                || manifest.descriptor().byte_length() > self.limits.render_bytes
+            {
+                return Err(Error::Invalid(
+                    "checkpoint delta manifest exceeds item bound".into(),
+                ));
+            }
+            let attachments = self.inner.load_manifest(manifest, item_count).await?;
+            if attachments.len() as u64 != u64::from(item_count) {
+                return Err(Error::Storage(
+                    "checkpoint delta manifest count differs".into(),
+                ));
+            }
+            for attachment in &attachments {
+                self.authorize(&attachment.file)?;
+            }
+            Ok(attachments)
+        })
+    }
+
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            self.authorize(file)?;
+            self.inner.read(file).await
+        })
+    }
 }
 
 async fn load_canonical_checkpoint_scoped(

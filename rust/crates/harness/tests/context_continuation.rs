@@ -683,7 +683,7 @@ fn assert_fresh_stage_requests(provider: &SummaryModel, limits: Limits) -> usize
     reason = "one default-path history, reload, replay and publication qualification sequence"
 )]
 async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+    let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
     let provider = Arc::new(SummaryModel::default());
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let limits = Limits {
@@ -790,6 +790,14 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
     assert_scoped_checkpoint_source(journal.as_ref(), &reference, limits, &retained).await?;
     assert_checkpoint_history_cut(&storage, journal.as_ref(), &reference, limits, &retained)
         .await?;
+    assert_checkpoint_tail_source(
+        storage.clone(),
+        journal.as_ref(),
+        &reference,
+        limits,
+        &retained,
+    )
+    .await?;
     Ok(())
 }
 
@@ -882,6 +890,270 @@ async fn assert_checkpoint_history_cut(
     assert!(matches!(
         load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 1)
             .await,
+        Err(Error::Invalid(_))
+    ));
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "actual published checkpoint plus exact tail, shared budgets, narrowed grants and ordinary source admission controls"
+)]
+async fn assert_checkpoint_tail_source(
+    storage: Arc<MemoryHarnessStorage>,
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    retained: &Context,
+) -> Result<()> {
+    use acyclic_harness::{
+        Capabilities,
+        executor::load_canonical_checkpoint_through,
+        runtime::RuntimeScope,
+        store::{HistoryReadLimits, HistoryReader},
+    };
+
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
+    let cursor = history.pin(0).await?;
+    let content = StoredContent(storage.clone());
+    let budget = HistoryReadLimits {
+        maximum_events: 2,
+        maximum_bytes: MAX_RECORD_BYTES as u64 * 4,
+    };
+    let original = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
+    let (checkpoint, imported) = load_canonical_checkpoint_through(
+        journal, reference, limits, &original, &history, &cursor, 20, budget, &content,
+    )
+    .await?;
+    assert_eq!(checkpoint.selection.conversation_revision, 19);
+    assert_eq!(imported.current_input_index, None);
+    assert_eq!(imported.messages.len(), retained.messages.len() + 1);
+    assert_eq!(
+        imported.messages.get(..retained.messages.len()),
+        Some(retained.messages.as_slice())
+    );
+    let tail = history.conversation_range(&cursor, 19, 20, budget).await?;
+    assert_eq!(tail.len(), 1);
+    let tail_message = tail
+        .first()
+        .ok_or_else(|| Error::NotFound("actual canonical tail".into()))?;
+    assert_eq!(
+        tail_message.kind,
+        acyclic_harness::conversation::MessageKind::Assistant
+    );
+    assert_eq!(
+        imported.messages.last(),
+        Some(&ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Parts(vec![ModelContentPart::File {
+                file: tail_message.content.clone(),
+                policy: FileProjectionPolicy::BoundedFull,
+            }]),
+        })
+    );
+    let (_, proof_bytes) = history
+        .operation_event_bounded(checkpoint.operation_id, budget.maximum_bytes)
+        .await?;
+    for (through, allowance) in [
+        (18, budget),
+        (
+            20,
+            HistoryReadLimits {
+                maximum_events: 1,
+                ..budget
+            },
+        ),
+        (
+            20,
+            HistoryReadLimits {
+                maximum_bytes: proof_bytes,
+                ..budget
+            },
+        ),
+        (
+            20,
+            HistoryReadLimits {
+                maximum_events: 0,
+                ..budget
+            },
+        ),
+    ] {
+        assert!(matches!(
+            load_canonical_checkpoint_through(
+                journal, reference, limits, &original, &history, &cursor, through, allowance,
+                &content,
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    let grants = retained
+        .messages
+        .iter()
+        .flat_map(|message| message.content.file_refs())
+        .chain(retained.metadata.values())
+        .map(FileRef::read_capability)
+        .collect::<Result<Vec<_>>>()?;
+    let denied = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
+    assert!(matches!(
+        load_canonical_checkpoint_through(
+            journal, reference, limits, &denied, &history, &cursor, 20, budget, &content,
+        )
+        .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let exact = RuntimeScope::new(
+        Capabilities::new(
+            grants
+                .into_iter()
+                .chain([tail_message.content.read_capability()?]),
+        ),
+        limits,
+    )?;
+    assert_eq!(
+        load_canonical_checkpoint_through(
+            journal,
+            reference,
+            Limits::default(),
+            &exact,
+            &history,
+            &cursor,
+            20,
+            budget,
+            &content,
+        )
+        .await?
+        .1,
+        imported
+    );
+    let model = Arc::new(SummaryModel::default());
+    let executor = StockExecutor::new(
+        Model::new(
+            "synthetic",
+            "checkpoint-and-tail",
+            "1",
+            serde_json::json!({}),
+        )?,
+        model.clone(),
+        ContextPipeline::new([Arc::new(SourceStage::new(
+            "published-summary-and-tail",
+            "1",
+            Arc::new(imported.clone()),
+            ContextPlacement::Prepend,
+        ))
+            as Arc<dyn acyclic_harness::context::ContextStage>]),
+        ToolRegistry::new(),
+    )
+    .with_limits(limits);
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("fresh input after exact summary and tail".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    executor.execute(input.clone(), journal).await?;
+    {
+        let requests = model
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 1);
+        let messages = &requests[0].request().messages;
+        assert_eq!(
+            messages.get(..imported.messages.len()),
+            Some(imported.messages.as_slice())
+        );
+        assert_eq!(
+            messages.last().map(|message| &message.content),
+            Some(&input.input)
+        );
+    }
+    // This is an original-owner import, not a child admission. A later canonical
+    // append must not change either the original logical or event cutoff.
+    let mut aggregate = acyclic_harness::store::StreamAggregate::open(
+        storage.stream(),
+        storage.conversation().clone(),
+        storage.verifier(),
+        acyclic_harness::core::SchemaRegistry::new(),
+    )
+    .await?
+    .with_content_verifier(Arc::new(StoredContent(storage.clone())));
+    let id = uuid::Uuid::new_v4();
+    aggregate
+        .execute(acyclic_harness::core::Command {
+            operation_id: OperationId::new(),
+            idempotency_key: acyclic_harness::IdempotencyKey::new(format!(
+                "checkpoint-tail-later:{id}"
+            ))?,
+            expected_revision: aggregate.reducer().revision(),
+            scope: storage.owner_scope().clone(),
+            causal_parent: None,
+            action: acyclic_harness::core::Action::AppendConversationMessage {
+                message: Box::new(acyclic_harness::conversation::ConversationMessage {
+                    id,
+                    sequence: 21,
+                    kind: acyclic_harness::conversation::MessageKind::Interaction,
+                    content: tail_message.content.clone(),
+                    attachments: Vec::new().into(),
+                    reply_to: None,
+                    tool_call_id: None,
+                    extensions: Default::default(),
+                }),
+            },
+        })
+        .await?;
+    assert_eq!(
+        load_canonical_checkpoint_through(
+            journal, reference, limits, &exact, &history, &cursor, 20, budget, &content,
+        )
+        .await?
+        .1,
+        imported
+    );
+    assert!(
+        load_canonical_checkpoint_through(
+            journal,
+            reference,
+            limits,
+            &original,
+            &history,
+            &cursor,
+            21,
+            HistoryReadLimits {
+                maximum_events: 3,
+                ..budget
+            },
+            &content,
+        )
+        .await
+        .is_err()
+    );
+    let later = history.pin(0).await?;
+    assert_eq!(
+        load_canonical_checkpoint_through(
+            journal,
+            reference,
+            limits,
+            &exact,
+            &history,
+            &later,
+            21,
+            HistoryReadLimits {
+                maximum_events: 3,
+                ..budget
+            },
+            &content,
+        )
+        .await?
+        .1,
+        imported,
+        "canonical interaction record consumes work but is not a model message"
+    );
+    assert!(matches!(
+        load_canonical_checkpoint_through(
+            journal, reference, limits, &exact, &history, &later, 21, budget, &content,
+        )
+        .await,
         Err(Error::Invalid(_))
     ));
     Ok(())

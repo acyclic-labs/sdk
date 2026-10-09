@@ -266,7 +266,7 @@ pub fn apply_context_projection(
     Ok(context)
 }
 
-pub(super) fn place_messages(
+pub(crate) fn place_messages(
     mut context: Context,
     mut messages: Vec<ModelMessage>,
     placement: ContextPlacement,
