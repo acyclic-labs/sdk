@@ -2892,7 +2892,7 @@ pub async fn canonical_checkpoint_for_operation(
             "canonical publication event is invalid".into(),
         ));
     };
-    limits.validate_file(projection)?;
+    validate_checkpoint_json_reference(projection, limits)?;
     let projection = load_json::<ResponseProjection>(journal, projection).await?;
     crate::context::validate_projected_context(&projection.context, limits)?;
     let Some(reference) = projection.checkpoint else {
@@ -2903,7 +2903,7 @@ pub async fn canonical_checkpoint_for_operation(
         }
         return Ok(None);
     };
-    limits.validate_file(&reference)?;
+    validate_checkpoint_json_reference(&reference, limits)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, &reference).await?;
     envelope.validate(limits)?;
@@ -2927,7 +2927,41 @@ pub async fn load_canonical_checkpoint(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
 )> {
-    limits.validate_file(reference)?;
+    load_canonical_checkpoint_scoped(journal, reference, limits, None).await
+}
+
+/// Loads a published checkpoint under the receiving admission's read grants and bounds.
+/// Internal checkpoint artifacts remain authenticated by the owning journal;
+/// this scope grants no access to them and must authorize every retained data
+/// and metadata reference. Caller limits may narrow, never widen, this scope.
+/// The returned context can be used as an ordinary context source. Binding it
+/// to a particular conversation cut or fork remains the caller's responsibility.
+pub async fn load_canonical_checkpoint_for_scope(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    scope: &RuntimeScope,
+) -> Result<(
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::Context,
+)> {
+    load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope)).await
+}
+
+async fn load_canonical_checkpoint_scoped(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<(
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::Context,
+)> {
+    let limits = match scope {
+        Some(scope) => crate::context::restrict_context_limits(limits, scope.limits())?,
+        None => limits,
+    };
+    validate_checkpoint_json_reference(reference, limits)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference).await?;
     envelope.validate(limits)?;
@@ -2940,6 +2974,9 @@ pub async fn load_canonical_checkpoint(
             "checkpoint is not published by its owning execution".into(),
         ));
     }
+    for file in [&envelope.source, &envelope.retained, &envelope.compaction] {
+        validate_checkpoint_json_reference(file, limits)?;
+    }
     let source = load_json::<crate::context::Context>(journal, &envelope.source).await?;
     let retained = load_json::<crate::context::Context>(journal, &envelope.retained).await?;
     let proof =
@@ -2948,9 +2985,18 @@ pub async fn load_canonical_checkpoint(
     // Publication authenticates the checkpoint; a new admission must still
     // hold current owner-mediated read grants for every retained payload.
     for message in &retained.messages {
-        for file in message.content.file_refs() {
-            journal.verify_input_file(file).await?;
+        validate_model_content_scope(&message.content, limits, scope)?;
+    }
+    for file in retained.metadata.values() {
+        limits.validate_file(file)?;
+        if let Some(scope) = scope {
+            if !crate::runtime::read_granted(scope.grants(), file)? {
+                return Err(Error::Unauthorized("attenuated task cannot read checkpoint metadata".into()));
+            }
         }
+    }
+    for message in &retained.messages {
+        verify_model_content_scoped(journal, &message.content, limits, scope).await?;
     }
     for file in retained.metadata.values() {
         journal.verify_input_file(file).await?;
@@ -2965,6 +3011,34 @@ pub async fn load_canonical_checkpoint(
         ));
     }
     Ok((envelope, retained))
+}
+
+fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits) -> Result<()> {
+    limits.validate_file(reference)?;
+    if reference.descriptor().byte_length() > limits.render_bytes {
+        return Err(Error::Invalid("checkpoint JSON exceeds effective render limit".into()));
+    }
+    Ok(())
+}
+
+fn validate_model_content_scope(content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>) -> Result<()> {
+    content.validate_limits(limits)?;
+    if let Some(scope) = scope {
+        for file in content.file_refs() {
+            if !crate::runtime::read_granted(scope.grants(), file)? {
+                return Err(Error::Unauthorized("attenuated task cannot read model content".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn verify_model_content_scoped(journal: &dyn ExecutionJournal, content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>) -> Result<()> {
+    validate_model_content_scope(content, limits, scope)?;
+    for file in content.file_refs() {
+        journal.verify_input_file(file).await?;
+    }
+    Ok(())
 }
 
 async fn load_model_request(

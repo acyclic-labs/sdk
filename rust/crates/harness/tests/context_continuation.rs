@@ -787,6 +787,98 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
         (19, 2)
     );
     assert!(checkpoint.selection.checkpoint.is_some());
+    assert_scoped_checkpoint_source(journal.as_ref(), &reference, limits, &retained).await?;
+    Ok(())
+}
+
+async fn assert_scoped_checkpoint_source(
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    retained: &Context,
+) -> Result<()> {
+    use acyclic_harness::executor::load_canonical_checkpoint_for_scope;
+    use acyclic_harness::{Capabilities, runtime::RuntimeScope};
+
+    let grants = retained
+        .messages
+        .iter()
+        .flat_map(|message| message.content.file_refs())
+        .chain(retained.metadata.values())
+        .map(FileRef::read_capability)
+        .collect::<Result<Vec<_>>>()?;
+    assert!(
+        !grants.is_empty(),
+        "published summary must retain file authority"
+    );
+    let scope = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
+    let (_, imported) =
+        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &scope).await?;
+    assert_eq!(&imported, retained);
+    let denied = scope.narrow(
+        scope
+            .grants()
+            .without(&Capabilities::new([grants[0].clone()])),
+        limits,
+    )?;
+    assert!(matches!(
+        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &denied).await,
+        Err(Error::Unauthorized(_))
+    ));
+    let narrow = scope.narrow(
+        scope.grants().clone(),
+        Limits {
+            render_bytes: 1,
+            ..limits
+        },
+    )?;
+    assert!(matches!(
+        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &narrow).await,
+        Err(Error::Invalid(_))
+    ));
+
+    // Consume the actual default-published projection through the existing
+    // source/stage path and admit an ordinary model operation with fresh input.
+    let model = Arc::new(SummaryModel::default());
+    let executor = StockExecutor::new(
+        Model::new("synthetic", "checkpoint-import", "1", serde_json::json!({}))?,
+        model.clone(),
+        ContextPipeline::new([Arc::new(SourceStage::new(
+            "published-summary",
+            "1",
+            Arc::new(imported),
+            ContextPlacement::Prepend,
+        ))
+            as Arc<dyn acyclic_harness::context::ContextStage>]),
+        ToolRegistry::new(),
+    )
+    .with_limits(limits);
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("new admission after summary import".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    executor.execute(input.clone(), journal).await?;
+    {
+        let requests = model
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 1);
+        let messages = &requests[0].request().messages;
+        assert_eq!(
+            messages.get(..retained.messages.len()),
+            Some(retained.messages.as_slice())
+        );
+        assert_eq!(
+            messages.last().map(|message| &message.content),
+            Some(&input.input)
+        );
+    }
+    let (_, unchanged) =
+        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &scope).await?;
+    assert_eq!(&unchanged, retained);
     Ok(())
 }
 
