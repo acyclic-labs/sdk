@@ -2,6 +2,7 @@ import { BrowserAggregate, BrowserHistoryReader, Harness, NativeContracts } from
 import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 
 export async function exerciseBrowserHistory() {
+  await exerciseConversationHead();
   const options = { authority: { kind: "task", id: "browser-history-owner" },
     issuerId: "browser-history-owner", issuerKey: new Uint8Array(32).fill(31),
     database: `harness-history-${crypto.randomUUID()}`, maximumCommands: 1024,
@@ -83,5 +84,40 @@ export async function exerciseBrowserHistory() {
     if (!ownerRejected) throw new Error("wrong issuer read accepted an unattested event");
   } finally {
     competing?.free(); wrong?.free(); cold?.free(); reader?.free(); aggregate?.free(); issuer.free();
+  }
+}
+
+async function exerciseConversationHead() {
+  const agent = "71717171-7171-7171-7171-717171717171";
+  const options = { authority: { kind: "conversation", id: "browser-message-head" },
+    issuerId: "browser-message-head", issuerKey: new Uint8Array(32).fill(41),
+    database: `harness-message-head-${crypto.randomUUID()}`, maximumCommands: 128,
+    maximumJournalBytes: 1024n * 1024n };
+  const issuer = await Harness.create(options);
+  let aggregate, reader, cold, wrong;
+  try {
+    aggregate = await BrowserAggregate.open(options);
+    reader = aggregate.historyReader();
+    if ((await reader.latestConversationMessage(65536n)) !== null) throw new Error("fresh message head is not empty");
+    const scope = issuer.issueScopeForAgent(agent, "bind-head", ["conversation:bind"]);
+    await aggregate.execute({ operation_id: "72727272-7272-7272-7272-727272727272",
+      idempotency_key: "bind-head", expected_revision: 0n, scope, causal_parent: null,
+      action: { kind: "bind_conversation", agent } });
+    if ((await reader.latestConversationMessage(65536n)) !== null) throw new Error("bound message head is not empty");
+    let boundRejected = false;
+    try { await reader.latestConversationMessage(0n); }
+    catch (error) { boundRejected = error.code === ErrorCode.INVALID; }
+    if (!boundRejected) throw new Error("zero message-head byte bound accepted");
+    reader.free(); reader = undefined;
+    aggregate.free(); aggregate = undefined;
+    cold = await BrowserHistoryReader.open(options);
+    if ((await cold.latestConversationMessage(65536n)) !== null) throw new Error("reopened binding marker changed");
+    wrong = await BrowserHistoryReader.open({ ...options, issuerKey: new Uint8Array(32).fill(42) });
+    let ownerRejected = false;
+    try { await wrong.latestConversationMessage(65536n); }
+    catch (error) { ownerRejected = error.code === ErrorCode.UNAUTHORIZED; }
+    if (!ownerRejected) throw new Error("message head accepted another issuer");
+  } finally {
+    wrong?.free(); cold?.free(); reader?.free(); aggregate?.free(); issuer.free();
   }
 }

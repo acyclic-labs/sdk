@@ -83,6 +83,7 @@ export const wasmbrowseraggregate_openBrowser: (a: any, b: any, c: number) => an
 export const wasmbrowseraggregate_reconcile: (a: number, b: any) => any;
 export const wasmbrowseraggregate_refreshThrough: (a: number, b: bigint, c: number) => any;
 export const wasmbrowseraggregate_snapshot: (a: number) => [number, number, number];
+export const wasmbrowserhistoryreader_latestConversationMessage: (a: number, b: bigint) => any;
 export const wasmbrowserhistoryreader_openBrowser: (a: any) => any;
 export const wasmbrowserhistoryreader_operationEvent: (a: number, b: any) => any;
 export const wasmbrowserhistoryreader_pin: (a: number, b: bigint) => any;

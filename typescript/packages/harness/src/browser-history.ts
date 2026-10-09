@@ -1,7 +1,7 @@
 /** Typed forwarding to the existing Rust Stream owner; no JS history admission. */
 import { WasmBrowserAggregate, WasmBrowserHistoryReader } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureHarnessWasm } from "./wasm-runtime.js";
-import type { Authority, Command, EventReference, HarnessOptions, OperationId, RecordedScope, Snapshot } from "./index.js";
+import type { Authority, ConversationMessage, Command, EventReference, HarnessOptions, OperationId, RecordedScope, Snapshot } from "./index.js";
 
 export interface BrowserHistoryOptions extends HarnessOptions {
   readonly database: string;
@@ -60,6 +60,10 @@ export class BrowserHistoryReader {
   pin(afterRevision = 0n): Promise<HistoryCursor> { return this.core.pin(afterRevision); }
   readPage(cursor: HistoryCursor, limits: HistoryReadLimits): Promise<HistoryPage> {
     return this.core.readPage(cursor, limits);
+  }
+  /** A newly pinned logical head; independent of an older archival cursor. */
+  latestConversationMessage(maximumBytes: bigint): Promise<ConversationMessage | null> {
+    return this.core.latestConversationMessage(maximumBytes);
   }
   operationEvent(operation: OperationId): Promise<CanonicalEvent | null> { return this.core.operationEvent(operation); }
   free(): void { this.core.free(); }
