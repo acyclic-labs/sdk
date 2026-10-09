@@ -67,6 +67,62 @@ installed transport bindings, with runtime assignment checks and maintained
 message-class method parameters. Remaining families/platforms, Rust-backed RPC,
 TLS/authentication, cancellation/recovery and embedded runtime remain pending.
 
+### Reusable Swift transport tooling
+
+The Swift producer and archive-installed qualifier consume accepted foundation
+`5f13157414a5f48425007ffd957ea7d09611e5fe`. Independent generations produce
+identical archive SHA-256
+`75b12a02ed63f9e7d23154babe06f063f87439e47af13daa19f50af92536bb4b`.
+The real reusable Linux x86_64 qualification completes with Swift 6.4,
+SwiftProtobuf 1.38.1, grpc-swift-2 2.4.3, grpc-swift-protobuf 2.4.1 and
+swift-collections 1.7.2, each dependency at its exact admitted source revision.
+
+The installed consumer passes all 25 generated client/server methods over the
+maintained in-process transport. Rust descriptors supply populated message and
+field expectations, method paths, request/response names and streaming shapes.
+Bytes, unsigned bounds, optional zero, populated oneofs and gRPC codecs pass;
+three invalid assignments fail compilation for their intended type errors.
+Before and after native execution, the qualifier verifies the complete admitted
+SDK inventory, compiled dependency sources and archive-installed payload.
+Its receipt records the exact executable, source, dependency and log hashes.
+The SDK inventory is independently reproducible with maintained tooling and
+matches the checksum-verified official archive. Routine CI uses offline controls
+and does not download or compile this native toolchain.
+
+These results establish archive-installed transport bindings and native
+in-process RPC evidence for Actors, Workers and Stream. They do not qualify
+network transport, Rust-backed RPC, remaining families/platforms,
+TLS/authentication, cancellation/recovery or the embedded runtime.
+
+### Elixir maintained archive and installed qualification
+
+The maintained Elixir producer executes unchanged protobuf 0.17.1 tooling against
+accepted foundation `5f13157414a5f48425007ffd957ea7d09611e5fe`, with protoc 28.3,
+OTP 29.1.1 and Elixir 1.20.4. Its real CLI invocation verifies the complete
+admitted runtime and emits the same 14 payload files as the native installed
+prototype. The prototype's independently generated packages produce identical
+archive SHA-256
+`99743856f5f0cee06ecac057007b721942869ad6b20dc38713a712c0357195a0`.
+
+The archive-installed prototype passes message, enum and service descriptors,
+all 25 populated RPC message pairs, bytes, unsigned maximum wire values,
+optional zero/clear, both Append outcome branches and three runtime encoding
+rejections. All six compiled dependencies match their locked Hex source
+archives. Changed source, extra source and substituted package metadata faults
+reject without changing the original compiled sources. The executed consumer
+fixture is maintained in the Elixir backend and routine CI uses offline checks.
+
+The maintained installed qualifier passes a fresh archive installation with
+Hex offline mode, a frozen six-package lock and private home/build paths. It
+verifies 135 qualification-tool/registry input files, the complete admitted
+runtime, and every dependency source before and after compilation. Native
+controls verify exact loaded SDK module inventories, compiled source paths and
+BEAM paths in addition to the installed message/type checks. Unexpected Hex
+code and post-run input drift reject before success evidence. Actual RPC calls
+remain outstanding.
+These controls do not qualify network transport, Rust-backed RPC, remaining
+families/platforms or the embedded runtime. See `tools/sdk-generator/backends/elixir`.
+
 ## Historical input identities
 
 | Input | SHA-256 read during this audit |
@@ -271,3 +327,38 @@ invalid assignments produce their intended runtime TypeErrors. Ruby's dynamic
 checks do not establish compile-time typing. Receipts retain all runtime/cache
 file hashes, controls and logs. Remaining families/platforms, Rust-backed RPC,
 TLS/authentication, cancellation/recovery and embedded runtime remain pending.
+
+### C++ matched runtime and installed native transport
+
+The maintained C++ backend now uses protoc 35.0 and gRPC 1.82.0 with the same
+upstream protobuf, Abseil and supporting dependency revisions for generation
+and runtime compilation. Its one-worker runtime recipe disables downloads and
+uses the shared MSVC runtime consistently. Two native generations against
+accepted foundation `5f13157414a5f48425007ffd957ea7d09611e5fe` produce identical
+17-file payloads and receipts. Generation rejects mid-run authority, tool,
+producer source and package metadata drift before writing success evidence.
+
+A CMake-installed SDK and independent consumer on Windows x64 pass complete
+Rust file descriptors after removing source comments and Buf image tag 8042,
+all 25 populated RPC message pairs, bytes, unsigned bounds, optional zero and
+oneof controls. Generated clients and servers execute all 25 methods over local
+TCP; server interceptors verify actual paths, stream types and call counts, and
+streaming clients check two distinct responses in order. A positive type control
+compiles. Three separate invalid assignments reject with the intended C2665
+byte-field and C2664 optional-integer compiler errors.
+
+Two deterministic package archives have identical SHA256
+`8bfb26bfadb6a328df08d35192e25f12edf162ed3fd9da6caf032163830fd7de`.
+The maintained archive reader verifies the exact Rust/producer/tool/template
+inputs and complete 17-file payload. A fresh build staged only from admitted
+archive bytes passes the same installed native controls with a private matched
+runtime. All 1,618 runtime files, SDK payload bytes, six compiled SDK source
+paths and installed header/resource bytes are verified after execution.
+The maintained installed qualifier passes the same fresh archive workflow,
+including exact compiled SDK/consumer source inventories and private dependency
+prefixes. It admits and rechecks 7,377 MSVC/Windows SDK and build-tool files
+and all 1,618 runtime files. The maintained inventory command reproduces both
+external inventory byte streams exactly. System OS files remain outside that
+host inventory. These checks do not establish Rust-backed RPC, TLS/authentication,
+cancellation/recovery, remaining families/platforms or embedded runtime behavior.
+The earlier protoc 28.3 source-only milestone remains separate historical evidence.

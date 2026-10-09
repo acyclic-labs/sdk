@@ -16,6 +16,7 @@ import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV2GrpcClients } from "../../objects/dist/v2-grpc.js";
 import { HttpWorkersClient } from "../../workers/dist/http.js";
+import { fixtureServer } from "./fixture-server.mjs";
 
 const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
@@ -235,6 +236,9 @@ const wasmServer = createServer((request, response) => {
   wasmRequests.push(request.url);
   adapter(request, response);
 });
+const closeHttpServer = fixtureServer(httpServer);
+const closeGrpcServer = fixtureServer(server);
+const closeWasmServer = fixtureServer(wasmServer);
 await new Promise(resolve => server.listen(0, "localhost", resolve));
 await new Promise(resolve => wasmServer.listen(0, "localhost", resolve));
 await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
@@ -269,7 +273,5 @@ try {
   }
   for (const [method, calls] of httpSeen) assert.equal(calls, 1, method);
 } finally {
-  await new Promise(resolve => httpServer.close(resolve));
-  await new Promise(resolve => server.close(resolve));
-  await new Promise(resolve => wasmServer.close(resolve));
+  await Promise.all([closeHttpServer(), closeGrpcServer(), closeWasmServer()]);
 }
