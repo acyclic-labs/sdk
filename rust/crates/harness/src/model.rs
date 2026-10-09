@@ -154,10 +154,6 @@ impl ModelContent {
                 ModelContentPart::ToolResult { name, content, .. } => {
                     crate::registry::validate_component_label(name, "tool name")?;
                     content.validate_limits(limits)?;
-                    crate::contract::validate_json_byte_bound(content, limits.render_bytes)
-                        .map_err(|_| {
-                            Error::Invalid("model tool projection exceeds render limit".into())
-                        })?;
                 }
                 ModelContentPart::Text { .. } => {}
             }
@@ -563,6 +559,7 @@ impl FileProjectionPolicy {
 
 impl ToolResultContent {
     pub(crate) fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
+        limits.validate()?;
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
                 return Err(Error::Invalid(
@@ -600,7 +597,8 @@ impl ToolResultContent {
                 ));
             }
         }
-        Ok(())
+        crate::contract::validate_json_byte_bound(self, limits.render_bytes)
+            .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))
     }
 }
 
@@ -1582,6 +1580,30 @@ mod tests {
             Err(Error::Invalid(message)) if message == "model prefix ordered messages differ")
         );
         assert_eq!(reopened.0.len() + 2, reader.0.len());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_tool_projection_envelopes_enforce_the_exact_render_bound() -> Result<()> {
+        for content in [
+            ToolResultContent::Json {
+                value: json!("é\0🦀"),
+            },
+            ToolResultContent::Parts {
+                parts: vec![ModelDataPart::Text {
+                    text: "é\0🦀".into(),
+                }],
+            },
+        ] {
+            let exact = crate::contract::canonical_json_bytes(&content)?.len() as u64;
+            content.validate_limits(Limits {
+                render_bytes: exact,
+                ..Limits::default()
+            })?;
+            assert!(matches!(content.validate_limits(Limits {
+                render_bytes: exact - 1, ..Limits::default()
+            }), Err(Error::Invalid(message)) if message.contains("render limit")));
+        }
         Ok(())
     }
 

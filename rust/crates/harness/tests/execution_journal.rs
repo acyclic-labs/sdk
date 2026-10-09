@@ -214,6 +214,13 @@ impl ToolProjection for NoopTool {
     }
 }
 
+struct FixedProjection(Value);
+impl ToolProjection for FixedProjection {
+    fn project(&self, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
+        Ok(self.0.clone())
+    }
+}
+
 #[derive(Default)]
 struct CapturingModel(Mutex<Vec<ModelRequest>>);
 
@@ -496,17 +503,42 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         executor: counted,
         projection: Arc::new(NoopTool),
     })?;
+    let large_definition = ToolDefinition {
+        name: "example.large-projection".into(),
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
+        ..definition.clone()
+    };
+    let large_executions = Arc::new(AtomicUsize::new(0));
+    let large_reconciliations = Arc::new(AtomicUsize::new(0));
+    let large_projection = json!({"kind":"json","value":"x".repeat(500)});
+    registry.register(Tool {
+        definition: large_definition.clone(),
+        executor: Arc::new(CountingNoopTool {
+            executions: large_executions.clone(),
+            reconciliations: large_reconciliations.clone(),
+        }),
+        projection: Arc::new(FixedProjection(large_projection.clone())),
+    })?;
+    let limits = Limits {
+        file_bytes: 256,
+        render_bytes: 1_024,
+        ..Limits::default()
+    };
     let racing_journal = Arc::new(TerminalCasLoser {
         inner: journal.clone(),
         losses: AtomicUsize::new(0),
     });
-    let runner = DurableToolRunner::new(registry, racing_journal.clone());
+    let runner = DurableToolRunner::new(registry, racing_journal.clone()).with_limits(limits)?;
     let operation = OperationId::from_bytes([59; 16]);
     let first_task = TaskId::from_bytes([60; 16]);
     let other_task = TaskId::from_bytes([61; 16]);
     let task_scope = RuntimeScope::new(
-        Capabilities::new(["tool:call:example.noop", "tool:call:example.invalid-output"]),
-        Limits::default(),
+        Capabilities::new([
+            "tool:call:example.noop",
+            "tool:call:example.invalid-output",
+            "tool:call:example.large-projection",
+        ]),
+        limits,
     )?;
     let mut bindings = Bindings::local();
     bindings.scope = task_scope.clone();
@@ -518,6 +550,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let other_context = runtime
         .durable_context(other_task, OperationId::from_bytes([64; 16]))
         .await?;
+    let projection_context = first_context.clone();
     assert!(matches!(
         runner
             .run_with_context(
@@ -596,6 +629,42 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             .map(|record| &record.event),
         Some(ExecutionEvent::ToolFailed { .. })
     ));
+    let projection_operation = OperationId::from_bytes([65; 16]);
+    for _ in 0..2 {
+        assert!(matches!(
+            runner
+                .run_with_context(
+                    first_task,
+                    projection_operation,
+                    large_definition.clone(),
+                    json!({}),
+                    ToolContext::new(
+                        projection_context.clone(),
+                        projection_operation,
+                        projection_operation.to_string()
+                    )?
+                )
+                .await?,
+            Outcome::Succeeded(Value::Null)
+        ));
+    }
+    let records = journal.replay(projection_operation, 0, 64).await?;
+    let Some(ExecutionEvent::ToolCompleted {
+        result, projection, ..
+    }) = records.last().map(|record| &record.event)
+    else {
+        return Err(Error::NotFound("large projection completion".into()));
+    };
+    assert!(result.descriptor().byte_length() <= limits.file_bytes);
+    assert!(projection.descriptor().byte_length() > limits.file_bytes);
+    assert!(projection.descriptor().byte_length() <= limits.render_bytes);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&journal.load(projection).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        large_projection
+    );
+    assert_eq!(large_executions.load(Ordering::SeqCst), 1);
+    assert_eq!(large_reconciliations.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
