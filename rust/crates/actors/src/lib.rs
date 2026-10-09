@@ -333,16 +333,20 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     async fn traced_call(
         address: std::net::SocketAddr,
-        rpc: &str,
+        rpc: &'static str,
     ) -> Result<tonic::codegen::http::Response<tonic::body::Body>, Box<dyn std::error::Error>> {
         use tonic::codegen::Service as _;
-        let mut channel = grpc::TracedChannel(
+        let mut channel = grpc::TracedChannel::new(
             tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
         );
         std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
         let request = tonic::codegen::http::Request::builder()
             .uri(format!(
                 "http://{address}/acyclic.actors.v1.ActorsService/{rpc}"
+            ))
+            .extension(tonic::GrpcMethod::new(
+                "acyclic.actors.v1.ActorsService",
+                rpc,
             ))
             .body(tonic::body::Body::empty())?;
         Ok(channel.call(request).await?)
@@ -428,7 +432,7 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .iter()
-                .filter(|(s, f, _)| (*s, *f) == ("acyclic.actors.grpc.call", "closed"))
+                .filter(|(s, f, _)| (*s, *f) == ("acyclic.actors.grpc.transport", "closed"))
                 .count()
         };
         assert_eq!(grpc_closed(), 1);
@@ -441,10 +445,10 @@ mod tests {
             ("acyclic.actors.http.call", "route", "v1/actors/create"),
             ("acyclic.actors.http.call", "http.status", "503"),
             ("acyclic.actors.http.call", "error.kind", "service"),
-            ("acyclic.actors.grpc.call", "rpc", "CreateActor"),
-            ("acyclic.actors.grpc.call", "error.kind", "transport"),
-            ("acyclic.actors.grpc.call", "rpc.code", "14"),
-            ("acyclic.actors.grpc.call", "error.kind", "status"),
+            ("acyclic.actors.grpc.transport", "rpc", "CreateActor"),
+            ("acyclic.actors.grpc.transport", "error.kind", "transport"),
+            ("acyclic.actors.grpc.transport", "rpc.code", "14"),
+            ("acyclic.actors.grpc.transport", "error.kind", "status"),
         ] {
             assert!(
                 seen.iter()
@@ -459,3 +463,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod grpc_tests;

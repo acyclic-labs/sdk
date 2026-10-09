@@ -27,5 +27,14 @@ pub fn generate(output: impl AsRef<Path>) -> io::Result<()> {
                 protoc_bin_vendored::include_path().map_err(io::Error::other)?,
             ],
         )
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+    if std::env::var("CARGO_CFG_TARGET_ARCH").map_err(io::Error::other)? != "wasm32" {
+        let transport = rust.join("acyclic.workers.v1.rs");
+        let observed = acyclic_grpc_observability::codegen::observe_clients(
+            &fs::read_to_string(&transport)?,
+            "workers",
+        )?;
+        fs::write(transport, observed)?;
+    }
+    Ok(())
 }
