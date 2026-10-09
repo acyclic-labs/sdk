@@ -11,10 +11,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 /// Borrowed asynchronous result returned by content-provider extension hooks.
@@ -1449,9 +1446,7 @@ pub struct ConversationState {
     #[serde(skip)]
     by_id: BTreeMap<Uuid, usize>,
     #[serde(skip)]
-    latest_user: Option<Uuid>,
-    #[serde(skip)]
-    settled_turns: BTreeSet<Uuid>,
+    pending_user: Option<Uuid>,
     #[serde(skip)]
     outcomes: BTreeMap<Uuid, usize>,
     #[serde(skip)]
@@ -1480,10 +1475,17 @@ impl TryFrom<ConversationStateWire> for ConversationState {
             }
             previous = message.sequence;
         }
+        let pending_user = wire
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.kind == MessageKind::User)
+            .map(|message| message.id);
         let mut state = Self {
             agent: wire.agent,
             messages: wire.messages,
             by_id,
+            pending_user,
             ..Self::default()
         };
         for position in 0..state.messages.len() {
@@ -1561,14 +1563,13 @@ impl ConversationState {
         ) {
             self.model_positions.push(position);
         }
-        if message.kind == MessageKind::User {
-            self.latest_user = Some(message.id);
-        }
         let outcome = message.kind == MessageKind::System
             && message.extensions.contains_key("acyclic.turn.outcome");
         if let Some(parent) = message.reply_to {
-            if message.kind == MessageKind::Assistant || outcome {
-                self.settled_turns.insert(parent);
+            if (message.kind == MessageKind::Assistant || outcome)
+                && self.pending_user == Some(parent)
+            {
+                self.pending_user = None;
             }
             if outcome {
                 self.outcomes.entry(parent).or_insert(position);
@@ -1577,8 +1578,7 @@ impl ConversationState {
     }
 
     pub(crate) fn unresolved_user(&self) -> Option<Uuid> {
-        self.latest_user
-            .filter(|id| !self.settled_turns.contains(id))
+        self.pending_user
     }
 
     pub(crate) fn turn_outcome(&self, user: Uuid) -> Option<&ConversationMessage> {
@@ -1690,6 +1690,9 @@ impl ConversationState {
         self.validate_append(&message)?;
         // Publish rebuildable indexes only after complete append validation.
         self.by_id.insert(message.id, self.messages.len());
+        if message.kind == MessageKind::User {
+            self.pending_user = Some(message.id);
+        }
         self.messages.push(message);
         self.index_turn(self.messages.len() - 1);
         Ok(())
@@ -1776,6 +1779,86 @@ pub fn validate_content_path(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_turn_rebuilds_without_retaining_settled_turn_identities() -> Result<()> {
+        fn append(
+            state: &mut ConversationState,
+            content: &FileRef,
+            kind: MessageKind,
+            reply_to: Option<Uuid>,
+            terminal: bool,
+        ) -> Result<Uuid> {
+            let sequence = state.messages().len() as u64 + 1;
+            let id = Uuid::from_u128(u128::from(sequence));
+            let mut extensions = BTreeMap::new();
+            if terminal {
+                extensions.insert("acyclic.turn.outcome".into(), content.clone());
+            }
+            state.append(ConversationMessage {
+                id,
+                sequence,
+                kind,
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to,
+                tool_call_id: None,
+                extensions,
+            })?;
+            Ok(id)
+        }
+
+        fn reopen(state: &ConversationState) -> Result<ConversationState> {
+            let bytes = crate::contract::canonical_json_bytes(state)?;
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
+        }
+
+        let agent = AgentId::new();
+        let content = file(agent, "pending.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        let mut previous = None;
+        for _ in 0..256 {
+            let user = append(&mut state, &content, MessageKind::User, None, false)?;
+            assert_eq!(state.unresolved_user(), Some(user));
+            if let Some(previous) = previous {
+                // A delayed older response must not settle the current user.
+                append(
+                    &mut state,
+                    &content,
+                    MessageKind::Assistant,
+                    Some(previous),
+                    false,
+                )?;
+                assert_eq!(state.unresolved_user(), Some(user));
+            }
+            append(
+                &mut state,
+                &content,
+                MessageKind::Assistant,
+                Some(user),
+                false,
+            )?;
+            assert_eq!(state.unresolved_user(), None);
+            previous = Some(user);
+        }
+        assert_eq!(reopen(&state)?, state);
+        let user = append(&mut state, &content, MessageKind::User, None, false)?;
+        append(&mut state, &content, MessageKind::System, Some(user), false)?;
+        assert_eq!(state.unresolved_user(), Some(user));
+        assert_eq!(reopen(&state)?, state);
+        let outcome = append(&mut state, &content, MessageKind::System, Some(user), true)?;
+        assert_eq!(state.unresolved_user(), None);
+        assert_eq!(
+            state.turn_outcome(user).map(|message| message.id),
+            Some(outcome)
+        );
+        assert_eq!(reopen(&state)?, state);
+        let next = append(&mut state, &content, MessageKind::User, None, false)?;
+        assert_eq!(state.unresolved_user(), Some(next));
+        assert_eq!(reopen(&state)?, state);
+        Ok(())
+    }
 
     #[test]
     fn indexed_history_rebuilds_and_pinned_pages_exclude_later_appends() -> Result<()> {
