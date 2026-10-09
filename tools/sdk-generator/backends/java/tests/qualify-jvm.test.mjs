@@ -44,7 +44,12 @@ function fixture(t, language = "kotlin", failure = "") {
       return { status: 1, stdout: language === "kotlin" ? `error: argument type mismatch: actual type is 'String', but '${type}' was expected.\n`
         : `Type Mismatch Error\nFound: String\nRequired: ${type}\n1 error found\n` };
     }
-    if (argv.includes("InstalledKotlinConsumer") || argv.includes("InstalledScalaConsumer")) return { status: failure === "positive" ? 1 : 0, stdout: "positive fixture" };
+    if (argv.includes("InstalledKotlinConsumer") || argv.includes("InstalledScalaConsumer")) {
+      const java = "PASS: installed Java descriptors, bytes, unsigned bounds, optional presence, oneof and gRPC shapes";
+      const consumer = `PASS: installed ${language === "kotlin" ? "Kotlin" : "Scala"} Java-binding interoperability, bytes, integer bits, presence and oneof`;
+      return { status: failure === "positive" ? 1 : 0,
+        stdout: failure === "silent" ? "" : failure === "java_marker" ? consumer : failure === "language_marker" ? java : `${java}\n${consumer}\n` };
+    }
     return { status: 0, stdout: "" };
   };
   return { args, toolchains, command, calls, put, dependency };
@@ -86,7 +91,7 @@ test("existing outputs and overlapping input paths are preserved", t => {
   f.args.output = join(f.args.cache, "new-output"); assert.throws(() => qualifyJvm(f.args, f), /overlaps/); assert.equal(f.calls.length, 0);
 });
 
-for (const failure of ["positive", "accepted", "unrelated", "version"]) {
+for (const failure of ["positive", "accepted", "unrelated", "version", "silent", "java_marker", "language_marker"]) {
   test(`${failure} failure cannot produce JVM qualification`, t => {
     const f = fixture(t, "kotlin", failure); assert.throws(() => qualifyJvm(f.args, f));
     assert.equal(existsSync(join(f.args.output, "qualification.json")), false);

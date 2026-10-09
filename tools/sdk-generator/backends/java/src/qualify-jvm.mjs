@@ -100,7 +100,12 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
   };
   const positive = compile("positive", entry);
   const descriptors = targets.map((name, index) => put(`authority/${index}.bin`, approved.inputs.get(approved.descriptors.get(name))));
-  run("positive", java, [...javaOptions, `-Dsdk.qualified.jar=${jar}`, "-cp", [classpath, positive.destination].join(delimiter), entry, ...descriptors]);
+  const positiveLog = run("positive", java, [...javaOptions, `-Dsdk.qualified.jar=${jar}`, "-cp", [classpath, positive.destination].join(delimiter), entry, ...descriptors]);
+  const languageName = args.language === "kotlin" ? "Kotlin" : "Scala";
+  if (!positiveLog.includes("PASS: installed Java descriptors, bytes, unsigned bounds, optional presence, oneof and gRPC shapes")
+    || !positiveLog.includes(`PASS: installed ${languageName} Java-binding interoperability, bytes, integer bits, presence and oneof`)) {
+    throw new Error("positive consumer did not report completed Java and language controls");
+  }
   for (const name of ["ActorBytes", "WorkerBytes", "OptionalInteger"]) {
     const { log } = compile(`Invalid${name}`, `Invalid${name}`, true);
     const expected = name === "OptionalInteger" ? "Long" : "ByteString";

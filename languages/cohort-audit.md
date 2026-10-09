@@ -193,7 +193,7 @@ on JDK 17.0.14. The reusable Java backend's `src/qualify-jvm.mjs` admits a
 matching Java installation receipt and Rust authority, verifies all compiler
 and dependency JAR hashes, and compiles against fresh snapshots. Its maintained
 compiler manifests record official Maven coordinates and published checksums.
-Eight offline runner tests cover both languages, drift, destination admission,
+Eleven offline runner tests cover both languages, drift, destination admission,
 unexpected compiler versions and prevention of success after failed controls.
 
 Each actual consumer executes the shared Java controls for all three API

@@ -121,6 +121,6 @@ and RPC-shape controls against the installed JAR, then exercise their own
 builder and serialization calls. Three independent invalid assignments must
 fail for the intended byte/integer type mismatch. A success receipt records
 compiler/tool identities, source controls and logs. Compiler preparation and
-actual installed runs are opt-in; routine CI runs eight offline runner tests.
+actual installed runs are opt-in; routine CI runs eleven offline runner tests.
 This establishes Kotlin/Scala interoperability with the Java transport package.
 Dedicated language APIs, Rust-backed RPC and embedded bindings remain pending.
