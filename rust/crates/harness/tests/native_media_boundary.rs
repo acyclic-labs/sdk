@@ -403,6 +403,16 @@ impl ToolExecutor for NativeProjector {
             ))
         })
     }
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "fixture projection does not reconcile a tool".into(),
+            ))
+        })
+    }
 }
 impl ToolProjection for NativeProjector {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
