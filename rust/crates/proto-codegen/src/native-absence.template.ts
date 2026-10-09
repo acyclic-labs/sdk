@@ -27,7 +27,12 @@ function isMissingGeneratedLoader(error: unknown): boolean {
   if (requested === undefined) return false;
   if (requested === loaderSpecifier) {
     const importer = moduleImporter(firstLine);
-    return importer !== undefined && normalizeModulePath(importer) === normalizeModulePath(importerUrl);
+    if (importer === undefined) return false;
+    const expected = normalizeModulePath(importerUrl);
+    const actual = normalizeModulePath(importer);
+    // Bun executes the maintained .ts source directly. Permit that exact
+    // importer only while this classifier itself is running from .ts source.
+    return actual === expected || (import.meta.url.endsWith(".ts") && actual === normalizeModulePath(importerUrl.replace(/\.js$/, ".ts")));
   }
   // Only the package's own generated loader is optional. Matching a path
   // suffix would incorrectly turn a broken transitive dependency into a
