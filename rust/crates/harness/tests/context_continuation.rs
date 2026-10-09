@@ -740,6 +740,18 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
     // live default-path fixture, not cold restoration or constant-memory proof.
     let generated = assert_fresh_stage_requests(&provider, limits);
     let stage_calls = calls.load(Ordering::SeqCst);
+    // A turn from the current pinned pipeline, older than the latest retired
+    // checkpoint, must hydrate its original selection instead of admitting a
+    // fresh user or choosing newer context. No stage/model work is repeated.
+    let (old_operation, old_file, old_output) = operations
+        .get(6)
+        .ok_or_else(|| Error::Invalid("no archived completed turn".into()))?;
+    assert_eq!(
+        &storage
+            .run_conversation(&bundle, *old_operation, old_file.clone(), Vec::new(), 1)
+            .await?,
+        old_output
+    );
     let (operation, file, expected) = operations
         .last()
         .ok_or_else(|| Error::Invalid("no completed default turn".into()))?;

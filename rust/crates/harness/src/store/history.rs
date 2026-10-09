@@ -305,6 +305,64 @@ impl<P: StreamProvider> HistoryReader<P> {
         .await
     }
 
+    /// Resolves only the declared selection through authenticated atomic indexes.
+    /// Each identity costs at most two single-record reads; all identities share
+    /// the supplied byte allowance. This read-only view grants no admission or
+    /// authority, and the caller must bind the selection to its original operation.
+    pub async fn selected_conversation(
+        &self,
+        cursor: &HistoryCursor,
+        selection: &crate::conversation::ModelContextSelection,
+        limits: HistoryReadLimits,
+    ) -> Result<crate::conversation::ConversationState> {
+        self.verifier.verify_audience(&cursor.authority)?;
+        if limits.maximum_events == 0
+            || limits.maximum_bytes == 0
+            || selection.message_ids.len() as u64 > u64::from(limits.maximum_events)
+            || cursor.after_revision > cursor.through_revision
+        {
+            return Err(Error::Invalid(
+                "selected history bounds or cursor are invalid".into(),
+            ));
+        }
+        if cursor.through_revision > self.committed_tail().await? {
+            return Err(Error::Invalid(
+                "selected history exceeds committed cutoff".into(),
+            ));
+        }
+        let mut consumed = 0_u64;
+        let mut messages = Vec::with_capacity(selection.message_ids.len());
+        for id in &selection.message_ids {
+            let remaining = limits
+                .maximum_bytes
+                .checked_sub(consumed)
+                .filter(|remaining| *remaining > 0)
+                .ok_or_else(|| Error::Invalid("selected history exceeds byte bound".into()))?;
+            let (message, bytes) = super::operations::find_message_counted(
+                &self.client,
+                &cursor.authority,
+                &self.verifier,
+                *id,
+                cursor.through_revision,
+                remaining,
+            )
+            .await?;
+            consumed = consumed
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("selected history byte count overflows".into()))?;
+            messages.push(message.ok_or_else(|| {
+                Error::Storage("selected history message is missing at its pinned cutoff".into())
+            })?);
+        }
+        let view = crate::conversation::ConversationState::selected_view(messages)?;
+        crate::projection::validate_model_context_selection_at_revision(
+            &view,
+            selection,
+            selection.conversation_revision,
+        )?;
+        Ok(view)
+    }
+
     /// Reads an exact contiguous canonical message range at one event cutoff.
     /// All message kinds count toward the explicit work bound. The byte bound
     /// includes every locator and canonical record, checked before decoding.

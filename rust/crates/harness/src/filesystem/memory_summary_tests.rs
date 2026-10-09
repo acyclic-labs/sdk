@@ -120,6 +120,17 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .len(),
         3
     );
+    {
+        let aggregate = storage.open_conversation(limits).await?;
+        let conversation = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
+        assert_eq!(conversation.logical_revision(), 4);
+        assert_eq!(conversation.resident_after_sequence(), 3);
+        assert_eq!(conversation.messages().len(), 1);
+        assert_eq!(conversation.messages()[0].sequence, 4);
+    }
     let reference =
         crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
             .await?

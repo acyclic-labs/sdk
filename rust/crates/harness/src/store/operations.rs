@@ -372,8 +372,28 @@ pub(crate) async fn find_message<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<Option<crate::conversation::ConversationMessage>> {
+    find_message_counted(
+        client,
+        authority,
+        verifier,
+        message_id,
+        through_revision,
+        maximum_bytes,
+    )
+    .await
+    .map(|(message, _)| message)
+}
+
+pub(crate) async fn find_message_counted<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    message_id: uuid::Uuid,
+    through_revision: u64,
+    maximum_bytes: u64,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     let path = message_path(authority, message_id)?;
-    let (message, _) = find_message_at_locator(
+    find_message_at_locator(
         client,
         authority,
         verifier,
@@ -383,8 +403,7 @@ pub(crate) async fn find_message<P: StreamProvider>(
         through_revision,
         maximum_bytes,
     )
-    .await?;
-    Ok(message)
+    .await
 }
 
 pub(crate) async fn find_message_sequence<P: StreamProvider>(
