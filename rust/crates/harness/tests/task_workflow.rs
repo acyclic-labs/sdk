@@ -185,12 +185,19 @@ impl ModelProvider for InterruptedModel {
         );
         let attempt = self.generated.fetch_add(1, Ordering::SeqCst);
         if self.approval_tool {
+            let file = request
+                .request()
+                .messages
+                .iter()
+                .flat_map(|message| message.content.file_refs())
+                .next()
+                .expect("approval tool retains the original input file");
             return Box::pin(futures::stream::iter([
                 Ok(if attempt == 0 {
                     ModelEvent::ToolCall {
                         call_id: "provider-call".into(),
                         name: "test.restore".into(),
-                        arguments: json!({"approval":true}),
+                        arguments: json!({"file":file,"approval":true}),
                     }
                 } else {
                     ModelEvent::Content {
