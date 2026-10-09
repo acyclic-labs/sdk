@@ -17,7 +17,7 @@ use crate::{
         ModelEventAdmission, decode_json, validate_execution_page,
     },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
-    model::ModelEvent,
+    model::{ModelContent, ModelEvent},
     projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
     tool::ToolApprovalVerifier,
@@ -1029,6 +1029,27 @@ where
             self.host
                 .read_content(reference, &grant, self.maximum_payload_bytes)
                 .await?;
+            Ok(())
+        })
+    }
+
+    fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let bindings = content.native_configurations();
+            for binding in &bindings {
+                let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+                    Error::Unsupported("native options require an original task owner".into())
+                })?;
+                owner.verify_native_configuration(binding).await?;
+            }
+            for file in content.file_refs() {
+                if !bindings
+                    .iter()
+                    .any(|binding| &binding.configuration.content == file)
+                {
+                    self.verify_input_file(file).await?;
+                }
+            }
             Ok(())
         })
     }

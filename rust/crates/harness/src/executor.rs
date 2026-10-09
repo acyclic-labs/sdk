@@ -242,6 +242,21 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Verifies data and native option bindings without granting fresh execution.
+    fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !content.native_configurations().is_empty() {
+                return Err(Error::Unsupported(
+                    "original native option verification is unavailable".into(),
+                ));
+            }
+            for file in content.file_refs() {
+                self.verify_input_file(file).await?;
+            }
+            Ok(())
+        })
+    }
+
     /// Confirms the selected model context is the exact projection of the
     /// owning conversation's previously committed selection for this turn.
     fn verify_selected_context<'a>(
@@ -567,12 +582,10 @@ impl StockExecutor {
                 break;
             }
         }
-        for message in &request.messages {
-            for file in message.content.file_refs() {
-                journal.verify_input_file(file).await?;
-            }
-        }
-        crate::model::PreparedModelRequest::prepare(request, self.limits)
+        let prepared = crate::model::PreparedModelRequest::prepare(request, self.limits)?;
+        self.verify_model_request_content(journal, &prepared)
+            .await?;
+        Ok(prepared)
     }
 
     /// Enforces the same explicit tool grants and policy in the stock model loop.
@@ -763,11 +776,7 @@ impl StockExecutor {
                 crate::model::PreparedModelRequest::prepare(request, self.limits)?
             }
         };
-        for message in &request.request().messages {
-            for reference in message.content.file_refs() {
-                journal.verify_input_file(reference).await?;
-            }
-        }
+        self.verify_model_request_content(journal, &request).await?;
         let request_digest = request.manifest().request_digest;
         let replay_completed = admission.completed;
         crate::obs::obs_record!(
@@ -1384,6 +1393,33 @@ impl StockExecutor {
         Ok(ToolCallProgress::Settled)
     }
 
+    async fn verify_model_content(
+        &self,
+        journal: &dyn ExecutionJournal,
+        content: &ModelContent,
+    ) -> Result<()> {
+        verify_model_content_scoped(
+            journal,
+            content,
+            self.limits,
+            self.task_context
+                .as_ref()
+                .map(|(context, _)| context.scope()),
+        )
+        .await
+    }
+
+    async fn verify_model_request_content(
+        &self,
+        journal: &dyn ExecutionJournal,
+        request: &crate::model::PreparedModelRequest,
+    ) -> Result<()> {
+        for message in &request.request().messages {
+            self.verify_model_content(journal, &message.content).await?;
+        }
+        Ok(())
+    }
+
     async fn validate_turn_input(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1409,14 +1445,10 @@ impl StockExecutor {
                 .await?;
             for message in &selected.messages {
                 message.content.validate_limits(self.limits)?;
-                for reference in message.content.file_refs() {
-                    journal.verify_input_file(reference).await?;
-                }
+                self.verify_model_content(journal, &message.content).await?;
             }
         }
-        for reference in input.input.file_refs() {
-            journal.verify_input_file(reference).await?;
-        }
+        self.verify_model_content(journal, &input.input).await?;
         Ok(())
     }
 }
@@ -1676,6 +1708,34 @@ pub(crate) async fn retained_model_step(
         admission,
         events,
     })
+}
+
+async fn verify_model_content_scoped(
+    journal: &dyn ExecutionJournal,
+    content: &ModelContent,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<()> {
+    validate_model_content_scope(content, limits, scope)?;
+    journal.verify_model_content(content).await
+}
+
+fn validate_model_content_scope(
+    content: &ModelContent,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+) -> Result<()> {
+    content.validate_limits(limits)?;
+    if let Some(scope) = scope {
+        for file in content.file_refs() {
+            if !crate::runtime::read_granted(scope.grants(), file)? {
+                return Err(Error::Unauthorized(
+                    "attenuated task cannot read model content".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn load_model_request(
@@ -3551,5 +3611,146 @@ mod tests {
         assert_eq!(captures[0].0.request_digest, captures[1].0.request_digest);
         assert_eq!(captures[0].1, captures[1].1);
         Ok(())
+    }
+    #[tokio::test]
+    async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Result<()> {
+        let journal = ModelReadSpy::default();
+        let file = journal
+            .stage(
+                OperationId::new(),
+                "media".into(),
+                vec![1, 2, 3, 4],
+                "image/png",
+            )
+            .await?;
+        let options = journal
+            .stage(
+                OperationId::new(),
+                "options".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        let content = ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: "media".into(),
+            name: "test.media".into(),
+            content: crate::model::ToolResultContent::Parts {
+                parts: vec![crate::model::ModelDataPart::File {
+                    file: file.clone(),
+                    policy: crate::model::FileProjectionPolicy::Native(
+                        crate::model::NativeMediaPolicy {
+                            intent: crate::model::NativeMediaIntent::Image {
+                                detail: crate::model::ImageDetail::Auto,
+                            },
+                            maximum_bytes: 4,
+                            maximum_work: 4,
+                            configuration: Some(crate::model::NativeConfigurationBinding {
+                                source: crate::core::EventReference {
+                                    authority: crate::core::Authority {
+                                        kind: crate::core::AggregateKind::Agent,
+                                        id: "test-agent".into(),
+                                    },
+                                    revision: 1,
+                                },
+                                configuration: crate::core::ExtensionConfiguration {
+                                    extension: crate::core::ExtensionDependency {
+                                        name: "test.media".into(),
+                                        version: 1,
+                                    },
+                                    schema_digest: [1; 32],
+                                    content: options.clone(),
+                                },
+                                implementation_digest: [2; 32],
+                            }),
+                        },
+                    ),
+                }],
+            },
+        });
+        let denied = RuntimeScope::new(crate::Capabilities::default(), Limits::default())?;
+        assert!(matches!(
+            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&denied)).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let media_only = RuntimeScope::new(
+            crate::Capabilities::new([file.read_capability()?]),
+            Limits::default(),
+        )?;
+        assert!(matches!(
+            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&media_only))
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let allowed = RuntimeScope::new(
+            crate::Capabilities::new([file.read_capability()?, options.read_capability()?]),
+            Limits::default(),
+        )?;
+        assert!(matches!(
+            verify_model_content_scoped(
+                &journal,
+                &content,
+                Limits {
+                    file_bytes: 3,
+                    ..Limits::default()
+                },
+                Some(&allowed)
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        verify_model_content_scoped(&journal, &content, Limits::default(), Some(&allowed)).await?;
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct ModelReadSpy {
+        journal: Journal,
+        reads: AtomicUsize,
+    }
+
+    impl ExecutionJournal for ModelReadSpy {
+        fn replay<'a>(
+            &'a self,
+            operation: OperationId,
+            after: u64,
+            maximum: u32,
+        ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+            self.journal.replay(operation, after, maximum)
+        }
+        fn append<'a>(
+            &'a self,
+            operation: OperationId,
+            key: String,
+            event: ExecutionEvent,
+        ) -> BoxFuture<'a, Result<()>> {
+            self.journal.append(operation, key, event)
+        }
+        fn stage<'a>(
+            &'a self,
+            operation: OperationId,
+            key: String,
+            bytes: Vec<u8>,
+            media: &'static str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            self.journal.stage(operation, key, bytes, media)
+        }
+        fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.journal.load(file)
+        }
+        // This spy exercises the real pre-reader scope barrier, not option authentication.
+        fn verify_model_content<'a>(
+            &'a self,
+            content: &'a ModelContent,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                for file in content.file_refs() {
+                    file.descriptor().verify(&self.load(file).await?)?;
+                }
+                Ok(())
+            })
+        }
     }
 }
