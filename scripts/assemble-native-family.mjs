@@ -244,8 +244,8 @@ async function main() {
     return;
   }
   if (process.argv[2] === "release") {
-    const [, outputArgument, inputsArgument, sourceSha] = process.argv.slice(2);
-    if (!outputArgument || !inputsArgument || !/^[0-9a-f]{40,64}$/u.test(sourceSha ?? "")) fail(`usage: assemble-${family.key}-native-package.mjs release OUTPUT INPUTS SOURCE_SHA`);
+    const [, outputArgument, inputsArgument, sourceSha, qualifiedArgument] = process.argv.slice(2);
+    if (!outputArgument || !inputsArgument || !qualifiedArgument || !/^[0-9a-f]{40,64}$/u.test(sourceSha ?? "")) fail(`usage: assemble-${family.key}-native-package.mjs release OUTPUT INPUTS SOURCE_SHA ORIGINAL_QUALIFIED_DIRECTORY`);
     const output = resolve(outputArgument), inputs = resolve(inputsArgument);
     const compilerReceipt = join(output, "BUILD.json");
     await readFile(compilerReceipt);
@@ -261,7 +261,7 @@ async function main() {
       for (const entry of [receipt.parent, ...receipt.companions]) await cp(join(assembled, entry.asset), join(output, entry.asset));
       await cp(join(assembled, assemblyFile), join(output, assemblyFile));
       await rm(join(output, "QUALIFICATION.json"), { force: true });
-      run(process.execPath, ["scripts/typescript-qualification.mjs", "create", output, sourceSha, compilerReceipt]);
+      run(process.execPath, ["scripts/typescript-qualification.mjs", "reassemble", output, sourceSha, compilerReceipt, resolve(qualifiedArgument)]);
       const archives = (await readdir(output)).filter(name => name.endsWith(".tgz"));
       for (const directory of await readdir(output, { withFileTypes: true })) {
         if (!directory.isDirectory()) continue;

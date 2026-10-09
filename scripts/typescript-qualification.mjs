@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -33,12 +33,13 @@ function expectedAssets() {
   });
 }
 
-async function create(output, sourceSha, buildReceipt) {
+async function create(output, sourceSha, buildReceipt, retained) {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceSha)) fail("source commit must be a full lowercase Git object ID");
   // Keep verify-only publication staging independent of the archive validator:
   // publish-npm.yml copies this script without its repository-local imports.
   const { validateArchive } = await import("./validate-npm-package.mjs");
-  const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha);
+  const original = retained ? await retainedCompilerFiles(retained, sourceSha, buildReceipt) : undefined;
+  const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha, original);
   const archiveUtils = await import("./archive-utils.mjs");
   const packages = expectedAssets().map(({ directory, ...packageEntry }) => {
     const archive = join(output, packageEntry.asset);
@@ -64,7 +65,8 @@ async function create(output, sourceSha, buildReceipt) {
   }
   const target = join(output, "QUALIFICATION.json");
   if (existsSync(target)) fail("qualification receipt already exists");
-  if (sourceSha !== checkedGit(["rev-parse", "HEAD"]).trim() || buildSha256 !== createHash("sha256").update(readReceiptBytes(buildReceipt, 16_777_216)).digest("hex") || JSON.stringify(build.source_files) !== JSON.stringify(compilerSource()) || JSON.stringify(build.outputs) !== JSON.stringify(compilerOutputs())) fail("compiler receipt, inputs or outputs changed during archive admission");
+  const admitted = readCompilerBuild(buildReceipt, sourceSha, retained ? await retainedCompilerFiles(retained, sourceSha, buildReceipt) : undefined);
+  if (buildSha256 !== admitted.receiptSha256) fail("compiler receipt changed during archive admission");
   const provenance = { revision: 1, scope: "typescript-compiler", source_sha256: build.source_sha256, compiler_build_receipt_sha256: `sha256:${buildSha256}`, rust_producers_qualified: false };
   writeFileSync(target, `${JSON.stringify({ ...provenance, source_commit: sourceSha, packages })}\n`, { flag: "wx" });
 }
@@ -77,7 +79,7 @@ function readReceiptBytes(path, limit) {
   return payload;
 }
 
-function readCompilerBuild(path, sourceSha) {
+function readCompilerBuild(path, sourceSha, retained) {
   const payload = readReceiptBytes(path, 16_777_216);
   const build = JSON.parse(payload.toString("utf8"));
   if (!build || Object.keys(build).sort().join() !== "executions,outputs,runtime,rust_producers_qualified,schema,scope,source_commit,source_files,source_sha256" || build.schema !== "acyclic.typescript-build-receipt.v1" || build.scope !== "typescript-compiler" || build.rust_producers_qualified !== false) fail("compiler build receipt scope is invalid");
@@ -89,12 +91,55 @@ function readCompilerBuild(path, sourceSha) {
   }
   if (!/^Version \d+\.\d+\.\d+/.test(build.executions[1].stdout.trim())) fail("compiler build receipt compiler version is absent");
   if (build.source_commit !== sourceSha || sourceSha !== checkedGit(["rev-parse", "HEAD"]).trim()) fail("compiler build receipt belongs to another source commit");
-  const source = compilerSource();
+  const source = retained ? retainedSource(build.source_files, retained) : compilerSource();
   if (JSON.stringify(build.source_files) !== JSON.stringify(source)) fail("compiler build receipt source differs from checkout");
   const encoded = source.map(file => `${file.path}\0${file.sha256}\0${file.bytes}\n`).join("");
   if (build.source_sha256 !== `sha256:${createHash("sha256").update(encoded).digest("hex")}`) fail("compiler build receipt source digest differs");
-  if (JSON.stringify(build.outputs) !== JSON.stringify(compilerOutputs(build.executions[2].stdout))) fail("compiler build receipt output differs from checkout");
+  const outputs = retained ? [...retained.values()].filter(file => PACKAGES.some(({ directory }) => file.path.startsWith(`typescript/packages/${directory}/dist/`))).sort(compareRecords) : compilerOutputs();
+  if (!outputs.length || JSON.stringify(build.outputs) !== JSON.stringify(outputs)) fail("compiler build receipt output differs from checkout or retained archives");
+  assertEmitted(outputs, build.executions[2].stdout);
   return { build, receiptSha256: createHash("sha256").update(payload).digest("hex") };
+}
+
+const compareRecords = (a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path));
+
+async function retainedCompilerFiles(directory, sourceSha, buildReceipt) {
+  const receiptPath = join(directory, "QUALIFICATION.json");
+  const receipt = readReceipt(receiptPath);
+  const build = JSON.parse(readReceiptBytes(buildReceipt, 16_777_216).toString("utf8"));
+  if (receipt.compiler_build_receipt_sha256 !== `sha256:${digest(buildReceipt)[0]}` || receipt.source_sha256 !== build.source_sha256) fail("retained compiler provenance differs");
+  const { readBoundedGzip, tarEntries, sha256 } = await import("./archive-utils.mjs");
+  const { validateArchive } = await import("./validate-npm-package.mjs");
+  const files = new Map();
+  for (const item of expectedAssets()) {
+    const archive = join(directory, item.asset);
+    verify(receiptPath, sourceSha, item.asset, archive);
+    const { compressed, expanded } = readBoundedGzip(archive, 104_857_600, 536_870_912);
+    if (receipt.packages.find(entry => entry.asset === item.asset).sha256 !== sha256(compressed) || validateArchive(archive, item.name, item.version, item.directory) !== sha256(compressed)) fail("retained archive changed during admission");
+    for (const entry of tarEntries(expanded)) {
+      if (entry.type === "5") continue;
+      const path = `${item.directory}/${entry.path.slice(8)}`;
+      if (files.has(path)) fail("retained archive contains duplicate compiler files");
+      files.set(path, { path, sha256: `sha256:${sha256(entry.body)}`, bytes: entry.body.length });
+    }
+  }
+  return files;
+}
+
+function retainedSource(records, retained) {
+  const tracked = trackedCompilerPaths();
+  const source = fileRecords(tracked);
+  if (!Array.isArray(records)) fail("compiler build receipt source inventory is invalid");
+  const seen = new Set();
+  for (const file of records) {
+    if (!file || typeof file.path !== "string" || seen.has(file.path)) fail("compiler build receipt source inventory is invalid");
+    seen.add(file.path);
+    if (tracked.has(file.path)) continue;
+    const original = retained.get(file.path);
+    if (!original || !/^typescript\/packages\/[^/]+\/generated\//u.test(file.path) || JSON.stringify(original) !== JSON.stringify(file)) fail("compiler build receipt runtime input differs from retained archives");
+    source.push(original);
+  }
+  return source.sort(compareRecords);
 }
 
 function readReceipt(path) {
@@ -144,12 +189,16 @@ function checkedGit(args) {
 // Runtime assets are captured as compiler inputs, not reclassified as proof
 // that their Rust/native/WASM producers compiled this source.
 function compilerSource() {
+  const paths = trackedCompilerPaths();
+  collectRegularFiles("typescript", paths, true);
+  return fileRecords(paths);
+}
+
+function trackedCompilerPaths() {
   const roots = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "rust", "proto", "scripts", "release", "typescript", "package.json", "bun.lock", "tsconfig.json", "tsconfig.base.json"];
   if (checkedGit(["status", "--porcelain=v1", "--untracked-files=all", "--", ...roots]).trim()) fail("compiler source is not a clean captured checkout");
   if (/^[a-zS] /m.test(checkedGit(["ls-files", "-v", "--", ...roots]))) fail("compiler source has concealed index changes");
-  const paths = new Set(checkedGit(["ls-files", "-z", "--", ...roots]).split("\0").filter(Boolean));
-  collectRegularFiles("typescript", paths, true);
-  return fileRecords(paths);
+  return new Set(checkedGit(["ls-files", "-z", "--", ...roots]).split("\0").filter(Boolean));
 }
 
 function collectRegularFiles(name, paths, omitOutputs = false) {
@@ -181,13 +230,17 @@ function compilerOutputs(emitted) {
   for (const { directory } of PACKAGES) collectRegularFiles(join("typescript/packages", directory, "dist"), paths);
   if (!paths.size) fail("TypeScript compiler emitted no package output");
   const outputs = fileRecords(paths);
-  if (emitted !== undefined) {
-    const actual = new Set(emitted.split(/\r?\n/).filter(line => line.startsWith("TSFILE: "))
-      .map(line => relative(root, resolve(root, line.slice(8))).replaceAll("\\", "/"))
-      .filter(path => PACKAGES.some(({ directory }) => path.startsWith(`typescript/packages/${directory}/dist/`))));
-    if (actual.size !== paths.size || [...paths].some(path => !actual.has(path))) fail("dist inventory differs from files emitted by this compiler run");
-  }
+  if (emitted !== undefined) assertEmitted(outputs, emitted);
   return outputs;
+}
+
+function assertEmitted(outputs, emitted) {
+  const actual = new Set(emitted.split(/\r?\n/).filter(line => line.startsWith("TSFILE: "))
+    .map(line => line.slice(8).replaceAll("\\", "/")).map(path => {
+      const marker = path.lastIndexOf("/typescript/packages/");
+      return marker >= 0 ? path.slice(marker + 1) : path;
+    }).filter(path => PACKAGES.some(({ directory }) => path.startsWith(`typescript/packages/${directory}/dist/`))));
+  if (actual.size !== outputs.length || outputs.some(file => !actual.has(file.path))) fail("dist inventory differs from files emitted by this compiler run");
 }
 
 function consumerCommands() {
@@ -240,9 +293,10 @@ function consumer(bun, buildReceipt) {
 
 const [command, ...args] = process.argv.slice(2);
 if (command === "create" && args.length === 3) await create(resolve(args[0]), args[1], resolve(args[2]));
+else if (command === "reassemble" && args.length === 4) await create(resolve(args[0]), args[1], resolve(args[2]), resolve(args[3]));
 else if (command === "verify" && args.length === 4) verify(resolve(args[0]), args[1], args[2], resolve(args[3]));
 else if (command === "consumer" && args.length === 2) {
   const result = consumer(args[0], resolve(args[1]));
   console.log(JSON.stringify(result));
   process.exitCode = result.passed ? 0 : 1;
-} else fail("usage: typescript-qualification.mjs create OUTPUT SOURCE_SHA BUILD_RECEIPT | verify RECEIPT SOURCE_SHA ASSET ARCHIVE | consumer BUN BUILD_RECEIPT");
+} else fail("usage: typescript-qualification.mjs create OUTPUT SOURCE_SHA BUILD_RECEIPT | reassemble OUTPUT SOURCE_SHA BUILD_RECEIPT ORIGINAL_QUALIFIED_DIRECTORY | verify RECEIPT SOURCE_SHA ASSET ARCHIVE | consumer BUN BUILD_RECEIPT");

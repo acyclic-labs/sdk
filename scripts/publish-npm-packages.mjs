@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { verifyNativeAssembly } from "./assemble-stream-native-package.mjs";
 import { verifyNativeAssembly as verifyActorsNativeAssembly } from "./assemble-actors-native-package.mjs";
+import { verifyNativeAssembly as verifyWorkersNativeAssembly } from "./assemble-workers-native-package.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -106,9 +107,9 @@ async function main() {
       : run("node", ["scripts/plugin-qualification.mjs", "verify", "plugin/QUALIFICATION.json", sourceSha, archive, releaseVersion], { stdio: "inherit" });
     if (verification.status !== 0) fail(`qualified archive verification failed for ${item.name}`);
 
-    if (item.directory === "stream" || item.directory === "actors") {
+    if (["stream", "actors", "workers"].includes(item.directory)) {
       const inventory = JSON.parse(readFileSync(join(root, `release/${item.directory}-native-packages.json`), "utf8"));
-      const verify = item.directory === "stream" ? verifyNativeAssembly : verifyActorsNativeAssembly;
+      const verify = ({ stream: verifyNativeAssembly, actors: verifyActorsNativeAssembly, workers: verifyWorkersNativeAssembly })[item.directory];
       const assembly = await verify(artifactDirectory, sourceSha, releaseVersion, inventory);
       await publishNativeAssembly(assembly, artifactDirectory);
       continue;

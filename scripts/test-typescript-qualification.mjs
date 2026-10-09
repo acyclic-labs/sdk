@@ -136,6 +136,8 @@ function writeArchiveFixture(stage, item) {
   writeFileSync(join(packageDirectory, "CHANGELOG.md"), `# ${item.name} changelog\n\n## ${item.version} fixture\n`);
   writeFileSync(join(packageDirectory, "dist/index.js"), "export {};\n");
   writeFileSync(join(packageDirectory, "dist/index.d.ts"), "export {};\n");
+  mkdirSync(join(packageDirectory, "generated/wasm"), { recursive: true });
+  writeFileSync(join(packageDirectory, "generated/wasm/runtime.wasm"), "fixture runtime bytes");
   const archiveRoot = join(stage, "archive-inputs", item.asset.slice(0, -4));
   cpSync(packageDirectory, join(archiveRoot, "package"), { recursive: true });
   const result = spawnSync("tar", ["-czf", join(output, item.asset), "-C", archiveRoot, "package"], {
@@ -145,7 +147,7 @@ function writeArchiveFixture(stage, item) {
   return join(output, item.asset);
 }
 
-for (const mutation of ["none", "archive-dist", "output", "source-digest", "commit", "rust-scope", "missing-execution", "missing-emitted", "source-change"]) {
+for (const mutation of ["none", "archive-dist", "output", "source-digest", "commit", "rust-scope", "missing-execution", "missing-emitted", "source-change", "reassemble", "retained-archive", "retained-runtime", "retained-output", "retained-build", "retained-source", "retained-new-dist"]) {
   test(`compiler-bound archive admission: ${mutation}`, () => {
     const stage = mkdtempSync(join(tmpdir(), "acyclic-compiler-archive-"));
     try {
@@ -154,7 +156,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       mkdirSync(join(stage, "target"));
       for (const name of ["typescript-qualification.mjs", "validate-npm-package.mjs", "archive-utils.mjs"]) cpSync(join(root, "scripts", name), join(stage, "scripts", name));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
-      writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n");
+      writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n/typescript/packages/*/generated/wasm/\n");
       for (const item of entries) writeArchiveFixture(stage, item);
       const git = args => {
         const result = spawnSync("git", args, { cwd: stage, encoding: "utf8" });
@@ -170,7 +172,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
         return { path, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, bytes: bytes.length };
       };
       const sorted = paths => paths.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(record);
-      const source = sorted(git(["ls-files", "-z", "--", "scripts", "release", "typescript"]).split("\0").filter(Boolean));
+      const source = sorted([...git(["ls-files", "-z", "--", "scripts", "release", "typescript"]).split("\0").filter(Boolean), ...entries.map(item => `typescript/packages/${item.directory}/generated/wasm/runtime.wasm`)]);
       const outputs = sorted(entries.flatMap(item => ["index.js", "index.d.ts"].map(file => `typescript/packages/${item.directory}/dist/${file}`)));
       const sourceDigest = `sha256:${createHash("sha256").update(source.map(file => `${file.path}\0${file.sha256}\0${file.bytes}\n`).join("")).digest("hex")}`;
       // Synthetic receipt tests admission replay only; it is not execution evidence.
@@ -180,7 +182,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
         ["x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json", "--pretty", "false"],
         ["test", "./typescript/packages/sdk/test/public-consumer.test.ts"],
       ];
-      const executions = commands.map((args, index) => ({ command: "fixture-bun", arguments: args, stdout: index === 1 ? "Version 5.9.3\n" : index === 2 ? outputs.map(file => `TSFILE: ${file.path}\n`).join("") : "", stderr: "" }));
+      const executions = commands.map((args, index) => ({ command: "fixture-bun", arguments: args, stdout: index === 1 ? "Version 5.9.3\n" : index === 2 ? outputs.map(file => `TSFILE: /original/producer/${file.path}\n`).join("") : "", stderr: "" }));
       const build = { schema: "acyclic.typescript-build-receipt.v1", scope: "typescript-compiler", source_commit: sourceCommit, source_sha256: sourceDigest, source_files: source, outputs, rust_producers_qualified: false, runtime: process.version, executions };
       if (mutation === "output") build.outputs[0].sha256 = `sha256:${"0".repeat(64)}`;
       if (mutation === "source-digest") build.source_sha256 = `sha256:${"0".repeat(64)}`;
@@ -198,8 +200,38 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       const buildPath = join(stage, "target/BUILD.json");
       writeFileSync(buildPath, JSON.stringify(build));
       const receiptPath = join(stage, "archives/QUALIFICATION.json");
-      const result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "create", join(stage, "archives"), sourceCommit, buildPath], { encoding: "utf8" });
-      if (mutation === "none") {
+      let result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "create", join(stage, "archives"), sourceCommit, buildPath], { encoding: "utf8" });
+      const retainedCase = mutation === "reassemble" || mutation.startsWith("retained-");
+      if (retainedCase) {
+        assert.equal(result.status, 0, result.stderr);
+        const original = join(stage, "target/original");
+        cpSync(join(stage, "archives"), original, { recursive: true });
+        for (const item of entries) {
+          rmSync(join(stage, "typescript/packages", item.directory, "dist"), { recursive: true });
+          rmSync(join(stage, "typescript/packages", item.directory, "generated"), { recursive: true });
+        }
+        rmSync(receiptPath);
+        if (mutation === "retained-new-dist") {
+          const input = join(stage, "archive-inputs", entries[0].asset.slice(0, -4));
+          writeFileSync(join(input, "package/dist/index.js"), "export const stale = true;\n");
+          const packed = spawnSync("tar", ["-czf", join(stage, "archives", entries[0].asset), "-C", input, "package"], { encoding: "utf8" });
+          assert.equal(packed.status, 0, packed.stderr);
+        }
+        if (mutation === "retained-archive") writeFileSync(join(original, entries[0].asset), "tampered");
+        if (mutation === "retained-build") writeFileSync(buildPath, JSON.stringify({ ...build, runtime: "v0.0.0" }));
+        if (mutation === "retained-source") writeFileSync(join(stage, "typescript/packages", entries[0].directory, "README.md"), "tampered");
+        if (["retained-runtime", "retained-output"].includes(mutation)) {
+          if (mutation === "retained-runtime") build.source_files.find(file => file.path.endsWith("runtime.wasm")).sha256 = `sha256:${"0".repeat(64)}`;
+          else build.outputs[0].sha256 = `sha256:${"0".repeat(64)}`;
+          writeFileSync(buildPath, JSON.stringify(build));
+          const retainedReceiptPath = join(original, "QUALIFICATION.json");
+          const retainedReceipt = JSON.parse(readFileSync(retainedReceiptPath, "utf8"));
+          retainedReceipt.compiler_build_receipt_sha256 = `sha256:${createHash("sha256").update(readFileSync(buildPath)).digest("hex")}`;
+          writeFileSync(retainedReceiptPath, JSON.stringify(retainedReceipt));
+        }
+        result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "reassemble", join(stage, "archives"), sourceCommit, buildPath, original], { encoding: "utf8" });
+      }
+      if (mutation === "none" || mutation === "reassemble") {
         assert.equal(result.status, 0, result.stderr);
         const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
         assert.equal(receipt.revision, 1);
@@ -211,7 +243,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
         }
       } else {
         assert.notEqual(result.status, 0);
-        assert.match(result.stderr, /archive dist differs|compiler build receipt|compiler source is not a clean|dist inventory differs/);
+        assert.match(result.stderr, /archive dist differs|compiler build receipt|compiler source is not a clean|dist inventory differs|retained compiler provenance|archive bytes differ/);
         assert.equal(existsSync(receiptPath), false);
       }
     } finally { rmSync(stage, { recursive: true, force: true }); }

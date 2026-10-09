@@ -21,5 +21,11 @@ test("the isolated npm job can import its staged publisher without a checkout", 
     execFileSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(join(stage, "scripts/publish-npm-packages.mjs")).href)});`], { cwd: stage });
     assert.match(workflow, /assemble-actors-native-package\.mjs inventory "\$stage\/release\/actors-native-packages\.json"/u);
     assert.match(workflow, /assemble-actors-native-package\.mjs release/u);
+    assert.match(workflow, /assemble-workers-native-package\.mjs inventory "\$stage\/release\/workers-native-packages\.json"/u);
+    assert.match(workflow, /assemble-workers-native-package\.mjs release/u);
+    for (const family of ["actors", "workers", "stream"]) {
+      const invocation = workflow.slice(workflow.indexOf(`node scripts/assemble-${family}-native-package.mjs release`)).split("\n")[1];
+      assert.ok(invocation.includes('"$RUNNER_TEMP/qualified/typescript"'), `${family} must retain original qualification inputs`);
+    }
   } finally { await rm(stage, { recursive: true, force: true }); }
 });
