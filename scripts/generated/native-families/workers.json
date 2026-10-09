@@ -1,0 +1,65 @@
+{
+  "buildScript": "scripts/build-workers-native.mjs",
+  "companionDirectory": "workers-native",
+  "features": [
+    "node-binding"
+  ],
+  "key": "workers",
+  "manifestRelative": "rust/crates/workers/Cargo.toml",
+  "npmPackage": "@acyclic-labs/workers",
+  "packageDirectory": "typescript/packages/workers",
+  "packageRelative": "typescript/packages/workers/package.json",
+  "rustPackageName": "acyclic-workers",
+  "rustTarget": "acyclic_workers",
+  "schema": "acyclic.native-family.v1",
+  "sourceRoots": [
+    ".cargo/config.toml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "buf.gen.yaml",
+    "buf.lock",
+    "buf.yaml",
+    "bun.lock",
+    "package.json",
+    "patches/napi-rs-cli-3.10.5.patch",
+    "rust-toolchain.toml",
+    "rust/crates/proto-codegen",
+    "rust/crates/workers",
+    "rust/vendor/protify-proc-macro-0.1.4",
+    "rust/vendor/tonic-web-wasm-client-0.9.2",
+    "scripts/archive-utils.mjs",
+    "scripts/assemble-native-family.mjs",
+    "scripts/assemble-workers-native-package.mjs",
+    "scripts/build-native-family.mjs",
+    "scripts/build-wasm.mjs",
+    "scripts/build-workers-native.mjs",
+    "scripts/check-generated.mjs",
+    "scripts/ensure-bun.ps1",
+    "scripts/ensure-bun.sh",
+    "scripts/generate.mjs",
+    "scripts/generated-bindings.mjs",
+    "scripts/generated/native-families/workers.json",
+    "scripts/native-family.mjs",
+    "tsconfig.base.json",
+    "typescript/packages/workers/generated/proto",
+    "typescript/packages/workers/package.json",
+    "typescript/packages/workers/src",
+    "typescript/packages/workers/tsconfig.json"
+  ],
+  "targets": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc"
+  ],
+  "version": "0.2.0",
+  "wasm": {
+    "artifact": "acyclic_workers",
+    "features": [
+      "browser-binding"
+    ],
+    "noDefaultFeatures": true,
+    "outName": "acyclic_workers_wasm",
+    "targetDirectory": "workers-wasm"
+  },
+  "wasmPackageName": "acyclic-workers"
+}
