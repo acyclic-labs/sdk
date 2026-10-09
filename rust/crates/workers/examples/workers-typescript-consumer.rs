@@ -6,8 +6,8 @@ fn main() -> Result<(), acyclic_workers::ContractError> {
     let module = b"export default async function run() { return new Uint8Array([7]); }";
     let digest = Sha256::digest(module).to_vec();
     let publication = acyclic_workers::wire::PublishVersionRequest {
-        javascript_module: module.to_vec().into(),
-        expected_sha256: digest.clone().into(),
+        javascript_module: module.to_vec(),
+        expected_sha256: digest.clone(),
         idempotency_key: "publish-example".into(),
     };
     acyclic_workers::validate_publish(&publication)?;
@@ -19,9 +19,9 @@ fn main() -> Result<(), acyclic_workers::ContractError> {
             )),
         }),
         input: Some(acyclic_workers::wire::Payload {
-            source: Some(acyclic_workers::wire::payload::Source::InlineBytes(
-                vec![1, 2, 3].into(),
-            )),
+            source: Some(acyclic_workers::wire::payload::Source::InlineBytes(vec![
+                1, 2, 3,
+            ])),
         }),
         limits: Some(acyclic_workers::wire::JobLimits {
             timeout_millis: 1_000,
