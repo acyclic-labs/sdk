@@ -3710,7 +3710,8 @@ impl AgentHarness {
         let scope = self
             .scope
             .narrow(admitted.grants, admitted.limits)?
-            .with_run_limits(run_limits)?;
+            .with_run_limits(run_limits)?
+            .with_replayed_extensions(admitted.extensions)?;
         let group = self.live.child(scope.concurrency_bound(self.concurrency));
         let descendants = group.child(scope.concurrency_bound(self.concurrency));
         Ok(TaskContext {
