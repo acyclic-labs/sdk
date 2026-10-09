@@ -196,17 +196,16 @@ async fn stock_turn_recovery(cancel: bool) -> Result<()> {
                 .ok_or_else(|| Error::NotFound("original lease".into()))?;
             let recovered = runtime.task_host().recover_work(task).await?;
             if cancel {
-                assert!(matches!(recovered, WorkPull::Unresolved { .. }));
+                assert!(
+                    matches!(recovered, WorkPull::Unresolved { lease: retained, .. } if retained.reservation == lease.reservation)
+                );
                 assert!(matches!(
                     runtime.resume_task(lease.clone(), &commands, 2).await,
                     TaskWorkerAttempt::Unresolved { .. }
                 ));
                 assert_eq!(model.generated.load(Ordering::SeqCst), 1);
                 assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
-                assert_eq!(
-                    runtime.task_host().outcome(task).await?,
-                    Some(Outcome::Cancelled)
-                );
+                assert_eq!(runtime.task_host().outcome(task).await?, None);
             } else {
                 let WorkPull::Claimed(recovered) = recovered else {
                     return Err(Error::Invalid(
