@@ -1949,7 +1949,7 @@ impl StockExecutor {
             let mut stream = self.provider.generate(
                 request,
                 crate::model::ModelDispatch {
-                    operation_id: input.operation_id,
+                    operation_id: purpose.attempt_operation(input.operation_id),
                     step,
                     request_digest,
                 },
@@ -4348,6 +4348,27 @@ mod tests {
     }
 
     impl ModelProvider for FakeModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            // This recovery fixture's accounting unit is a canonical request
+            // byte. It does not model a production provider's tokenizer.
+            Ok(crate::context::ModelTokenCount {
+                request_digest: request.manifest().request_digest,
+                fixed_tokens: u32::try_from(request.bytes().len())
+                    .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
+                message_tokens: vec![0; request.request().messages.len()],
+            })
+        }
+
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -6742,6 +6763,27 @@ mod tests {
         #[derive(Default)]
         struct Provider(Mutex<Vec<(crate::model::ModelDispatch, Vec<u8>)>>);
         impl ModelProvider for Provider {
+            fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+                Ok(crate::context::ModelContextCapacity {
+                    context_tokens: 131_072,
+                    output_tokens: 4_096,
+                })
+            }
+
+            fn count_tokens(
+                &self,
+                request: &crate::model::PreparedModelRequest,
+            ) -> Result<crate::context::ModelTokenCount> {
+                // This recovery fixture's accounting unit is a canonical request
+                // byte. It does not model a production provider's tokenizer.
+                Ok(crate::context::ModelTokenCount {
+                    request_digest: request.manifest().request_digest,
+                    fixed_tokens: u32::try_from(request.bytes().len())
+                        .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
+                    message_tokens: vec![0; request.request().messages.len()],
+                })
+            }
+
             fn generate<'a>(
                 &'a self,
                 request: crate::model::PreparedModelRequest,
