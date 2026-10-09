@@ -41,10 +41,11 @@ test("installed browser entry executes the ordinary registered runtime", async (
       limits: { file_bytes: 65536n, path_bytes: 1024n, attachments: 4n, render_bytes: 65536n,
         model_steps: 4n, model_events_per_step: 16n, tool_calls_per_step: 4n, context_messages: 16n },
       run_limits: { concurrency: 1n, max_steps: 4n, deadline_epoch_ms: null },
-      session_limits: { active_tasks: 1n, total_tasks: 2n, depth: 1, model_steps: 4n }, concurrency: 1,
+      session_limits: { active_tasks: 1n, total_tasks: 3n, depth: 1, model_steps: 4n }, concurrency: 1,
     };
     const scope = owner.issueScopeForAgent(agent, "owner", [
       "operation:declare", "operation:observe", "operation:cancel", "operation:wake", "task:spawn:installed.complete@1",
+      "task:spawn:acyclic.stock_turn@1", "model:generate",
       owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
     ]);
     const outputSchema: BrowserWorkLease["operation"]["entrypoint"]["result_schema"] = {
@@ -53,6 +54,8 @@ test("installed browser entry executes the ordinary registered runtime", async (
     registry.registerMachine({ name: "installed.complete", version: "1", digest: new Array(32).fill(41),
       state_schema: { type: "integer" }, input_schema: { type: "integer" }, output_schema: outputSchema, requirements: [] },
     (input: unknown) => input, (state: unknown) => ({ state, commands: [], status: { kind: "completed", value: state } }));
+    registry.registerStockTurn();
+    expect(() => registry.registerStockTurn()).toThrow();
     runtime = await BrowserTaskRuntime.open(options, owner, registry, scope);
     await runtime.initializeVolume();
     const unrelated = "00000000-0000-0000-0000-000000000001";
@@ -72,6 +75,35 @@ test("installed browser entry executes the ordinary registered runtime", async (
     const tick = await runtime.workerTick(worker, null, 8, 2);
     expect(tick.work?.kind).toBe("completed");
     expect(await runtime.outcome(unrelated)).toEqual({ Succeeded: 3n });
+
+    let generations = 0;
+    runtime.configureModel({ provider: "installed", name: "stock", revision: "1", options: {} },
+      async function* () {
+        generations++;
+        yield { kind: "content", delta: "stock result" };
+        yield { kind: "completed", metadata: {} };
+      }, () => null,
+      selection => {
+        expect(selection.revision).toBe("1");
+        return { context_tokens: 128, output_tokens: 16 };
+      }, (bytes, request_digest) => {
+        const request = JSON.parse(new TextDecoder().decode(bytes));
+        return { request_digest, fixed_tokens: 1, message_tokens: request.messages.map(() => 2) };
+      });
+    const command = crypto.randomUUID();
+    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
+    const operation = crypto.randomUUID();
+    const input = { operation_id: command, kind: "acyclic.model.v1", payload };
+    const stock = await runtime.admit(operation, "acyclic.stock_turn", "1", input);
+    expect(stock.kind).toBe("accepted");
+    if (stock.kind !== "accepted") throw new Error(`stock admission ${stock.kind}`);
+    expect(await runtime.admit(operation, "acyclic.stock_turn", "1", input)).toEqual(stock);
+    await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, operation_id: crypto.randomUUID() })).rejects.toThrow();
+    expect((await runtime.runOperation(worker, stock.task_id, 4))?.kind).toBe("completed");
+    expect(await runtime.outcome(stock.task_id)).toEqual({ Succeeded: { text: "stock result", metadata: {}, attachments: [], steps: 1n } });
+    expect(generations).toBe(1);
+    expect(await runtime.runOperation(worker, stock.task_id, 4)).toBeNull();
+    expect(generations).toBe(1);
   } finally {
     runtime?.free();
     registry.free();

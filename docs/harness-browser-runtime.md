@@ -73,3 +73,8 @@ liveness guarantee, and transports must honor cancellation for transport
 liveness. Full portable default tools, canonical root-turn composition and
 recursive steering remain separately tracked requirements; these adapters
 alone do not establish completion of the full slice I goal.
+
+
+`WasmTaskRegistry.registerStockTurn()` registers the same Rust stock-turn definition as native callers. Its input is the existing model command's operation ID, kind and immutable payload reference. It uses the existing model outbox and recovery path; registration grants no authority and starts no work.
+
+`configureModel` accepts optional synchronous capacity and token-counting callbacks after generate/reconcile. Capacity receives the exact model selection. Counting receives the exact canonical request bytes and Rust request digest; its returned `ModelTokenCount` must bind that digest and contain one additive upper bound per ordered message. Rust applies the canonical capacity and count validators. These trusted provider callbacks must be effect-free, and promises, malformed bounds and foreign request counts are rejected. Missing callbacks retain the explicit unsupported result. Default compaction still requires its separately qualified context pipeline consumer.

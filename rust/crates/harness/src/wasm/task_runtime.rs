@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
+    context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
     core::Scope,
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
@@ -305,6 +305,8 @@ impl ToolProjection for HostTool {
 struct HostModel {
     generate: Function,
     reconcile: Function,
+    capacity: Option<Function>,
+    count_tokens: Option<Function>,
 }
 
 struct HostModelIterator {
@@ -368,6 +370,40 @@ impl HostModel {
 }
 
 impl ModelProvider for HostModel {
+    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
+        let callback = self.capacity.as_ref().ok_or_else(|| {
+            Error::Unsupported("selected model context capacity is unavailable".into())
+        })?;
+        let model = to_js(model)
+            .map_err(|_| Error::Invalid("model capacity selection encoding failed".into()))?;
+        let value = callback
+            .call1(&JsValue::UNDEFINED, &model)
+            .map_err(|_| Error::Invalid("model capacity callback failed".into()))?;
+        let capacity: ModelContextCapacity = from_js(value)
+            .map_err(|_| Error::Invalid("model capacity callback returned invalid data".into()))?;
+        capacity.validate()?;
+        Ok(capacity)
+    }
+
+    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+        let callback = self.count_tokens.as_ref().ok_or_else(|| {
+            Error::Unsupported("selected model token counting is unavailable".into())
+        })?;
+        let digest = to_js(&request.manifest().request_digest)
+            .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
+        let value = callback
+            .call2(
+                &JsValue::UNDEFINED,
+                &js_sys::Uint8Array::from(request.bytes()),
+                &digest,
+            )
+            .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
+        let count: ModelTokenCount = from_js(value)
+            .map_err(|_| Error::Invalid("model counting callback returned invalid data".into()))?;
+        count.validate(request)?;
+        Ok(count)
+    }
+
     fn generate<'a>(
         &'a self,
         request: PreparedModelRequest,
@@ -654,6 +690,9 @@ impl WasmTaskRuntime {
     /// Generate receives canonical request bytes, separate dispatch identity and
     /// an `AbortSignal`, and returns an async iterator;
     /// reconcile receives the exact retained attempt and never redispatches it.
+    /// Optional capacity/counting callbacks are synchronous, effect-free provider
+    /// operations. Counting receives exact canonical bytes and their Rust digest;
+    /// Rust validates the response binding and ordered message dimensions.
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
@@ -666,6 +705,14 @@ impl WasmTaskRuntime {
             unchecked_param_type = "(attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>"
         )]
         reconcile: Function,
+        #[wasm_bindgen(
+            unchecked_param_type = "((model: WasmModelWire) => ModelContextCapacity) | undefined"
+        )]
+        capacity: Option<Function>,
+        #[wasm_bindgen(
+            unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined"
+        )]
+        count_tokens: Option<Function>,
     ) -> std::result::Result<(), JsValue> {
         let model: Model = from_js(model)?;
         model.validate().map_err(js_error)?;
@@ -674,6 +721,8 @@ impl WasmTaskRuntime {
             Arc::new(HostModel {
                 generate,
                 reconcile,
+                capacity,
+                count_tokens,
             }),
         ));
         Ok(())
@@ -999,3 +1048,7 @@ fn work_value(work: TaskWorkerAttempt) -> WasmBrowserWork {
         },
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+#[path = "task_runtime/accounting_tests.rs"]
+mod accounting_tests;
