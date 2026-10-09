@@ -2648,9 +2648,19 @@ pub fn json_tool_projection_schema(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Returns the complete ordered media and native option inventory without IO or authority.
-#[wasm_bindgen(js_name = modelContentFileRefs, unchecked_return_type = "WasmFileRefWire[]")]
-pub fn model_content_file_refs(
+/// Complete declarative inventory, without granting file or option authority.
+#[derive(Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+struct WasmModelContentInventoryWire<'a> {
+    #[tsify(type = "readonly WasmFileRefWire[]")]
+    files: Vec<&'a FileRef>,
+    #[tsify(type = "readonly WasmNativeConfigurationBindingWire[]")]
+    native_configurations: Vec<&'a crate::model::NativeConfigurationBinding>,
+}
+
+/// Returns all media/options refs and original-admission claims without IO.
+#[wasm_bindgen(js_name = modelContentInventory, unchecked_return_type = "WasmModelContentInventoryWire")]
+pub fn model_content_inventory(
     #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<JsValue, JsValue> {
@@ -2658,7 +2668,10 @@ pub fn model_content_file_refs(
     content
         .validate_limits(from_js(limits)?)
         .map_err(js_error)?;
-    to_js_admitted(&content.file_refs())
+    to_js_admitted(&WasmModelContentInventoryWire {
+        files: content.file_refs(),
+        native_configurations: content.native_configurations(),
+    })
 }
 
 /// Public facade input for the shared request constructor.

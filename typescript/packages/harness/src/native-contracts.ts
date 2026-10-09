@@ -1,7 +1,7 @@
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
-  Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput,
+  Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput, WasmModelContentInventoryWire,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata,
   WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
@@ -303,8 +303,9 @@ export class NativeContracts {
   }
 
   /** The Rust inventory includes tool media and immutable native option references. */
-  modelContentFileRefs(content: ModelContent, limits: Limits): readonly FileRef[] {
-    return freezeNative(normalizeTypedNativeValue(this.native.modelContentFileRefs(content, limits))) as readonly FileRef[];
+  modelContentInventory(content: ModelContent, limits: Limits): Readonly<Omit<WasmModelContentInventoryWire, "files"> & { files: readonly FileRef[] }> {
+    return freezeNative(normalizeNativeValue(this.native.modelContentInventory(content, limits))) as
+      Readonly<Omit<WasmModelContentInventoryWire, "files"> & { files: readonly FileRef[] }>;
   }
 
   /** Rust owns model stream event, tool-call, completion, and UTF-8 byte admission. */
