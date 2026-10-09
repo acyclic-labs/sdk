@@ -12,6 +12,17 @@ replacement needs an immutable source handoff and matching installed packages.
 
 ## Coverage retained for qualification
 
+The Dart producer and reusable installed qualifier now generate from accepted
+foundation `5f13157414a5f48425007ffd957ea7d09611e5fe`. The admitted Dart 3.13.5,
+protoc_plugin 25.1.0 and grpc 5.1.0 toolchain produces a reproducible archive with
+SHA-256 `224dd1312302bbcae17a8c583cac163fd91b99ff4b398177903194ac0788bfd8`.
+Fresh offline installation passes message/enum descriptors and nested contents,
+bytes, unsigned bits, optional presence, both oneof branches, gRPC method shapes,
+and three independent static type rejections. This is current transport-binding
+evidence for Actors, Workers and Stream; complete file-level metadata, remaining
+families/platforms, Rust-backed RPC, TLS/authentication, cancellation/recovery and
+embedded runtime remain outstanding. See `tools/sdk-generator/backends/dart`.
+
 | Cohort | Targets | Historical evidence and limits |
 | --- | --- | --- |
 | Go transport | Go | The historical `current-installed-method-matrix-20261004.json` records Stream and Machines coverage; Actors and Inference remain partial. `go/qualification-matrix.md` distinguishes protobuf-over-HTTP fixture probes from local gRPC cancellation. |

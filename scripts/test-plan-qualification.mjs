@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 import {
   chooseLanes,
   classifyQualificationEvent,
   ignored,
+  languageGeneratorBackends,
   laneKeys,
+  parseGeneratorBackends,
   qualificationEventKinds,
   requiresFullQualification,
+  selectGeneratorBackends,
 } from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 const blob = (path, object = "a".repeat(40)) => `100644 blob ${object}\t${path}`;
+const generatorPaths = languageGeneratorBackends.map(backend => `tools/sdk-generator/backends/${backend}/src/generate.mjs`);
 const tree = [
   blob("Cargo.lock"),
   blob("rust/crates/stream/src/lib.rs"),
@@ -24,10 +28,8 @@ const tree = [
   blob("README.md"),
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
-  blob("tools/sdk-generator/backends/go/generate.go"),
-  blob("tools/sdk-generator/backends/java/generate.mjs"),
-  blob("tools/sdk-generator/backends/dotnet/generate.mjs"),
-  blob("tools/sdk-generator/backends/ruby/src/generate.mjs"),
+  ...generatorPaths.map(path => blob(path)),
+  blob(".github/sdk-generator-backends.json"),
   blob("tools/sdk-generator/shared/authority.mjs"),
   blob("tools/sdk-generator/backends/future/generate.mjs"),
 ];
@@ -91,9 +93,48 @@ test("unrelated workflows reach only policy and repository lanes", () => {
 
 test("isolated language generator changes reuse Rust and TypeScript builds", () => {
   const before = laneKeys(lanes, tree);
-  for (const path of ["tools/sdk-generator/backends/go/generate.go", "tools/sdk-generator/backends/java/generate.mjs", "tools/sdk-generator/backends/dotnet/generate.mjs", "tools/sdk-generator/backends/ruby/src/generate.mjs", "tools/sdk-generator/shared/authority.mjs"]) {
+  for (const path of [...generatorPaths, "tools/sdk-generator/shared/authority.mjs", ".github/sdk-generator-backends.json"]) {
     const after = laneKeys(lanes, changed(path));
     assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
+  }
+});
+
+test("generator scope selects only affected backends and retains package README checks", () => {
+  for (const backend of languageGeneratorBackends) {
+    assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/src/generate.mjs`]), [backend]);
+    assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/README.md`]), []);
+  }
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"]), languageGeneratorBackends.filter(name => name !== "go"));
+  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"]), ["go", "dart"]);
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/backends/dotnet/templates/package/README.md"]), ["dotnet"]);
+  for (const path of [".github/workflows/sdk-generator.yml", ".github/sdk-generator-backends.json", "scripts/plan-qualification.mjs", "scripts/test-plan-qualification.mjs"]) {
+    assert.deepEqual(selectGeneratorBackends([path]), languageGeneratorBackends);
+  }
+});
+
+test("generator registry rejects empty, duplicate and unsafe backend coordinates", () => {
+  const entry = { name: "go", shared: [] };
+  for (const value of [[], [entry, entry], ["go"], [{ ...entry, name: "../outside" }], [{ ...entry, name: "go;echo" }], [null], {},
+    [{ ...entry, name: "Go" }], [{ ...entry, shared: ["unknown"] }], [{ ...entry, shared: ["archive", "archive"] }],
+    [{ ...entry, unexpected: true }]]) assert.throws(() => parseGeneratorBackends(value));
+});
+
+test("future shared-reader dependencies are declared without planner code changes", () => {
+  const registry = parseGeneratorBackends([{ name: "new-backend", shared: ["archive"] }]);
+  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"], registry), ["new-backend"]);
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"], registry), []);
+});
+
+test("registered backends declare the shared readers used by their source and controls", () => {
+  const registry = parseGeneratorBackends(JSON.parse(readFileSync(".github/sdk-generator-backends.json", "utf8")));
+  const sources = root => readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+    const path = `${root}/${entry.name}`;
+    return entry.isDirectory() ? sources(path) : /\.(mjs|go)$/.test(entry.name) ? [readFileSync(path, "utf8")] : [];
+  }).join("\n");
+  for (const entry of registry) {
+    const text = sources(`tools/sdk-generator/backends/${entry.name}`);
+    if (/shared\/(authority\.mjs|protoc\.json)/.test(text)) assert.ok(entry.shared.includes("authority"), `${entry.name} must declare shared authority inputs`);
+    if (/scripts\/archive-utils\.mjs/.test(text)) assert.ok(entry.shared.includes("archive"), `${entry.name} must declare archive-reader inputs`);
   }
 });
 
