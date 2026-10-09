@@ -46,8 +46,21 @@ fail with their intended compiler type errors. The executed fixture sources
 live in `tests/fixtures/consumer/`.
 
 This establishes installed CMake consumption and native loopback transport for
-the accepted Actors, Workers and Stream exports. Deterministic archive admission
-and a reusable installed qualifier remain pending, as do Rust-backed RPC,
+the accepted Actors, Workers and Stream exports. Two deterministic archives have identical SHA256
+`8bfb26bfadb6a328df08d35192e25f12edf162ed3fd9da6caf032163830fd7de`.
+`src/package.mjs` admits that archive against an external digest, the generation
+receipt, complete payload inventory, maintained producer/tool/template pins and
+accepted Rust authority. Admission rejects links, traversal, missing/extra files
+and payload or receipt drift. A reusable installed qualifier remains pending,
+as do Rust-backed RPC,
 TLS/authentication, cancellation/recovery, remaining families/platforms and
 embedded runtime qualification. Historical protoc 28.3 source-only evidence is
 retained separately from the matched native runtime evidence.
+
+Archive admission command:
+
+```sh
+node tools/sdk-generator/backends/cpp/src/package.mjs \
+  --package /package.tar.gz --sha256 <external-sha256> \
+  --receipt /generation-receipt.json --authority /accepted-export
+```
