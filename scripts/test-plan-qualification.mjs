@@ -155,8 +155,12 @@ test("generator scope selects only affected backends and retains package README 
     assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/src/generate.mjs`]), [backend]);
     assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/README.md`]), []);
   }
-  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"]), languageGeneratorBackends.filter(name => name !== "go"));
-  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"]), ["go", "dart"]);
+  const sharedScope = parseGeneratorBackends([
+    { name: "source-only", shared: ["authority"] }, { name: "archive-only", shared: ["archive"] },
+    { name: "both-readers", shared: ["authority", "archive"] }, { name: "neither-reader", shared: [] },
+  ]);
+  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"], sharedScope), ["source-only", "both-readers"]);
+  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"], sharedScope), ["archive-only", "both-readers"]);
   assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/backends/dotnet/templates/package/README.md"]), ["dotnet"]);
   for (const path of [".github/workflows/sdk-generator.yml", ".github/sdk-generator-backends.json", "scripts/plan-qualification.mjs", "scripts/test-plan-qualification.mjs"]) {
     assert.deepEqual(selectGeneratorBackends([path]), languageGeneratorBackends);
