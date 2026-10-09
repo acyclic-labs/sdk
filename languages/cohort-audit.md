@@ -38,6 +38,35 @@ The inventory also contains Rust and TypeScript, owned by the foundation loop.
 The cohort list records observations and work allocation; Rust-owned metadata
 remains the generation authority.
 
+### Reusable PHP transport tooling
+
+The PHP producer consumes accepted foundation
+`5f13157414a5f48425007ffd957ea7d09611e5fe` through protoc 28.3 and the maintained
+gRPC 1.82.0 PHP plugin, compiled from unchanged pinned gRPC/protobuf/Abseil
+sources. Independent generations emit identical 105-file payloads. The reusable
+qualifier builds deterministic archive SHA-256
+`50d85aadd88283df77f53b06fe72d73605d4bf7c61be37209aa84e5d3a557967`, then
+uses Composer 2.10.3 to resolve and install offline into fresh owned directories.
+Raw dependency ZIPs, the entire PHP 8.5.11 runtime, Composer, the gRPC extension
+and bsdtar are admitted by exact hashes. Installed package/dependency bytes and
+authoritative autoloader roots are verified before and after controls.
+
+Actual installed controls compare complete Actors/Workers/Stream file
+descriptors after removing source comments and only Buf image tag 8042. Bytes,
+unsigned wire bits, optional-zero presence, both oneof branches and every
+generated client method's path, message types and unary/server-streaming shape
+pass. Maintained serializers process nonempty samples. Three independent array
+assignments fail for their intended runtime type errors. Native gRPC client
+creation/shutdown passes; four client mutations and three actual ZIP safety
+faults fail as intended. Fifty-seven offline producer/qualifier controls guard
+admission, isolation and failure receipts. Routine CI downloads no PHP tooling.
+
+On this 64-bit PHP runtime, `-1` represents the uint64 maximum wire bits;
+unsigned decimal strings saturate and are not qualified. These results establish
+installed transport bindings, with runtime assignment checks and maintained
+message-class method parameters. Remaining families/platforms, Rust-backed RPC,
+TLS/authentication, cancellation/recovery and embedded runtime remain pending.
+
 ## Historical input identities
 
 | Input | SHA-256 read during this audit |
