@@ -280,12 +280,12 @@ impl DurableToolRunner {
         // ToolInvocation uses ordinary compact JSON; sorting object keys does not
         // change its byte count. Identity hashing below remains canonical.
         crate::contract::validate_json_byte_bound(&invocation, content_limit)?;
+        tool.executor
+            .authorize_with_context(&context, &invocation)?;
         context
             .task()
             .authorize_tool(&definition, &invocation)
             .await?;
-        tool.executor
-            .authorize(Some(context.task().scope()), &invocation)?;
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(&(
             &task_id,
             &definition,

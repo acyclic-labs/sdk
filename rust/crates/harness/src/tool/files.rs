@@ -102,8 +102,8 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
     let definition = ToolDefinition {
         name: name.into(),
         revision: match adapter {
-            FileTool::Patch { .. } => "portable-patch-3",
-            _ => "portable-4",
+            FileTool::Patch { .. } => "portable-patch-4",
+            _ => "portable-5",
         }
         .into(),
         description: description.into(),
@@ -200,17 +200,8 @@ fn public_path(path: &str) -> Result<()> {
 impl FileTool {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
         invocation.validate()?;
-        // The admitted registry owns the selected name/definition. Reusing an
-        // executor under a consumer's tool name does not grant file authority.
-        if context.operation_id() != invocation.operation_id
-            || context.call_id() != invocation.call_id
-        {
-            return Err(Error::Unauthorized(
-                "file tool requires its exact admitted call context".into(),
-            ));
-        }
         let task = context.task();
-        self.authorize(Some(task.scope()), &invocation)?;
+        self.authorize_with_context(&context, &invocation)?;
         let value = match self {
             Self::Read => {
                 let input: ReadFileInput = decode(invocation.arguments)?;
@@ -281,8 +272,12 @@ impl FileTool {
     }
 }
 
-impl ToolExecutor for FileTool {
-    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
+impl FileTool {
+    fn authorize_scope(
+        &self,
+        scope: Option<&RuntimeScope>,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
         invocation.validate()?;
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("file tool requires original runtime scope".into())
@@ -326,6 +321,41 @@ impl ToolExecutor for FileTool {
             }
         }
         Ok(())
+    }
+}
+
+impl ToolExecutor for FileTool {
+    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
+        self.authorize_scope(scope, invocation)?;
+        Err(Error::Unauthorized(
+            "portable file tool requires original task context".into(),
+        ))
+    }
+
+    fn authorize_with_context(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        if context.operation_id() != invocation.operation_id
+            || context.call_id() != invocation.call_id
+        {
+            return Err(Error::Unauthorized(
+                "file tool requires its exact admitted call context".into(),
+            ));
+        }
+        self.authorize_scope(Some(context.task().scope()), invocation)?;
+        match self {
+            Self::Read => Ok(()),
+            Self::Write => context.task().authorize_content_publication(None),
+            Self::Edit | Self::Patch { .. } => {
+                let file: FileRef =
+                    decode(invocation.arguments.get("file").cloned().ok_or_else(|| {
+                        Error::Invalid("file tool requires an original source reference".into())
+                    })?)?;
+                context.task().authorize_content_publication(Some(&file))
+            }
+        }
     }
 
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
@@ -464,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn source_authority_is_checked_by_the_pre_replay_executor_gate() -> Result<()> {
+    fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         let file = file()?;
         let missing = RuntimeScope::new(Capabilities::default(), Limits::default())?;
         let granted = RuntimeScope::new(
@@ -509,7 +539,10 @@ mod tests {
                 tool.executor.authorize(Some(&missing), &invocation),
                 Err(Error::Unauthorized(_))
             ));
-            tool.executor.authorize(Some(&granted), &invocation)?;
+            assert!(matches!(
+                tool.executor.authorize(Some(&granted), &invocation),
+                Err(Error::Unauthorized(_))
+            ));
         }
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),
@@ -546,10 +579,10 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
-        assert_eq!(tool.definition.revision, "portable-4");
+        assert_eq!(tool.definition.revision, "portable-5");
         assert_eq!(
             patch_file(4096, 16)?.definition.revision,
-            "portable-patch-3"
+            "portable-patch-4"
         );
         Ok(())
     }

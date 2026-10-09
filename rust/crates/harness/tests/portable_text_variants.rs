@@ -16,6 +16,7 @@ use acyclic_harness::{
     runtime::{Bindings, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext},
     tool::{
         ToolInvocation, ToolRegistry, ToolResult,
+        files::{self, EditFileInput, FileResult, PatchFileInput, ReadFileInput, WriteFileInput},
         schema::ProjectionMode,
         text::{ReadOptions, SearchOptions, TextRange},
         text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
@@ -78,9 +79,18 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     );
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let owner = issuer.root_for_agent(agent, "owner", Capabilities::new([read.clone(), write]));
-    let writer =
-        FilesystemContentPublisher::new(host.clone(), volume, &issuer.verifier(), &owner, 4096)?;
+    let owner = issuer.root_for_agent(
+        agent,
+        "owner",
+        Capabilities::new([read.clone(), write.clone()]),
+    );
+    let writer = Arc::new(FilesystemContentPublisher::new(
+        host.clone(),
+        volume,
+        &issuer.verifier(),
+        &owner,
+        4096,
+    )?);
     let source = writer
         .stage(
             OperationId::new(),
@@ -103,7 +113,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     assert_ne!(source, later);
     let reader = Arc::new(ReaderSpy {
         inner: Arc::new(FilesystemContentVerifier::new(
-            host,
+            host.clone(),
             issuer.verifier(),
             owner,
             4096,
@@ -136,9 +146,14 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let mut tools = ToolRegistry::new();
     tools.register(read_tool)?;
     tools.register(search_tool)?;
+    tools.register(files::read_file()?)?;
+    tools.register(files::write_file()?)?;
+    tools.register(files::edit_file()?)?;
+    tools.register(files::patch_file(65_536, 16)?)?;
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
         let source = source.clone();
+        let host = host.clone();
         let reader = captured_reader.clone();
         let executor = read_executor.clone();
         let projector = read_projector.clone();
@@ -201,6 +216,119 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             assert_eq!(
                 search_projector.project(&invocation, &canonical)?,
                 json!({"kind":"json","value":canonical.value})
+            );
+            // Public typed calls use the actual admitted live context and writer.
+            let write = context.tool::<WriteFileInput, FileResult>("acyclic.write_file")?;
+            let whole = context.tool::<ReadFileInput, String>("acyclic.read_file")?;
+            let edit = context.tool::<EditFileInput, FileResult>("acyclic.edit_file")?;
+            let patch = context.tool::<PatchFileInput, FileResult>("acyclic.patch_file")?;
+            let written = context
+                .call(
+                    &write,
+                    WriteFileInput {
+                        path: "live.txt".into(),
+                        text: "alpha\r\n🦀 omega\r\n".into(),
+                        media_type: "text/plain".into(),
+                        display_name: "live.txt".into(),
+                    },
+                )
+                .await?;
+            assert_eq!(
+                context
+                    .call(
+                        &whole,
+                        ReadFileInput {
+                            file: written.file.clone()
+                        }
+                    )
+                    .await?,
+                "alpha\r\n🦀 omega\r\n"
+            );
+            let edited = context
+                .call(
+                    &edit,
+                    EditFileInput {
+                        file: written.file.clone(),
+                        old_text: "omega".into(),
+                        new_text: "done".into(),
+                    },
+                )
+                .await?;
+            assert_eq!(
+                context.read_file(&edited.file).await?,
+                "alpha\r\n🦀 done\r\n".as_bytes()
+            );
+            assert_eq!(
+                context.read_file(&written.file).await?,
+                "alpha\r\n🦀 omega\r\n".as_bytes()
+            );
+            let patched = context
+                .call(
+                    &patch,
+                    PatchFileInput {
+                        file: edited.file.clone(),
+                        diff: "@@\n-alpha\n+beta\n".into(),
+                    },
+                )
+                .await?;
+            assert_eq!(
+                context.read_file(&patched.file).await?,
+                "beta\r\n🦀 done\r\n".as_bytes()
+            );
+            assert_eq!(
+                context.read_file(&edited.file).await?,
+                "alpha\r\n🦀 done\r\n".as_bytes()
+            );
+            let workspace = acyclic_harness::filesystem::workspace_ref(
+                patched.file.volume().provider().clone(),
+                &patched.file.volume().storage_name()?,
+            )?;
+            let before_failed_writes = host.resolve(&workspace).await?.generation;
+            assert!(matches!(
+                context
+                    .call(
+                        &edit,
+                        EditFileInput {
+                            file: written.file.clone(),
+                            old_text: "omega".into(),
+                            new_text: "stale".into(),
+                        }
+                    )
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(
+                host.resolve(&workspace).await?.generation,
+                before_failed_writes
+            );
+            let read_only = context.scoped(
+                context.scope().grants().without(&Capabilities::new([written
+                    .file
+                    .volume()
+                    .capability(VolumeOperation::Write)?])),
+                context.scope().limits(),
+            )?;
+            assert!(matches!(
+                read_only
+                    .call(
+                        &write,
+                        WriteFileInput {
+                            path: "denied.txt".into(),
+                            text: "denied".into(),
+                            media_type: "text/plain".into(),
+                            display_name: "denied.txt".into(),
+                        }
+                    )
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert_eq!(
+                context.read_file(&patched.file).await?,
+                "beta\r\n🦀 done\r\n".as_bytes()
+            );
+            assert_eq!(
+                host.resolve(&workspace).await?.generation,
+                before_failed_writes
             );
             // The original tool-call grants survive attenuation; file access does not.
             let restricted = context.scoped(
@@ -269,7 +397,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     bindings.tools = tools;
     bindings.content = Some(ContentBindings {
         reader,
-        writer: None,
+        writer: Some(writer),
     });
     bindings.scope = RuntimeScope::new(
         Capabilities::new([
@@ -277,6 +405,11 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             "tool:call:acyclic.read_file_range".to_owned(),
             "tool:call:acyclic.search_file".to_owned(),
             read,
+            write,
+            "tool:call:acyclic.read_file".to_owned(),
+            "tool:call:acyclic.write_file".to_owned(),
+            "tool:call:acyclic.edit_file".to_owned(),
+            "tool:call:acyclic.patch_file".to_owned(),
         ]),
         Limits::default(),
     )?;

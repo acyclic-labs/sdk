@@ -13,12 +13,14 @@ use acyclic_harness::{
     durable_tool::DurableToolRunner,
     executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
     filesystem::{
-        FilesystemContentPublisher, FilesystemExecutionJournal, FilesystemHost,
-        FilesystemTaskRuntime,
+        FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
+        FilesystemHost, FilesystemTaskRuntime,
     },
     interaction::{Interaction, InteractionOutcome},
     resources::ProviderRef,
-    runtime::{RuntimeScope, TaskDefinition, TaskRegistry, ToolContext},
+    runtime::{
+        AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext,
+    },
     scheduler::SessionLimits,
     tool::{ToolExecutor, ToolInvocation, ToolRegistry, ToolResult, files},
     workflow::{
@@ -68,6 +70,13 @@ struct FileExecutorSpy {
 impl ToolExecutor for FileExecutorSpy {
     fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
         self.inner.authorize(scope, invocation)
+    }
+    fn authorize_with_context(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        self.inner.authorize_with_context(context, invocation)
     }
     fn execute<'a>(
         &'a self,
@@ -200,18 +209,21 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "operation:observe".to_owned(),
             "task:spawn:fixture.file_replay@1".to_owned(),
             "tool:call:acyclic.read_file".to_owned(),
+            "tool:call:acyclic.write_file".to_owned(),
+            "tool:call:acyclic.edit_file".to_owned(),
+            "tool:call:acyclic.patch_file".to_owned(),
             read_grant.clone(),
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
-    let writer = FilesystemContentPublisher::new(
+    let writer = Arc::new(FilesystemContentPublisher::new(
         filesystem.clone(),
         volume.clone(),
         &issuer.verifier(),
         &signed,
         65_536,
-    )?;
+    )?);
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
         .stage(
@@ -232,6 +244,32 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     let definition = tool.definition.clone();
     let mut tools = ToolRegistry::new();
     tools.register(tool)?;
+    let mutations = [
+        (
+            files::write_file()?,
+            json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
+        ),
+        (
+            files::edit_file()?,
+            json!({"file":source,"old_text":"original","new_text":"changed"}),
+        ),
+        (
+            files::patch_file(4096, 16)?,
+            json!({"file":source,"diff":"@@\n-original\n+changed\n"}),
+        ),
+    ];
+    let write_executor = Arc::new(FileExecutorSpy {
+        inner: mutations[0].0.executor.clone(),
+        executions: AtomicUsize::new(0),
+        reconciliations: AtomicUsize::new(0),
+    });
+    for (index, (tool, _)) in mutations.iter().enumerate() {
+        let mut tool = tool.clone();
+        if index == 0 {
+            tool.executor = write_executor.clone();
+        }
+        tools.register(tool)?;
+    }
     let machine: Arc<dyn ResumableMachine> = Arc::new(AdmissionMachine {
         identity: MachineIdentity {
             name: "fixture.file_replay".into(),
@@ -289,6 +327,29 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             ));
         }
         let context = runtime.harness().durable_context(task, admission).await?;
+        // Explicit low-level composition reuses the real admitted task host and
+        // original owner-bound writer. This is not the default lease-owned writer.
+        let writable = AgentHarness::with_policy(
+            tasks.clone(),
+            tools.clone(),
+            scope.clone(),
+            1,
+            Some(runtime.task_host().clone()),
+            None,
+            Some(ContentBindings {
+                reader: Arc::new(FilesystemContentVerifier::new(
+                    filesystem.clone(),
+                    issuer.verifier(),
+                    signed.clone(),
+                    65_536,
+                )?),
+                writer: Some(writer.clone()),
+            }),
+            None,
+            None,
+        )?
+        .durable_context(task, admission)
+        .await?;
         // This runner regression uses an explicit real FS journal, not the
         // runtime's lease-owned default execution entry point.
         let journal = Arc::new(JournalSpy {
@@ -322,6 +383,29 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         if reopened {
             assert_eq!(journal.writes.load(Ordering::SeqCst), 0);
         }
+        let write_call = OperationId::from_bytes([86; 16]);
+        let write_result = runner
+            .run_with_context(
+                task,
+                write_call,
+                mutations[0].0.definition.clone(),
+                mutations[0].1.clone(),
+                ToolContext::new(writable.clone(), write_call, write_call.to_string())?,
+            )
+            .await?;
+        let Outcome::Succeeded(write_value) = write_result else {
+            panic!("write must complete")
+        };
+        let published: files::FileResult = serde_json::from_value(write_value.clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(published.file.path(), "destination.txt");
+        assert_eq!(writable.read_file(&published.file).await?, b"body");
+        assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
+        assert_eq!(write_executor.reconciliations.load(Ordering::SeqCst), 0);
+        if reopened {
+            assert_eq!(journal.writes.load(Ordering::SeqCst), 0);
+        }
+        let write_records = journal.inner.replay(write_call, 0, 16).await?;
         let records = journal.inner.replay(call, 0, 16).await?;
         assert_eq!(
             records
@@ -332,6 +416,58 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         );
         let before_reads = journal.reads.load(Ordering::SeqCst);
         let before_writes = journal.writes.load(Ordering::SeqCst);
+        let workspace = acyclic_harness::filesystem::workspace_ref(
+            volume.provider().clone(),
+            &volume.storage_name()?,
+        )?;
+        let before_rejected_head = filesystem.resolve(&workspace).await?.generation;
+        // This admitted runtime intentionally has a reader and no original writer.
+        // A scope's write capability cannot supply that missing provider binding.
+        for (tool, arguments) in &mutations {
+            let operation = OperationId::new();
+            assert!(matches!(
+                runner
+                    .run_with_context(
+                        task,
+                        operation,
+                        tool.definition.clone(),
+                        arguments.clone(),
+                        ToolContext::new(context.clone(), operation, operation.to_string())?
+                    )
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        let write_grant = volume.capability(VolumeOperation::Write)?;
+        let no_write = writable.scoped(
+            scope.grants().without(&Capabilities::new([write_grant])),
+            scope.limits(),
+        )?;
+        for (index, (tool, arguments)) in mutations.iter().enumerate() {
+            // The write case replays an already completed operation. Edit/patch
+            // are fresh controls with valid original read grant and input schema.
+            let operation = if index == 0 {
+                write_call
+            } else {
+                OperationId::new()
+            };
+            assert!(matches!(
+                runner
+                    .run_with_context(
+                        task,
+                        operation,
+                        tool.definition.clone(),
+                        arguments.clone(),
+                        ToolContext::new(no_write.clone(), operation, operation.to_string())?
+                    )
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        assert_eq!(
+            journal.inner.replay(write_call, 0, 16).await?,
+            write_records
+        );
         let restricted = context.scoped(
             scope
                 .grants()
@@ -374,7 +510,23 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(executor.reconciliations.load(Ordering::SeqCst), 0);
         assert_eq!(journal.inner.replay(call, 0, 16).await?, records);
+        assert_eq!(
+            filesystem.resolve(&workspace).await?.generation,
+            before_rejected_head
+        );
+        assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
+        assert_eq!(write_executor.reconciliations.load(Ordering::SeqCst), 0);
         if !reopened {
+            let later_write = writer
+                .stage(
+                    OperationId::new(),
+                    "destination.txt",
+                    b"later destination edit",
+                    "text/plain",
+                    "destination.txt",
+                )
+                .await?;
+            assert_ne!(published.file, later_write);
             let later = writer
                 .stage(
                     OperationId::new(),

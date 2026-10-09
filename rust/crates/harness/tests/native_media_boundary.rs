@@ -5,6 +5,9 @@
     reason = "ordered boundary scenarios retain their positive and negative controls together"
 )]
 
+#[cfg(target_arch = "wasm32")]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
 use acyclic_fs::Fs;
 use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result,
@@ -48,6 +51,7 @@ struct ReaderSpy {
     inner: Arc<dyn ContentResidencyVerifier>,
     reads: AtomicUsize,
     corrupt: AtomicBool,
+    missing: AtomicBool,
 }
 impl ContentResidencyVerifier for ReaderSpy {
     fn verify<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
@@ -56,6 +60,11 @@ impl ContentResidencyVerifier for ReaderSpy {
     fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
+            if self.missing.load(Ordering::SeqCst) {
+                return Err(Error::NotFound(
+                    "original native media is unavailable".into(),
+                ));
+            }
             let mut bytes = self.inner.read(file).await?;
             if self.corrupt.load(Ordering::SeqCst) {
                 let first = bytes
@@ -443,9 +452,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
     }]
 }
 
-#[tokio::test]
-async fn live_original_options_and_actual_native_parts_reach_adapter_without_conversion()
--> Result<()> {
+async fn exercise_live_native_boundary() -> Result<()> {
     let provider = ProviderRef::new("native-boundary", "filesystem", "2")?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent_id = AgentId::new();
@@ -607,6 +614,7 @@ async fn live_original_options_and_actual_native_parts_reach_adapter_without_con
         )?),
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
+        missing: AtomicBool::new(false),
     });
     let adapter = Arc::new(MockAdapter {
         reader: reader.clone(),
@@ -979,6 +987,17 @@ async fn live_original_options_and_actual_native_parts_reach_adapter_without_con
                 let counts = adapter.counts.load(Ordering::SeqCst);
                 let generates = adapter.generates.load(Ordering::SeqCst);
                 let reads = reader.reads.load(Ordering::SeqCst);
+                // A missing original reference must fail at the same authenticated
+                // reader boundary as corruption, before adapter counting/dispatch.
+                let captured = adapter.captures.lock().map_err(|_| Error::Storage("capture lock".into()))?.len();
+                reader.missing.store(true, Ordering::SeqCst);
+                assert!(matches!(context.model_events(only_file(&original.0, &original.1), Some(16)).await, Err(Error::NotFound(_))));
+                reader.missing.store(false, Ordering::SeqCst);
+                assert!(reader.reads.load(Ordering::SeqCst) > reads);
+                assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
+                assert_eq!(adapter.generates.load(Ordering::SeqCst), generates);
+                assert_eq!(adapter.captures.lock().map_err(|_| Error::Storage("capture lock".into()))?.len(), captured);
+                let reads = reader.reads.load(Ordering::SeqCst);
                 reader.corrupt.store(true, Ordering::SeqCst);
                 assert!(context.model_events(only_file(&original.0, &original.1), Some(16)).await.is_err());
                 assert!(reader.reads.load(Ordering::SeqCst) > reads);
@@ -1174,4 +1193,20 @@ async fn live_original_options_and_actual_native_parts_reach_adapter_without_con
     assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
     assert_eq!(adapter.generates.load(Ordering::SeqCst), generated);
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn live_original_options_and_actual_native_parts_reach_adapter_without_conversion()
+-> Result<()> {
+    exercise_live_native_boundary().await
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen_test::wasm_bindgen_test]
+async fn live_original_options_and_actual_native_parts_reach_adapter_without_conversion()
+-> std::result::Result<(), wasm_bindgen::JsValue> {
+    exercise_live_native_boundary()
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }

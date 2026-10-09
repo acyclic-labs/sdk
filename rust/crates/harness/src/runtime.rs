@@ -4427,6 +4427,39 @@ impl TaskContext {
         )
         .await
     }
+    fn bound_content_writer<'a>(
+        &self,
+        binding: Option<&'a ContentBindings>,
+    ) -> Result<&'a Arc<dyn ContentPublisher>> {
+        let content =
+            binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+        let writer = content
+            .writer
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
+        if !self
+            .scope
+            .grants
+            .contains(&writer.volume().capability(VolumeOperation::Write)?)
+        {
+            return Err(Error::Unauthorized(
+                "task scope cannot write this volume".into(),
+            ));
+        }
+        Ok(writer)
+    }
+
+    /// Checks the original content destination without reading or publishing bytes.
+    pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
+        let writer = self.bound_content_writer(self.harness.content.as_ref())?;
+        if source.is_some_and(|source| source.volume() != writer.volume()) {
+            return Err(Error::Unauthorized(
+                "source differs from the owner-bound destination".into(),
+            ));
+        }
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "one owner-bound publication path retains its binding, identity, bytes, metadata and receipt mode"
@@ -4448,19 +4481,7 @@ impl TaskContext {
         }
         let content =
             binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = content
-            .writer
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
-        if !self
-            .scope
-            .grants
-            .contains(&writer.volume().capability(VolumeOperation::Write)?)
-        {
-            return Err(Error::Unauthorized(
-                "task scope cannot write this volume".into(),
-            ));
-        }
+        let writer = self.bound_content_writer(Some(content))?;
         let file = match publication {
             ContentPublication::Replacement(source) => {
                 if source.volume() != writer.volume() || source.path() != path {
@@ -4533,13 +4554,15 @@ impl TaskContext {
             name: tool.definition.name.clone(),
             arguments,
         };
-        binding.executor.authorize(Some(&self.scope), &invocation)?;
-        self.authorize_tool(&tool.definition, &invocation).await?;
         let context = ToolContext::new(
             self.clone(),
             invocation.operation_id,
             invocation.call_id.clone(),
         )?;
+        binding
+            .executor
+            .authorize_with_context(&context, &invocation)?;
+        self.authorize_tool(&tool.definition, &invocation).await?;
         let result = binding
             .executor
             .execute_with_context(context, invocation)

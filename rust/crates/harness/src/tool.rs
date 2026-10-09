@@ -173,6 +173,16 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
+    /// Checks original task-bound resources before replay, dispatch or reconciliation.
+    /// Context-independent adapters retain the same scoped authorization gate.
+    fn authorize_with_context(
+        &self,
+        context: &crate::runtime::ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        self.authorize(Some(context.task().scope()), invocation)
+    }
+
     /// Executes an already admitted invocation.
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>>;
 
