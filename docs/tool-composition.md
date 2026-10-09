@@ -55,6 +55,35 @@ Bounded search, read options and patch editing remain open. Optional execution
 consumes the landed PR5 provider and its existing approval, selected multi-volume
 view, publication and recovery path; no second execution journal is justified.
 
+## Explicit patch editing
+
+`tool::patch::apply_update` transforms a bounded immutable UTF-8 source using
+V4A update-file diff fragments (`@@` hunks, exact context/add/delete lines,
+optional exact anchors and an EOF marker). It rejects missing/ambiguous context,
+unknown syntax and out-of-order changes, with finite source/diff/output byte,
+comparison-work and hunk ceilings. Unchanged bytes retain their original line
+endings; additions use the first source line-ending style, otherwise LF.
+
+The format follows the update operation described in the
+[official OpenAI patch guide](https://developers.openai.com/api/docs/guides/tools-apply-patch).
+The selected contract requires exact context rather than fuzzy whitespace or
+first-match acceptance. `tool::files::patch_file(work, hunks)` explicitly selects
+this optional single-file variant; it does not change the portable exact-edit
+default or provide the provider's complete create/delete/multi-file operation
+protocol. Work/hunk configuration is pinned in the definition schema digest.
+It checks the original task file limit before reading, then publishes once
+through the same `TaskContext::stage_file_at` generation-checked receipt path as
+exact editing. There is no live-head rebase, Git process or separate journal.
+
+Source fixtures cover mixed line endings/UTF-8, ordered hunks, anchors/EOF,
+ambiguous/missing/context-free insertion rejection, byte/work/hunk ceilings,
+retained-result retry after later edits, changed-output conflicts and stale
+publication. The content fixture uses authenticated Filesystem providers with a
+scope stub; it does not prove actual durable task admission or cancellation.
+These fixtures are parsed/formatted only, not compiled or executed. Generated
+compile-time schemas, bounded read/search options and full/reference projections
+remain open.
+
 ## Approved native multimodal scope
 
 The coordinator confirmed this implementation scope on 2026-10-08. The shape

@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub mod edit;
 pub mod files;
+pub mod patch;
 
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

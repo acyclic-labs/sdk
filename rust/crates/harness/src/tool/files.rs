@@ -22,11 +22,33 @@ pub fn edit_file() -> Result<Tool> {
     assemble(FileTool::Edit)
 }
 
+/// Explicitly selects exact V4A update-file editing with pinned finite work limits.
+///
+/// The original task's file-byte ceiling bounds input and output. The limits
+/// below are part of the definition schema digest, so different configurations
+/// cannot silently reuse an admitted definition.
+pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
+    super::patch::PatchLimits {
+        maximum_bytes: 1,
+        maximum_work,
+        maximum_hunks,
+    }
+    .validate()?;
+    assemble(FileTool::Patch {
+        maximum_work,
+        maximum_hunks,
+    })
+}
+
 #[derive(Clone, Copy)]
 enum FileTool {
     Read,
     Write,
     Edit,
+    Patch {
+        maximum_work: u64,
+        maximum_hunks: u32,
+    },
 }
 
 fn assemble(adapter: FileTool) -> Result<Tool> {
@@ -49,6 +71,17 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
             json!({"type":"object","properties":{"file":{"type":"object"}},
                 "required":["file"],"additionalProperties":false}),
         ),
+        FileTool::Patch {
+            maximum_work,
+            maximum_hunks,
+        } => (
+            "acyclic.patch_file",
+            "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
+            json!({"type":"object","properties":{"file":{"type":"object"},"diff":{"type":"string","minLength":1}},
+                "required":["file","diff"],"additionalProperties":false,
+                "x-harness-patch-limits":{"maximum_work":maximum_work,"maximum_hunks":maximum_hunks}}),
+            json!({"type":"object","properties":{"file":{"type":"object"}},"required":["file"],"additionalProperties":false}),
+        ),
         FileTool::Edit => (
             "acyclic.edit_file",
             "Replace one exact UTF-8 match at an authorized pinned source generation",
@@ -61,7 +94,11 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
     };
     let definition = ToolDefinition {
         name: name.into(),
-        revision: "portable-2".into(),
+        revision: match adapter {
+            FileTool::Patch { .. } => "portable-patch-1",
+            _ => "portable-2",
+        }
+        .into(),
         description: description.into(),
         input_schema,
         projection_schema: crate::tool::json_projection_schema(output_schema.clone()),
@@ -97,6 +134,13 @@ struct EditInput {
     file: FileRef,
     old_text: String,
     new_text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchInput {
+    file: FileRef,
+    diff: String,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(arguments: Value) -> Result<T> {
@@ -155,6 +199,34 @@ impl FileTool {
                         &input.media_type,
                         &input.display_name,
                     )
+                    .await?;
+                json!({"file":file})
+            }
+            Self::Patch {
+                maximum_work,
+                maximum_hunks,
+            } => {
+                let input: PatchInput = decode(invocation.arguments)?;
+                public_path(input.file.path())?;
+                let limits = super::patch::PatchLimits {
+                    maximum_bytes: task.scope().limits().file_bytes,
+                    maximum_work: *maximum_work,
+                    maximum_hunks: *maximum_hunks,
+                };
+                limits.validate()?;
+                if input.file.descriptor().byte_length() > limits.maximum_bytes
+                    || input.diff.len() as u64 > limits.maximum_bytes
+                {
+                    return Err(Error::Invalid(
+                        "patch input exceeds original task file bound".into(),
+                    ));
+                }
+                let bytes = task.read_file(&input.file).await?;
+                let source = std::str::from_utf8(&bytes)
+                    .map_err(|_| Error::Invalid("patch editing requires UTF-8 content".into()))?;
+                let edited = super::patch::apply_update(source, &input.diff, limits)?;
+                let file = task
+                    .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
                 json!({"file":file})
             }

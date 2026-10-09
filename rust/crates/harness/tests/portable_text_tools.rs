@@ -247,6 +247,75 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?,
         Some(written)
     );
+    // Optional V4A editing uses exactly the same immutable reader and CAS
+    // publisher. This fixture checks content authority/receipts, not admission.
+    let patch_tool = files::patch_file(8192, 8)?;
+    assert_ne!(
+        patch_tool.definition.digest()?,
+        files::patch_file(8193, 8)?.definition.digest()?
+    );
+    let patch_operation = OperationId::new();
+    let patch_invocation = ToolInvocation {
+        operation_id: patch_operation,
+        call_id: "patch".into(),
+        name: patch_tool.definition.name.clone(),
+        arguments: json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+patched\n"}),
+    };
+    let patch_context = ToolContext::new(task.clone(), patch_operation, "patch")?;
+    let patched = patch_tool
+        .executor
+        .execute_with_context(patch_context.clone(), patch_invocation.clone())
+        .await?;
+    let patched_ref: FileRef = serde_json::from_value(
+        patched
+            .value
+            .get("file")
+            .ok_or_else(|| Error::Invalid("patch result lacks file".into()))?
+            .clone(),
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(task.read_file(&patched_ref).await?, b"patched\r\n");
+    let later = writer
+        .stage(
+            OperationId::new(),
+            "second.txt",
+            b"later user edit",
+            "text/plain",
+            "second.txt",
+        )
+        .await?;
+    assert_eq!(
+        patch_tool
+            .executor
+            .reconcile_with_context(patch_context.clone(), patch_invocation.clone())
+            .await?,
+        Some(patched)
+    );
+    assert_eq!(task.read_file(&later).await?, b"later user edit");
+    let mut changed_patch = patch_invocation.clone();
+    changed_patch.arguments = json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+different\n"});
+    assert!(matches!(
+        patch_tool
+            .executor
+            .reconcile_with_context(patch_context, changed_patch)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    let stale_patch_operation = OperationId::new();
+    assert!(matches!(
+        patch_tool
+            .executor
+            .execute_with_context(
+                ToolContext::new(task.clone(), stale_patch_operation, "patch")?,
+                ToolInvocation {
+                    operation_id: stale_patch_operation,
+                    ..patch_invocation
+                }
+            )
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(task.read_file(&later).await?, b"later user edit");
     assert_eq!(task.read_file(&user).await?, b"user edit");
     assert_eq!(
         read_tool
