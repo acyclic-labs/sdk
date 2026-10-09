@@ -266,7 +266,7 @@ enum State {
 #[message(error = Admission, file = TestFile)]
 #[derive(Debug, PartialEq)]
 struct StateView {
-    #[wire(tag = 1, enumeration = State)]
+    #[wire(tag = 1, enumeration)]
     state: State,
 }
 

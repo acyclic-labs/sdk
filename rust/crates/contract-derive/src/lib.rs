@@ -45,6 +45,29 @@ mod registration;
 /// #[file(family = "test", messages(OtherProto))] struct OtherFile;
 /// ```
 ///
+/// Enum wire identity comes solely from the semantic field type.
+/// ```compile_fail
+/// use acyclic_contract_derive::{enumeration, file, message};
+/// #[derive(Default)] enum Error { #[default] Missing, Unknown(i32) }
+/// #[enumeration(error = Error, unknown = Error::Unknown)] enum State { Unspecified = 0, Ready = 1 }
+/// #[enumeration(error = Error, unknown = Error::Unknown)] enum Other { Unspecified = 0, Ready = 2 }
+/// #[message(error = Error, file = File)]
+/// struct View { #[wire(enumeration = Other, tag = 1)] state: State }
+/// #[file(family = "test", messages(ViewProto), enums(State, Other))] struct File;
+/// ```
+///
+/// Enum admission and encoding cannot be replaced by scalar conversion hooks.
+/// ```compile_fail
+/// use acyclic_contract_derive::{enumeration, file, message};
+/// #[derive(Default)] enum Error { #[default] Missing, Unknown(i32) }
+/// #[enumeration(error = Error, unknown = Error::Unknown)] enum State { Unspecified = 0, Ready = 1 }
+/// fn admit(_: i32) -> Result<State, Error> { Ok(State::Ready) }
+/// fn emit(_: State) -> i32 { 2 }
+/// #[message(error = Error, file = File)]
+/// struct View { #[wire(enumeration, from = admit, into = emit, tag = 1)] state: State }
+/// #[file(family = "test", messages(ViewProto), enums(State))] struct File;
+/// ```
+///
 /// A nominal enum must use its unique file owner.
 /// ```compile_fail
 /// use acyclic_contract_derive::{enumeration, file, message};
@@ -53,7 +76,7 @@ mod registration;
 /// enum State { Unspecified = 0, Ready = 1 }
 /// #[file(family = "foreign", enums(State))] struct Foreign;
 /// #[message(error = Error, file = LocalFile)]
-/// struct Local { #[wire(enumeration = State, tag = 1)] state: State }
+/// struct Local { #[wire(enumeration, tag = 1)] state: State }
 /// #[file(family = "local", messages(LocalProto))] struct LocalFile;
 /// ```
 ///
@@ -107,9 +130,10 @@ pub fn enumeration(args: TokenStream, item: TokenStream) -> TokenStream {
 /// ```compile_fail
 /// use acyclic_contract_derive::{enumeration, file, oneof};
 /// use core::convert::Infallible;
-/// #[enumeration] enum State { Ready = 0 }
-/// #[oneof(error = Infallible, file = File)]
-/// enum Choice { #[wire(enumeration = State, tag = 1)] State(State) }
+/// #[derive(Default)] enum Error { #[default] Missing, Unknown(i32) }
+/// #[enumeration(error = Error, unknown = Error::Unknown)] enum State { Ready = 0 }
+/// #[oneof(error = Error, file = File)]
+/// enum Choice { #[wire(enumeration, tag = 1)] State(State) }
 /// #[file(family = "test", enums(State))] struct File;
 /// ```
 ///

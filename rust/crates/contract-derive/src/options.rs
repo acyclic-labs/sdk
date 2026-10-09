@@ -12,7 +12,6 @@ pub struct Options {
     pub into: Option<Path>,
     pub tag: Option<u32>,
     pub kind: Option<String>,
-    pub enumeration: Option<Path>,
     pub oneof: Option<LitStr>,
 }
 
@@ -53,13 +52,19 @@ impl Options {
             self.from = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("into") {
             self.into = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("enumeration") {
-            self.enumeration = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("oneof") {
             self.oneof = Some(meta.value()?.parse()?);
-        } else if ["string", "bytes", "uint32", "uint64", "bool", "message"]
-            .iter()
-            .any(|kind| meta.path.is_ident(kind))
+        } else if [
+            "string",
+            "bytes",
+            "uint32",
+            "uint64",
+            "bool",
+            "message",
+            "enumeration",
+        ]
+        .iter()
+        .any(|kind| meta.path.is_ident(kind))
         {
             if self.kind.is_some() {
                 return Err(meta.error("multiple wire kinds"));

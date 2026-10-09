@@ -26,11 +26,7 @@ impl Field {
             syn::Error::new_spanned(&field.ty, "contract messages require named fields")
         })?;
         let options = Options::take_fields(&mut field.attrs)?;
-        if usize::from(options.kind.is_some())
-            + usize::from(options.enumeration.is_some())
-            + usize::from(options.oneof.is_some())
-            > 1
-        {
+        if usize::from(options.kind.is_some()) + usize::from(options.oneof.is_some()) > 1 {
             return Err(syn::Error::new_spanned(
                 &ident,
                 "wire kinds are mutually exclusive",
@@ -51,14 +47,18 @@ impl Field {
             .unwrap_or_else(|| field.ty.clone());
         let kind = if options.oneof.is_some() {
             "oneof".into()
-        } else if options.enumeration.is_some() {
-            "enumeration".into()
         } else {
             options
                 .kind
                 .clone()
                 .map_or_else(|| options::primitive(&ty), Ok)?
         };
+        if kind == "enumeration" && (options.from.is_some() || options.into.is_some()) {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "enum conversions derive solely from the semantic type",
+            ));
+        }
         let base: Type = match kind.as_str() {
             "message" | "oneof" => options::shadow(&ty)?,
             "enumeration" => syn::parse_quote!(i32),
@@ -73,7 +73,7 @@ impl Field {
             && (optional.is_some()
                 || repeated.is_some()
                 || options.oneof.is_some()
-                || options.enumeration.is_some())
+                || kind == "enumeration")
         {
             return Err(syn::Error::new_spanned(
                 &ty,
@@ -127,7 +127,8 @@ impl Field {
                 .ok_or_else(|| syn::Error::new_spanned(ident, "wire tag is required"))?;
             options::tag(tag, seen, ident)?;
             let kind = syn::Ident::new(&self.kind, ident.span());
-            let kind = if let Some(enumeration) = &self.options.enumeration {
+            let kind = if self.kind == "enumeration" {
+                let enumeration = &self.ty;
                 let path = quote!(#enumeration).to_string();
                 quote!(enumeration = #path)
             } else {
@@ -183,7 +184,8 @@ impl Field {
             let ty = options::shadow(&self.ty)?;
             return Ok(quote!(schema.push_str(&<#ty>::schema(#ident));));
         }
-        let name = if let Some(enumeration) = &self.options.enumeration {
+        let name = if self.kind == "enumeration" {
+            let enumeration = &self.ty;
             quote!(#enumeration::PROTO_NAME)
         } else if self.kind == "message" {
             let ty = options::shadow(&self.ty)?;
@@ -270,7 +272,8 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
         .collect::<Result<Vec<_>, _>>()?;
     let mut owner_checks = vec![options::owner_check(&file, &quote!(#wire), true)];
     for field in &fields {
-        let ty = if let Some(enumeration) = &field.options.enumeration {
+        let ty = if field.kind == "enumeration" {
+            let enumeration = &field.ty;
             quote!(#enumeration)
         } else if field.kind == "message" || field.kind == "oneof" {
             let ty = options::shadow(&field.ty)?;

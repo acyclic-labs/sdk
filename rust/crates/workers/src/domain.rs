@@ -40,13 +40,6 @@ pub enum JobState {
     /// The job was cancelled.
     Cancelled = 5,
 }
-fn parse_jobstate(value: i32) -> Result<JobState, DomainError> {
-    JobState::try_from(value)
-}
-fn encode_jobstate(value: JobState) -> i32 {
-    value as i32
-}
-
 /// Known `ErrorCode` values; raw shadows retain unknown protobuf integers.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownErrorCode)]
 
@@ -76,13 +69,6 @@ pub enum ErrorCode {
     /// Durable execution ended with a terminal failure.
     TerminalJobFailure = 10,
 }
-fn parse_errorcode(value: i32) -> Result<ErrorCode, DomainError> {
-    ErrorCode::try_from(value)
-}
-fn encode_errorcode(value: ErrorCode) -> i32 {
-    value as i32
-}
-
 /// Semantic Source cases preserving the published oneof.
 pub mod payload {
     use super::*;
@@ -492,7 +478,7 @@ pub struct JobObservation {
     #[wire(tag = 1)]
     /// Identity of the accepted durable job.
     pub job_id: String,
-    #[wire(tag = 2, enumeration = JobState, from = parse_jobstate, into = encode_jobstate)]
+    #[wire(tag = 2, enumeration)]
     /// Current execution state reported for the job.
     pub state: JobState,
     #[wire(tag = 3, bytes)]
@@ -664,7 +650,7 @@ pub struct InvokeResponse {
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Error.ts", rename_all = "camelCase")]
 pub struct Error {
-    #[wire(tag = 1, enumeration = ErrorCode, from = parse_errorcode, into = encode_errorcode)]
+    #[wire(tag = 1, enumeration)]
     /// Known Workers service error code.
     pub code: ErrorCode,
     #[wire(tag = 2)]

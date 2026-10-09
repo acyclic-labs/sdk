@@ -92,30 +92,6 @@ impl DomainError {
     }
 }
 
-fn parse_subscription_state(value: i32) -> Result<SubscriptionState, DomainError> {
-    SubscriptionState::try_from(value)
-}
-
-fn encode_subscription_state(value: SubscriptionState) -> i32 {
-    value as i32
-}
-
-fn parse_actor_state(value: i32) -> Result<ActorState, DomainError> {
-    ActorState::try_from(value)
-}
-
-fn encode_actor_state(value: ActorState) -> i32 {
-    value as i32
-}
-
-fn parse_error_code(value: i32) -> Result<ErrorCode, DomainError> {
-    ErrorCode::try_from(value)
-}
-
-fn encode_error_code(value: ErrorCode) -> i32 {
-    value as i32
-}
-
 impl From<std::convert::Infallible> for DomainError {
     fn from(value: std::convert::Infallible) -> Self { match value {} }
 }
@@ -655,7 +631,7 @@ pub enum ErrorCode {
 #[ts(export_to = "actors/ServiceError.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ServiceError {
-    #[wire(tag = 1, enumeration = ErrorCode, from = parse_error_code, into = encode_error_code)]
+    #[wire(tag = 1, enumeration)]
 
     code: ErrorCode,
     #[wire(tag = 2)]
@@ -700,7 +676,7 @@ pub struct SubscriptionObservation {
     subscription_id: String,
     #[wire(tag = 2)]
     stream_path: String,
-    #[wire(tag = 3, enumeration = SubscriptionState, from = parse_subscription_state, into = encode_subscription_state)]
+    #[wire(tag = 3, enumeration)]
     state: SubscriptionState,
     #[ts(type = "bigint")]
     #[wire(tag = 4)]
@@ -773,7 +749,7 @@ pub struct ActorObservation {
     code_sha256: CodeSha256,
     #[wire(tag = 3)]
     home_region: String,
-    #[wire(tag = 4, enumeration = ActorState, from = parse_actor_state, into = encode_actor_state)]
+    #[wire(tag = 4, enumeration)]
     state: ActorState,
     #[wire(tag = 5, message)]
     subscriptions: Vec<SubscriptionObservation>,

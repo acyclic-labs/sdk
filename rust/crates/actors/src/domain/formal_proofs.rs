@@ -9,10 +9,10 @@ fn assert_subscription_state_mapping(raw: i32) {
     let expected = raw == SubscriptionState::Unspecified as i32
         || raw == SubscriptionState::Active as i32
         || raw == SubscriptionState::Paused as i32;
-    let result = super::parse_subscription_state(raw);
+    let result = SubscriptionState::try_from(raw);
     assert_eq!(result.is_ok(), expected);
     match result {
-        Ok(value) => assert_eq!(super::encode_subscription_state(value), raw),
+        Ok(value) => assert_eq!(i32::from(value), raw),
         Err(DomainError::UnknownSubscriptionState(found)) => assert_eq!(found, raw),
         _ => {
             assert!(false);
@@ -25,10 +25,10 @@ fn assert_actor_state_mapping(raw: i32) {
         || raw == ActorState::Active as i32
         || raw == ActorState::Hibernated as i32
         || raw == ActorState::Paused as i32;
-    let result = super::parse_actor_state(raw);
+    let result = ActorState::try_from(raw);
     assert_eq!(result.is_ok(), expected);
     match result {
-        Ok(value) => assert_eq!(super::encode_actor_state(value), raw),
+        Ok(value) => assert_eq!(i32::from(value), raw),
         Err(DomainError::UnknownActorState(found)) => assert_eq!(found, raw),
         _ => {
             assert!(false);
@@ -48,10 +48,10 @@ fn assert_error_code_mapping(raw: i32) {
         || raw == ErrorCode::AdmissionDenied as i32
         || raw == ErrorCode::CheckpointFailed as i32
         || raw == ErrorCode::DependencyUnavailable as i32;
-    let result = super::parse_error_code(raw);
+    let result = ErrorCode::try_from(raw);
     assert_eq!(result.is_ok(), expected);
     match result {
-        Ok(value) => assert_eq!(super::encode_error_code(value), raw),
+        Ok(value) => assert_eq!(i32::from(value), raw),
         Err(DomainError::UnknownErrorCode(found)) => assert_eq!(found, raw),
         _ => {
             assert!(false);
