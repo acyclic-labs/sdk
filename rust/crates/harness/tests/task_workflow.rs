@@ -2350,8 +2350,10 @@ async fn stock_restart_with_publication_fault(
                 // Produce current stock Started/request bytes with explicit
                 // unselected context through the same fenced disk journal.
                 let admission = host.observe_admission(task).await?;
-                let admitted_scope = RuntimeScope::new(admission.grants, admission.limits)?
-                    .with_run_limits(admission.run_limits)?;
+                let admitted_context = harness
+                    .durable_context(task, admission.operation_id)
+                    .await?;
+                let admitted_scope = admitted_context.scope().clone();
                 let previous = StockExecutor::new(
                     Model::new("test", "interrupted", "1", Value::Null)?,
                     model.clone(),
@@ -2360,7 +2362,8 @@ async fn stock_restart_with_publication_fault(
                 )
                 .with_limits(admitted_scope.limits())
                 .with_tool_authority(admitted_scope, None)?
-                .with_durable_task(host.clone(), task, fence.clone());
+                .with_durable_task(host.clone(), task, fence.clone())
+                .with_task_context(&admitted_context, execution.operation_id())?;
                 let journal = FilesystemExecutionJournal::for_task(
                     host.journal_owner(task, fence.clone()).await?,
                     execution.operation_id(),
