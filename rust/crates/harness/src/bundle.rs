@@ -1119,6 +1119,7 @@ mod tests {
                     crate::OperationId::from_bytes((10 + u128::from(index)).to_be_bytes()),
                     SelectedModelContext {
                         selection: ModelContextSelection {
+                            checkpoint: (index == 1).then(|| file.clone()),
                             conversation_revision: 20 + u64::from(index),
                             message_ids: vec![
                                 uuid::Uuid::from_u128(30 + u128::from(index)),
