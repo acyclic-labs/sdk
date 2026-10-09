@@ -19,7 +19,7 @@ provider reconciliation own admission and effects.
 | Default compaction uses actual model accounting. | `ThresholdCompaction` defaults to a 16,384-token response reserve and 20,000 recent tokens. The selected provider supplies capacity and request-bound additive token upper bounds. Consumers may replace the policy or disable it. | There is no model-name capacity catalog or SDK tokenizer. Missing accounting, impossible capacities and mandatory-budget overflow fail explicitly. |
 | Compaction cannot substitute a retained projection. | The canonical checkpoint envelope binds original source, retained context, compaction proof, operation and covered logical history. Publication verifies the admitted settled summary before exposing the checkpoint. | Full canonical history is retained. Checkpoint imports verify original-owner publication, scope grants, event cut and bounded tail before model admission. |
 | Checkpoint continuation does not rerun settled work. | Native canonical conversation execution reuses the committed retained projection and admitted response artifacts. Subsequent stages receive a fresh delta; a covered historical current-input marker is cleared. | The continuation must bind the exact original operation and checkpoint. Reconciliation and lost-ack recovery remain in existing owner journals. |
-| Full and fresh forks select explicit history semantics. | `ForkHistoryPolicy` chooses the original logical history cut or a fresh conversation, and the seed binds that cut and ordered inherited references. | Summary-fork preparation is read-only groundwork; child materialization, seed publication and default receiving-task admission are not implemented by that preparation API. |
+| Full, fresh and Summary forks select explicit history semantics. | `ForkHistoryPolicy` pins the original logical history cut, starts fresh, or binds a verified checkpoint projection. The Filesystem preparer copies private execution payloads into child-owned immutable files and binds the complete capture to its seed. `summary_fork_stage` checks parent publication, the original causal child binding, signed receiving scope and exact reads before using the ordinary pinned stage. | Full-prefix grant capture still scans parent history. Explicit child stage capture does not implement automatic receiving-task setup, bounded fork hydration or browser qualification. |
 
 ## Verification surfaces
 
@@ -59,9 +59,12 @@ and bounded default cold hydration. The event cache and independent archival
 reader do not establish either property. No unrestricted memory, throughput or
 10,000-agent claim follows from bounded regression fixtures.
 
-Summary-fork child-owned capture, exact immutable payload relocation and seed
-binding, receiving-task admission and their restart/fault/browser evidence remain
-separate work. `PreparedSummaryFork` authorizes no workspace allocation, model
+Summary-fork capture and explicit child-stage admission are exercised by
+`filesystem::memory::summary_tests`: an actual admitted compaction is copied,
+published, imported into its bound child and consumed by a replayable model
+operation. Denied grants, changed seeds, narrow file bounds and independently
+bound children reject. Automatic receiving-task setup and restart/fault/browser
+evidence remain separate work. `PreparedSummaryFork` authorizes no workspace allocation, model
 dispatch or child activation. Native typed tool-result and file-policy contracts
 must be supplied by their owning producer before their consumers can qualify.
 

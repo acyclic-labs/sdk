@@ -2225,6 +2225,12 @@ impl Reducer {
                 retain(file)?;
             }
         }
+        if let Some(summary) = &seed.summary {
+            // The provider binds this original checkpoint capture to its allocated seed.
+            for file in &summary.references {
+                published_refs.insert(file.read_capability()?, file.clone());
+            }
+        }
         let selected_manifests = seed
             .attachment_manifests
             .iter()
@@ -4742,6 +4748,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             VolumeOwner::Project("project-1".into()),
         )?;
         let seed = ForkSeed {
+            summary: None,
             operation_id: operation(8),
             parent: parent.clone(),
             parent_revision: 1,

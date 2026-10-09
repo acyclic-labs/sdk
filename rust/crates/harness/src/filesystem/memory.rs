@@ -2283,3 +2283,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "memory_summary_tests.rs"]
+mod summary_tests;

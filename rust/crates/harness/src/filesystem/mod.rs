@@ -50,6 +50,7 @@ pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
+mod summary_fork;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
@@ -683,6 +684,42 @@ where
                     // provider verifies residency of the selected refs below.
                 }
             }
+            if let Some(summary) = &seed.summary
+                && summary.context.volume().provider() == &self.host.provider
+            {
+                let bytes = self
+                    .host
+                    .read_pinned(&summary.context, self.maximum_inherited_bytes)
+                    .await?;
+                let context: crate::context::Context = crate::contract::json_from_slice(&bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                crate::context::validate_projected_context(&context, summary.selection.limits)?;
+                if context.current_input_index.is_some()
+                    || crate::contract::canonical_json_bytes(&context)?.as_slice() != bytes.as_ref()
+                {
+                    return Err(Error::Invalid(
+                        "summary capture is not a canonical historical Context".into(),
+                    ));
+                }
+                let observed = context
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.file_refs())
+                    .chain(context.metadata.values())
+                    .map(crate::contract::canonical_json_digest)
+                    .collect::<Result<BTreeSet<_>>>()?;
+                let declared = summary
+                    .payloads
+                    .iter()
+                    .chain(&summary.references)
+                    .map(crate::contract::canonical_json_digest)
+                    .collect::<Result<BTreeSet<_>>>()?;
+                if observed != declared {
+                    return Err(Error::Invalid(
+                        "summary capture reference inventory differs from its Context".into(),
+                    ));
+                }
+            }
             if seed.child_private_volume.provider() == &self.host.provider {
                 let private = workspace_ref(
                     self.host.provider.clone(),
@@ -741,19 +778,41 @@ where
                     .generation(&child_workspace, &private_head)
                     .await?;
                 let changes = initial.diff_to(&head, u32::MAX).await.map_err(map_error)?;
-                let expected = seed
-                    .inherited_context
-                    .iter()
-                    .map(|file| {
-                        if file.version() != hex::encode(private_head.as_resource().key()) {
+                let mut expected = BTreeSet::new();
+                for file in &seed.inherited_context {
+                    if file.version() != hex::encode(private_head.as_resource().key()) {
+                        if seed.summary.is_none() {
                             return Err(Error::Invalid(
                                 "inherited file is not pinned to the selected private generation"
                                     .into(),
                             ));
                         }
-                        Ok(format!("/{}", file.path()))
-                    })
-                    .collect::<Result<BTreeSet<_>>>()?;
+                        // Summary's payload generation precedes the generation
+                        // containing its immutable Context. Both pinned views
+                        // must contain the same exact bytes at this path.
+                        let selected = FileRef::new(
+                            file.volume().clone(),
+                            file.path(),
+                            hex::encode(private_head.as_resource().key()),
+                            file.descriptor().clone(),
+                            file.display_name(),
+                        )?;
+                        let original = self
+                            .host
+                            .read_pinned(file, self.maximum_inherited_bytes)
+                            .await?;
+                        let final_bytes = self
+                            .host
+                            .read_pinned(&selected, self.maximum_inherited_bytes)
+                            .await?;
+                        if original != final_bytes {
+                            return Err(Error::Invalid(
+                                "summary inherited payload changed before admission".into(),
+                            ));
+                        }
+                    }
+                    expected.insert(format!("/{}", file.path()));
+                }
                 if expected.len() != seed.inherited_context.len() {
                     return Err(Error::Invalid(
                         "inherited context has duplicate paths".into(),
@@ -1317,6 +1376,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         resolver: &dyn ContentResidencyVerifier,
         idempotency_key: &IdempotencyKey,
     ) -> Result<InheritedContextCapture> {
+        self.materialize_inherited_conversation_continued(
+            parent,
+            child_private,
+            initial_generation,
+            child_agent,
+            attached_agents,
+            through_sequence,
+            maximum_messages,
+            maximum_bytes,
+            maximum_references,
+            resolver,
+            idempotency_key,
+            &[],
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "same inherited capture with exact original summary continuation keys"
+    )]
+    pub(super) async fn materialize_inherited_conversation_continued(
+        &self,
+        parent: &Reducer,
+        child_private: &VolumeRef,
+        initial_generation: &GenerationRef,
+        child_agent: AgentId,
+        attached_agents: &[AgentId],
+        through_sequence: u64,
+        maximum_messages: usize,
+        maximum_bytes: u64,
+        maximum_references: usize,
+        resolver: &dyn ContentResidencyVerifier,
+        idempotency_key: &IdempotencyKey,
+        continuation_keys: &[IdempotencyKey],
+    ) -> Result<InheritedContextCapture> {
         self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         if parent.authority() != &self.parent
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
@@ -1459,10 +1555,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             .map_err(map_error)?
         {
             let prior = self.host.generation_ref(&prior)?;
-            if self.host.resolve(&workspace).await?.generation != prior {
-                return Err(Error::Conflict(
-                    "child private volume changed after inherited-context staging".into(),
-                ));
+            let head = self.host.resolve(&workspace).await?.generation;
+            if head != prior {
+                let mut continued = false;
+                for key in continuation_keys {
+                    if let Some(generation) = self
+                        .host
+                        .open(&workspace)
+                        .await?
+                        .operation_generation(filesystem_key(key))
+                        .await
+                        .map_err(map_error)?
+                        && self.host.generation_ref(&generation)? == head
+                    {
+                        continued = true;
+                        break;
+                    }
+                }
+                if !continued {
+                    return Err(Error::Conflict(
+                        "child private volume changed after inherited-context staging".into(),
+                    ));
+                }
             }
             prior
         } else {

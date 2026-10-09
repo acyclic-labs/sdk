@@ -522,6 +522,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         }
         let inherited = captured.file.clone();
         let seed = ForkSeed {
+            summary: None,
             operation_id: OperationId::from_bytes(identity(level + 80)),
             parent: authority.clone(),
             parent_revision: aggregate.reducer().revision(),
@@ -979,6 +980,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert_eq!(aggregate.reducer().revision(), seed.parent_revision);
         }
         let report = ForkReport {
+            summary: None,
             request: ForkRequest {
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
@@ -987,6 +989,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_agent: seed.child_agent,
                 attached_agents: seed.attached_agents.clone(),
                 preparation: ForkPreparation {
+                    summary: None,
                     child_project_volume: match &seed.resources[2].revision {
                         ResourceRevision::Project { volume, .. } => volume.clone(),
                         _ => unreachable!("fork seed includes the child project"),

@@ -11,7 +11,8 @@ use crate::{
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
         Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
-        ForkSeed, ForkSelection, InheritedConversationPrefix, ResourceRevision, SharedGrant,
+        ForkSeed, ForkSelection, InheritedConversationPrefix, PreparedSummaryFork, ReferenceGrant,
+        ResourceRevision, SharedGrant,
     },
     resources::{ProviderRef, WorkspaceRef},
 };
@@ -68,6 +69,12 @@ pub struct FilesystemForkPreparer<A, O> {
     stream_provider: ProviderRef,
     resolver: Arc<dyn ContentResidencyVerifier>,
     capture_providers: Vec<Arc<dyn ForkCaptureProvider>>,
+    summary: Option<BoundSummary>,
+}
+
+struct BoundSummary {
+    prepared: PreparedSummaryFork,
+    journal: Arc<dyn crate::executor::ExecutionJournal>,
 }
 
 impl<A, O> FilesystemForkPreparer<A, O> {
@@ -102,7 +109,27 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             stream_provider,
             resolver,
             capture_providers: Vec::new(),
+            summary: None,
         })
+    }
+
+    /// Binds an already verified original-parent Summary projection. This
+    /// installs no grants and performs no model, allocation or publication IO.
+    pub fn with_summary_context(
+        mut self,
+        prepared: PreparedSummaryFork,
+        journal: Arc<dyn crate::executor::ExecutionJournal>,
+    ) -> Result<Self> {
+        if prepared.parent() != self.parent.authority()
+            || prepared.parent_revision() != self.parent.revision()
+            || journal.canonical_authority() != Some(self.parent.authority())
+        {
+            return Err(Error::Conflict(
+                "summary capture differs from this original parent".into(),
+            ));
+        }
+        self.summary = Some(BoundSummary { prepared, journal });
+        Ok(self)
     }
 
     /// Registers an exact provider-owned resource capture. A provider may be
@@ -182,6 +209,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
 
     fn check_request(&self, request: &ForkRequest) -> Result<()> {
         self.authorize_request(request)?;
+        if let Some(selection) = &request.preparation.summary {
+            let summary = self.summary.as_ref().ok_or_else(|| {
+                Error::Unsupported(
+                    "summary fork owner-bound checkpoint provider is not installed".into(),
+                )
+            })?;
+            if summary.prepared.selection() != selection
+                || summary.prepared.through_sequence()
+                    != request.preparation.inherited_through_sequence
+            {
+                return Err(Error::Conflict(
+                    "summary fork request differs from its original capture".into(),
+                ));
+            }
+        }
         if request.parent_revision != self.parent.revision() {
             return Err(Error::Conflict(
                 "fork preparation is not at the bound parent revision".into(),
@@ -549,43 +591,122 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 &project_key,
             )
             .await?;
-        let (child_private_generation, inherited_context, reference_grants, attachment_manifests) =
-            if request.preparation.inherited_through_sequence == 0 {
-                (
-                    private_observation.generation.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                )
+        let (
+            mut child_private_generation,
+            mut inherited_context,
+            mut reference_grants,
+            attachment_manifests,
+        ) = if request.preparation.inherited_through_sequence == 0 {
+            (
+                private_observation.generation.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        } else {
+            let context_key = IdempotencyKey::new(format!(
+                "fork:{}:{request_digest}:context",
+                request.operation_id
+            ))?;
+            let continuation_keys = if request.preparation.summary.is_some() {
+                super::summary_fork::summary_keys(&context_key)?.to_vec()
             } else {
-                let context_key = IdempotencyKey::new(format!(
-                    "fork:{}:{request_digest}:context",
-                    request.operation_id
-                ))?;
-                let inherited = controller
-                    .materialize_inherited_conversation(
-                        &self.parent,
-                        &private,
-                        &private_observation.generation,
-                        request.child_agent,
-                        &request.attached_agents,
-                        request.preparation.inherited_through_sequence,
-                        usize::try_from(request.preparation.maximum_inherited_messages).map_err(
-                            |_| Error::Invalid("fork message bound is too large".into()),
-                        )?,
-                        request.preparation.maximum_inherited_bytes,
-                        request.preparation.maximum_inherited_references as usize,
-                        self.resolver.as_ref(),
-                        &context_key,
-                    )
-                    .await?;
-                (
-                    inherited.generation,
-                    vec![inherited.file],
-                    inherited.reference_grants,
-                    inherited.attachment_manifests,
-                )
+                Vec::new()
             };
+            let inherited = controller
+                .materialize_inherited_conversation_continued(
+                    &self.parent,
+                    &private,
+                    &private_observation.generation,
+                    request.child_agent,
+                    &request.attached_agents,
+                    request.preparation.inherited_through_sequence,
+                    usize::try_from(request.preparation.maximum_inherited_messages)
+                        .map_err(|_| Error::Invalid("fork message bound is too large".into()))?,
+                    request.preparation.maximum_inherited_bytes,
+                    request.preparation.maximum_inherited_references as usize,
+                    self.resolver.as_ref(),
+                    &context_key,
+                    &continuation_keys,
+                )
+                .await?;
+            (
+                inherited.generation,
+                vec![inherited.file],
+                inherited.reference_grants,
+                inherited.attachment_manifests,
+            )
+        };
+        let summary = if request.preparation.summary.is_some() {
+            let bound = self.summary.as_ref().ok_or_else(|| {
+                Error::Unsupported("summary fork provider is not installed".into())
+            })?;
+            let key = IdempotencyKey::new(format!(
+                "fork:{}:{request_digest}:context",
+                request.operation_id
+            ))?;
+            let prefix = inherited_context
+                .first()
+                .ok_or_else(|| Error::Invalid("summary fork omitted its logical prefix".into()))?;
+            // Count the exact additional reader grants before either Summary
+            // publication phase. Reuse original prefix grants when identical.
+            let (_, summary_references) = super::summary_fork::split_references(&bound.prepared)?;
+            let mut planned_grants = reference_grants
+                .iter()
+                .map(|grant| Ok((grant.capability()?, grant.reader)))
+                .collect::<Result<BTreeSet<_>>>()?;
+            for reader in
+                std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
+            {
+                for file in summary_references.values() {
+                    if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader) {
+                        planned_grants.insert((file.read_capability()?, reader));
+                    }
+                }
+            }
+            if planned_grants.len() > request.preparation.maximum_inherited_references as usize {
+                return Err(Error::Invalid(
+                    "summary fork reader grants exceed capture allowance".into(),
+                ));
+            }
+            let (capture, generation) = controller
+                .materialize_summary_context(
+                    &self.parent,
+                    &bound.prepared,
+                    bound.journal.as_ref(),
+                    &private,
+                    &child_private_generation,
+                    prefix,
+                    request.preparation.maximum_inherited_bytes,
+                    request.preparation.maximum_inherited_references as usize,
+                    &key,
+                )
+                .await?;
+            let mut granted = reference_grants
+                .iter()
+                .map(|grant| Ok((grant.capability()?, grant.reader)))
+                .collect::<Result<BTreeSet<_>>>()?;
+            for reader in
+                std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
+            {
+                for file in &capture.references {
+                    if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader)
+                        && granted.insert((file.read_capability()?, reader))
+                    {
+                        reference_grants.push(ReferenceGrant {
+                            file: file.clone(),
+                            reader,
+                            attachment_manifest: None,
+                        });
+                    }
+                }
+            }
+            inherited_context.extend(capture.inherited_files().cloned());
+            child_private_generation = generation;
+            Some(capture)
+        } else {
+            None
+        };
         let mut captures = Vec::with_capacity(request.selections.len());
         let mut shared_grants = Vec::new();
         for (index, selection) in request.selections.iter().enumerate() {
@@ -679,6 +800,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             child_private_volume: private.clone(),
             child_private_generation,
             inherited_context,
+            summary,
             inherited_through_sequence,
             shared_grants,
             reference_grants,
@@ -713,6 +835,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         verifier: &AuthorityVerifier,
         scope: &Scope,
     ) -> Result<()> {
+        if seed.summary.is_some() {
+            return Err(Error::Unsupported(
+                "summary fork allocation requires its owner-bound checkpoint preparer".into(),
+            ));
+        }
         seed.validate()?;
         if parent.authority() != &seed.parent || parent.revision() != seed.parent_revision {
             return Err(Error::Conflict(

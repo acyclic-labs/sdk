@@ -265,6 +265,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         child_agent,
         attached_agents: Vec::new(),
         preparation: ForkPreparation {
+            summary: None,
             child_project_volume: child_project.clone(),
             child_private_volume: child_private.clone(),
             inherited_through_sequence: 0,

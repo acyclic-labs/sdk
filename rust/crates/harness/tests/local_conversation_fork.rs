@@ -207,6 +207,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: child_private.clone(),
                 inherited_through_sequence: 1,

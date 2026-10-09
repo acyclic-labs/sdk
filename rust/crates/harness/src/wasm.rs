@@ -50,8 +50,8 @@ use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
-mod mcp;
 mod history;
+mod mcp;
 
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]

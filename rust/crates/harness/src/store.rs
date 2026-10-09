@@ -29,6 +29,25 @@ use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
+fn fork_child_binding(seed: &ForkSeed) -> Result<(OperationId, EventReference)> {
+    let revision = seed
+        .parent_revision
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("fork parent revision overflow".into()))?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"harness/v2/fork-child-bind\0");
+    hash.update(&seed.operation_id.into_bytes());
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok((
+        OperationId::from_bytes(identity),
+        EventReference {
+            authority: seed.parent.clone(),
+            revision,
+        },
+    ))
+}
+
 /// Native, deterministic migration implementation selected by the exact
 /// installed target digest. External-effect migrations belong in an effect
 /// journal, not this pre-publication transformation boundary.
@@ -473,16 +492,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "parent fork event does not match the child seed".into(),
             ));
         }
-        let causal_parent = crate::core::EventReference {
-            authority: seed.parent.clone(),
-            revision: fork_revision,
-        };
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"harness/v2/fork-child-bind\0");
-        hash.update(&seed.operation_id.into_bytes());
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        let bind_operation = OperationId::from_bytes(identity);
+        let (bind_operation, causal_parent) = fork_child_binding(seed)?;
         let conversation = self
             .reducer
             .conversation()
@@ -520,6 +530,69 @@ impl<P: StreamProvider> StreamAggregate<P> {
         })
         .await?;
         Ok(())
+    }
+
+    /// Captures a published Summary projection through the ordinary pinned stage.
+    /// Both parent publication and this child's original causal binding must exist.
+    /// The supplied reader and signed scope belong to the receiving child; the
+    /// seed adds no grants and later model admission retains the stage's exact file.
+    pub async fn summary_fork_stage(
+        &self,
+        parent: &Self,
+        seed: &ForkSeed,
+        scope: &Scope,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        limits: Limits,
+    ) -> Result<crate::context::PinnedContextStage> {
+        seed.validate()?;
+        let verifier = self.reducer.event_verifier();
+        verifier.verify(scope)?;
+        if parent.reducer.authority() != &seed.parent
+            || parent.reducer.fork(&seed.child) != Some(seed)
+            || self.reducer.authority() != &seed.child
+            || self.reducer.conversation().and_then(|state| state.agent) != Some(seed.child_agent)
+            || scope.agent() != Some(seed.child_agent)
+        {
+            return Err(Error::Unauthorized(
+                "summary source is not this admitted child fork".into(),
+            ));
+        }
+        let (operation_id, causal_parent) = fork_child_binding(seed)?;
+        let publication = parent.read_event_at(causal_parent.revision).await?;
+        if publication.operation_id != seed.operation_id
+            || !matches!(&publication.payload, EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+        {
+            return Err(Error::Conflict(
+                "summary source differs from parent publication".into(),
+            ));
+        }
+        let binding = self.read_event_at(1).await?;
+        if binding.operation_id != operation_id
+            || binding.causal_parent != Some(causal_parent)
+            || !matches!(binding.payload, EventPayload::ConversationBound { agent } if agent == seed.child_agent)
+        {
+            return Err(Error::Conflict(
+                "summary child lacks its original fork binding".into(),
+            ));
+        }
+        let capture = seed
+            .summary
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("fork has no Summary projection".into()))?;
+        let limits = crate::context::restrict_context_limits(capture.selection.limits, limits)?;
+        for file in capture.inherited_files().chain(&capture.references) {
+            limits.validate_file(file)?;
+            crate::conversation::ContentGrant::verify_read(&verifier, scope, file)?;
+        }
+        crate::context::PinnedContextStage::capture(
+            "fork-summary",
+            "1",
+            capture.context.clone(),
+            reader,
+            crate::context::ContextPlacement::Prepend,
+            limits,
+        )
+        .await
     }
 
     /// Opens and replays an aggregate, treating an absent path as empty.

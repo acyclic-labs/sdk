@@ -24,10 +24,12 @@ pub struct HistoryCursor {
 /// Finite work and output bounds for one history read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct HistoryReadLimits {
     /// Maximum number of decoded events.
     pub maximum_events: u32,
     /// Maximum total encoded record bytes, checked before decoding each record.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub maximum_bytes: u64,
 }
 

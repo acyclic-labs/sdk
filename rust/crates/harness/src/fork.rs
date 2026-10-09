@@ -836,7 +836,7 @@ pub struct ForkRequest {
 /// Selection of authoritative logical history before a fork is admitted.
 /// Model representation and compaction remain separate context policies.
 /// Selecting a mode supplies no providers, grants, child volumes or budgets.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ForkHistoryPolicy {
@@ -845,6 +845,8 @@ pub enum ForkHistoryPolicy {
     Fork,
     /// Explicitly starts without inherited conversation messages.
     Fresh,
+    /// Keeps the full logical parent cut with an explicitly selected checkpoint projection.
+    Summary(Box<SummaryForkSelection>),
 }
 
 /// Immutable provider allocation and context bounds for one fork operation.
@@ -871,10 +873,20 @@ pub struct ForkPreparation {
     pub maximum_inherited_bytes: u64,
     /// Maximum retained references in the inherited prefix.
     pub maximum_inherited_references: u32,
+    /// Optional immutable Summary projection selected before fork admission.
+    pub summary: Option<SummaryForkSelection>,
 }
 
 impl ForkPreparation {
     fn validate(&self, child_agent: AgentId) -> Result<()> {
+        if let Some(selection) = &self.summary {
+            selection.validate()?;
+            if self.inherited_through_sequence == 0 {
+                return Err(Error::Invalid(
+                    "summary fork requires a nonempty logical parent cut".into(),
+                ));
+            }
+        }
         self.child_project_volume.validate()?;
         self.child_private_volume.validate()?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
@@ -958,10 +970,14 @@ impl ForkRequest {
                 "fork context policy requires a bound parent agent".into(),
             ));
         }
-        self.preparation.inherited_through_sequence = match policy {
-            ForkHistoryPolicy::Fork => conversation.messages().last().map_or(0, |m| m.sequence),
-            ForkHistoryPolicy::Fresh => 0,
+        let full_cut = conversation.messages().last().map_or(0, |m| m.sequence);
+        let (through_sequence, summary) = match policy {
+            ForkHistoryPolicy::Fork => (full_cut, None),
+            ForkHistoryPolicy::Fresh => (0, None),
+            ForkHistoryPolicy::Summary(selection) => (full_cut, Some(*selection)),
         };
+        self.preparation.inherited_through_sequence = through_sequence;
+        self.preparation.summary = summary;
         self.validate()?;
         Ok(self)
     }
@@ -1250,6 +1266,8 @@ pub struct ForkReport {
     pub child_private_generation: GenerationRef,
     /// Bounded parent context materialized as child-owned files.
     pub inherited_context: Vec<FileRef>,
+    /// Exact optional Summary capture; its selection and files are seed-bound.
+    pub summary: Option<SummaryForkCapture>,
     /// Inclusive conversation message sequence inherited by the child; zero selects none.
     pub inherited_through_sequence: u64,
     /// Explicit child-bound access to selected session-shared volumes.
@@ -1265,6 +1283,16 @@ impl ForkReport {
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        if self.summary.as_ref().map(|capture| &capture.selection)
+            != self.request.preparation.summary.as_ref()
+        {
+            return Err(Error::Invalid(
+                "fork report changed its summary selection".into(),
+            ));
+        }
+        if let Some(summary) = &self.summary {
+            summary.validate(&self.child_private_volume)?;
+        }
         if self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
             || self.shared_grants.len() as u64 > MAX_FORK_REFERENCES as u64
             || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
@@ -1392,6 +1420,7 @@ impl ForkReport {
             child_private_volume: self.child_private_volume,
             child_private_generation: self.child_private_generation,
             inherited_context: self.inherited_context,
+            summary: self.summary,
             inherited_through_sequence: self.inherited_through_sequence,
             shared_grants: self.shared_grants,
             reference_grants: self.reference_grants,
@@ -1429,6 +1458,8 @@ pub struct ForkSeed {
     pub child_private_generation: GenerationRef,
     /// Child-owned inherited conversation files.
     pub inherited_context: Vec<FileRef>,
+    /// Exact optional Summary capture; its selection and files are seed-bound.
+    pub summary: Option<SummaryForkCapture>,
     /// Inclusive bounded parent conversation prefix; zero selects no messages.
     pub inherited_through_sequence: u64,
     /// Explicit child-bound access to selected session-shared volumes.
@@ -1689,17 +1720,35 @@ impl ForkSeed {
     }
 
     fn validate_inherited_context(&self) -> Result<()> {
-        if (self.inherited_through_sequence == 0 && !self.inherited_context.is_empty())
-            || (self.inherited_through_sequence > 0
-                && (self.inherited_context.len() != 1
-                    || self.inherited_context.first().is_none_or(|file| {
-                        file.path() != ".system/inherited-conversation/prefix.json"
-                            || file.descriptor().media_type()
-                                != "application/vnd.acyclic.harness.inherited-conversation+json"
-                    })))
-        {
+        if let Some(summary) = &self.summary {
+            summary.validate(&self.child_private_volume)?;
+            if self.inherited_through_sequence == 0 {
+                return Err(Error::Invalid(
+                    "summary fork has no inherited logical history".into(),
+                ));
+            }
+        }
+        let mut expected = Vec::new();
+        if self.inherited_through_sequence > 0 {
+            let prefix = self
+                .inherited_context
+                .first()
+                .filter(|file| {
+                    file.path() == ".system/inherited-conversation/prefix.json"
+                        && file.descriptor().media_type()
+                            == "application/vnd.acyclic.harness.inherited-conversation+json"
+                })
+                .ok_or_else(|| {
+                    Error::Invalid("inherited context omitted its selected prefix".into())
+                })?;
+            expected.push(prefix);
+        }
+        if let Some(summary) = &self.summary {
+            expected.extend(summary.inherited_files());
+        }
+        if expected != self.inherited_context.iter().collect::<Vec<_>>() {
             return Err(Error::Invalid(
-                "inherited context does not match its selected prefix".into(),
+                "inherited context does not match its selected capture".into(),
             ));
         }
         let mut inherited_paths = BTreeSet::new();
@@ -2076,6 +2125,7 @@ mod tests {
             Some("3".into()),
         )?);
         let mut seed = ForkSeed {
+            summary: None,
             operation_id: OperationId::from_bytes([1; 16]),
             parent,
             parent_revision: 3,
@@ -2288,6 +2338,7 @@ mod tests {
             VolumeOwner::Session("session".into()),
         )?);
         let report = ForkReport {
+            summary: None,
             request: ForkRequest {
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
@@ -2296,6 +2347,7 @@ mod tests {
                 child_agent: seed.child_agent,
                 attached_agents: Vec::new(),
                 preparation: ForkPreparation {
+                    summary: None,
                     child_project_volume: match &project_resource.revision {
                         ResourceRevision::Project { volume, .. } => volume.clone(),
                         _ => unreachable!("fixture includes the child project"),

@@ -624,6 +624,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: child_private.clone(),
                 inherited_through_sequence: 1,
@@ -1406,6 +1407,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: child_private.clone(),
                 inherited_through_sequence: 1,

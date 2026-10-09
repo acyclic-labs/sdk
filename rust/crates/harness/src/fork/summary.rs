@@ -6,7 +6,7 @@
 use crate::{
     Error, Result,
     context::{CanonicalContextCheckpoint, Context},
-    conversation::{ContentResidencyVerifier, FileRef, Limits},
+    conversation::{ContentResidencyVerifier, FileRef, Limits, VolumeRef},
     core::{Authority, Reducer},
     executor::{ExecutionJournal, load_canonical_checkpoint_through},
     runtime::RuntimeScope,
@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 /// Immutable checkpoint and bounded canonical work selected before fork admission.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SummaryForkSelection {
     /// Exact checkpoint published by the original parent execution journal.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub checkpoint: FileRef,
     /// Finite model projection and content bounds, narrowed by receiving scope.
     pub limits: Limits,
@@ -40,6 +42,88 @@ impl SummaryForkSelection {
             return Err(Error::Invalid("summary fork selection is invalid".into()));
         }
         Ok(())
+    }
+}
+
+/// Exact child-owned Summary projection bound by the original fork seed.
+/// Payload copies preserve bytes and descriptors; other references retain their original immutable identities.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct SummaryForkCapture {
+    /// Original immutable checkpoint and bounded-work selection.
+    pub selection: SummaryForkSelection,
+    /// Canonical whole Context in the child-owned inherited namespace.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+    pub context: FileRef,
+    /// Owner-controlled copies of private model payloads at their pinned generation.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
+    pub payloads: Vec<FileRef>,
+    /// Original noncopied references required by the captured Context.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
+    pub references: Vec<FileRef>,
+}
+
+impl SummaryForkCapture {
+    /// Validates the exact typed capture before provider residency checks.
+    pub fn validate(&self, child_private: &VolumeRef) -> Result<()> {
+        self.selection.validate()?;
+        if self
+            .payloads
+            .len()
+            .checked_add(2)
+            .is_none_or(|count| count > super::MAX_FORK_RESOURCES)
+            || self.references.len() > super::MAX_FORK_REFERENCES
+        {
+            return Err(Error::Invalid(
+                "summary fork capture exceeds protocol counts".into(),
+            ));
+        }
+        self.selection.limits.validate_file(&self.context)?;
+        if self.context.volume() != child_private
+            || self.context.path() != ".system/inherited-conversation/summary-context.json"
+            || self.context.descriptor().media_type() != "application/json"
+            || self.context.descriptor().byte_length() > self.selection.limits.render_bytes
+        {
+            return Err(Error::Invalid(
+                "summary fork context is not the selected child capture".into(),
+            ));
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for file in &self.payloads {
+            self.selection.limits.validate_file(file)?;
+            if file.volume() != child_private
+                || !file
+                    .path()
+                    .starts_with(".system/inherited-conversation/summary-payloads/")
+                || !paths.insert(file.path())
+            {
+                return Err(Error::Invalid(
+                    "summary fork payload is not a unique child copy".into(),
+                ));
+            }
+        }
+        let mut refs = std::collections::BTreeSet::new();
+        for file in &self.references {
+            self.selection.limits.validate_file(file)?;
+            if !refs.insert(crate::contract::canonical_json_digest(file)?) {
+                return Err(Error::Invalid(
+                    "summary fork reference appears twice".into(),
+                ));
+            }
+            if crate::conversation::is_internal_path(file.path())
+                && !crate::conversation::is_inherited_context_path(file.path())
+            {
+                return Err(Error::Unauthorized(
+                    "summary fork cannot delegate private execution storage".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn inherited_files(&self) -> impl Iterator<Item = &FileRef> {
+        std::iter::once(&self.context).chain(&self.payloads)
     }
 }
 
