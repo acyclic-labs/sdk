@@ -34,6 +34,7 @@ const tree = [
   blob("tools/sdk-generator/backends/go/generate.go"),
   blob("tools/sdk-generator/backends/java/generate.mjs"),
   blob("tools/sdk-generator/backends/dotnet/generate.mjs"),
+  blob("tools/sdk-generator/backends/ruby/src/generate.mjs"),
   blob("tools/sdk-generator/shared/authority.mjs"),
   blob("tools/sdk-generator/backends/future/generate.mjs"),
 ];
@@ -97,7 +98,7 @@ test("unrelated workflows reach only policy and repository lanes", () => {
 
 test("isolated language generator changes reuse Rust and TypeScript builds", () => {
   const before = laneKeys(lanes, tree);
-  for (const path of ["tools/sdk-generator/backends/go/generate.go", "tools/sdk-generator/backends/java/generate.mjs", "tools/sdk-generator/backends/dotnet/generate.mjs", "tools/sdk-generator/shared/authority.mjs"]) {
+  for (const path of ["tools/sdk-generator/backends/go/generate.go", "tools/sdk-generator/backends/java/generate.mjs", "tools/sdk-generator/backends/dotnet/generate.mjs", "tools/sdk-generator/backends/ruby/src/generate.mjs", "tools/sdk-generator/shared/authority.mjs"]) {
     const after = laneKeys(lanes, changed(path));
     assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
   }

@@ -70,6 +70,29 @@ pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
+/// Checks compact JSON size without retaining an encoded buffer or cloning a
+/// Value tree. Key ordering does not change the size of ordinary typed records.
+/// Canonical encoding and identity checks still use `canonical_json_bytes`.
+pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) -> Result<()> {
+    struct Budget(u64);
+
+    impl std::io::Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_sub(bytes.len() as u64)
+                .ok_or_else(|| std::io::Error::other("JSON exceeds declared byte bound"))?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    serde_json::to_writer(Budget(maximum), value).map_err(|error| Error::Invalid(error.to_string()))
+}
+
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
 pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
@@ -541,6 +564,8 @@ mod tests {
             "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
         );
         assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
+        validate_json_byte_bound(&value, expected.len() as u64)?;
+        assert!(validate_json_byte_bound(&value, expected.len() as u64 - 1).is_err());
         Ok(())
     }
 
@@ -633,6 +658,34 @@ mod tests {
             b"[-9223372036854775808,18446744073709551615]"
         );
         Ok(())
+    }
+
+    #[test]
+    fn json_byte_bound_stops_serialization_before_remaining_elements() {
+        use serde::ser::SerializeSeq as _;
+        use std::cell::Cell;
+
+        struct Observed<'a>(&'a Cell<usize>);
+        impl Serialize for Observed<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                let mut sequence = serializer.serialize_seq(Some(1_000))?;
+                for _ in 0..1_000 {
+                    self.0.set(self.0.get() + 1);
+                    sequence.serialize_element(&"x".repeat(64))?;
+                }
+                sequence.end()
+            }
+        }
+
+        let visited = Cell::new(0);
+        assert!(matches!(
+            validate_json_byte_bound(&Observed(&visited), 32),
+            Err(Error::Invalid(message)) if message.contains("declared byte bound")
+        ));
+        assert_eq!(visited.get(), 1);
     }
 
     #[test]
