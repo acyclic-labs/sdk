@@ -1,4 +1,4 @@
-import { DEFAULT_LIMITS } from "../../src/conversation.js";
+import { DEFAULT_LIMITS } from "../../dist/index.js";
 
 /** This synthetic provider declares canonical UTF-8 bytes and file body bytes
  * as token units, with 512 units of framing per request and message. Rust owns
