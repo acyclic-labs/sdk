@@ -152,7 +152,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
 struct Projection;
 impl ToolProjection for Projection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -163,6 +163,7 @@ fn catalog() -> McpCatalog {
         server: "example".into(),
         revision: "approved-1".into(),
         schema_exposure: McpSchemaExposure::Eager,
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
         discovery: McpDiscoveryPolicy::Search,
         tools: vec![McpToolDefinition {
             name: "echo".into(),

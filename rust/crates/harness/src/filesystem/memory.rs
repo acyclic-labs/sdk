@@ -345,7 +345,7 @@ impl ToolExecutor for LocalListFilesTool {
 
 impl ToolProjection for LocalListFilesTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(serde_json::json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -394,7 +394,7 @@ impl ToolExecutor for LocalStageFileTool {
 
 impl ToolProjection for LocalStageFileTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(serde_json::json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -439,7 +439,7 @@ impl ToolProjection for LocalReadFileTool {
             .value
             .as_str()
             .ok_or_else(|| Error::Invalid("read_file result has no text".into()))?;
-        let projection = Value::String(text.into());
+        let projection = json!({"kind":"json","value":text});
         if serde_json::to_vec(&projection)
             .map_err(|error| Error::Invalid(error.to_string()))?
             .len() as u64
@@ -520,7 +520,7 @@ impl MemoryHarnessStorage {
         Tool {
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
-                revision: "1".into(),
+                revision: "2".into(),
                 description: "List one bounded, generation-pinned page of the agent-private volume"
                     .into(),
                 input_schema: json!({
@@ -545,6 +545,17 @@ impl MemoryHarnessStorage {
                     "required": ["generation", "entries", "has_more", "next_after"],
                     "additionalProperties": false
                 }),
+                projection_schema: crate::tool::json_projection_schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "generation": {"type": "object"},
+                        "entries": {"type": "array", "items": {"type": "object"}},
+                        "has_more": {"type": "boolean"},
+                        "next_after": {"type": ["string", "null"]}
+                    },
+                    "required": ["generation", "entries", "has_more", "next_after"],
+                    "additionalProperties": false
+                })),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -559,7 +570,7 @@ impl MemoryHarnessStorage {
         Tool {
             definition: ToolDefinition {
                 name: "acyclic.stage_file".into(),
-                revision: "1".into(),
+                revision: "2".into(),
                 description: "Stage a bounded UTF-8 file in the agent-private volume and return its immutable FileRef".into(),
                 input_schema: json!({
                     "type": "object",
@@ -578,6 +589,12 @@ impl MemoryHarnessStorage {
                     "required": ["file"],
                     "additionalProperties": false
                 }),
+                projection_schema: crate::tool::json_projection_schema(json!({
+                    "type": "object",
+                    "properties": {"file": {"type": "object"}},
+                    "required": ["file"],
+                    "additionalProperties": false
+                })),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -601,6 +618,7 @@ impl MemoryHarnessStorage {
                     "additionalProperties": false
                 }),
                 output_schema: json!({"type": "string"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -1424,9 +1442,13 @@ mod tests {
                 "one.txt",
             )
             .await?;
+        let expected_projection = json!({"kind":"json","value":"pinned text"});
+        let render_bytes = serde_json::to_vec(&expected_projection)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .len() as u64;
         let mut limits = Limits {
             file_bytes: 4_096,
-            render_bytes: 32,
+            render_bytes,
             ..Limits::default()
         };
         let tool = owner
@@ -1444,8 +1466,20 @@ mod tests {
         assert_eq!(result.value, json!("pinned text"));
         assert_eq!(
             tool.projection.project(&invocation, &result)?,
-            json!("pinned text")
+            expected_projection
         );
+        let bounded_tool = owner.default_tools(Limits {
+            render_bytes: render_bytes - 1,
+            ..limits
+        })?;
+        assert!(matches!(
+            bounded_tool
+                .get("acyclic.read_file")
+                .ok_or_else(|| Error::NotFound("bounded projection tool".into()))?
+                .projection
+                .project(&invocation, &result),
+            Err(Error::Invalid(_))
+        ));
         assert_eq!(
             tool.executor.reconcile(invocation.clone()).await?,
             Some(result)

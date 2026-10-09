@@ -173,7 +173,7 @@ impl ToolExecutor for InterruptedTool {
 
 impl ToolProjection for InterruptedTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(serde_json::json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -884,6 +884,9 @@ async fn worker_restart_with_options(
             description: "Read and reconcile".into(),
             input_schema: json!({"type":"object"}),
             output_schema: json!({"type":"string"}),
+            projection_schema: acyclic_harness::tool::json_projection_schema(
+                json!({"type":"string"}),
+            ),
         },
         executor: tool.clone(),
         projection: tool.clone(),
@@ -2231,9 +2234,9 @@ async fn stock_restart_with_publication_fault(
             max_steps: 1,
         };
         assert!(matches!(execution.execute(TurnInput {
-            input: ModelContent::Part(ModelContentPart::File { file: input_file, policy: FileProjectionPolicy::Native }),
+            input: ModelContent::Part(ModelContentPart::File { file: input_file, policy: FileProjectionPolicy::Native(Box::new(acyclic_harness::model::NativeMediaPolicy { intent: acyclic_harness::model::NativeMediaIntent::Image { detail: acyclic_harness::model::ImageDetail::Auto }, maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES, maximum_work: 4096, configuration: None })) }),
             ..turn.clone()
-        }).await, Err(Error::Unauthorized(message)) if message == "task cannot read the execution input file"));
+        }).await, Err(Error::Unauthorized(message)) if message == "attenuated task cannot read model content"));
         assert!(
             execution
                 .execute(TurnInput {

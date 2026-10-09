@@ -76,6 +76,7 @@ fn definitions_to_js(definitions: Vec<crate::tool::ToolDefinition>) -> Result<Js
             description: definition.description,
             input_schema: definition.input_schema,
             output_schema: definition.output_schema,
+            projection_schema: definition.projection_schema,
         })
         .collect::<Vec<_>>();
     // Definitions contain only admitted JavaScript JSON and added string/bool

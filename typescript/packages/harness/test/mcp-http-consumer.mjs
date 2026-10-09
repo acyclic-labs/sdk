@@ -53,7 +53,8 @@ export async function exerciseMcpHttp(origin, client, mode, createProvider) {
     const last = JSON.parse(decode(await transport.listToolsJson(crypto.randomUUID(), first.nextCursor)));
     check(last.nextCursor === undefined, "catalog is incomplete");
     const catalog = { server: "fixture", revision: "1", schema_exposure: { kind: "selected", names: ["echo"] },
-      discovery: "search", tools: [...first.tools, ...last.tools] };
+      projection_schema: { type: "object", properties: { kind: { const: "json" }, value: {} }, required: ["kind", "value"], additionalProperties: false },
+  discovery: "search", tools: [...first.tools, ...last.tools] };
     validateMcpCatalog(catalog, 2, 8192);
     check(mcpModelDefinitions(catalog, 2, 8192).map(tool => tool.name).join() === "mcp.fixture.echo", "schema exposure changed");
     check(searchMcpCatalog(catalog, "find", undefined, 2, 2, 8192).length === 2, "hidden schema discovery failed");

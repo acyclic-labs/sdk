@@ -1,13 +1,13 @@
-import { validateComponentLabel, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { validateComponentLabel, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolInvocation, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DiscoveredContext, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
-import type { WasmModelContent, WasmModelContentPart, WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
-import type { SelectedModelContext } from "./projection.js";
+import { publicModelContent, type SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
 import type { ProjectWorkspaceProvider } from "./project.js";
 import type { GroupPolicy } from "./enums.js";
@@ -278,18 +278,6 @@ type RuntimeAgentInput = AgentInput<UserContentPart> & { readonly selectedContex
 
 function validateSelectedContext(selected: SelectedModelContext, limits: Limits): void {
   validateSelectedModelContextWasm(selected, limits);
-}
-
-/** Builds the one canonical model content value for a direct user turn. */
-function publicModelContent(content: WasmModelContent): ModelContent {
-  if (typeof content === "string") return content;
-  const part = (value: WasmModelContentPart) => {
-    if (value.kind === "file") return { ...value, file: value.file as FileRef };
-    if (value.kind !== "tool_call" && value.kind !== "tool_result") return value;
-    const { call_id: callId, ...rest } = value;
-    return { ...rest, callId };
-  };
-  return Array.isArray(content) ? content.map(part) : part(content);
 }
 
 function directUserContent(input: AgentInput<UserContentPart>): ModelContent {
@@ -1216,7 +1204,7 @@ export class TaskContext {
     this.#harness.contracts.verifyFileBytes(file, bytes);
     return { file, bytes };
   }
-  async #readBoundFile(content: ContentBindings | undefined, reference: FileRef): Promise<Uint8Array> {
+  #admitBoundFile(content: ContentBindings | undefined, reference: FileRef): FileRef {
     this.signal.throwIfAborted();
     if (!content) throw new Error("content reader is not bound");
     const file = this.#harness.contracts.validate("file_ref", reference);
@@ -1234,6 +1222,18 @@ export class TaskContext {
       allowed = grants.includes(content.directoryReadCapability(file.volume, prefix));
     }
     if (!allowed) throw new Error("task scope cannot read this file");
+    return file;
+  }
+  /** Check every selected file before the first owner-mediated read. */
+  async readFiles(references: readonly FileRef[]): Promise<readonly Uint8Array[]> {
+    const files = references.map(file => this.#admitBoundFile(this.#harness.content, file));
+    const bytes: Uint8Array[] = [];
+    for (const file of files) bytes.push(await this.#readBoundFile(this.#harness.content, file));
+    return bytes;
+  }
+  async #readBoundFile(content: ContentBindings | undefined, reference: FileRef): Promise<Uint8Array> {
+    const file = this.#admitBoundFile(content, reference);
+    if (!content) throw new Error("content reader is not bound");
     const bytes = await content.read(file);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content reader returned invalid bytes");
     content.verify(file, bytes);
@@ -1402,8 +1402,8 @@ function publicToolHandle<Input, Output>(registered: RegisteredTool<Input, Outpu
   const erased = eraseRegisteredTool(registered);
   const cached = publicToolHandles.get(erased);
   if (cached !== undefined) return restoreToolRef<Input, Output>(cached);
-  const { name, revision, description, inputSchema, outputSchema } = registered.definition;
-  const handle = Object.freeze({ definition: Object.freeze({ name, revision, description, inputSchema, outputSchema }),
+  const { name, revision, description, inputSchema, outputSchema, projection } = registered.definition;
+  const handle = Object.freeze({ definition: Object.freeze({ name, revision, description, inputSchema, outputSchema, projectionSchema: projection.schema }),
     ...(registered.machine ? { machine: registered.machine } : {}) }) as ToolRef<Input, Output>;
   publicToolHandles.set(erased, handle as unknown as ErasedToolRef);
   return handle;
@@ -1735,23 +1735,29 @@ export class HarnessBuilder {
     return this.#registerTool(definition, undefined, pinned);
   }
   #registerTool<Input, Output>(definition: ToolDefinition<Input, Output>, executor?: ToolExecutor<Input, Output>, machine?: MachineIdentityWire): this {
-    if (typeof definition.parseInput !== "function" || typeof definition.parseOutput !== "function") {
+    const captured = { ...definition };
+    const projection = captured.projection;
+    const project = projection?.project;
+    if (typeof captured.parseInput !== "function" || typeof captured.parseOutput !== "function") {
       throw new TypeError("typed tool parsers are required");
     }
-    this.contracts.encodeCanonicalJson(definition.inputSchema);
-    this.contracts.encodeCanonicalJson(definition.outputSchema);
-    this.contracts.validateToolDefinition(definition);
-    const key = toolKey(definition.name, definition.revision);
+    if (typeof project !== "function") throw new TypeError("typed tool projection is required");
+    const pinned = Object.freeze({ ...captured,
+      inputSchema: freezeSchema(structuredClone(captured.inputSchema)),
+      outputSchema: freezeSchema(structuredClone(captured.outputSchema)),
+      projection: Object.freeze({ schema: freezeSchema(structuredClone(projection.schema)), project: project.bind(projection) }) });
+    this.contracts.encodeCanonicalJson(pinned.inputSchema);
+    this.contracts.encodeCanonicalJson(pinned.outputSchema);
+    this.contracts.encodeCanonicalJson(pinned.projection.schema);
+    this.contracts.validateToolDefinition(pinned);
+    const key = toolKey(pinned.name, pinned.revision);
     if (this.#tools.has(key)) throw new Error(`conflicting registration for ${key}`);
-    const previouslyRegistered = [...this.#tools.values()].some(tool => tool.definition.name === definition.name);
-    const pinned = Object.freeze({ ...definition,
-      inputSchema: freezeSchema(structuredClone(definition.inputSchema)),
-      outputSchema: freezeSchema(structuredClone(definition.outputSchema)) });
+    const previouslyRegistered = [...this.#tools.values()].some(tool => tool.definition.name === pinned.name);
     this.#tools.set(key, eraseRegisteredTool(Object.freeze({ definition: pinned,
       ...(executor ? { executor } : {}), ...(machine ? { machine } : {}) })));
     this.#toolSources.set(key, eraseToolDefinition(definition));
-    if (previouslyRegistered) this.#selectedTools.delete(definition.name);
-    else this.#selectedTools.set(definition.name, definition.revision);
+    if (previouslyRegistered) this.#selectedTools.delete(pinned.name);
+    else this.#selectedTools.set(pinned.name, pinned.revision);
     return this;
   }
   /** Choose exactly one revision for model-visible calls of a shared tool name. */
@@ -2269,6 +2275,10 @@ export class AgentHarness {
   }
   async call<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal = new AbortController().signal,
     taskId?: RuntimeTaskId, operationId?: string, providerCallId?: string): Promise<Output> {
+    return (await this.#invokeTool(tool, input, signal, taskId, operationId, providerCallId)).value;
+  }
+  async #invokeTool<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal: AbortSignal,
+    taskId?: RuntimeTaskId, operationId?: string, providerCallId?: string): Promise<{ value: Output; invocation: ToolInvocation<Input> }> {
     const { admittedInput, parsedInput, publishOutput, callId, invocation, approvals } =
       await this.#prepareToolCall(tool, input, signal, operationId, providerCallId);
     const actionInstance = invocation.operationId;
@@ -2285,6 +2295,7 @@ export class AgentHarness {
           description: tool.definition.description,
           input_schema: tool.definition.inputSchema,
           output_schema: tool.definition.outputSchema,
+          projection_schema: tool.definition.projectionSchema,
         },
         invocation: { call_id: callId, name: invocation.name, arguments: admittedInput },
       });
@@ -2311,9 +2322,10 @@ export class AgentHarness {
     const registered = restoreRegisteredTool<Input, Output>(erased);
     if (publicToolHandle(registered) !== tool) throw new Error("tool definition is not registered or no longer active");
     if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
-    if (registered.definition.handler) return publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput));
+    if (registered.definition.handler) return { invocation,
+      value: publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput)) };
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
-    return publishOutput((await registered.executor.execute(invocation)).value);
+    return { invocation, value: publishOutput((await registered.executor.execute(invocation)).value) };
   }
   async callDurable<Input, Output>(operationId: OperationId, tool: ToolRef<Input, Output>, input: Input,
     taskId: RuntimeTaskId, signal = new AbortController().signal): Promise<Outcome<Output, OperationId>> {
@@ -2398,22 +2410,28 @@ export class AgentHarness {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), ...(this.components.modelOutputTokens === undefined ? {} : { maxOutputTokens: this.components.modelOutputTokens }) });
+        const inventories = request.messages.map(message =>
+          this.contracts.modelContentInventory(message.content, this.limits));
+        // The local TS composition has no original extension registry/runtime.
+        // File read grants cannot authenticate a claimed native option binding.
+        if (inventories.some(inventory => inventory.nativeConfigurations.length !== 0)) {
+          throw new Error("original native option admission is unavailable in the local TypeScript runtime");
+        }
         const prefix = this.components.inheritedModelPrefix;
         let bytes: Uint8Array;
         if (prefix === undefined) bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
         else {
           const files = new Map(prefix.files);
-          for (const message of request.messages) {
-            const parts = typeof message.content === "string" ? []
-              : Array.isArray(message.content) ? message.content : [message.content];
-            for (const part of parts) {
-              if (part.kind !== "file") continue;
-              const key = new TextDecoder().decode(this.contracts.encodeCanonicalJson(part.file));
-              if (files.has(key)) continue;
-              prefix.core.verifyContentRead(prefix.scope, part.file);
-              files.set(key, await context.readFile(part.file));
+          const pending = new Map<string, FileRef>();
+          for (const inventory of inventories) {
+            for (const file of inventory.files) {
+              prefix.core.verifyContentRead(prefix.scope, file);
+              const key = new TextDecoder().decode(this.contracts.encodeCanonicalJson(file));
+              if (!files.has(key)) pending.set(key, file);
             }
           }
+          const payloads = await context.readFiles([...pending.values()]);
+          [...pending.keys()].forEach((key, index) => files.set(key, payloads[index]!));
           bytes = await prefix.core.prepareInheritedModelRequest(prefix.scope, request, prefix.head, files, nativeLimits(this.limits));
         }
         const wire = this.contracts.decodeModelJson(bytes) as unknown as WasmModelRequestWire;
@@ -2426,6 +2444,7 @@ export class AgentHarness {
           tools: wire.tools.map((tool) => ({
             name: tool.name, revision: tool.revision, description: tool.description,
             inputSchema: tool.input_schema as ToolJsonSchema, outputSchema: tool.output_schema as ToolJsonSchema,
+            projectionSchema: tool.projection_schema as ToolJsonSchema,
           })),
           ...(wire.max_output_tokens == null ? {} : { maxOutputTokens: wire.max_output_tokens }),
           signal: context.signal,
@@ -2452,11 +2471,18 @@ export class AgentHarness {
             domain: "harness:tool-call:v2", task_id: context.taskId, step,
             call_id: call.callId,
           }), "operation");
-          const value = await context.call(this.tool(call.name), call.arguments, toolOperationId, call.callId);
-          const projection = value;
-          validateModelContent({ kind: "tool_result", callId: call.callId, name: call.name, value: projection }, this.limits);
+          const reference = this.tool(call.name);
+          const erased = this.#tools.get(toolKey(reference.definition.name, reference.definition.revision));
+          if (!erased) throw new Error(`selected tool is not registered: ${call.name}`);
+          const registered = restoreRegisteredTool<unknown, unknown>(erased);
+          const { value, invocation } = await this.#invokeTool(reference, call.arguments,
+            context.signal, context.taskId, toolOperationId, call.callId);
+          const projection = registered.definition.projection.project(invocation, { value });
+          this.contracts.validateToolProjection(registered.definition, projection, this.limits);
+          const result = { kind: "tool_result" as const, callId: call.callId, name: call.name, content: projection };
+          validateModelContent(result, this.limits);
           receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
-          messages.push({ role: "assistant", content: call }, { role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
+          messages.push({ role: "assistant", content: call }, { role: "tool", content: result });
         }
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);
@@ -2536,8 +2562,8 @@ export class AgentHarness {
       if (!selected) throw new Error(`model-visible tool revision is ambiguous: ${name}`);
       const tool = this.#tools.get(toolKey(name, selected));
       if (!tool) throw new Error(`selected tool revision is not registered: ${name}@${selected}`);
-      const { revision, description, inputSchema, outputSchema } = tool.definition;
-      return { name, revision, description, inputSchema, outputSchema };
+      const { revision, description, inputSchema, outputSchema, projection } = tool.definition;
+      return { name, revision, description, inputSchema, outputSchema, projectionSchema: projection.schema };
     });
   }
 }
