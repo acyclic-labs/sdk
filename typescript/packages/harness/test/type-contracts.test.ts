@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import type {
-  AgentHarness, AgentId, ApprovalBinding, Authority, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
+  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   NativeModelContent, NativeModelContentPart,
+  CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
 } from "../src/index.js";
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
@@ -11,14 +12,33 @@ import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_p
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
   WasmModelContent, WasmModelContentPart, WasmModelEvent, WasmModelRole,
+  CompactionPolicy as RustCompactionPolicy, CompactionRetention as RustCompactionRetention,
+  ThresholdCompaction as RustThresholdCompaction, ModelContextCapacity as RustModelContextCapacity,
+  ModelTokenCount as RustModelTokenCount,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Assert<Condition extends true> = Condition;
 type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false;
 type AssertNever<Value extends never> = Value;
+type _BrowserAggregateBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["execute"]>[0], Omit<Command, "authority">>>;
+type _BrowserReconciliationBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["reconcile"]>[0], Omit<Command, "authority">>>;
 type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, WasmModelContentPart>>;
 type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, WasmModelContent>>;
+
+type _CompactionContractsUseGeneratedRustShapes = Assert<Equal<
+  [CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire],
+  [RustCompactionPolicy, RustCompactionRetention, RustThresholdCompaction, RustModelContextCapacity, RustModelTokenCount]
+>>;
+type _CapacityFacadeUsesRustCounts = Assert<Equal<
+  ModelContextCapacity,
+  Readonly<{ contextTokens: RustModelContextCapacity["context_tokens"]; outputTokens: RustModelContextCapacity["output_tokens"] }>
+>>;
+type _AccountingFacadeUsesRustCounts = Assert<Equal<
+  ModelTokenCount,
+  Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
+>>;
+
 type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelRole,
   "system" | "user" | "assistant" | "tool">>;
 type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<

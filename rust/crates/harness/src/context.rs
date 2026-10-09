@@ -3,7 +3,7 @@
 use crate::contract::next_revision;
 use crate::{
     Result,
-    conversation::{ContentResidencyVerifier, FileRef},
+    conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, Limits},
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
@@ -22,22 +22,191 @@ use futures::StreamExt as _;
 mod accounting;
 pub use accounting::*;
 mod selection;
+pub(crate) use selection::place_messages;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;
+mod compaction;
+pub use compaction::*;
+mod snapshot;
+pub use snapshot::*;
+
+/// Durable output of an ordinary admitted summary model operation.
+/// The operation's execution journal retains its exact request and observations.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSummary {
+    /// Caller-owned operation identity; retries use the same admitted request.
+    pub operation_id: crate::OperationId,
+    /// Logical parent step of the summary admission.
+    pub step: u32,
+    /// Number of ordered source messages covered by this summary.
+    pub source_messages: u32,
+    /// Digest of the exact source projection, including immutable content refs.
+    pub source_digest: [u8; 32],
+    /// Immutable summary text staged through the execution journal.
+    pub output: FileRef,
+}
+
+/// Consumer-declared content that compaction must preserve verbatim.
+/// The current input is always retained, regardless of this policy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct CompactionRetention {
+    /// Roles retained in full. Defaults to instructions (`System`).
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelRole[]"))]
+    pub roles: Vec<ModelRole>,
+    /// Retains messages containing native media references in full.
+    pub native_media: bool,
+}
+
+impl Default for CompactionRetention {
+    fn default() -> Self {
+        Self {
+            roles: vec![ModelRole::System],
+            native_media: true,
+        }
+    }
+}
+
+impl CompactionRetention {
+    /// Rejects ambiguous repeated role declarations.
+    pub fn validate(&self) -> Result<()> {
+        for (position, role) in self.roles.iter().enumerate() {
+            if self
+                .roles
+                .get(..position)
+                .is_some_and(|prior| prior.contains(role))
+            {
+                return Err(crate::Error::Invalid(
+                    "compaction retention repeats a role".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompactionReference {
     /// BLAKE3 digest of the exact serialized source context.
     pub source_digest: [u8; 32],
-    /// Number of source messages before compaction.
-    pub source_messages: u32,
-    /// Number of model-visible messages retained after compaction.
-    pub retained_messages: u32,
+    /// Caller-selected projection budget; replay reconstructs the same selection.
+    pub maximum_messages: u32,
+    /// Exact consumer retention policy used by this admission.
+    pub retention: CompactionRetention,
+    /// Summary operation and immutable output, when a projection was compressed.
+    pub summary: Option<ContextSummary>,
 }
 
-/// One versioned durable context revision.
+impl CompactionReference {
+    /// Encodes this proof with the existing Harness canonical JSON serializer.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        crate::contract::canonical_json_bytes(self)
+    }
+}
+
+/// Ref-only canonical checkpoint envelope pinned by a committed history selection.
+/// The source selection's revision is its coverage watermark; stage output is separate.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalContextCheckpoint {
+    /// Existing execution which admitted the summary and its source.
+    pub operation_id: crate::OperationId,
+    /// Exact canonical delta and previous checkpoint used by that admission.
+    pub selection: crate::conversation::ModelContextSelection,
+    /// Immutable source base before stage transformation.
+    pub source: FileRef,
+    /// Immutable compacted canonical base for later deltas.
+    pub retained: FileRef,
+    /// Exact compaction proof and admitted summary output provenance.
+    pub compaction: FileRef,
+}
+
+impl CanonicalContextCheckpoint {
+    /// Checks a bounded envelope. The owning journal must verify publication and read refs.
+    pub fn validate(&self, limits: Limits) -> Result<()> {
+        limits.validate()?;
+        if self.selection.conversation_revision == 0
+            || self.selection.message_ids.is_empty()
+            || self.selection.message_ids.len() > limits.context_messages
+        {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint coverage is invalid".into(),
+            ));
+        }
+        let unique = self
+            .selection
+            .message_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique.len() != self.selection.message_ids.len() {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint repeats source identities".into(),
+            ));
+        }
+        for reference in [&self.source, &self.retained, &self.compaction] {
+            limits.validate_file(reference)?;
+            if reference.volume() != self.source.volume()
+                || reference.descriptor().media_type() != "application/json"
+            {
+                return Err(crate::Error::Invalid(
+                    "canonical checkpoint payload scope is invalid".into(),
+                ));
+            }
+        }
+        if let Some(previous) = &self.selection.checkpoint {
+            limits.validate_file(previous)?;
+        }
+        Ok(())
+    }
+
+    /// Encodes one bounded envelope for the owning journal's normal content publisher.
+    pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
+        self.validate(limits)?;
+        // Count the typed envelope before canonical serialization creates its
+        // Value tree and byte buffer. Both publication and render bounds apply.
+        crate::contract::validate_json_byte_bound(
+            self,
+            limits.file_bytes.min(limits.render_bytes),
+        )?;
+        let bytes = crate::contract::canonical_json_bytes(self)?;
+        if bytes.len() as u64 > limits.file_bytes || bytes.len() as u64 > limits.render_bytes {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint envelope exceeds byte bounds".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Binds resolved payloads to the canonical source and existing summary operation.
+    pub fn validate_projection(
+        &self,
+        source: &Context,
+        retained: &Context,
+        compaction: &CompactionReference,
+        limits: Limits,
+    ) -> Result<()> {
+        self.validate(limits)?;
+        validate_projected_context(source, limits)?;
+        validate_projected_context(retained, limits)?;
+        validate_compaction(compaction, source, retained)?;
+        if compaction
+            .summary
+            .as_ref()
+            .is_none_or(|summary| summary.operation_id != self.operation_id)
+        {
+            return Err(crate::Error::Invalid(
+                "canonical checkpoint summary admission differs".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Resolved view of one durable context revision. Stream retains only `content`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextRevision {
     /// Stable record format version.
@@ -48,10 +217,23 @@ pub struct ContextRevision {
     pub source: String,
     /// Exact provider implementation revision.
     pub source_revision: String,
+    /// Immutable canonical context payload retained by the owning content provider.
+    pub content: FileRef,
     /// Reconstructable context value.
     pub context: Context,
     /// Present only when this revision deterministically compacts another context.
     pub compaction: Option<CompactionReference>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredContextRevision {
+    format_version: u32,
+    revision: u64,
+    source: String,
+    source_revision: String,
+    context: FileRef,
+    compaction: Option<CompactionReference>,
 }
 
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
@@ -60,23 +242,32 @@ pub struct DurableContextProvider {
     path: StreamPath,
     source: String,
     source_revision: String,
-    maximum_revisions: u32,
+    maximum_page_records: u32,
     content_verifier: Arc<dyn ContentResidencyVerifier>,
+    publisher: Option<Arc<dyn ContentPublisher>>,
+    limits: Limits,
 }
 
 impl DurableContextProvider {
-    /// Creates a bounded durable provider over one permanent Stream path.
+    /// Creates a durable provider with a positive per-page work bound over one Stream path.
     pub fn new(
         provider: Arc<dyn StreamProvider>,
         path: StreamPath,
         source: impl Into<String>,
         source_revision: impl Into<String>,
-        maximum_revisions: u32,
+        maximum_page_records: u32,
         content_verifier: Arc<dyn ContentResidencyVerifier>,
+        limits: Limits,
     ) -> Result<Self> {
         let source = source.into();
         let source_revision = source_revision.into();
-        if source.trim().is_empty() || source_revision.trim().is_empty() || maximum_revisions == 0 {
+        limits.validate()?;
+        crate::contract::validate_component_label(&source, "context source")?;
+        crate::contract::validate_component_label(&source_revision, "context source revision")?;
+        if source.trim().is_empty()
+            || source_revision.trim().is_empty()
+            || maximum_page_records == 0
+        {
             return Err(crate::Error::Invalid(
                 "durable context source, revision, and bound are required".into(),
             ));
@@ -86,9 +277,95 @@ impl DurableContextProvider {
             path,
             source,
             source_revision,
-            maximum_revisions,
+            maximum_page_records,
             content_verifier,
+            publisher: None,
+            limits,
         })
+    }
+
+    /// Installs an owner-bound writer for immutable projection payloads.
+    /// A source can reopen with only a reader; publication requires this binding.
+    pub fn with_publisher(mut self, publisher: Arc<dyn ContentPublisher>) -> Result<Self> {
+        publisher.volume().validate()?;
+        self.publisher = Some(publisher);
+        Ok(self)
+    }
+
+    async fn stage_revision(
+        &self,
+        revision: u64,
+        context: Context,
+        compaction: Option<CompactionReference>,
+        key: &[u8],
+    ) -> Result<(ContextRevision, Bytes)> {
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            crate::Error::Unsupported("durable context publisher is not bound".into())
+        })?;
+        let bytes = crate::contract::canonical_json_bytes(&context)?;
+        if bytes.len() as u64 > self.limits.file_bytes {
+            return Err(crate::Error::Invalid(
+                "context payload exceeds file limit".into(),
+            ));
+        }
+        let digest = crate::contract::canonical_json_digest(&(
+            "harness:context-payload:v1",
+            self.path.as_str(),
+            &self.source,
+            &self.source_revision,
+            revision,
+            key,
+        ))?;
+        let mut identity = [0; 16];
+        for (destination, byte) in identity.iter_mut().zip(digest.iter()) {
+            *destination = *byte;
+        }
+        let operation = crate::OperationId::from_bytes(identity);
+        let content = publisher
+            .stage(
+                operation,
+                &format!("context/projections/{operation}.json"),
+                &bytes,
+                "application/json",
+                "context.json",
+            )
+            .await?;
+        self.limits.validate_file(&content)?;
+        if content.volume() != publisher.volume()
+            || content.descriptor().media_type() != "application/json"
+        {
+            return Err(crate::Error::Unauthorized(
+                "context publisher returned another binding".into(),
+            ));
+        }
+        content.descriptor().verify(&bytes)?;
+        self.content_verifier.verify(&content).await?;
+        let stored = StoredContextRevision {
+            format_version: 5,
+            revision,
+            source: self.source.clone(),
+            source_revision: self.source_revision.clone(),
+            context: content.clone(),
+            compaction,
+        };
+        let encoded = crate::contract::canonical_json_bytes(&stored)?;
+        if encoded.len() > MAX_RECORD_BYTES {
+            return Err(crate::Error::Invalid(
+                "durable context record exceeds Stream limit".into(),
+            ));
+        }
+        Ok((
+            ContextRevision {
+                format_version: stored.format_version,
+                revision,
+                source: stored.source,
+                source_revision: stored.source_revision,
+                content,
+                context,
+                compaction: stored.compaction,
+            },
+            Bytes::from(encoded),
+        ))
     }
 
     /// Appends one immutable context revision with exact retry and tail-CAS semantics.
@@ -99,45 +376,36 @@ impl DurableContextProvider {
         compaction: Option<CompactionReference>,
         idempotency_key: impl Into<Bytes>,
     ) -> Result<ContextRevision> {
-        validate_context_refs(&context, self.content_verifier.as_ref()).await?;
+        validate_context_refs(&context, self.content_verifier.as_ref(), self.limits).await?;
         let revision = next_revision(expected_revision)?;
-        if revision > u64::from(self.maximum_revisions) {
-            return Err(crate::Error::Invalid(
-                "durable context revision bound exceeded".into(),
-            ));
-        }
+        let key_bytes = idempotency_key.into();
+        let key = StreamIdempotencyKey::new(key_bytes.clone())
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         if let Some(reference) = &compaction {
             let source = self.read_revision(expected_revision).await?;
             validate_compaction(reference, &source.context, &context)?;
         }
-        let record = ContextRevision {
-            format_version: 2,
-            revision,
-            source: self.source.clone(),
-            source_revision: self.source_revision.clone(),
-            context,
-            compaction,
-        };
-        let encoded = crate::contract::canonical_json_bytes(&record)?;
-        if encoded.len() > MAX_RECORD_BYTES {
-            return Err(crate::Error::Invalid(
-                "durable context record exceeds Stream limit".into(),
-            ));
-        }
-        let key = StreamIdempotencyKey::new(idempotency_key)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let (record, encoded) = self
+            .stage_revision(revision, context, compaction, &key_bytes)
+            .await?;
         match self
             .provider
             .append(AppendRequest {
                 path: self.path.clone(),
-                records: vec![Bytes::from(encoded)],
+                records: vec![encoded],
                 if_tail: Some(expected_revision),
                 idempotency_key: Some(key),
             })
             .await
             .map_err(|error| crate::Error::Storage(error.to_string()))?
         {
-            AppendOutcome::Committed(receipt) if receipt.tail == revision => Ok(record),
+            AppendOutcome::Committed(receipt)
+                if receipt.start == expected_revision
+                    && receipt.end == revision
+                    && receipt.tail == revision =>
+            {
+                Ok(record)
+            }
             AppendOutcome::Committed(_) => Err(crate::Error::Storage(
                 "context append returned an invalid tail".into(),
             )),
@@ -147,58 +415,161 @@ impl DurableContextProvider {
         }
     }
 
-    /// Replays and validates the complete bounded revision history.
-    pub async fn revisions(&self) -> Result<Vec<ContextRevision>> {
-        let tail = match self.provider.tail(self.path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(crate::Error::Storage(error.to_string())),
-        };
-        if tail > u64::from(self.maximum_revisions) {
-            return Err(crate::Error::Storage(
-                "durable context history exceeds configured revision bound".into(),
+    /// Publishes one continuing projection and its exact source in a single CAS.
+    /// Neither the uncompressed source nor a projection without its provenance
+    /// becomes a visible latest revision. Exact retries reuse the same pair.
+    pub async fn append_compaction(
+        &self,
+        expected_revision: u64,
+        source: Context,
+        compacted: Context,
+        reference: CompactionReference,
+        idempotency_key: impl Into<Bytes>,
+    ) -> Result<[ContextRevision; 2]> {
+        let source_revision = next_revision(expected_revision)?;
+        let compacted_revision = next_revision(source_revision)?;
+        let key_bytes = idempotency_key.into();
+        let key = StreamIdempotencyKey::new(key_bytes.clone())
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        validate_projected_context(&source, self.limits)?;
+        validate_projected_context(&compacted, self.limits)?;
+        validate_compaction(&reference, &source, &compacted)?;
+        validate_context_refs(&source, self.content_verifier.as_ref(), self.limits).await?;
+        validate_context_refs(&compacted, self.content_verifier.as_ref(), self.limits).await?;
+        let (source_record, source_bytes) = self
+            .stage_revision(source_revision, source, None, &key_bytes)
+            .await?;
+        let (compacted_record, compacted_bytes) = self
+            .stage_revision(compacted_revision, compacted, Some(reference), &key_bytes)
+            .await?;
+        let pair = [source_record, compacted_record];
+        match self
+            .provider
+            .append(AppendRequest {
+                path: self.path.clone(),
+                records: vec![source_bytes, compacted_bytes],
+                if_tail: Some(expected_revision),
+                idempotency_key: Some(key),
+            })
+            .await
+            .map_err(|error| crate::Error::Storage(error.to_string()))?
+        {
+            AppendOutcome::Committed(receipt)
+                if receipt.start == expected_revision
+                    && receipt.end == compacted_revision
+                    && receipt.tail == compacted_revision =>
+            {
+                Ok(pair)
+            }
+            AppendOutcome::Committed(_) => Err(crate::Error::Storage(
+                "context append returned an invalid tail".into(),
+            )),
+            AppendOutcome::TailConflict { actual_tail } => Err(crate::Error::Conflict(format!(
+                "context revision {expected_revision} is stale; actual revision is {actual_tail}"
+            ))),
+        }
+    }
+
+    /// Captures an immutable read boundary; later appends do not extend this revision.
+    pub async fn tail_revision(&self) -> Result<u64> {
+        match self.provider.tail(self.path.clone()).await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(crate::Error::Storage(error.to_string())),
+        }
+    }
+
+    /// Reads one verified page after a cursor through a captured revision.
+    /// Work and returned records are bounded by the configured page allowance,
+    /// independent of total retained history. A page beginning with compaction
+    /// reads its immediate source once in addition to the bounded page.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.context.page",
+            level = "debug",
+            skip_all,
+            fields(rev = through, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
+    pub async fn revisions(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
+        crate::obs::outcome(self.revisions_inner(after, through).await)
+    }
+
+    async fn revisions_inner(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
+        if after > through || through > self.tail_revision().await? {
+            return Err(crate::Error::Invalid(
+                "context page cursor is invalid".into(),
             ));
         }
-        if tail == 0 {
+        let count = (through - after).min(u64::from(self.maximum_page_records));
+        if count == 0 {
             return Ok(Vec::new());
         }
         let mut stream = self
             .provider
             .read(ReadRequest {
                 path: self.path.clone(),
-                from: 0,
-                limit: self.maximum_revisions,
+                from: after,
+                limit: u32::try_from(count)
+                    .map_err(|_| crate::Error::Invalid("context page bound overflow".into()))?,
             })
             .await
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         let mut revisions: Vec<ContextRevision> = Vec::new();
         while let Some(record) = stream.next().await {
             let record = record.map_err(|error| crate::Error::Storage(error.to_string()))?;
-            let revision = self.decode_revision(record.sequence, &record.value).await?;
+            if revisions.len() as u64 >= count || record.sequence != after + revisions.len() as u64
+            {
+                return Err(crate::Error::Storage(
+                    "context page returned an invalid range".into(),
+                ));
+            }
+            let revision = self
+                .decode_revision(record.sequence, &record.value, self.limits)
+                .await?;
             if let Some(reference) = &revision.compaction {
-                let source = revisions.last().ok_or_else(|| {
-                    crate::Error::Storage(
-                        "durable context compaction has no preceding source".into(),
-                    )
+                let preceding = if revisions.is_empty() {
+                    if after == 0 {
+                        return Err(crate::Error::Storage(
+                            "context compaction has no preceding source".into(),
+                        ));
+                    }
+                    Some(self.read_revision(after).await?)
+                } else {
+                    None
+                };
+                let source = revisions.last().or(preceding.as_ref()).ok_or_else(|| {
+                    crate::Error::Storage("context compaction source is absent".into())
                 })?;
                 validate_compaction(reference, &source.context, &revision.context)
                     .map_err(|error| crate::Error::Storage(error.to_string()))?;
             }
             revisions.push(revision);
         }
-        if revisions.len() as u64 != tail {
-            return Err(crate::Error::Storage(
-                "durable context tail changed during replay".into(),
-            ));
+        if revisions.len() as u64 != count {
+            return Err(crate::Error::Storage("context page is incomplete".into()));
         }
+        crate::obs::obs_record!("items" = revisions.len() as u64);
         Ok(revisions)
     }
 
-    async fn decode_revision(&self, sequence: u64, bytes: &[u8]) -> Result<ContextRevision> {
-        let revision: ContextRevision = crate::contract::json_from_slice(bytes)
+    async fn decode_revision(
+        &self,
+        sequence: u64,
+        bytes: &[u8],
+        limits: Limits,
+    ) -> Result<ContextRevision> {
+        let limits = restrict_context_limits(self.limits, limits)?;
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Err(crate::Error::Storage(
+                "context record exceeds Stream limit".into(),
+            ));
+        }
+        let revision: StoredContextRevision = crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&revision)? != bytes
-            || revision.format_version != 2
+            || revision.format_version != 5
             || revision.revision != next_revision(sequence)?
             || revision.source != self.source
             || revision.source_revision != self.source_revision
@@ -207,14 +578,49 @@ impl DurableContextProvider {
                 "durable context identity, revision or canonical bytes are invalid".into(),
             ));
         }
-        validate_context_refs(&revision.context, self.content_verifier.as_ref()).await?;
-        Ok(revision)
+        limits.validate_file(&revision.context)?;
+        if revision.context.descriptor().media_type() != "application/json"
+            || revision.context.descriptor().byte_length() > limits.render_bytes
+        {
+            return Err(crate::Error::Storage(
+                "context payload descriptor is invalid".into(),
+            ));
+        }
+        self.content_verifier.verify(&revision.context).await?;
+        let payload = self.content_verifier.read(&revision.context).await?;
+        revision.context.descriptor().verify(&payload)?;
+        let context: Context = crate::contract::json_from_slice(&payload)
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        if crate::contract::canonical_json_bytes(&context)? != payload {
+            return Err(crate::Error::Storage(
+                "context payload is not canonical".into(),
+            ));
+        }
+        validate_context_refs(&context, self.content_verifier.as_ref(), limits).await?;
+        Ok(ContextRevision {
+            format_version: revision.format_version,
+            revision: revision.revision,
+            source: revision.source,
+            source_revision: revision.source_revision,
+            content: revision.context,
+            context,
+            compaction: revision.compaction,
+        })
     }
 
     async fn read_revision(&self, revision: u64) -> Result<ContextRevision> {
-        if revision == 0 || revision > u64::from(self.maximum_revisions) {
+        self.read_revision_bounded(revision, self.limits).await
+    }
+
+    async fn read_revision_bounded(
+        &self,
+        revision: u64,
+        limits: Limits,
+    ) -> Result<ContextRevision> {
+        limits.validate()?;
+        if revision == 0 {
             return Err(crate::Error::Invalid(
-                "context revision is outside configured bounds".into(),
+                "context revision must be positive".into(),
             ));
         }
         let mut stream = self
@@ -236,75 +642,253 @@ impl DurableContextProvider {
                 "context revision read returned an invalid range".into(),
             ));
         }
-        self.decode_revision(record.sequence, &record.value).await
+        self.decode_revision(record.sequence, &record.value, limits)
+            .await
     }
 
-    /// Returns a captured latest revision with at most two record reads, independent
-    /// of retained revision count. Explicit `revisions()` remains bounded archival replay.
-    pub async fn latest(&self) -> Result<Context> {
-        let tail = match self.provider.tail(self.path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(crate::Error::Storage(error.to_string())),
-        };
+    /// Loads one pinned revision, checking its source proof with at most two
+    /// record reads. Later publications do not change this projection.
+    pub async fn revision(&self, revision: u64) -> Result<ContextRevision> {
+        self.revision_bounded(revision, self.limits).await
+    }
+
+    async fn revision_bounded(&self, revision: u64, limits: Limits) -> Result<ContextRevision> {
+        let record = self.read_revision_bounded(revision, limits).await?;
+        if let Some(reference) = &record.compaction {
+            let source = self.read_revision_bounded(revision - 1, limits).await?;
+            validate_compaction(reference, &source.context, &record.context)?;
+        }
+        Ok(record)
+    }
+
+    /// Captures the current continuing projection and its immutable revision.
+    /// Reads at most two records, independent of retained revision count.
+    pub async fn latest_revision(&self) -> Result<Option<ContextRevision>> {
+        let tail = self.tail_revision().await?;
         if tail == 0 {
-            return Ok(Context::default());
+            return Ok(None);
         }
-        let revision = self.read_revision(tail).await?;
-        if let Some(reference) = &revision.compaction {
-            let source = self.read_revision(tail - 1).await?;
-            validate_compaction(reference, &source.context, &revision.context)?;
-        }
-        Ok(revision.context)
+        self.revision(tail).await.map(Some)
+    }
+
+    /// Returns the captured latest context. `latest_revision` also retains its
+    /// pin; `revisions(after, through)` provides explicit bounded archival pages.
+    pub async fn latest(&self) -> Result<Context> {
+        Ok(self
+            .latest_revision()
+            .await?
+            .map_or_else(Context::default, |record| record.context))
     }
 
     /// Deterministically compacts a context and returns its immutable source reference.
     pub fn compact(
         context: &Context,
         max_messages: usize,
-        summary: Option<ModelMessage>,
+        summary: Option<ContextSummary>,
+        retention: CompactionRetention,
     ) -> Result<(Context, CompactionReference)> {
+        retention.validate()?;
+        context.validate_current_input()?;
         if max_messages == 0 {
             return Err(crate::Error::Invalid(
                 "compaction max_messages must be positive".into(),
             ));
         }
         let source = crate::contract::canonical_json_bytes(context)?;
-        let mut compacted = context.clone();
-        if compacted.messages.len() > max_messages {
-            let keep = max_messages.saturating_sub(usize::from(summary.is_some()));
-            let split = compacted.messages.len().saturating_sub(keep);
-            let mut retained = compacted.messages.split_off(split);
-            if let Some(summary) = summary {
-                retained.insert(0, summary);
+        let source_digest = *blake3::hash(&source).as_bytes();
+        if let Some(summary) = &summary {
+            let covered = context
+                .messages
+                .get(..summary.source_messages as usize)
+                .ok_or_else(|| {
+                    crate::Error::Invalid("summary extent exceeds source projection".into())
+                })?;
+            let summarized = Context {
+                messages: covered.to_vec(),
+                metadata: context.metadata.clone(),
+                current_input_index: context
+                    .current_input_index
+                    .filter(|index| *index < summary.source_messages),
+            };
+            if summary.source_messages == 0
+                || summary.source_digest != crate::contract::canonical_json_digest(&summarized)?
+                || summary.output.descriptor().media_type() != "text/plain"
+            {
+                return Err(crate::Error::Invalid(
+                    "summary does not bind its source prefix".into(),
+                ));
             }
-            compacted.messages = retained;
         }
+        let compacted = if context.messages.len() > max_messages
+            || (summary.is_some() && context.messages.len() == max_messages)
+        {
+            let summary = summary.as_ref().ok_or_else(|| {
+                crate::Error::Invalid(
+                    "compaction requires a durable summary; context cannot be silently dropped"
+                        .into(),
+                )
+            })?;
+            compact_projection(context, max_messages, summary, &retention)?
+        } else {
+            context.clone()
+        };
         let reference = CompactionReference {
-            source_digest: *blake3::hash(&source).as_bytes(),
-            source_messages: u32::try_from(context.messages.len())
-                .map_err(|_| crate::Error::Invalid("too many context messages".into()))?,
-            retained_messages: u32::try_from(compacted.messages.len())
-                .map_err(|_| crate::Error::Invalid("too many retained messages".into()))?,
+            source_digest,
+            maximum_messages: u32::try_from(max_messages).map_err(|_| {
+                crate::Error::Invalid("compaction budget exceeds portable count".into())
+            })?,
+            summary,
+            retention,
         };
         Ok((compacted, reference))
     }
 }
 
-fn validate_compaction(
+fn compact_projection(
+    context: &Context,
+    max_messages: usize,
+    summary: &ContextSummary,
+    retention: &CompactionRetention,
+) -> Result<Context> {
+    if max_messages < 2 {
+        return Err(crate::Error::Invalid(
+            "compaction must retain the current input and summary".into(),
+        ));
+    }
+    let mandatory = mandatory_positions(context, summary.source_messages as usize, retention);
+    if mandatory.len() >= max_messages {
+        return Err(crate::Error::Invalid(
+            "mandatory context exceeds compaction message budget".into(),
+        ));
+    }
+    let mut selected = mandatory;
+    for position in (0..context.messages.len()).rev() {
+        if selected.len() + 1 == max_messages {
+            break;
+        }
+        selected.insert(position);
+    }
+    retain_compacted_messages(context, selected, summary)
+}
+
+pub(super) fn mandatory_positions(
+    context: &Context,
+    covered: usize,
+    retention: &CompactionRetention,
+) -> std::collections::BTreeSet<usize> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut selected = context
+        .messages
+        .iter()
+        .enumerate()
+        .filter_map(|(position, message)| {
+            (context.current_input_index.map(|index| index as usize) == Some(position)
+                || position + 1 == context.messages.len()
+                || position >= covered
+                || retention.roles.contains(&message.role)
+                || (retention.native_media && message.content.contains_native_media()))
+            .then_some(position)
+        })
+        .collect::<BTreeSet<_>>();
+    // A message can contain several calls/results. Close over the exchange graph
+    // so every mandatory message carries its complete paired messages as well.
+    let mut pending = BTreeMap::new();
+    let mut paired: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (position, message) in context.messages.iter().enumerate() {
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    pending.insert(call_id, position);
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    if let Some(call) = pending.remove(call_id) {
+                        paired.entry(call).or_default().push(position);
+                        paired.entry(position).or_default().push(call);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut visit = selected.iter().copied().collect::<Vec<_>>();
+    while let Some(position) = visit.pop() {
+        if let Some(neighbors) = paired.get(&position) {
+            for neighbor in neighbors {
+                if selected.insert(*neighbor) {
+                    visit.push(*neighbor);
+                }
+            }
+        }
+    }
+    selected
+}
+
+fn retain_compacted_messages(
+    context: &Context,
+    selected: std::collections::BTreeSet<usize>,
+    summary: &ContextSummary,
+) -> Result<Context> {
+    let mut calls = std::collections::BTreeSet::new();
+    let mut retained = vec![ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::File {
+            file: summary.output.clone(),
+            policy: crate::model::FileProjectionPolicy::BoundedFull,
+        }),
+    }];
+    let mut current_input_index = None;
+    for position in selected {
+        let message = context
+            .messages
+            .get(position)
+            .ok_or_else(|| crate::Error::Invalid("compaction position is missing".into()))?;
+        let parts = message.content.parts();
+        for part in parts {
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    calls.insert(call_id);
+                }
+                ModelContentPart::ToolResult { call_id, .. } if !calls.remove(call_id) => {
+                    return Err(crate::Error::Invalid(
+                        "compaction boundary splits a tool exchange".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if context.current_input_index.map(|index| index as usize) == Some(position) {
+            current_input_index = Some(u32::try_from(retained.len()).map_err(|_| {
+                crate::Error::Invalid("current input index exceeds portable count".into())
+            })?);
+        }
+        retained.push(message.clone());
+    }
+    if !calls.is_empty() {
+        return Err(crate::Error::Invalid(
+            "compaction boundary splits a tool exchange".into(),
+        ));
+    }
+    Ok(Context {
+        messages: retained,
+        metadata: context.metadata.clone(),
+        current_input_index,
+    })
+}
+
+pub(crate) fn validate_compaction(
     reference: &CompactionReference,
     source: &Context,
     compacted: &Context,
 ) -> Result<()> {
     let encoded = crate::contract::canonical_json_bytes(source)?;
-    let source_messages = u32::try_from(source.messages.len())
-        .map_err(|_| crate::Error::Invalid("too many context messages".into()))?;
-    let retained_messages = u32::try_from(compacted.messages.len())
-        .map_err(|_| crate::Error::Invalid("too many retained messages".into()))?;
     if reference.source_digest != *blake3::hash(&encoded).as_bytes()
-        || reference.source_messages != source_messages
-        || reference.retained_messages != retained_messages
-        || reference.retained_messages > reference.source_messages
+        || DurableContextProvider::compact(
+            source,
+            reference.maximum_messages as usize,
+            reference.summary.clone(),
+            reference.retention.clone(),
+        )?
+        .0 != *compacted
     {
         return Err(crate::Error::Invalid(
             "compaction reference does not bind the source and retained context".into(),
@@ -316,23 +900,11 @@ fn validate_compaction(
 async fn validate_context_refs(
     context: &Context,
     verifier: &dyn ContentResidencyVerifier,
+    limits: Limits,
 ) -> Result<()> {
+    validate_projected_context(context, limits)?;
     for message in &context.messages {
-        let parts = match &message.content {
-            ModelContent::Part(part) => std::slice::from_ref(part),
-            ModelContent::Parts(parts) if !parts.is_empty() => parts.as_slice(),
-            _ => {
-                return Err(crate::Error::Invalid(
-                    "durable context contains inline content".into(),
-                ));
-            }
-        };
-        for part in parts {
-            let ModelContentPart::File { file, .. } = part else {
-                return Err(crate::Error::Invalid(
-                    "durable context contains inline content".into(),
-                ));
-            };
+        for file in message.content.file_refs() {
             verifier.verify(file).await?;
         }
     }
@@ -351,21 +923,83 @@ async fn validate_context_refs(
 }
 
 impl ContextSource for DurableContextProvider {
-    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { Ok(self.latest().await?.messages) })
+    fn load<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move {
+            limits.validate()?;
+            let tail = self.tail_revision().await?;
+            if tail == 0 {
+                return Ok(Vec::new());
+            }
+            Ok(self.revision_bounded(tail, limits).await?.context.messages)
+        })
     }
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
 pub trait ContextSource: acyclic_stream::ProviderPlatform {
-    /// Resolves model-visible messages for the current step.
-    fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
+    /// Resolves model-visible messages under the original admitted limits.
+    /// Implementations must bound source reads and construction before returning;
+    /// the pipeline independently validates the returned projection.
+    fn load<'a>(
+        &'a self,
+        input: &'a ContextInput,
+        limits: Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
 
 impl ContextSource for Context {
-    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { Ok(self.messages.clone()) })
+    fn load<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move {
+            validate_source_messages(&self.messages, limits)?;
+            Ok(self.messages.clone())
+        })
     }
+}
+
+/// A source contributes messages only; its unrelated metadata is not imported.
+pub(super) fn validate_source_messages(messages: &[ModelMessage], limits: Limits) -> Result<()> {
+    limits.validate()?;
+    let metadata = BTreeMap::new();
+    BorrowedContext {
+        messages: ContextMessages {
+            first: messages,
+            user: None,
+            second: &[],
+        },
+        metadata: &metadata,
+        current_input_index: None,
+    }
+    .validate_bounds(limits)?;
+    for message in messages {
+        message.content.validate_limits(limits)?;
+    }
+    Ok(())
+}
+
+/// A pinned provider allowance can narrow, never widen, the admitted request.
+pub(super) fn restrict_context_limits(pinned: Limits, admitted: Limits) -> Result<Limits> {
+    pinned.validate()?;
+    admitted.validate()?;
+    Ok(Limits {
+        file_bytes: pinned.file_bytes.min(admitted.file_bytes),
+        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
+        attachments: pinned.attachments.min(admitted.attachments),
+        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        model_steps: pinned.model_steps.min(admitted.model_steps),
+        model_events_per_step: pinned
+            .model_events_per_step
+            .min(admitted.model_events_per_step),
+        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
+        context_messages: pinned.context_messages.min(admitted.context_messages),
+    })
 }
 
 /// Placement of source messages relative to existing context.
@@ -430,10 +1064,12 @@ impl ContextStage for SourceStage {
         &'a self,
         input: &'a ContextInput,
         context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
-            let loaded = self.source.load(input).await?;
-            Ok(selection::place_messages(context, loaded, self.placement))
+            validate_projected_context(&context, limits)?;
+            let loaded = self.source.load(input, limits).await?;
+            selection::place_messages(context, loaded, self.placement, limits)
         })
     }
 }
@@ -443,11 +1079,14 @@ pub struct CompactionStage {
     /// Maximum messages retained after compaction.
     pub max_messages: usize,
     /// Optional caller-produced summary prepended when compaction occurs.
-    pub summary: Option<ModelMessage>,
+    pub summary: Option<ContextSummary>,
+    /// Consumer-declared mandatory roles and native media retention.
+    pub retention: CompactionRetention,
 }
 
 impl ContextStage for CompactionStage {
     fn validate(&self) -> Result<()> {
+        self.retention.validate()?;
         if self.max_messages == 0 {
             return Err(crate::Error::Invalid(
                 "compaction max_messages must be positive".into(),
@@ -463,31 +1102,31 @@ impl ContextStage for CompactionStage {
     fn contract(&self) -> Value {
         serde_json::json!({
             "name": self.name(),
-            "revision": "1",
+            "revision": "3",
             "max_messages": self.max_messages,
             "summary": self.summary,
+            "retention": self.retention,
         })
     }
 
     fn apply<'a>(
         &'a self,
         _: &'a ContextInput,
-        mut context: Context,
+        context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
             self.validate()?;
-            if context.messages.len() > self.max_messages {
-                let keep = self
-                    .max_messages
-                    .saturating_sub(usize::from(self.summary.is_some()));
-                let split = context.messages.len().saturating_sub(keep);
-                let mut retained = context.messages.split_off(split);
-                if let Some(summary) = &self.summary {
-                    retained.insert(0, summary.clone());
-                }
-                context.messages = retained;
-            }
-            Ok(context)
+            validate_projected_context(&context, limits)?;
+            let compacted = DurableContextProvider::compact(
+                &context,
+                self.max_messages,
+                self.summary.clone(),
+                self.retention.clone(),
+            )?
+            .0;
+            validate_projected_context(&compacted, limits)?;
+            Ok(compacted)
         })
     }
 }
@@ -503,6 +1142,87 @@ pub struct Context {
     /// Stage-owned, namespaced version-pinned metadata files.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmFileRefWire>"))]
     pub metadata: BTreeMap<String, FileRef>,
+    /// Position of the active turn input. Absent for standalone source projections.
+    /// Transformations must preserve this marker when they reorder or replace messages.
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    pub current_input_index: Option<u32>,
+}
+
+impl Context {
+    fn validate_current_input(&self) -> Result<()> {
+        if self
+            .current_input_index
+            .is_some_and(|index| index as usize >= self.messages.len())
+        {
+            return Err(crate::Error::Invalid(
+                "current input index is outside context".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A borrowed view of exactly the messages that will form a base or continuation.
+/// Preflight uses the ordinary Context wire fields before copying any payloads.
+struct ContextMessages<'a> {
+    first: &'a [ModelMessage],
+    user: Option<&'a ModelContent>,
+    second: &'a [ModelMessage],
+}
+
+impl Serialize for ContextMessages<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+
+        #[derive(Serialize)]
+        struct UserMessage<'a> {
+            role: ModelRole,
+            content: &'a ModelContent,
+        }
+
+        let mut sequence = serializer.serialize_seq(None)?;
+        for message in self.first {
+            sequence.serialize_element(message)?;
+        }
+        if let Some(content) = self.user {
+            sequence.serialize_element(&UserMessage {
+                role: ModelRole::User,
+                content,
+            })?;
+        }
+        for message in self.second {
+            sequence.serialize_element(message)?;
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedContext<'a> {
+    messages: ContextMessages<'a>,
+    metadata: &'a BTreeMap<String, FileRef>,
+    current_input_index: Option<u32>,
+}
+
+impl BorrowedContext<'_> {
+    fn validate_bounds(&self, limits: Limits) -> Result<()> {
+        let count = self
+            .messages
+            .first
+            .len()
+            .checked_add(usize::from(self.messages.user.is_some()))
+            .and_then(|count| count.checked_add(self.messages.second.len()))
+            .filter(|count| *count <= limits.context_messages);
+        if count.is_none() || self.metadata.len() > limits.attachments {
+            return Err(crate::Error::Invalid(
+                "context projection exceeded declared bounds".into(),
+            ));
+        }
+        crate::contract::validate_json_byte_bound(self, limits.render_bytes)
+    }
 }
 
 /// Inputs visible to every context stage.
@@ -540,11 +1260,14 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
-    /// Transforms context; stage order is the order supplied by application code.
+    /// Transforms context under the original admitted limits, in application order.
+    /// Implementations must apply these bounds before source reads or allocation;
+    /// the pipeline also checks every returned projection.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
         context: Context,
+        limits: Limits,
     ) -> BoxFuture<'a, Result<Context>>;
 }
 
@@ -589,11 +1312,96 @@ impl ContextPipeline {
             .await
     }
 
+    /// Builds the canonical selection/current input and in-turn messages before stages.
+    /// This boundary contains no stage contributions and performs no source reads.
+    pub fn base_context(input: &ContextInput, limits: Limits) -> Result<Context> {
+        limits.validate()?;
+        let metadata = BTreeMap::new();
+        let messages = ContextMessages {
+            first: input
+                .selected_context
+                .as_ref()
+                .map_or(&[], |selected| selected.messages.as_slice()),
+            user: input.selected_context.is_none().then_some(&input.input),
+            second: &input.prior_messages,
+        };
+        let base_count = input
+            .selected_context
+            .as_ref()
+            .map_or(1, |selected| selected.messages.len());
+        let current_input_index = u32::try_from(base_count.checked_sub(1).ok_or_else(|| {
+            crate::Error::Invalid("current input is missing from context".into())
+        })?)
+        .map_err(|_| crate::Error::Invalid("current input index exceeds portable count".into()))?;
+        BorrowedContext {
+            messages,
+            metadata: &metadata,
+            current_input_index: Some(current_input_index),
+        }
+        .validate_bounds(limits)?;
+        input.input.validate_limits(limits)?;
+        input.input.validate_user_input()?;
+        if let Some(selected) = &input.selected_context {
+            selected.validate_for_input(&input.input)?;
+        }
+        if input
+            .selected_context
+            .as_ref()
+            .is_some_and(|selected| selected.selection.checkpoint.is_some())
+        {
+            return Err(crate::Error::Unsupported(
+                "canonical checkpoint requires owner-resolved base context".into(),
+            ));
+        }
+        let base = input.selected_context.as_ref().map_or_else(
+            || {
+                vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: input.input.clone(),
+                }]
+            },
+            |selected| selected.messages.clone(),
+        );
+        let context = Context {
+            messages: base
+                .into_iter()
+                .chain(input.prior_messages.iter().cloned())
+                .collect(),
+            metadata,
+            current_input_index: Some(current_input_index),
+        };
+        validate_projected_context(&context, limits)?;
+        Ok(context)
+    }
+
+    /// Adds an exact new delta to an owner-resolved base before running stages.
+    /// The caller establishes source provenance; the active input belongs to the delta.
+    pub fn continue_base(mut retained: Context, delta: Context, limits: Limits) -> Result<Context> {
+        validate_projected_context(&retained, limits)?;
+        if delta.current_input_index.is_none() {
+            return Err(crate::Error::Invalid(
+                "continued base has no current input".into(),
+            ));
+        }
+        // The retained parent's old active input is historical in this admission.
+        retained.current_input_index = None;
+        selection::place_context(retained, delta, ContextPlacement::Append, limits)
+    }
+
     /// Bounds the initial view and every intermediate projection, without truncation.
-    pub async fn run_bounded(
+    pub async fn run_bounded(&self, input: &ContextInput, limits: Limits) -> Result<Context> {
+        self.transform_bounded(input, Self::base_context(input, limits)?, limits)
+            .await
+    }
+
+    /// Applies declared stages to an explicit base, including a retained canonical
+    /// checkpoint plus its new history delta. The caller owns that base's provenance;
+    /// transforms may replace or reorder it while preserving the current input marker.
+    pub async fn transform_bounded(
         &self,
         input: &ContextInput,
-        limits: crate::conversation::Limits,
+        mut context: Context,
+        limits: Limits,
     ) -> Result<Context> {
         limits.validate()?;
         self.validate()?;
@@ -606,26 +1414,20 @@ impl ContextPipeline {
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
         }
-        let base = input.selected_context.as_ref().map_or_else(
-            || {
-                vec![ModelMessage {
-                    role: ModelRole::User,
-                    content: input.input.clone(),
-                }]
-            },
-            |selected| selected.messages.clone(),
-        );
-        let mut context = Context {
-            messages: base
-                .into_iter()
-                .chain(input.prior_messages.iter().cloned())
-                .collect(),
-            metadata: BTreeMap::new(),
-        };
         validate_projected_context(&context, limits)?;
+        if context.current_input_index.is_none() {
+            return Err(crate::Error::Invalid(
+                "base context has no current input marker".into(),
+            ));
+        }
         for stage in &self.0 {
-            context = stage.apply(input, context).await?;
+            context = stage.apply(input, context, limits).await?;
             validate_projected_context(&context, limits)?;
+            if context.current_input_index.is_none() {
+                return Err(crate::Error::Invalid(
+                    "context stage removed the current input marker".into(),
+                ));
+            }
         }
         Ok(context)
     }
@@ -652,37 +1454,1446 @@ mod tests {
         model::{FileProjectionPolicy, ModelRole},
         resources::ProviderRef,
     };
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture compares borrowed and owned wire bounds for both base variants and checkpoint continuation"
+    )]
+    fn borrowed_context_preflight_matches_base_and_continuation_wire() -> Result<()> {
+        let user = ModelContent::Text("current 🦀 \"quoted\"\n".into());
+        let message = |role, text: &str| ModelMessage {
+            role,
+            content: ModelContent::Text(text.into()),
+        };
+        let selected = SelectedModelContext {
+            selection: crate::conversation::ModelContextSelection {
+                conversation_revision: 2,
+                message_ids: vec![uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2)],
+                checkpoint: None,
+            },
+            messages: vec![
+                message(ModelRole::System, "pinned instruction"),
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: user.clone(),
+                },
+            ],
+        };
+        for selected_context in [None, Some(selected)] {
+            let input = ContextInput {
+                input: user.clone(),
+                selected_context,
+                step: 0,
+                prior_messages: vec![message(ModelRole::Assistant, "prior answer")],
+            };
+            let base = ContextPipeline::base_context(&input, Limits::default())?;
+            let view = BorrowedContext {
+                messages: ContextMessages {
+                    first: input
+                        .selected_context
+                        .as_ref()
+                        .map_or(&[], |selected| selected.messages.as_slice()),
+                    user: input.selected_context.is_none().then_some(&input.input),
+                    second: &input.prior_messages,
+                },
+                metadata: &base.metadata,
+                current_input_index: base.current_input_index,
+            };
+            let encoded = crate::contract::canonical_json_bytes(&base)?;
+            assert_eq!(crate::contract::canonical_json_bytes(&view)?, encoded);
+            let exact = Limits {
+                render_bytes: encoded.len() as u64,
+                ..Limits::default()
+            };
+            assert_eq!(ContextPipeline::base_context(&input, exact)?, base);
+            assert!(matches!(
+                ContextPipeline::base_context(
+                    &input,
+                    Limits {
+                        render_bytes: exact.render_bytes - 1,
+                        ..exact
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+            assert!(matches!(
+                ContextPipeline::base_context(
+                    &input,
+                    Limits {
+                        context_messages: base.messages.len() - 1,
+                        ..Limits::default()
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+
+            let retained = Context {
+                messages: vec![message(ModelRole::System, "retained summary")],
+                ..Default::default()
+            };
+            let expected = Context {
+                messages: retained
+                    .messages
+                    .iter()
+                    .chain(&base.messages)
+                    .cloned()
+                    .collect(),
+                metadata: retained.metadata.clone(),
+                current_input_index: base.current_input_index.map(|index| index + 1),
+            };
+            let view = BorrowedContext {
+                messages: ContextMessages {
+                    first: &retained.messages,
+                    user: None,
+                    second: &base.messages,
+                },
+                metadata: &retained.metadata,
+                current_input_index: expected.current_input_index,
+            };
+            let encoded = crate::contract::canonical_json_bytes(&expected)?;
+            assert_eq!(crate::contract::canonical_json_bytes(&view)?, encoded);
+            let exact = Limits {
+                render_bytes: encoded.len() as u64,
+                ..Limits::default()
+            };
+            assert_eq!(
+                ContextPipeline::continue_base(retained.clone(), base.clone(), exact)?,
+                expected
+            );
+            assert!(matches!(
+                ContextPipeline::continue_base(
+                    retained.clone(),
+                    base.clone(),
+                    Limits {
+                        render_bytes: exact.render_bytes - 1,
+                        ..exact
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+            assert!(matches!(
+                ContextPipeline::continue_base(
+                    retained,
+                    base,
+                    Limits {
+                        context_messages: expected.messages.len() - 1,
+                        ..Limits::default()
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+        }
+        Ok(())
+    }
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 
+    fn native_retention_policy() -> FileProjectionPolicy {
+        FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
+            intent: crate::model::NativeMediaIntent::Document { maximum_pages: 1 },
+            maximum_bytes: 1_048_576,
+            maximum_work: 1,
+            configuration: None,
+        }))
+    }
+
+    fn validate_native_call_fixture(context: &Context) -> Result<()> {
+        crate::model::PreparedModelRequest::prepare(
+            crate::model::ModelRequest {
+                model: crate::model::Model::new(
+                    "test",
+                    "native-retention",
+                    "1",
+                    serde_json::json!({}),
+                )?,
+                messages: context.messages.clone(),
+                tools: vec![crate::tool::ToolDefinition {
+                    name: "native.tool".into(),
+                    revision: "1".into(),
+                    description: "Native retention fixture".into(),
+                    input_schema: serde_json::json!({"type":"null"}),
+                    output_schema: serde_json::json!({"type":"null"}),
+                    projection_schema: serde_json::json!({"oneOf": [
+                        crate::tool::json_projection_schema(serde_json::json!({"type":"null"})),
+                        {"type":"object", "required":["kind","parts"],
+                         "properties":{"kind":{"const":"parts"}, "parts":{"type":"array", "minItems":1, "maxItems":1, "items":{"type":"object"}}},
+                         "additionalProperties":false}
+                    ]}),
+                }],
+                max_output_tokens: Some(128),
+            },
+            Limits::default(),
+        )?;
+        Ok(())
+    }
+
+    fn native_call_context(
+        file: &FileRef,
+        results: usize,
+        native_in_result: bool,
+    ) -> Result<Context> {
+        let mut calls: Vec<_> = (0..results)
+            .map(|index| ModelContentPart::ToolCall {
+                call_id: format!("native-{index}"),
+                name: "native.tool".into(),
+                arguments: Value::Null,
+            })
+            .collect();
+        if !native_in_result {
+            calls.push(ModelContentPart::File {
+                file: file.clone(),
+                policy: native_retention_policy(),
+            });
+        }
+        let mut messages = vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("old".into()),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Parts(calls),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("gap".into()),
+            },
+        ];
+        for index in 0..results {
+            messages.push(ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: format!("native-{index}"),
+                    name: "native.tool".into(),
+                    content: if native_in_result && index == 0 {
+                        crate::model::ToolResultContent::Parts {
+                            parts: vec![crate::model::ModelDataPart::File {
+                                file: file.clone(),
+                                policy: native_retention_policy(),
+                            }],
+                        }
+                    } else {
+                        crate::model::ToolResultContent::Json { value: Value::Null }
+                    },
+                }),
+            });
+        }
+        messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("current".into()),
+        });
+        Ok(Context {
+            current_input_index: Some(
+                u32::try_from(messages.len() - 1)
+                    .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?,
+            ),
+            messages,
+            metadata: BTreeMap::new(),
+        })
+    }
+
+    #[test]
+    fn native_call_retention_closes_tool_pair_before_compaction_budget() -> Result<()> {
+        let file: FileRef = message(ModelRole::Assistant, "media reference")?
+            .content
+            .file_refs()
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::Invalid("media reference missing".into()))?
+            .clone();
+        // Native data in either the call message or its first result retains
+        // the complete multi-call exchange, including every other result.
+        for (results, native_in_result) in
+            (1..=3).flat_map(|results| [false, true].map(move |nested| (results, nested)))
+        {
+            let source = native_call_context(&file, results, native_in_result)?;
+            validate_native_call_fixture(&source)?;
+            let summary = ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: u32::try_from(source.messages.len())
+                    .map_err(|_| crate::Error::Invalid("fixture count exceeds u32".into()))?,
+                source_digest: crate::contract::canonical_json_digest(&source)?,
+                output: file.clone(),
+            };
+            let (compacted, reference) = DurableContextProvider::compact(
+                &source,
+                results + 3,
+                Some(summary.clone()),
+                CompactionRetention::default(),
+            )?;
+            let mut expected = vec![source.messages[1].clone()];
+            expected.extend_from_slice(&source.messages[3..]);
+            assert_eq!(compacted.messages.get(1..), Some(expected.as_slice()));
+            assert_eq!(
+                compacted.current_input_index,
+                Some(
+                    u32::try_from(results + 2)
+                        .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?
+                )
+            );
+            validate_compaction(&reference, &source, &compacted)?;
+            validate_native_call_fixture(&compacted)?;
+            assert!(
+                DurableContextProvider::compact(
+                    &source,
+                    results + 2,
+                    Some(summary.clone()),
+                    CompactionRetention::default()
+                )
+                .is_err()
+            );
+            let retention = CompactionRetention {
+                native_media: false,
+                ..CompactionRetention::default()
+            };
+            let (without_media, _) =
+                DurableContextProvider::compact(&source, 2, Some(summary), retention)?;
+            assert_eq!(
+                without_media.messages.get(1..),
+                source.messages.get(source.messages.len() - 1..)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_keeps_mandatory_messages_and_never_splits_tool_pairs() -> Result<()> {
+        let source = Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("instructions".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("old".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("old answer".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall {
+                        call_id: "call".into(),
+                        name: "example.tool".into(),
+                        arguments: Value::Null,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call".into(),
+                        name: "example.tool".into(),
+                        content: crate::model::ToolResultContent::Json { value: Value::Null },
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("current".into()),
+                },
+            ],
+            metadata: BTreeMap::new(),
+            current_input_index: None,
+        };
+        let summary = ContextSummary {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            source_messages: 6,
+            source_digest: crate::contract::canonical_json_digest(&source)?,
+            output: message(ModelRole::System, "summary")?
+                .content
+                .file_refs()
+                .into_iter()
+                .next()
+                .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
+                .clone(),
+        };
+        let prefix = Context {
+            messages: source.messages[..3].to_vec(),
+            metadata: source.metadata.clone(),
+            current_input_index: None,
+        };
+        let prefix_summary = ContextSummary {
+            source_messages: 3,
+            source_digest: crate::contract::canonical_json_digest(&prefix)?,
+            ..summary.clone()
+        };
+        let (prefix_compacted, prefix_reference) = DurableContextProvider::compact(
+            &source,
+            5,
+            Some(prefix_summary.clone()),
+            CompactionRetention::default(),
+        )?;
+        assert_eq!(prefix_compacted.messages.get(2..), source.messages.get(3..));
+        validate_compaction(&prefix_reference, &source, &prefix_compacted)?;
+        assert!(
+            DurableContextProvider::compact(
+                &source,
+                4,
+                Some(prefix_summary.clone()),
+                CompactionRetention::default(),
+            )
+            .is_err(),
+            "unsummarized messages cannot be dropped to meet the budget"
+        );
+        for extent in [0, 2, 7] {
+            assert!(
+                DurableContextProvider::compact(
+                    &source,
+                    5,
+                    Some(ContextSummary {
+                        source_messages: extent,
+                        ..prefix_summary.clone()
+                    }),
+                    CompactionRetention::default(),
+                )
+                .is_err()
+            );
+        }
+        for budget in 1..=6 {
+            let result = DurableContextProvider::compact(
+                &source,
+                budget,
+                Some(summary.clone()),
+                CompactionRetention::default(),
+            );
+            if matches!(budget, 1 | 2 | 4) {
+                assert!(result.is_err());
+                continue;
+            }
+            let (projected, reference) = result?;
+            assert!(projected.messages.contains(&source.messages[0]));
+            assert_eq!(projected.messages.last(), source.messages.last());
+            assert_eq!(
+                projected.messages.contains(&source.messages[3]),
+                projected.messages.contains(&source.messages[4])
+            );
+            validate_compaction(&reference, &source, &projected)?;
+            let mut corrupt = projected;
+            corrupt
+                .messages
+                .last_mut()
+                .ok_or_else(|| crate::Error::Invalid("empty context".into()))?
+                .content = ModelContent::Text("substitution".into());
+            assert!(validate_compaction(&reference, &source, &corrupt).is_err());
+        }
+        assert!(
+            DurableContextProvider::compact(&source, 3, None, CompactionRetention::default())
+                .is_err()
+        );
+        let configurable = Context {
+            messages: vec![
+                source.messages[0].clone(),
+                source.messages[1].clone(),
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::File {
+                        file: summary.output.clone(),
+                        policy: native_retention_policy(),
+                    }),
+                },
+                source.messages[5].clone(),
+            ],
+            metadata: BTreeMap::new(),
+            current_input_index: None,
+        };
+        let configured_summary = ContextSummary {
+            source_digest: crate::contract::canonical_json_digest(&configurable)?,
+            source_messages: 4,
+            ..summary
+        };
+        assert!(
+            DurableContextProvider::compact(
+                &configurable,
+                3,
+                Some(configured_summary.clone()),
+                CompactionRetention::default(),
+            )
+            .is_err()
+        );
+        let retention = CompactionRetention {
+            roles: vec![ModelRole::User],
+            native_media: false,
+        };
+        let (projected, mut reference) = DurableContextProvider::compact(
+            &configurable,
+            3,
+            Some(configured_summary),
+            retention.clone(),
+        )?;
+        assert_eq!(
+            projected.messages.get(1..),
+            Some(
+                &[
+                    configurable.messages[1].clone(),
+                    configurable.messages[3].clone(),
+                ][..]
+            )
+        );
+        assert_eq!(reference.retention, retention);
+        validate_compaction(&reference, &configurable, &projected)?;
+        reference.retention = CompactionRetention::default();
+        assert!(validate_compaction(&reference, &configurable, &projected).is_err());
+        assert!(
+            CompactionRetention {
+                roles: vec![ModelRole::User, ModelRole::User],
+                native_media: true
+            }
+            .validate()
+            .is_err()
+        );
+        Ok(())
+    }
+
     struct RefVerifier;
 
-    struct CountingVerifier(std::sync::atomic::AtomicUsize);
+    struct TestPayloadStore {
+        volume: VolumeRef,
+        files: std::sync::Mutex<BTreeMap<String, (FileRef, Vec<u8>)>>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    fn payload_limits() -> Limits {
+        Limits {
+            file_bytes: 1_048_576,
+            render_bytes: 1_048_576,
+            context_messages: 4_096,
+            attachments: 1_024,
+            path_bytes: 4_096,
+            ..Limits::default()
+        }
+    }
+
+    struct SourceLimitSpy(std::sync::Mutex<Vec<Limits>>);
+
+    impl ContextSource for SourceLimitSpy {
+        fn load<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            limits: Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(limits);
+                Ok(vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("source".into()),
+                }])
+            })
+        }
+    }
+
+    struct StageLimitSpy(std::sync::Mutex<Vec<Limits>>);
+
+    impl ContextStage for StageLimitSpy {
+        fn name(&self) -> &str {
+            "limit-spy"
+        }
+        fn contract(&self) -> Value {
+            serde_json::json!({"revision":"1"})
+        }
+        fn apply<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            context: Context,
+            limits: Limits,
+        ) -> BoxFuture<'a, Result<Context>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(limits);
+                Ok(context)
+            })
+        }
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one actual pipeline fixture checks forwarding and both exact placement boundaries"
+    )]
+    async fn admitted_limits_reach_sources_and_stages_and_bound_message_joins() -> Result<()> {
+        let input = ContextInput {
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let limits = Limits {
+            context_messages: 2,
+            render_bytes: 2_048,
+            ..payload_limits()
+        };
+        let source = Arc::new(SourceLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let stage = Arc::new(StageLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let pipeline = ContextPipeline::new([
+            Arc::new(SourceStage::new(
+                "source",
+                "1",
+                source.clone(),
+                ContextPlacement::Prepend,
+            )) as Arc<dyn ContextStage>,
+            stage.clone(),
+        ]);
+        let projected = pipeline.run_bounded(&input, limits).await?;
+        assert_eq!(projected.current_input_index, Some(1));
+        assert_eq!(
+            *source
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![limits]
+        );
+        assert_eq!(
+            *stage
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![limits]
+        );
+        let base = ContextPipeline::base_context(&input, limits)?;
+        let contribution = vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text("source".into()),
+        }];
+        for placement in [ContextPlacement::Prepend, ContextPlacement::Append] {
+            let joined =
+                selection::place_messages(base.clone(), contribution.clone(), placement, limits)?;
+            assert_eq!(
+                joined.current_input_index,
+                Some(u32::from(placement == ContextPlacement::Prepend))
+            );
+            let exact = crate::contract::canonical_json_bytes(&joined)?.len() as u64;
+            assert_eq!(
+                selection::place_messages(
+                    base.clone(),
+                    contribution.clone(),
+                    placement,
+                    Limits {
+                        render_bytes: exact,
+                        ..limits
+                    }
+                )?,
+                joined
+            );
+            for rejected in [
+                Limits {
+                    context_messages: 1,
+                    ..limits
+                },
+                Limits {
+                    render_bytes: exact - 1,
+                    ..limits
+                },
+            ] {
+                assert!(matches!(
+                    selection::place_messages(
+                        base.clone(),
+                        contribution.clone(),
+                        placement,
+                        rejected
+                    ),
+                    Err(crate::Error::Invalid(_))
+                ));
+            }
+        }
+        let oversized = Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("x".repeat(2_048)),
+            }],
+            ..Context::default()
+        };
+        assert!(matches!(
+            oversized.load(&input, limits).await,
+            Err(crate::Error::Invalid(_))
+        ));
+        let too_many = Context {
+            messages: projected.messages,
+            ..Context::default()
+        };
+        assert!(matches!(
+            too_many
+                .load(
+                    &input,
+                    Limits {
+                        context_messages: 1,
+                        ..limits
+                    }
+                )
+                .await,
+            Err(crate::Error::Invalid(_))
+        ));
+        let file = message(ModelRole::System, "instruction")?
+            .content
+            .file_refs()
+            .into_iter()
+            .next()
+            .cloned()
+            .ok_or_else(|| crate::Error::Invalid("fixture instruction is missing".into()))?;
+        let discovered = DiscoveredContext {
+            instructions: vec![file.clone(), file.clone()],
+            skills: Vec::new(),
+        };
+        assert!(matches!(
+            discovered
+                .load(
+                    &input,
+                    Limits {
+                        context_messages: 1,
+                        ..limits
+                    }
+                )
+                .await,
+            Err(crate::Error::Invalid(_))
+        ));
+        assert!(matches!(
+            discovered
+                .load(
+                    &input,
+                    Limits {
+                        file_bytes: 1,
+                        ..limits
+                    }
+                )
+                .await,
+            Err(crate::Error::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    struct RendererLimitSpy(std::sync::Mutex<Vec<Limits>>);
+
+    impl ContextRenderer for RendererLimitSpy {
+        fn contract(&self) -> Value {
+            serde_json::json!({"revision":"1"})
+        }
+        fn render<'a>(
+            &'a self,
+            _: &'a ContextSelection,
+            _: ContextRenderMode,
+            _: &'a ContextInput,
+            limits: Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(limits);
+                Ok(vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("rendered".into()),
+                }])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_stage_narrows_limits_before_source_verification_and_rendering() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let verifier = Arc::new(CountingVerifier {
+            count: std::sync::atomic::AtomicUsize::new(0),
+            payloads,
+        });
+        let renderer = Arc::new(RendererLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let file = message(ModelRole::System, "0123456789")?
+            .content
+            .file_refs()
+            .into_iter()
+            .next()
+            .cloned()
+            .ok_or_else(|| crate::Error::Invalid("fixture source is missing".into()))?;
+        let pinned = Limits {
+            render_bytes: 2_048,
+            ..payload_limits()
+        };
+        let stage = SelectionStage::new(
+            "selection".into(),
+            ContextSelection {
+                source: ContextSourceValue::File { file: file.clone() },
+                extent: ContextExtent::Whole,
+                representation: ContextRepresentation::Full,
+            },
+            renderer.clone(),
+            verifier.clone(),
+            ContextRenderMode::Prompt,
+            ContextPlacement::Prepend,
+            pinned,
+        )?;
+        let input = ContextInput {
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let admitted = Limits {
+            file_bytes: 9,
+            render_bytes: 4_096,
+            context_messages: 2,
+            ..payload_limits()
+        };
+        let base = ContextPipeline::base_context(&input, admitted)?;
+        assert!(matches!(
+            stage.apply(&input, base.clone(), admitted).await,
+            Err(crate::Error::Invalid(_))
+        ));
+        assert_eq!(verifier.count.load(Ordering::SeqCst), 0);
+        assert!(
+            renderer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        let admitted = Limits {
+            file_bytes: 10,
+            ..admitted
+        };
+        let projected = stage.apply(&input, base, admitted).await?;
+        assert_eq!(projected.current_input_index, Some(1));
+        assert_eq!(verifier.count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *renderer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Limits {
+                render_bytes: pinned.render_bytes,
+                ..admitted
+            }]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_source_reopen_applies_admitted_payload_bounds_before_body_reads() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let stream = Arc::new(MemoryStream::default());
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let path = StreamPath::new("bounded/source-admission")
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let provider = DurableContextProvider::new(
+            stream.clone(),
+            path.clone(),
+            "source",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads.clone())?;
+        let context = Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("x".repeat(400)),
+            }],
+            ..Context::default()
+        };
+        provider
+            .append(0, context.clone(), None, Bytes::from_static(b"original"))
+            .await?;
+        let reopened = DurableContextProvider::new(
+            stream,
+            path,
+            "source",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?;
+        let input = ContextInput {
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        for limits in [
+            Limits {
+                file_bytes: 128,
+                ..payload_limits()
+            },
+            Limits {
+                render_bytes: 128,
+                ..payload_limits()
+            },
+        ] {
+            payloads.reads.store(0, Ordering::SeqCst);
+            assert!(reopened.load(&input, limits).await.is_err());
+            assert_eq!(payloads.reads.load(Ordering::SeqCst), 0);
+        }
+        assert_eq!(
+            reopened.load(&input, payload_limits()).await?,
+            context.messages
+        );
+        assert_eq!(payloads.reads.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    impl TestPayloadStore {
+        fn new() -> Result<Self> {
+            Ok(Self {
+                volume: VolumeRef::new(
+                    ProviderRef::new("test", "filesystem", "2")?,
+                    "context",
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                )?,
+                files: std::sync::Mutex::new(BTreeMap::new()),
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl ContentPublisher for TestPayloadStore {
+        fn volume(&self) -> &VolumeRef {
+            &self.volume
+        }
+
+        fn stage<'a>(
+            &'a self,
+            operation: crate::OperationId,
+            path: &'a str,
+            bytes: &'a [u8],
+            media_type: &'a str,
+            display_name: &'a str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            Box::pin(async move {
+                let reference = FileRef::new(
+                    self.volume.clone(),
+                    path,
+                    operation.to_string(),
+                    FileDescriptor::from_bytes(bytes, media_type)?,
+                    display_name,
+                )?;
+                let mut files = self
+                    .files
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some((retained, body)) = files.get(path) {
+                    if retained != &reference || body != bytes {
+                        return Err(crate::Error::Conflict("payload identity changed".into()));
+                    }
+                    return Ok(retained.clone());
+                }
+                files.insert(path.to_owned(), (reference.clone(), bytes.to_vec()));
+                Ok(reference)
+            })
+        }
+    }
+
+    impl ContentResidencyVerifier for TestPayloadStore {
+        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move { file.validate() })
+        }
+
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            Box::pin(async move {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let files = self
+                    .files
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (reference, bytes) = files
+                    .get(file.path())
+                    .ok_or_else(|| crate::Error::Storage("missing context payload".into()))?;
+                if file != reference {
+                    return Err(crate::Error::Storage(
+                        "context payload reference changed".into(),
+                    ));
+                }
+                Ok(bytes.clone())
+            })
+        }
+    }
+
+    struct RemoveInputMarker;
+
+    impl ContextStage for RemoveInputMarker {
+        fn name(&self) -> &str {
+            "remove-input-marker"
+        }
+
+        fn contract(&self) -> Value {
+            serde_json::json!({"name": self.name(), "revision": "1"})
+        }
+
+        fn apply<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            mut context: Context,
+            _: Limits,
+        ) -> BoxFuture<'a, Result<Context>> {
+            context.current_input_index = None;
+            Box::pin(async move { Ok(context) })
+        }
+    }
+
+    #[test]
+    fn repeated_compaction_replaces_summaries_and_retains_instructions() -> Result<()> {
+        let source = Context {
+            messages: vec![
+                message(ModelRole::System, "instructions")?,
+                message(ModelRole::User, "old")?,
+                message(ModelRole::Assistant, "old-answer")?,
+                message(ModelRole::User, "current")?,
+            ],
+            metadata: BTreeMap::new(),
+            current_input_index: Some(3),
+        };
+        let make_summary = |source: &Context, label: &str| -> Result<ContextSummary> {
+            let output = message(ModelRole::Assistant, label)?;
+            Ok(ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: u32::try_from(source.messages.len())
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                source_digest: crate::contract::canonical_json_digest(source)?,
+                output: output.content.file_refs()[0].clone(),
+            })
+        };
+        let first_summary = make_summary(&source, "first-summary")?;
+        let (mut next, reference) = DurableContextProvider::compact(
+            &source,
+            3,
+            Some(first_summary.clone()),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &source, &next)?;
+        assert_eq!(next.messages[0].role, ModelRole::Assistant);
+        next.messages.extend([
+            message(ModelRole::Assistant, "later-answer")?,
+            message(ModelRole::User, "latest")?,
+        ]);
+        next.current_input_index = Some(4);
+        let (compacted, reference) = DurableContextProvider::compact(
+            &next,
+            3,
+            Some(make_summary(&next, "second-summary")?),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &next, &compacted)?;
+        assert_eq!(compacted.messages.len(), 3);
+        assert!(compacted.messages.contains(&source.messages[0]));
+        assert_eq!(compacted.messages.last(), next.messages.last());
+        assert_eq!(compacted.current_input_index, Some(2));
+        assert!(
+            compacted
+                .messages
+                .iter()
+                .all(|message| { !message.content.file_refs().contains(&&first_summary.output) })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_retains_current_user_before_trailing_tool_results() -> Result<()> {
+        let source = Context {
+            messages: vec![
+                message(ModelRole::System, "instructions")?,
+                message(ModelRole::User, "old")?,
+                message(ModelRole::Assistant, "old-answer")?,
+                message(ModelRole::User, "current")?,
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall {
+                        call_id: "current-call".into(),
+                        name: "tool".into(),
+                        arguments: Value::Null,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "current-call".into(),
+                        name: "tool".into(),
+                        content: crate::model::ToolResultContent::Json { value: Value::Null },
+                    }),
+                },
+            ],
+            metadata: BTreeMap::new(),
+            current_input_index: Some(3),
+        };
+        let summary = ContextSummary {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            source_messages: 6,
+            source_digest: crate::contract::canonical_json_digest(&source)?,
+            output: message(ModelRole::Assistant, "summary")?
+                .content
+                .file_refs()[0]
+                .clone(),
+        };
+        assert!(
+            DurableContextProvider::compact(
+                &source,
+                4,
+                Some(summary.clone()),
+                CompactionRetention::default(),
+            )
+            .is_err()
+        );
+        let (compacted, reference) = DurableContextProvider::compact(
+            &source,
+            5,
+            Some(summary),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &source, &compacted)?;
+        assert!(compacted.messages.contains(&source.messages[3]));
+        assert_eq!(compacted.messages.last(), source.messages.last());
+        assert!(compacted.messages.contains(&source.messages[4]));
+        assert!(compacted.messages.contains(&source.messages[5]));
+        assert_eq!(compacted.current_input_index, Some(2));
+        Ok(())
+    }
+
+    struct InputDependentProjection {
+        revision: u32,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ContextStage for InputDependentProjection {
+        fn name(&self) -> &str {
+            "input-dependent-projection"
+        }
+
+        fn contract(&self) -> Value {
+            serde_json::json!({ "name": self.name(), "revision": self.revision })
+        }
+
+        fn apply<'a>(
+            &'a self,
+            input: &'a ContextInput,
+            mut context: Context,
+            _: Limits,
+        ) -> BoxFuture<'a, Result<Context>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                context.messages.push(ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!(
+                        "stage:{}:{}",
+                        self.revision,
+                        serde_json::to_string(&input.input)
+                            .map_err(|error| crate::Error::Invalid(error.to_string()))?
+                    )),
+                });
+                context.messages.reverse();
+                let length = u32::try_from(context.messages.len())
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+                context.current_input_index =
+                    context.current_input_index.map(|index| length - 1 - index);
+                Ok(context)
+            })
+        }
+    }
+
+    fn retained_input_base(input: ModelContent) -> Context {
+        Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("older question".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("older answer".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: input,
+                },
+            ],
+            current_input_index: Some(2),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_base_boundary_reruns_input_dependent_custom_transforms_and_reload()
+    -> Result<()> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pipeline = ContextPipeline::new([Arc::new(InputDependentProjection {
+            revision: 1,
+            calls: calls.clone(),
+        }) as Arc<dyn ContextStage>]);
+        let mut input = ContextInput {
+            input: ModelContent::Text("first input".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let raw = ContextPipeline::base_context(&input, Limits::default())?;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(ContextPipeline::default().run(&input).await?, raw);
+        // The continuation owner supplies its retained base plus the current delta.
+        // No prior stage contribution is saved into this base.
+        let retained = retained_input_base(input.input.clone());
+        let first = pipeline
+            .transform_bounded(&input, retained.clone(), Limits::default())
+            .await?;
+        assert_eq!(first.current_input_index, Some(1));
+        assert_eq!(first.messages[1].content, input.input);
+        assert_eq!(
+            first.messages[0].content,
+            ModelContent::Text("stage:1:\"first input\"".into())
+        );
+        assert_eq!(retained.messages.len(), 3);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        input.input = ModelContent::Text("later input".into());
+        let mut next_base = retained.clone();
+        next_base.messages[2].content = input.input.clone();
+        let next = pipeline
+            .transform_bounded(&input, next_base.clone(), Limits::default())
+            .await?;
+        assert_eq!(
+            next.messages[0].content,
+            ModelContent::Text("stage:1:\"later input\"".into())
+        );
+        let reloaded =
+            pipeline.reload(ContextPipeline::new([Arc::new(InputDependentProjection {
+                revision: 2,
+                calls: calls.clone(),
+            })
+                as Arc<dyn ContextStage>]))?;
+        let next = reloaded
+            .transform_bounded(&input, next_base, Limits::default())
+            .await?;
+        assert_eq!(
+            next.messages[0].content,
+            ModelContent::Text("stage:2:\"later input\"".into())
+        );
+        assert_eq!(
+            next.messages
+                .iter()
+                .filter(|message| message.role == ModelRole::System)
+                .count(),
+            1
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let invalid = Context {
+            current_input_index: None,
+            ..retained
+        };
+        assert!(
+            pipeline
+                .transform_bounded(&input, invalid, Limits::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_stages_preserve_explicit_input_position() -> Result<()> {
+        let input = ContextInput {
+            input: ModelContent::Text("active input".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: vec![ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("prior answer".into()),
+            }],
+        };
+        let source = Arc::new(Context {
+            messages: vec![message(ModelRole::User, "additional-facts")?],
+            ..Context::default()
+        });
+        let pipeline = ContextPipeline::new([
+            Arc::new(SourceStage::new(
+                "prepend",
+                "1",
+                source.clone(),
+                ContextPlacement::Prepend,
+            )) as Arc<dyn ContextStage>,
+            Arc::new(SourceStage::new(
+                "append",
+                "1",
+                source,
+                ContextPlacement::Append,
+            )),
+        ]);
+        let projected = pipeline.run(&input).await?;
+        assert_eq!(projected.current_input_index, Some(1));
+        assert_eq!(projected.messages[1].content, input.input);
+        let summary = ContextSummary {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            source_messages: 4,
+            source_digest: crate::contract::canonical_json_digest(&projected)?,
+            output: message(ModelRole::Assistant, "summary")?
+                .content
+                .file_refs()[0]
+                .clone(),
+        };
+        let (compacted, reference) = DurableContextProvider::compact(
+            &projected,
+            3,
+            Some(summary),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &projected, &compacted)?;
+        assert_eq!(compacted.current_input_index, Some(1));
+        assert_eq!(compacted.messages[1].content, input.input);
+        assert_eq!(compacted.messages.last(), projected.messages.last());
+        assert!(
+            ContextPipeline::new([Arc::new(RemoveInputMarker) as Arc<dyn ContextStage>])
+                .run(&input)
+                .await
+                .is_err()
+        );
+
+        let invalid = Context {
+            current_input_index: Some(4),
+            ..projected
+        };
+        assert!(
+            validate_projected_context(&invalid, crate::conversation::Limits::default()).is_err()
+        );
+        assert!(
+            DurableContextProvider::compact(&invalid, 4, None, CompactionRetention::default())
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Result<()> {
+        let context = Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("pinned".into()),
+            }],
+            metadata: BTreeMap::new(),
+            current_input_index: None,
+        };
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let payload = payloads
+            .stage(
+                crate::OperationId::new(),
+                "context/projections/pinned.json",
+                &crate::contract::canonical_json_bytes(&context)?,
+                "application/json",
+                "context.json",
+            )
+            .await?;
+        let record = StoredContextRevision {
+            format_version: 5,
+            revision: 1,
+            source: "instructions".into(),
+            source_revision: "1".into(),
+            context: payload,
+            compaction: None,
+        };
+        let mut records = Vec::new();
+        for (field, value) in [
+            ("format_version", serde_json::json!(0)),
+            ("revision", serde_json::json!(2)),
+            ("source", serde_json::json!("another-source")),
+            ("source_revision", serde_json::json!("another-revision")),
+            ("unknown", serde_json::json!(true)),
+        ] {
+            let mut corrupt = serde_json::to_value(&record)
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            corrupt[field] = value;
+            records.push(crate::contract::canonical_json_bytes(&corrupt)?);
+        }
+        records.push(
+            serde_json::to_vec_pretty(&record)
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+        );
+        records.push(b"not-json".to_vec());
+        let mut missing_source = record;
+        missing_source.compaction = Some(CompactionReference {
+            source_digest: crate::contract::canonical_json_digest(&context)?,
+            maximum_messages: 2,
+            retention: CompactionRetention::default(),
+            summary: None,
+        });
+        records.push(crate::contract::canonical_json_bytes(&missing_source)?);
+        for bytes in records {
+            let stream = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("corrupt/context")
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::from(bytes)],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await
+                .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let provider = DurableContextProvider::new(
+                stream,
+                path,
+                "instructions",
+                "1",
+                1,
+                payloads.clone(),
+                payload_limits(),
+            )?;
+            assert!(provider.revisions(0, 1).await.is_err());
+            assert!(
+                provider
+                    .decode_revision(0, &vec![b' '; MAX_RECORD_BYTES + 1], payload_limits())
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    struct CountingVerifier {
+        count: std::sync::atomic::AtomicUsize,
+        payloads: Arc<TestPayloadStore>,
+    }
     impl ContentResidencyVerifier for CountingVerifier {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 file.validate()
             })
+        }
+
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            self.payloads.read(file)
         }
     }
 
     #[tokio::test]
     async fn latest_context_work_is_independent_of_retained_revisions() -> Result<()> {
         for retained in [1, 16, 128] {
-            let verifier = Arc::new(CountingVerifier(std::sync::atomic::AtomicUsize::new(0)));
+            let payloads = Arc::new(TestPayloadStore::new()?);
+            let verifier = Arc::new(CountingVerifier {
+                count: std::sync::atomic::AtomicUsize::new(0),
+                payloads: payloads.clone(),
+            });
             let provider = DurableContextProvider::new(
                 Arc::new(MemoryStream::default()),
                 StreamPath::new("bounded/context")
                     .map_err(|error| crate::Error::Invalid(error.to_string()))?,
                 "instructions",
                 "1",
-                128,
+                7,
                 verifier.clone(),
-            )?;
+                payload_limits(),
+            )?
+            .with_publisher(payloads)?;
             let context = Context {
                 messages: vec![message(ModelRole::System, "pinned")?],
                 metadata: BTreeMap::new(),
+                current_input_index: None,
             };
             for revision in 0..retained {
                 provider
@@ -694,15 +2905,42 @@ mod tests {
                     )
                     .await?;
             }
-            verifier.0.store(0, std::sync::atomic::Ordering::SeqCst);
+            verifier.count.store(0, std::sync::atomic::Ordering::SeqCst);
             let started = std::time::Instant::now();
             assert_eq!(provider.latest().await?, context);
-            assert_eq!(verifier.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(verifier.count.load(std::sync::atomic::Ordering::SeqCst), 2);
             eprintln!(
-                "context retained={retained} verified_refs=1 active_wire_bytes={} elapsed_us={}",
+                "context retained={retained} verified_refs=2 active_wire_bytes={} elapsed_us={}",
                 crate::contract::canonical_json_bytes(&context)?.len(),
                 started.elapsed().as_micros()
             );
+            let through = provider.tail_revision().await?;
+            provider
+                .append(
+                    through,
+                    context.clone(),
+                    None,
+                    Bytes::from_static(b"later-revision"),
+                )
+                .await?;
+            let mut after = 0;
+            let mut visited = 0;
+            loop {
+                let page = provider.revisions(after, through).await?;
+                assert!(page.len() <= 7);
+                if page.is_empty() {
+                    break;
+                }
+                for revision in &page {
+                    assert_eq!(revision.revision, after + 1);
+                    assert!(revision.revision <= through);
+                    after = revision.revision;
+                    visited += 1;
+                }
+            }
+            assert_eq!(visited, retained);
+            assert!(provider.revisions(through + 1, through).await.is_err());
+            assert!(provider.revisions(0, through + 2).await.is_err());
         }
         Ok(())
     }
@@ -821,6 +3059,7 @@ mod tests {
             old.reload(ContextPipeline::new([Arc::new(CompactionStage {
                 max_messages: 0,
                 summary: None,
+                retention: CompactionRetention::default(),
             })
                 as Arc<dyn ContextStage>]))
                 .is_err()
@@ -914,6 +3153,7 @@ mod tests {
     )]
     async fn durable_sources_and_compaction_reopen_exactly() -> Result<()> {
         let stream = Arc::new(MemoryStream::default());
+        let payloads = Arc::new(TestPayloadStore::new()?);
         let path = StreamPath::new("runtime/context/memory")
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let provider = DurableContextProvider::new(
@@ -922,8 +3162,10 @@ mod tests {
             "memory",
             "1",
             2,
-            Arc::new(RefVerifier),
-        )?;
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads.clone())?;
         assert_eq!(provider.latest().await?, Context::default());
         assert!(
             provider
@@ -935,9 +3177,10 @@ mod tests {
                             content: ModelContent::Text("secret".into())
                         }],
                         metadata: BTreeMap::new(),
+                        current_input_index: Some(1),
                     },
                     None,
-                    Bytes::from_static(b"inline-rejected")
+                    Bytes::from_static(b"invalid-marker-rejected")
                 )
                 .await
                 .is_err()
@@ -949,6 +3192,7 @@ mod tests {
                 message(ModelRole::User, "three")?,
             ],
             metadata: BTreeMap::new(),
+            current_input_index: None,
         };
         provider
             .append(0, original.clone(), None, Bytes::from_static(b"context-1"))
@@ -956,7 +3200,20 @@ mod tests {
         let (compacted, reference) = DurableContextProvider::compact(
             &original,
             2,
-            Some(message(ModelRole::System, "summary")?),
+            Some(ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: 3,
+                source_digest: crate::contract::canonical_json_digest(&original)?,
+                output: message(ModelRole::System, "summary")?
+                    .content
+                    .file_refs()
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
+                    .clone(),
+            }),
+            CompactionRetention::default(),
         )?;
         let mut forged = reference.clone();
         forged.source_digest[0] ^= 1;
@@ -987,12 +3244,9 @@ mod tests {
                 Bytes::from_static(b"context-2"),
             )
             .await?;
-        assert!(
-            provider
-                .append(2, compacted.clone(), None, Bytes::from_static(b"context-3"),)
-                .await
-                .is_err()
-        );
+        provider
+            .append(2, compacted.clone(), None, Bytes::from_static(b"context-3"))
+            .await?;
 
         let reopened = Arc::new(DurableContextProvider::new(
             stream.clone(),
@@ -1000,11 +3254,13 @@ mod tests {
             "memory",
             "1",
             2,
-            Arc::new(RefVerifier),
+            payloads.clone(),
+            payload_limits(),
         )?);
-        let revisions = reopened.revisions().await?;
+        let revisions = reopened.revisions(0, 2).await?;
         assert_eq!(revisions.len(), 2);
         assert_eq!(revisions[1].compaction, Some(reference));
+        assert_eq!(reopened.revisions(1, 2).await?, revisions[1..]);
         assert_eq!(reopened.latest().await?, compacted);
 
         let pipeline = ContextPipeline::new([Arc::new(SourceStage::new(
@@ -1023,9 +3279,268 @@ mod tests {
             .await?;
         assert_eq!(assembled.messages.len(), 4);
         assert_eq!(assembled.messages[3], message(ModelRole::User, "current")?);
-        let undersized =
-            DurableContextProvider::new(stream, path, "memory", "1", 1, Arc::new(RefVerifier))?;
-        assert!(undersized.latest().await.is_err());
+        let undersized = DurableContextProvider::new(
+            stream,
+            path,
+            "memory",
+            "1",
+            1,
+            payloads,
+            payload_limits(),
+        )?;
+        assert_eq!(undersized.latest().await?, compacted);
+        assert_eq!(undersized.revisions(0, 2).await?.len(), 1);
+        let second = undersized.revisions(1, 2).await?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].context, compacted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn continuing_compaction_publishes_and_retries_one_atomic_pair() -> Result<()> {
+        let stream = Arc::new(MemoryStream::default());
+        let payloads = Arc::new(TestPayloadStore::new()?);
+        let path = StreamPath::new("runtime/context/continuing")
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let provider = DurableContextProvider::new(
+            stream.clone(),
+            path.clone(),
+            "memory",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads.clone())?;
+        let source = Context {
+            messages: vec![
+                message(ModelRole::User, "one")?,
+                message(ModelRole::Assistant, "two")?,
+                message(ModelRole::User, "three")?,
+            ],
+            current_input_index: Some(2),
+            ..Context::default()
+        };
+        let mut covered = source.clone();
+        covered.messages.truncate(2);
+        covered.current_input_index = None;
+        let output = message(ModelRole::System, "summary")?
+            .content
+            .file_refs()
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
+            .clone();
+        let (compacted, reference) = DurableContextProvider::compact(
+            &source,
+            2,
+            Some(ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: 2,
+                source_digest: crate::contract::canonical_json_digest(&covered)?,
+                output,
+            }),
+            CompactionRetention::default(),
+        )?;
+        let key = Bytes::from_static(b"atomic-compaction");
+        // Discard the first successful acknowledgement, as a caller whose
+        // receipt was lost would. The same admission must remain recoverable.
+        provider
+            .append_compaction(
+                0,
+                source.clone(),
+                compacted.clone(),
+                reference.clone(),
+                key.clone(),
+            )
+            .await?;
+        let reopened = DurableContextProvider::new(
+            stream,
+            path,
+            "memory",
+            "1",
+            1,
+            payloads.clone(),
+            payload_limits(),
+        )?
+        .with_publisher(payloads)?;
+        let pair = reopened
+            .append_compaction(0, source.clone(), compacted.clone(), reference.clone(), key)
+            .await?;
+        assert_eq!(reopened.tail_revision().await?, 2);
+        assert_eq!(pair.first().map(|record| &record.context), Some(&source));
+        assert_eq!(pair.last().map(|record| &record.context), Some(&compacted));
+        assert_eq!(reopened.latest().await?, compacted);
+        let pin = reopened
+            .latest_revision()
+            .await?
+            .ok_or_else(|| crate::Error::Storage("published context revision is missing".into()))?;
+        assert_eq!(pin.revision, 2);
+        assert_eq!(reopened.revision(pin.revision).await?, pin);
+        assert!(reopened.revision(0).await.is_err());
+        assert_eq!(reopened.revisions(0, 1).await?, pair[..1]);
+        assert_eq!(reopened.revisions(1, 2).await?, pair[1..]);
+        assert!(matches!(
+            reopened
+                .append_compaction(
+                    0,
+                    source.clone(),
+                    compacted.clone(),
+                    reference.clone(),
+                    Bytes::from_static(b"stale-compaction")
+                )
+                .await,
+            Err(crate::Error::Conflict(_))
+        ));
+        let mut forged = reference.clone();
+        forged.source_digest[0] ^= 1;
+        assert!(
+            reopened
+                .append_compaction(
+                    2,
+                    source.clone(),
+                    compacted.clone(),
+                    forged,
+                    Bytes::from_static(b"forged-compaction")
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            reopened
+                .append_compaction(
+                    u64::MAX - 1,
+                    source,
+                    compacted,
+                    reference,
+                    Bytes::from_static(b"overflow-compaction")
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(reopened.tail_revision().await?, 2);
+        reopened
+            .append(
+                2,
+                Context::default(),
+                None,
+                Bytes::from_static(b"newer-context"),
+            )
+            .await?;
+        assert_eq!(reopened.latest().await?, Context::default());
+        assert_eq!(reopened.revision(pin.revision).await?, pin);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_payload_missing_corrupt_and_oversized_fail_without_fallback() -> Result<()> {
+        for failure in [0, 1, 2] {
+            let stream = Arc::new(MemoryStream::default());
+            let payloads = Arc::new(TestPayloadStore::new()?);
+            let path = StreamPath::new("context/payload-negatives")
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            let provider = DurableContextProvider::new(
+                stream.clone(),
+                path.clone(),
+                "memory",
+                "1",
+                1,
+                payloads.clone(),
+                payload_limits(),
+            )?
+            .with_publisher(payloads.clone())?;
+            let context = Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("pinned payload".into()),
+                }],
+                ..Context::default()
+            };
+            let published = provider
+                .append(0, context, None, Bytes::from_static(b"payload"))
+                .await?;
+            if failure < 2 {
+                {
+                    let mut files = payloads.files.lock().unwrap();
+                    if failure == 0 {
+                        files.remove(published.content.path());
+                    } else {
+                        let (_, bytes) =
+                            files.get_mut(published.content.path()).ok_or_else(|| {
+                                crate::Error::Storage("payload fixture is missing".into())
+                            })?;
+                        if let Some(first) = bytes.first_mut() {
+                            *first ^= 1;
+                        }
+                    }
+                }
+                assert!(provider.latest().await.is_err());
+            } else {
+                payloads.reads.store(0, std::sync::atomic::Ordering::SeqCst);
+                let reader = DurableContextProvider::new(
+                    stream,
+                    path,
+                    "memory",
+                    "1",
+                    1,
+                    payloads.clone(),
+                    Limits {
+                        render_bytes: 1,
+                        ..payload_limits()
+                    },
+                )?;
+                assert!(reader.latest().await.is_err());
+                assert_eq!(payloads.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_payload_bounds_and_missing_writer_do_not_publish() -> Result<()> {
+        for (file_bytes, render_bytes, writer) in [
+            (128, 1_024, true),
+            (1_024, 128, true),
+            (1_024, 1_024, false),
+        ] {
+            let payloads = Arc::new(TestPayloadStore::new()?);
+            let provider = DurableContextProvider::new(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("context/bounds")
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                "memory",
+                "1",
+                1,
+                payloads.clone(),
+                Limits {
+                    file_bytes,
+                    render_bytes,
+                    ..payload_limits()
+                },
+            )?;
+            let provider = if writer {
+                provider.with_publisher(payloads.clone())?
+            } else {
+                provider
+            };
+            let context = Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("x".repeat(512)),
+                }],
+                current_input_index: Some(0),
+                ..Context::default()
+            };
+            assert!(
+                provider
+                    .append(0, context, None, Bytes::from_static(b"oversized"))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(provider.tail_revision().await?, 0);
+            assert!(payloads.files.lock().unwrap().is_empty());
+        }
         Ok(())
     }
 }

@@ -16,11 +16,15 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+mod snapshot;
+pub use snapshot::Snapshot;
 
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AggregateKind {
     /// Durable agent definition and configuration.
     Agent,
@@ -43,6 +47,7 @@ pub const AUTHORITY_ID_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 /// Stable identity of one independently ordered history.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Authority {
     /// Aggregate kind.
     pub kind: AggregateKind,
@@ -407,7 +412,7 @@ impl AuthorityVerifier {
         Ok(*hasher.finalize().as_bytes())
     }
 
-    fn verify_event(&self, event: &Event) -> Result<()> {
+    pub(crate) fn verify_event(&self, event: &Event) -> Result<()> {
         if event.scope.issuer != self.id || event.attestation != self.attest_event(event)? {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
@@ -902,22 +907,6 @@ pub enum ApplyResult {
     },
 }
 
-/// Versioned acceleration record; canonical events remain authoritative.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Snapshot {
-    /// Snapshot format version.
-    pub format_version: u32,
-    /// Aggregate represented by the snapshot.
-    pub authority: Authority,
-    /// Last included event revision.
-    pub revision: u64,
-    /// Canonical events included in this portable v2 snapshot.
-    pub events: Vec<Event>,
-    /// Digest over all preceding fields.
-    pub state_digest: [u8; 32],
-}
-
 /// Explicit treatment of one extension's state at a child fork.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1139,7 +1128,7 @@ impl ExtensionConfiguration {
 }
 
 /// Immutable schema and implementation binding for one extension version.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct ExtensionBinding {
     schema: Value,
     schema_digest: [u8; 32],
@@ -1477,13 +1466,15 @@ pub struct Reducer {
     extension_states: BTreeMap<String, (EventReference, ExtensionRecord)>,
     configured_extensions: BTreeMap<ExtensionDependency, ExtensionConfiguration>,
     active_configurations: Vec<ExtensionConfiguration>,
-    events: Vec<Event>,
-    operation_intents: BTreeMap<OperationId, ([u8; 32], Event)>,
+    events: VecDeque<Event>,
+    operation_positions: BTreeMap<OperationId, u64>,
+    resident_event_limit: usize,
+    active_extension_revision: Option<u64>,
     effects: BTreeMap<EffectId, EffectState>,
     forks: BTreeMap<Authority, ForkSeed>,
     published_merges: BTreeSet<(String, Vec<u8>)>,
     conversation: ConversationState,
-    context_selections: Vec<ModelContextSelection>,
+    latest_context_checkpoint: Option<FileRef>,
     interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
 }
 
@@ -1505,13 +1496,15 @@ impl Reducer {
             extension_states: BTreeMap::new(),
             configured_extensions: BTreeMap::new(),
             active_configurations: Vec::new(),
-            events: Vec::new(),
-            operation_intents: BTreeMap::new(),
+            events: VecDeque::new(),
+            operation_positions: BTreeMap::new(),
+            resident_event_limit: usize::MAX,
+            active_extension_revision: None,
             effects: BTreeMap::new(),
             forks: BTreeMap::new(),
             published_merges: BTreeSet::new(),
             conversation: ConversationState::default(),
-            context_selections: Vec::new(),
+            latest_context_checkpoint: None,
             interactions: BTreeMap::new(),
         }
     }
@@ -1520,6 +1513,10 @@ impl Reducer {
     #[must_use]
     pub fn authority(&self) -> &Authority {
         &self.authority
+    }
+
+    pub(crate) fn event_verifier(&self) -> AuthorityVerifier {
+        self.authority_verifier.clone()
     }
 
     /// Returns the current gapless revision.
@@ -1642,18 +1639,13 @@ impl Reducer {
                 "extension admission requires an agent aggregate".into(),
             ));
         }
-        let Some(event) = self
-            .events
-            .iter()
-            .rev()
-            .find(|event| matches!(&event.payload, EventPayload::ExtensionsSelected { .. }))
-        else {
+        let Some(revision) = self.active_extension_revision else {
             return Ok(None);
         };
         let admission = ExtensionAdmission {
             source: EventReference {
                 authority: self.authority.clone(),
-                revision: event.revision,
+                revision,
             },
             selected: self.active_extensions.clone(),
             configurations: self.active_configurations.clone(),
@@ -1694,10 +1686,19 @@ impl Reducer {
         (self.authority.kind == AggregateKind::Conversation).then_some(&self.conversation)
     }
 
-    /// Returns revision-pinned model context selections in admission order.
+    /// Enumerates context selections in the resident event suffix, in admission order.
+    /// Older selections must be resolved through the authoritative Stream operation index.
+    pub fn resident_context_selections(&self) -> impl Iterator<Item = &ModelContextSelection> {
+        self.events.iter().filter_map(|event| match &event.payload {
+            EventPayload::ModelContextSelected { selection } => Some(selection),
+            _ => None,
+        })
+    }
+
+    /// Latest owner-published canonical base, maintained by selection replay.
     #[must_use]
-    pub fn context_selections(&self) -> &[ModelContextSelection] {
-        &self.context_selections
+    pub fn latest_context_checkpoint(&self) -> Option<&FileRef> {
+        self.latest_context_checkpoint.as_ref()
     }
 
     /// Returns the exact selection committed for one operation, even after
@@ -1707,21 +1708,49 @@ impl Reducer {
         &self,
         operation_id: OperationId,
     ) -> Option<&ModelContextSelection> {
-        self.operation_intents
-            .get(&operation_id)
-            .and_then(|(_, event)| match &event.payload {
+        self.event_for_operation(operation_id)
+            .and_then(|event| match &event.payload {
                 EventPayload::ModelContextSelected { selection } => Some(selection),
                 _ => None,
             })
+    }
+
+    pub(crate) fn verify_command_scope(&self, command: &Command) -> Result<()> {
+        self.authority_verifier.verify_audience(&self.authority)?;
+        IdempotencyKey::new(command.idempotency_key.0.clone())?;
+        self.authority_verifier.verify(&command.scope)
+    }
+
+    /// Checks an archived admitted event against the exact caller command without re-planning effects.
+    pub(crate) fn verify_retained_command(&self, command: &Command, event: &Event) -> Result<()> {
+        self.verify_command_scope(command)?;
+        self.authority_verifier.verify_event(event)?;
+        if event.operation_id != command.operation_id
+            || event.intent_digest != canonical_intent(command)?
+        {
+            return Err(Error::Conflict(
+                "operation identity is already bound to another intent".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Exact aggregate revision committed for a stable operation identity.
     /// Hosts use it to reconstruct the original CAS command on a lost-ack retry.
     #[must_use]
     pub fn operation_revision(&self, operation_id: OperationId) -> Option<u64> {
-        self.operation_intents
+        self.event_for_operation(operation_id)
+            .map(|event| event.revision)
+    }
+
+    fn event_for_operation(&self, operation_id: OperationId) -> Option<&Event> {
+        self.operation_positions
             .get(&operation_id)
-            .map(|(_, event)| event.revision)
+            .and_then(|revision| {
+                let first = self.events.front()?.revision;
+                let position = usize::try_from(revision.checked_sub(first)?).ok()?;
+                self.events.get(position)
+            })
     }
 
     /// Returns the exact admitted request and its optional terminal resolution.
@@ -1771,18 +1800,82 @@ impl Reducer {
         )
     )]
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
-        crate::obs::outcome(self.plan_with_migration_boundary(command, Migration::Unverified))
+        crate::obs::outcome(self.plan_with_migration_boundary(
+            command,
+            Migration::Unverified,
+            false,
+        ))
     }
 
     /// Provider admission has verified residency and independently executed
     /// the exact pinned migration before requesting a publishable event.
+    #[cfg(test)]
     pub(crate) fn plan_verified_migration(&self, command: &Command) -> Result<ApplyResult> {
         if !matches!(&command.action, Action::MigrateExtensionState { .. }) {
             return Err(Error::Invalid(
                 "verified migration planner requires a migration action".into(),
             ));
         }
-        self.plan_with_migration_boundary(command, Migration::Verified)
+        self.plan_with_migration_boundary(command, Migration::Verified, false)
+    }
+
+    /// Only the owning Stream adapter calls this after its authoritative identity lookup.
+    /// Atomic publication still compares absence of that identity with the event append.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.reducer.plan",
+            level = "debug",
+            skip_all,
+            fields(rev = self.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
+    pub(crate) fn plan_indexed(
+        &self,
+        command: &Command,
+        migration_verified: bool,
+    ) -> Result<ApplyResult> {
+        if migration_verified && !matches!(&command.action, Action::MigrateExtensionState { .. }) {
+            return crate::obs::outcome(Err(Error::Invalid(
+                "verified migration planner requires a migration action".into(),
+            )));
+        }
+        crate::obs::outcome(self.plan_with_migration_boundary(
+            command,
+            if migration_verified {
+                Migration::Verified
+            } else {
+                Migration::Unverified
+            },
+            true,
+        ))
+    }
+
+    pub(crate) fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
+        if maximum == 0 {
+            return Err(Error::Invalid(
+                "resident event allowance must be positive".into(),
+            ));
+        }
+        self.resident_event_limit = maximum;
+        self.trim_resident_events();
+        Ok(())
+    }
+
+    fn trim_resident_events(&mut self) {
+        while self.events.len() > self.resident_event_limit {
+            if let Some(event) = self.events.pop_front() {
+                self.operation_positions.remove(&event.operation_id);
+            }
+        }
+    }
+
+    /// Last revision no longer available through the synchronous resident event reader.
+    #[must_use]
+    pub fn archived_through_revision(&self) -> u64 {
+        self.events
+            .front()
+            .map_or(self.revision, |event| event.revision - 1)
     }
 
     #[allow(
@@ -1793,19 +1886,23 @@ impl Reducer {
         &self,
         command: &Command,
         migration: Migration,
+        identity_checked: bool,
     ) -> Result<ApplyResult> {
-        self.authority_verifier.verify_audience(&self.authority)?;
-        IdempotencyKey::new(command.idempotency_key.0.clone())?;
-        self.authority_verifier.verify(&command.scope)?;
+        self.verify_command_scope(command)?;
         let intent = canonical_intent(command)?;
-        if let Some((existing_intent, event)) = self.operation_intents.get(&command.operation_id) {
-            if existing_intent == &intent {
+        if let Some(event) = self.event_for_operation(command.operation_id) {
+            if event.intent_digest == intent {
                 return Ok(ApplyResult::Replayed {
                     event: event.clone(),
                 });
             }
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
+            ));
+        }
+        if !identity_checked && self.archived_through_revision() != 0 {
+            return Err(Error::Unsupported(
+                "operation identity requires authoritative archive lookup".into(),
             ));
         }
         if command.expected_revision != self.revision {
@@ -1954,8 +2051,8 @@ impl Reducer {
     )]
     pub fn apply_committed(&mut self, event: Event) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
-        if let Some((digest, existing)) = self.operation_intents.get(&event.operation_id) {
-            if digest == &event.intent_digest && existing == &event {
+        if let Some(existing) = self.event_for_operation(event.operation_id) {
+            if existing == &event {
                 return Ok(ApplyResult::Replayed {
                     event: existing.clone(),
                 });
@@ -1981,9 +2078,10 @@ impl Reducer {
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
         self.apply_payload(&event.payload, event.revision)?;
         self.revision = event.revision;
-        self.events.push(event.clone());
-        self.operation_intents
-            .insert(event.operation_id, (event.intent_digest, event.clone()));
+        self.operation_positions
+            .insert(event.operation_id, event.revision);
+        self.events.push_back(event.clone());
+        self.trim_resident_events();
         Ok(ApplyResult::Applied { event })
     }
 
@@ -1992,10 +2090,15 @@ impl Reducer {
         if revision > self.revision {
             return Err(Error::Invalid("cursor is beyond the aggregate head".into()));
         }
+        if revision < self.archived_through_revision() {
+            return Err(Error::Unsupported(
+                "cursor requires authoritative archive reader".into(),
+            ));
+        }
         Ok(self
             .events
             .iter()
-            .skip_while(|event| event.revision <= revision)
+            .filter(|event| event.revision > revision)
             .take(limit)
             .cloned()
             .collect())
@@ -2082,10 +2185,9 @@ impl Reducer {
             let prefix = InheritedConversationPrefix::select(
                 self.authority.clone(),
                 self.revision,
-                parent_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
-                &self.conversation.messages,
+                &self.conversation,
             )?;
             let bytes = prefix.canonical_bytes()?;
             let expected = FileDescriptor::from_bytes(
@@ -2121,6 +2223,12 @@ impl Reducer {
             }
             for file in message.extensions.values() {
                 retain(file)?;
+            }
+        }
+        if let Some(summary) = &seed.summary {
+            // The provider binds this original checkpoint capture to its allocated seed.
+            for file in &summary.references {
+                published_refs.insert(file.read_capability()?, file.clone());
             }
         }
         let selected_manifests = seed
@@ -2169,24 +2277,12 @@ impl Reducer {
                     _ => false,
                 })
             {
-                let published =
-                    self.conversation
-                        .messages
-                        .iter()
-                        .take(inherited_count)
-                        .any(|message| {
-                            message.content == *file
-                                || match &message.attachments {
-                                    crate::conversation::ReferencedAttachments::Inline {
-                                        items,
-                                    } => items.iter().any(|item| item.file == *file),
-                                    crate::conversation::ReferencedAttachments::Manifest {
-                                        manifest,
-                                        ..
-                                    } => manifest == file,
-                                }
-                                || message.extensions.values().any(|value| value == file)
-                        });
+                // The first pass indexed every direct reference, including
+                // complete FileRef metadata. Reuse it instead of rescanning the
+                // parent prefix for each child/attached-reader grant.
+                let published = published_refs
+                    .get(&file.read_capability()?)
+                    .is_some_and(|published| published == file);
                 match &grant.attachment_manifest {
                     None if !published => {
                         return Err(Error::Invalid(
@@ -2243,47 +2339,6 @@ impl Reducer {
             }
         }
         Ok(())
-    }
-
-    /// Creates a portable, integrity-checked restoration accelerator.
-    pub fn snapshot(&self) -> Result<Snapshot> {
-        let mut snapshot = Snapshot {
-            format_version: 2,
-            authority: self.authority.clone(),
-            revision: self.revision,
-            events: self.events.clone(),
-            state_digest: [0; 32],
-        };
-        snapshot.state_digest = snapshot_digest(&snapshot)?;
-        Ok(snapshot)
-    }
-
-    /// Restores deterministic state after validating snapshot integrity.
-    pub fn restore(
-        snapshot: Snapshot,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-    ) -> Result<Self> {
-        if snapshot.format_version != 2 {
-            return Err(Error::Unsupported(format!(
-                "snapshot format {}",
-                snapshot.format_version
-            )));
-        }
-        if snapshot_digest(&snapshot)? != snapshot.state_digest {
-            return Err(Error::Invalid("snapshot digest mismatch".into()));
-        }
-        authority_verifier.verify_audience(&snapshot.authority)?;
-        let mut reducer = Self::new(snapshot.authority, authority_verifier, schemas);
-        for event in snapshot.events {
-            reducer.apply_committed(event)?;
-        }
-        if reducer.revision != snapshot.revision {
-            return Err(Error::Invalid(
-                "snapshot revision does not match its events".into(),
-            ));
-        }
-        Ok(reducer)
     }
 
     #[allow(
@@ -2712,6 +2767,7 @@ impl Reducer {
                         "extension activation does not match pinned agent state".into(),
                     ));
                 }
+                self.active_extension_revision = Some(revision);
                 self.active_extensions = selected.clone();
                 self.active_configurations = configurations.clone();
             }
@@ -2856,7 +2912,9 @@ impl Reducer {
             EventPayload::ModelContextSelected { selection } => {
                 self.require_conversation()?;
                 selection.validate(&self.conversation)?;
-                self.context_selections.push(selection.clone());
+                if let Some(checkpoint) = &selection.checkpoint {
+                    self.latest_context_checkpoint = Some(checkpoint.clone());
+                }
             }
             EventPayload::InteractionOpened { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
@@ -3225,15 +3283,6 @@ fn validate_effect_observation(
     Ok(())
 }
 
-fn snapshot_digest(snapshot: &Snapshot) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(
-        snapshot.format_version,
-        &snapshot.authority,
-        snapshot.revision,
-        &snapshot.events,
-    ))
-}
-
 fn json_digest(value: &Value) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(value)
 }
@@ -3375,8 +3424,12 @@ mod tests {
                 }
             }
             // (c) restoring a snapshot equals replaying every committed event.
+            let wire = crate::contract::canonical_json_bytes(&reducer.snapshot().map_err(fail)?)
+                .map_err(fail)?;
+            let decoded = crate::contract::json_from_slice(&wire)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
             let restored = Reducer::restore(
-                reducer.snapshot().map_err(fail)?,
+                decoded,
                 authority.clone(),
                 schemas(),
             )
@@ -3572,9 +3625,15 @@ resolve_interaction interaction_resolved interaction:resolve";
                 content: second,
             },
         })?;
+        reducer.set_resident_event_limit(1)?;
+        assert_eq!(reducer.snapshot()?.events.len(), 1);
+        assert_eq!(reducer.archived_through_revision(), 2);
         assert_eq!(reducer.active_configurations()[0].content, first);
         assert_eq!(reducer.extension_admission()?, Some(admitted));
-        let restored = Reducer::restore(reducer.snapshot()?, issuer.verifier(), registry)?;
+        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;
+        let snapshot = crate::contract::json_from_slice(&wire)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored = Reducer::restore(snapshot, issuer.verifier(), registry)?;
         assert_eq!(
             restored.active_configurations(),
             reducer.active_configurations()
@@ -4689,6 +4748,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             VolumeOwner::Project("project-1".into()),
         )?;
         let seed = ForkSeed {
+            summary: None,
             operation_id: operation(8),
             parent: parent.clone(),
             parent_revision: 1,
@@ -4952,6 +5012,12 @@ resolve_interaction interaction_resolved interaction:resolve";
         ));
         reducer.apply_committed(event)?;
         assert_eq!(reducer.fork(&child), Some(&seed));
+        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;
+        let snapshot = crate::contract::json_from_slice(&wire)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored = Reducer::restore(snapshot, issuer().verifier(), schemas())?;
+        assert_eq!(restored, reducer);
+        reducer = restored;
         let mut reused_private = seed;
         reused_private.operation_id = operation(9);
         reused_private.child.id = "conversation-3".into();
@@ -5162,6 +5228,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             Some(&[message.clone()][..])
         );
         let selection = ModelContextSelection {
+            checkpoint: None,
             conversation_revision: 1,
             message_ids: vec![message.id],
         };
@@ -5172,13 +5239,17 @@ resolve_interaction interaction_resolved interaction:resolve";
                 selection: selection.clone(),
             },
         ))?;
-        assert_eq!(reducer.context_selections(), &[selection]);
+        assert_eq!(
+            reducer.resident_context_selections().collect::<Vec<_>>(),
+            vec![&selection]
+        );
         assert!(matches!(
             reducer.plan(&command(
                 operation(4),
                 3,
                 Action::SelectModelContext {
                     selection: ModelContextSelection {
+                        checkpoint: None,
                         conversation_revision: 0,
                         message_ids: vec![message.id]
                     },
@@ -5186,9 +5257,49 @@ resolve_interaction interaction_resolved interaction:resolve";
             )),
             Err(Error::Conflict(_))
         ));
-        let restored = Reducer::restore(reducer.snapshot()?, verifier, schemas())?;
+        let restored = Reducer::restore(reducer.snapshot()?, verifier.clone(), schemas())?;
         assert_eq!(restored.conversation(), reducer.conversation());
-        assert_eq!(restored.context_selections(), reducer.context_selections());
+        assert_eq!(
+            restored.resident_context_selections().collect::<Vec<_>>(),
+            reducer.resident_context_selections().collect::<Vec<_>>()
+        );
+        // The complete reference reducer can admit fresh identities. Once its
+        // event cache is bounded, a bare reducer must not assert archive absence.
+        // Replay the resulting authenticated committed events into that cache.
+        let mut canonical = restored;
+        reducer.set_resident_event_limit(1)?;
+        for identity in 5..=68 {
+            let next = command(
+                operation(identity),
+                reducer.revision(),
+                Action::SelectModelContext {
+                    selection: selection.clone(),
+                },
+            );
+            assert!(matches!(reducer.plan(&next), Err(Error::Unsupported(_))));
+            let ApplyResult::Applied { event } = canonical.apply(next)? else {
+                return Err(Error::Invalid(
+                    "fresh canonical selection was not admitted".into(),
+                ));
+            };
+            reducer.apply_committed(event)?;
+            assert_eq!(reducer.resident_context_selections().count(), 1);
+        }
+        assert!(
+            reducer
+                .context_selection_for_operation(operation(3))
+                .is_none()
+        );
+        assert_eq!(
+            reducer.context_selection_for_operation(operation(68)),
+            Some(&selection)
+        );
+        let restored = Reducer::restore(reducer.snapshot()?, verifier, schemas())?;
+        assert_eq!(restored.resident_context_selections().count(), 1);
+        assert_eq!(
+            restored.context_selection_for_operation(operation(68)),
+            Some(&selection)
+        );
         Ok(())
     }
 }

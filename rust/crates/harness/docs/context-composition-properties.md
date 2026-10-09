@@ -20,6 +20,19 @@ bindings. Reuse may cover only equal ordered message identities under compatible
 bindings; a changed projection must be admitted and cannot be replaced by stale
 content for a cache hit. No provider cache or model-family heuristic is added.
 
+Fork history descriptors use format 3: a domain-separated chain over each
+canonical message digest, starting from zero. Conversation append maintains the
+head fingerprint; decoding rebuilds it from the records rather than trusting a
+serialized cache. Full-cut fork preparation and admission reuse that head.
+Explicit earlier cuts compute the chain one record at a time, preserving order,
+metadata and immutable references without a whole-history JSON allocation.
+Sparse projection views cannot supply a logical history fingerprint.
+Reference-grant enumeration and retained conversation state remain separate
+costs; this change does not establish history eviction or Summary fork support.
+The authored 10,000-record fixture counts per-record hash calls and checks head
+reuse, decode, older cuts, later appends and invalid sources. Its execution and
+actual native/WASM fork qualification remain required.
+
 The `context::admission_model` unit test exhausts 26 reachable states
 for two payloads and one operation. It models claim-before-dispatch, a crash
 after claim, projection changes, retained-storage loss, and durable completion.

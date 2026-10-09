@@ -125,10 +125,16 @@ function bindModel(identity: Model, provider: ModelProvider): BoundModel {
   for (const label of [identity.provider, identity.name, identity.revision]) {
     if (typeof label !== "string" || !label.trim()) throw new TypeError("model identity requires a provider, name, and revision");
   }
-  if (typeof provider.generate !== "function" || typeof provider.reconcile !== "function") {
-    throw new TypeError("model provider requires generate and reconcile");
+  const { contextCapacity, countTokens, generate, reconcile } = provider;
+  if (typeof contextCapacity !== "function" || typeof countTokens !== "function"
+    || typeof generate !== "function" || typeof reconcile !== "function") {
+    throw new TypeError("model provider requires contextCapacity, countTokens, generate, and reconcile");
   }
-  return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider });
+  const boundProvider = Object.freeze({
+    contextCapacity: contextCapacity.bind(provider), countTokens: countTokens.bind(provider),
+    generate: generate.bind(provider), reconcile: reconcile.bind(provider),
+  });
+  return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider: boundProvider });
 }
 export type ResumableTaskOptions<Input, Output> = TaskDefinitionOptions<Input, Output> & Readonly<{
   input: RuntimeSchema<Input>;

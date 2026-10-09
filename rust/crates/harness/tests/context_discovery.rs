@@ -44,7 +44,8 @@ fn executor(
         provider,
         ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
         acyclic_harness::tool::ToolRegistry::new(),
-    ))
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled))
 }
 
 fn assert_lazy_request(provider: &CapturingModel) -> Result<()> {

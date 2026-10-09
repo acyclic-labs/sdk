@@ -24,7 +24,7 @@ use crate::{
 use acyclic_harness::{
     Error, OperationId, Result,
     conversation::FileRef,
-    executor::{ExecutionEvent, ExecutionJournal, Executor, TurnInput, TurnOutput},
+    executor::{ExecutionEvent, ExecutionJournal, Executor, ModelPurpose, TurnInput, TurnOutput},
     model::{ModelContent, ModelContentPart, ModelEvent, ModelRole},
     runtime::{RuntimeScope, ToolPolicy},
     tool::ToolRegistry,
@@ -642,7 +642,11 @@ impl Prior {
                         }
                         prior.started = true;
                     }
-                    ExecutionEvent::Model { step, event } => {
+                    ExecutionEvent::Model {
+                        step,
+                        purpose: ModelPurpose::Response,
+                        event,
+                    } => {
                         prior.last_step = prior.last_step.max(*step);
                         let Ok(ModelEvent::Completed { metadata }) = load(journal, event).await
                         else {
@@ -685,11 +689,29 @@ impl Prior {
                             });
                         }
                     }
-                    ExecutionEvent::ModelStarted { step, .. }
+                    ExecutionEvent::ModelStarted {
+                        step,
+                        purpose: ModelPurpose::Response,
+                        ..
+                    }
                     | ExecutionEvent::ToolStarted { step, .. }
                     | ExecutionEvent::ToolCompleted { step, .. }
                     | ExecutionEvent::ToolFailed { step, .. } => {
                         prior.last_step = prior.last_step.max(*step);
+                    }
+                    ExecutionEvent::Model {
+                        purpose: ModelPurpose::Summary,
+                        ..
+                    }
+                    | ExecutionEvent::ModelStarted {
+                        purpose: ModelPurpose::Summary,
+                        ..
+                    }
+                    | ExecutionEvent::ContextPrepared { .. }
+                    | ExecutionEvent::ContextCompacted { .. } => {
+                        return Err(Error::Conflict(
+                            "stock context events do not belong to a codex execution".into(),
+                        ));
                     }
                 }
             }
@@ -752,6 +774,7 @@ impl TurnJournal<'_> {
             key,
             ExecutionEvent::Model {
                 step,
+                purpose: ModelPurpose::Response,
                 event: staged,
             },
         )
@@ -777,6 +800,7 @@ impl TurnJournal<'_> {
                         &format!("model:{step}:started"),
                         ExecutionEvent::ModelStarted {
                             step,
+                            purpose: ModelPurpose::Response,
                             request_digest,
                             request,
                         },

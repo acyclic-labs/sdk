@@ -23,7 +23,7 @@ use acyclic_harness::fork::{
 };
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::resources::{ProviderRef, StreamRef};
-use acyclic_harness::store::StreamAggregate;
+use acyclic_harness::store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate};
 use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use std::sync::Arc;
@@ -207,6 +207,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                summary: None,
                 child_project_volume: child_project.clone(),
                 child_private_volume: child_private.clone(),
                 inherited_through_sequence: 1,
@@ -370,6 +371,63 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .conversation()
         .ok_or_else(|| Error::Invalid("missing conversation".into()))?;
     assert_eq!(conversation.messages().len(), 2);
+    // Reopen a reader directly over the canonical Stream, without relying on
+    // the restored reducer's resident message cache. Merge notices occupy the
+    // same sequence space and must carry the same atomic lookup indexes.
+    let history = HistoryReader::new(&stream, &parent, issuer.verifier())?;
+    let cut = HistoryCursor {
+        authority: parent.clone(),
+        after_revision: 0,
+        through_revision: 4,
+    };
+    let notice_id = Uuid::from_bytes([8; 16]);
+    let notice = history
+        .conversation_message(&cut, notice_id, 65_536)
+        .await?
+        .ok_or_else(|| Error::NotFound("indexed merge notice".into()))?;
+    assert_eq!(notice.sequence, 2);
+    assert_eq!(notice.kind, MessageKind::Merge);
+    assert_eq!(conversation.message(notice_id), Some(&notice));
+    assert_eq!(
+        history.latest_conversation_message(65_536).await?,
+        Some(notice)
+    );
+    let messages = history
+        .conversation_range(
+            &cut,
+            0,
+            2,
+            HistoryReadLimits {
+                maximum_events: 2,
+                maximum_bytes: 131_072,
+            },
+        )
+        .await?;
+    assert_eq!(messages.as_slice(), conversation.messages());
+    let before_merge = HistoryCursor {
+        through_revision: 3,
+        ..cut.clone()
+    };
+    assert!(
+        history
+            .conversation_message(&before_merge, notice_id, 65_536)
+            .await?
+            .is_none()
+    );
+    assert!(
+        history
+            .conversation_range(
+                &before_merge,
+                1,
+                2,
+                HistoryReadLimits {
+                    maximum_events: 1,
+                    maximum_bytes: 65_536,
+                },
+            )
+            .await
+            .is_err()
+    );
     let first_message = conversation
         .messages()
         .first()
