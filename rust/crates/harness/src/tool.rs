@@ -51,11 +51,31 @@ impl ToolDefinition {
         Ok(())
     }
 
+    /// Validates and decodes the complete model-visible projection envelope.
+    /// Bare values are rejected even when an unconstrained schema accepts them.
+    pub(crate) fn validate_projection(
+        &self,
+        value: &Value,
+    ) -> Result<crate::model::ToolResultContent> {
+        validate_value(&self.projection_schema, value, "tool projection")?;
+        serde_json::from_value(value.clone()).map_err(|error| {
+            Error::Invalid(format!("tool projection envelope is invalid: {error}"))
+        })
+    }
+
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
         self.validate()?;
         crate::contract::canonical_json_digest(self)
     }
+}
+
+/// Declares an explicit JSON result envelope for the supplied value schema.
+/// The value schema is a child schema; local references resolve from the complete envelope.
+#[must_use]
+pub fn json_projection_schema(value_schema: Value) -> Value {
+    serde_json::json!({"type":"object","properties":{"kind":{"const":"json"},"value":value_schema},
+        "required":["kind","value"],"additionalProperties":false})
 }
 
 /// One admitted invocation.
@@ -182,7 +202,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
 
 /// Replaceable mapping from tool results into model-visible context.
 pub trait ToolProjection: acyclic_stream::ProviderPlatform {
-    /// Projects without side effects into the definition's projection schema.
+    /// Produces the complete serialized ToolResultContent envelope without effects.
+    /// The independently pinned projection schema validates this full envelope.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 }
 
@@ -379,7 +400,7 @@ mod tests {
     struct Projection;
     impl ToolProjection for Projection {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(result.value.clone())
+            Ok(serde_json::json!({"kind":"json","value":result.value}))
         }
     }
 
@@ -414,7 +435,7 @@ mod tests {
                     description: "Echo".into(),
                     input_schema: json!({}),
                     output_schema: json!({}),
-                    projection_schema: json!({}),
+                    projection_schema: crate::tool::json_projection_schema(json!({})),
                 },
                 executor: Arc::new(Executor),
                 projection: Arc::new(Projection),
@@ -469,11 +490,31 @@ mod tests {
             input_schema: json!({"type": "null"}),
             output_schema: json!({"type": "object", "required": ["count"],
                 "properties": {"count": {"type": "integer"}}, "additionalProperties": false}),
-            projection_schema: json!({"type": "string"}),
+            projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
         };
         definition.validate()?;
+        let permissive = ToolDefinition {
+            projection_schema: json!({}),
+            ..definition.clone()
+        };
+        assert!(
+            permissive
+                .validate_projection(&json!("old bare projection"))
+                .is_err()
+        );
+        assert!(
+            permissive
+                .validate_projection(&json!({"kind":"parts","parts":[
+                    {"kind":"tool_call","call_id":"nested","name":"nested","arguments":{}}
+                ]}))
+                .is_err()
+        );
         validate_value(&definition.output_schema, &json!({"count": 2}), "result")?;
-        validate_value(&definition.projection_schema, &json!("two"), "projection")?;
+        validate_value(
+            &definition.projection_schema,
+            &json!({"kind":"json","value":"two"}),
+            "projection",
+        )?;
         assert!(validate_value(&definition.output_schema, &json!("two"), "result").is_err());
         assert!(
             validate_value(
@@ -524,7 +565,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({}),
-            projection_schema: json!({}),
+            projection_schema: crate::tool::json_projection_schema(json!({})),
         };
         let digest = definition.digest()?;
         let operation_id = OperationId::from_bytes([8; 16]);

@@ -237,6 +237,7 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
     selection.validate(conversation)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
+        || maximum_render_bytes > MAX_PROJECTION_JSON_BYTES
         || maximum_projected_attachments as u64 > MAX_PROJECTION_PROJECTED_ATTACHMENTS as u64
         || selection.message_ids.len() > maximum_messages
     {
@@ -316,7 +317,8 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: call_id.to_owned(),
                     name: name.clone(),
-                    value,
+                    content: serde_json::from_value(value)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
                 }),
             });
             continue;
@@ -332,8 +334,20 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
                 )));
             }
         };
+        // This projection explicitly selects native image intent without conversion.
+        // The selected adapter must enforce its finite work budget.
+        let native_image = || {
+            FileProjectionPolicy::Native(crate::model::NativeMediaPolicy {
+                intent: crate::model::NativeMediaIntent::Image {
+                    detail: crate::model::ImageDetail::Auto,
+                },
+                maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
+                maximum_work: maximum_render_bytes,
+                configuration: None,
+            })
+        };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => FileProjectionPolicy::Native,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image(),
             kind if kind.starts_with("text/")
                 && message.content.descriptor().byte_length() <= maximum_render_bytes =>
             {
@@ -358,9 +372,7 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
         for attachment in attachments.into_iter().take(projected_count) {
             attachment.validate()?;
             let policy = match attachment.file.descriptor().media_type() {
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                    FileProjectionPolicy::Native
-                }
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image(),
                 _ => FileProjectionPolicy::Reference,
             };
             parts.push(ModelContentPart::File {

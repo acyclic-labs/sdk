@@ -574,7 +574,8 @@ impl StockExecutor {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: invocation.call_id.clone(),
                         name: invocation.name,
-                        value: projection,
+                        content: serde_json::from_value(projection)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
                     }),
                 },
             ]);
@@ -1263,11 +1264,9 @@ impl StockExecutor {
                 .projection
                 .project(&invocation, &result)
                 .and_then(|value| {
-                    validate_value(
-                        &tool.definition.projection_schema,
-                        &value,
-                        "tool projection",
-                    )?;
+                    tool.definition
+                        .validate_projection(&value)?
+                        .validate_limits(self.limits)?;
                     if crate::contract::canonical_json_bytes(&value)?.len() as u64
                         > self.limits.render_bytes
                     {
@@ -1379,17 +1378,13 @@ impl StockExecutor {
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-        validate_value(
-            &tool.definition.projection_schema,
-            &projection,
-            "tool projection",
-        )?;
+        let content = tool.definition.validate_projection(&projection)?;
         let message = ModelMessage {
             role: ModelRole::Tool,
             content: ModelContent::Part(ModelContentPart::ToolResult {
                 call_id: invocation.call_id.clone(),
                 name: invocation.name.clone(),
-                value: projection,
+                content,
             }),
         };
         message.content.validate_limits(self.limits)?;
@@ -1607,11 +1602,7 @@ pub(crate) async fn completed_tool_projection(
     let result = load_json::<ToolResult>(journal, result).await?;
     let projection = load_json::<Value>(journal, projection).await?;
     validate_value(&definition.output_schema, &result.value, "tool output")?;
-    validate_value(
-        &definition.projection_schema,
-        &projection,
-        "tool projection",
-    )?;
+    definition.validate_projection(&projection)?;
     Ok(projection)
 }
 
@@ -2106,7 +2097,7 @@ mod tests {
 
     impl crate::tool::ToolProjection for Projection {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(result.value.clone())
+            Ok(serde_json::json!({"kind":"json","value":result.value}))
         }
     }
 
@@ -2520,7 +2511,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
-                projection_schema: json!({"type": "object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
             },
             executor: Arc::new(FakeTool(AtomicUsize::new(0))),
             projection: Arc::new(Projection),
@@ -2614,7 +2605,9 @@ mod tests {
                     description: "Echo".into(),
                     input_schema: json!({"type": "object"}),
                     output_schema: json!({"type": "object"}),
-                    projection_schema: json!({"type": "object"}),
+                    projection_schema: crate::tool::json_projection_schema(
+                        json!({"type": "object"}),
+                    ),
                 },
                 executor: tool_executor.clone(),
                 projection: Arc::new(Projection),
@@ -2734,7 +2727,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
-                projection_schema: json!({"type": "object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -2988,7 +2981,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
-                projection_schema: json!({"type": "object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
             },
             executor: Arc::new(FakeTool(AtomicUsize::new(0))),
             projection: Arc::new(Projection),
@@ -3049,7 +3042,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
-                projection_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -3109,7 +3102,7 @@ mod tests {
                     "additionalProperties": false,
                 }),
                 output_schema: json!({"type": "object"}),
-                projection_schema: json!({"type": "object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -3166,7 +3159,7 @@ mod tests {
                     "additionalProperties": false,
                 }),
                 output_schema: json!({"type": "object"}),
-                projection_schema: json!({"type": "object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -3216,14 +3209,26 @@ mod tests {
             description: "Structured result, text projection".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
-            projection_schema: json!({"type": "string"}),
+            projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
         };
         // Each retained payload has a valid digest and canonical encoding.
         // Failures below concern the independently admitted schemas.
         for (canonical, projected, accepted) in [
-            (json!({"count": 2}), json!("two"), true),
-            (json!("bad result"), json!("two"), false),
-            (json!({"count": 2}), json!({"bad": "projection"}), false),
+            (
+                json!({"count": 2}),
+                json!({"kind":"json","value":"two"}),
+                true,
+            ),
+            (
+                json!("bad result"),
+                json!({"kind":"json","value":"two"}),
+                false,
+            ),
+            (
+                json!({"count": 2}),
+                json!({"kind":"json","value":{"bad":"projection"}}),
+                false,
+            ),
         ] {
             let journal = Journal::default();
             let operation = OperationId::new();
@@ -3305,7 +3310,7 @@ mod tests {
                     description: "Echo".into(),
                     input_schema: json!({"type":"object"}),
                     output_schema,
-                    projection_schema,
+                    projection_schema: crate::tool::json_projection_schema(projection_schema),
                 },
                 executor: tool_executor.clone(),
                 projection: Arc::new(Projection),

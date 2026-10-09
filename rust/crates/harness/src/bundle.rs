@@ -988,7 +988,7 @@ mod tests {
         fn definition(&self, name: &str, description: &str) -> Result<ToolDefinition> {
             Ok(ToolDefinition {
                 name: self.definition_name.unwrap_or(name).into(),
-                revision: "1".into(),
+                revision: "2".into(),
                 description: description.into(),
                 input_schema: json!({"type": "object", "properties": {
                     "request": {"type": "string"}
@@ -996,9 +996,11 @@ mod tests {
                 output_schema: json!({"type": "object", "properties": {
                     "tool": {"type": "string"}
                 }, "required": ["tool"], "additionalProperties": false}),
-                projection_schema: json!({"type": "object", "properties": {
-                    "tool": {"type": "string"}
-                }, "required": ["tool"], "additionalProperties": false}),
+                projection_schema: crate::tool::json_projection_schema(
+                    json!({"type": "object", "properties": {
+                    "tool": {"type": "string"}, "result":{"type":"object","properties":{"tool":{"type":"string"}},"required":["tool"],"additionalProperties":false}
+                }, "required": ["tool","result"], "additionalProperties": false}),
+                ),
             })
         }
 
@@ -1024,7 +1026,7 @@ mod tests {
         }
 
         fn project(&self, tool: &str, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(json!({"tool": tool, "result": result.value}))
+            Ok(json!({"kind":"json","value":{"tool": tool, "result": result.value}}))
         }
     }
 
@@ -1047,9 +1049,11 @@ mod tests {
             };
             let result = tool.executor.execute(invocation.clone()).await?;
             assert_eq!(result.value, json!({"tool": name}));
+            tool.definition
+                .validate_projection(&tool.projection.project(&invocation, &result)?)?;
             assert_eq!(
                 tool.projection.project(&invocation, &result)?,
-                json!({"tool": name, "result": {"tool": name}})
+                json!({"kind":"json","value":{"tool": name, "result": {"tool": name}}})
             );
         }
         Ok(())

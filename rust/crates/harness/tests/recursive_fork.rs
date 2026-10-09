@@ -1351,7 +1351,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     .await?;
     assert!(
         matches!(selected.messages[0].content, ModelContent::Parts(ref parts)
-        if matches!(parts.get(1), Some(ModelContentPart::File { file, policy: FileProjectionPolicy::Native }) if file == &image))
+        if matches!(parts.get(1), Some(ModelContentPart::File { file, policy: FileProjectionPolicy::Native(_) }) if file == &image))
     );
     assert_eq!(state.messages.len(), 2);
     assert!(matches!(

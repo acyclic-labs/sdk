@@ -252,12 +252,87 @@ enum WasmModelRole {
     Tool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
 enum WasmFileProjectionPolicy {
     Reference,
     BoundedFull,
-    Native,
+    Native(WasmNativeMediaPolicyWire),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[serde(rename_all = "snake_case")]
+enum WasmImageDetail {
+    Auto,
+    Low,
+    High,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WasmNativeMediaIntent {
+    Image {
+        detail: WasmImageDetail,
+    },
+    Audio {
+        #[tsify(type = "number")]
+        maximum_duration_ms: u64,
+    },
+    Video {
+        #[tsify(type = "number")]
+        maximum_duration_ms: u64,
+        maximum_frames: u32,
+    },
+    Document {
+        maximum_pages: u32,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
+#[serde(deny_unknown_fields)]
+struct WasmNativeConfigurationBindingWire {
+    #[tsify(type = "WasmEventReferenceWire")]
+    source: crate::core::EventReference,
+    #[tsify(type = "WasmExtensionConfigurationWire")]
+    configuration: ExtensionConfiguration,
+    #[tsify(type = "readonly number[]")]
+    implementation_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
+#[serde(deny_unknown_fields)]
+struct WasmNativeMediaPolicyWire {
+    intent: WasmNativeMediaIntent,
+    #[tsify(type = "number")]
+    maximum_bytes: u64,
+    #[tsify(type = "number")]
+    maximum_work: u64,
+    configuration: Option<WasmNativeConfigurationBindingWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WasmModelDataPart {
+    Text {
+        text: String,
+    },
+    File {
+        #[tsify(type = "WasmFileRefWire")]
+        file: FileRef,
+        policy: WasmFileProjectionPolicy,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WasmToolResultContent {
+    Json {
+        #[tsify(type = "WasmModelJsonValue")]
+        value: serde_json::Value,
+    },
+    Parts {
+        parts: Vec<WasmModelDataPart>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
@@ -282,8 +357,7 @@ enum WasmModelContentPart {
         #[serde(rename = "call_id", alias = "callId")]
         call_id: String,
         name: String,
-        #[tsify(type = "WasmModelJsonValue")]
-        value: serde_json::Value,
+        content: WasmToolResultContent,
     },
 }
 
@@ -731,11 +805,14 @@ export interface WasmModelLimitsInput {
     readonly tool_calls_per_step: number | bigint;
     readonly context_messages: number | bigint;
 }
+export type WasmModelToolResultContentInput =
+    | Readonly<{ kind: "json"; value: unknown }>
+    | Extract<WasmToolResultContent, { kind: "parts" }>;
 type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
     Part extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
         : Part extends { readonly kind: "tool_result"; readonly call_id: string }
-            ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+            ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
             : Part;
 export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
 export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
@@ -2545,6 +2622,21 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Validates the explicit result envelope without granting file or option authority.
+#[wasm_bindgen(js_name = validateToolProjection)]
+pub fn validate_tool_projection(
+    #[wasm_bindgen(unchecked_param_type = "WasmToolDefinitionInput")] definition: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelToolResultContentInput")] projection: JsValue,
+) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let projection: serde_json::Value = from_js(projection)?;
+    definition
+        .validate_projection(&projection)
+        .and_then(|content| content.validate_limits(Limits::default()))
+        .map_err(js_error)
 }
 
 /// Public facade input for the shared request constructor.

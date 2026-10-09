@@ -61,10 +61,10 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
     };
     let definition = ToolDefinition {
         name: name.into(),
-        revision: "portable-1".into(),
+        revision: "portable-2".into(),
         description: description.into(),
         input_schema,
-        projection_schema: output_schema.clone(),
+        projection_schema: crate::tool::json_projection_schema(output_schema.clone()),
         output_schema,
     };
     definition.validate()?;
@@ -210,6 +210,6 @@ impl ToolExecutor for FileTool {
 
 impl ToolProjection for FileTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(serde_json::json!({"kind":"json","value":result.value}))
     }
 }

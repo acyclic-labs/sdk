@@ -275,12 +275,18 @@ impl DurableToolRunner {
             .authorize(Some(context.task().scope()), &invocation)?;
         let content_limit = self.limits.file_bytes.min(scope.limits().file_bytes);
         let projection_limit = self.limits.render_bytes.min(scope.limits().render_bytes);
+        let projection_limits = Limits {
+            file_bytes: content_limit,
+            render_bytes: projection_limit,
+            path_bytes: self.limits.path_bytes.min(scope.limits().path_bytes),
+            attachments: self.limits.attachments.min(scope.limits().attachments),
+            ..self.limits
+        };
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(&(
             &task_id,
             &definition,
             &invocation,
-            content_limit,
-            projection_limit,
+            projection_limits,
         ))?)
         .as_bytes();
         let (_, records) =
@@ -347,6 +353,15 @@ impl DurableToolRunner {
             }
         }
         if let Some((result, projection)) = completed {
+            // These are journal-owned JSON artifacts. Bound their descriptors
+            // before the existing custody reader allocates or decodes bodies.
+            if result.descriptor().byte_length() > content_limit
+                || projection.descriptor().byte_length() > content_limit.min(projection_limit)
+            {
+                return Err(Error::Conflict(
+                    "durable tool history exceeds admitted descriptor limits".into(),
+                ));
+            }
             let result: ToolResult = load_json(self.journal.as_ref(), &result).await?;
             let projection: Value = load_json(self.journal.as_ref(), &projection).await?;
             if crate::contract::canonical_json_bytes(&result)?.len() as u64 > content_limit
@@ -358,11 +373,9 @@ impl DurableToolRunner {
                 ));
             }
             validate_value(&definition.output_schema, &result.value, "tool output")?;
-            validate_value(
-                &definition.projection_schema,
-                &projection,
-                "tool projection",
-            )?;
+            definition
+                .validate_projection(&projection)?
+                .validate_limits(projection_limits)?;
             return Ok(Outcome::Succeeded(result.value));
         }
         if let Some(reason) = failed {
@@ -532,12 +545,10 @@ impl DurableToolRunner {
                 )
                 .await;
         };
-        if validate_value(
-            &definition.projection_schema,
-            &projection,
-            "tool projection",
-        )
-        .is_err()
+        if definition
+            .validate_projection(&projection)
+            .and_then(|content| content.validate_limits(projection_limits))
+            .is_err()
             || crate::contract::canonical_json_bytes(&projection)?.len() as u64 > projection_limit
         {
             return self
@@ -715,7 +726,7 @@ mod tests {
             description: "test resumable tool".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
-            projection_schema: json!({"type": "object"}),
+            projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
         }
     }
 
