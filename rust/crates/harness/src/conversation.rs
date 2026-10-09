@@ -983,6 +983,20 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         media_type: &'a str,
         display_name: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>>;
+    /// Publishes replacement bytes only at the immutable source generation.
+    /// Unsupported publishers must reject rather than fall back to `stage`.
+    fn stage_at<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _source: &'a FileRef,
+        _bytes: &'a [u8],
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "generation-checked publication is unavailable".into(),
+            ))
+        })
+    }
 }
 
 /// Resolves an owner-mediated reader when a volume has not been explicitly

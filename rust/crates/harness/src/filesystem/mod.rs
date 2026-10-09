@@ -59,6 +59,8 @@ mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 mod memory;
 pub use memory::{LocalHarness, MemoryHarnessStorage};
+mod text_tools;
+pub use text_tools::ExactTextReplacement;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -1898,6 +1900,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             maximum_bytes,
             idempotency_key,
             None,
+            None,
+        )
+        .await
+    }
+
+    /// Publishes content only at an explicitly pinned workspace generation.
+    /// Retry binds that generation as well as the complete file contract.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "generation-checked publication names the same complete contract as uploads"
+    )]
+    pub async fn put_content_at(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        maximum_bytes: u64,
+        idempotency_key: &IdempotencyKey,
+        expected_generation: &GenerationRef,
+    ) -> Result<FileRef> {
+        crate::tool::edit::validate_edit_bound(maximum_bytes)?;
+        self.put_content_impl(
+            volume,
+            grant,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            maximum_bytes,
+            idempotency_key,
+            None,
+            Some(expected_generation),
         )
         .await
     }
@@ -1930,6 +1967,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             maximum_bytes,
             idempotency_key,
             Some(class),
+            None,
         )
         .await
     }
@@ -1950,6 +1988,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
         internal_class: Option<InternalContentClass>,
+        expected_generation: Option<&GenerationRef>,
     ) -> Result<FileRef> {
         grant.require(volume, VolumeOperation::Write)?;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
@@ -1990,8 +2029,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             blake3::hash(idempotency_key.as_str().as_bytes()).to_hex()
         );
         let metadata_path = content_metadata_path(provisional.path());
-        let receipt_bytes =
+        let metadata_bytes =
             serde_json::to_vec(&provisional).map_err(|error| Error::Invalid(error.to_string()))?;
+        let receipt_bytes =
+            crate::contract::canonical_json_bytes(&(&provisional, expected_generation))?;
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name()?)?;
         if let Some(prior) = self
             .open(&workspace)
@@ -2020,11 +2061,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &workspace,
                     Some(&generation),
                     &format!("/{metadata_path}"),
-                    receipt_bytes.len() as u64,
+                    metadata_bytes.len() as u64,
                 )
                 .await
                 .map_err(|_| Error::Conflict("upload metadata index is missing".into()))?;
-            if indexed.as_ref() != receipt_bytes.as_slice() {
+            if indexed.as_ref() != metadata_bytes.as_slice() {
                 return Err(Error::Conflict(
                     "upload metadata index does not match".into(),
                 ));
@@ -2070,14 +2111,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         });
         mutations.push(WorkspaceMutation::PutFile {
             path: format!("/{metadata_path}"),
-            bytes: receipt_bytes.clone(),
+            bytes: metadata_bytes,
         });
         mutations.push(WorkspaceMutation::PutFile {
             path: format!("/{receipt_path}"),
             bytes: receipt_bytes,
         });
         let generation = self
-            .apply(&workspace, None, &mutations, idempotency_key)
+            .apply(&workspace, expected_generation, &mutations, idempotency_key)
             .await?;
         self.retain_generation(&workspace, &generation).await?;
         let version = hex::encode(generation.as_resource().key());

@@ -454,6 +454,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         description: "No-op".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
+        projection_schema: json!({}),
     };
     let executions = Arc::new(AtomicUsize::new(0));
     let reconciliations = Arc::new(AtomicUsize::new(0));
@@ -473,9 +474,23 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         description: "Pinned invalid result".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({"type":"string"}),
+        projection_schema: json!({}),
     };
     registry.register(Tool {
         definition: invalid_output.clone(),
+        executor: counted.clone(),
+        projection: Arc::new(NoopTool),
+    })?;
+    let invalid_projection = ToolDefinition {
+        name: "example.invalid-projection".into(),
+        revision: "1".into(),
+        description: "Valid canonical result with an invalid model projection".into(),
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({}),
+        projection_schema: json!({"type":"string"}),
+    };
+    registry.register(Tool {
+        definition: invalid_projection.clone(),
         executor: counted,
         projection: Arc::new(NoopTool),
     })?;
@@ -483,12 +498,16 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         inner: journal.clone(),
         losses: AtomicUsize::new(0),
     });
-    let runner = DurableToolRunner::new(registry, racing_journal.clone());
+    let runner = DurableToolRunner::new(registry.clone(), racing_journal.clone());
     let operation = OperationId::from_bytes([59; 16]);
     let first_task = TaskId::from_bytes([60; 16]);
     let other_task = TaskId::from_bytes([61; 16]);
     let task_scope = RuntimeScope::new(
-        Capabilities::new(["tool:call:example.noop", "tool:call:example.invalid-output"]),
+        Capabilities::new([
+            "tool:call:example.noop",
+            "tool:call:example.invalid-output",
+            "tool:call:example.invalid-projection",
+        ]),
         Limits::default(),
     )?;
     let mut bindings = Bindings::local();
@@ -525,6 +544,23 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             .await?,
         Outcome::Succeeded(Value::Null)
     ));
+    registry.remove_from_model("example.noop")?;
+    assert!(registry.get("example.noop").is_none());
+    let rebuilt = DurableToolRunner::new(registry, racing_journal.clone());
+    assert!(matches!(
+        rebuilt
+            .run_with_context(
+                first_task,
+                operation,
+                definition.clone(),
+                json!({}),
+                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
+            )
+            .await?,
+        Outcome::Succeeded(Value::Null)
+    ));
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(
         runner
             .run_with_context(
@@ -561,7 +597,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 invalid_output,
                 json!({}),
                 ToolContext::new(
-                    first_context,
+                    first_context.clone(),
                     failure_operation,
                     failure_operation.to_string()
                 )?
@@ -577,7 +613,54 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             .await?
             .last()
             .map(|record| &record.event),
-        Some(ExecutionEvent::ToolFailed { .. })
+        Some(ExecutionEvent::ToolFailed {
+            reason: ToolFailureKind::InvalidOutput,
+            ..
+        })
+    ));
+    let projection_operation = OperationId::from_bytes([65; 16]);
+    let projection_failure = runner
+        .run_with_context(
+            first_task,
+            projection_operation,
+            invalid_projection.clone(),
+            json!({}),
+            ToolContext::new(
+                first_context.clone(),
+                projection_operation,
+                projection_operation.to_string(),
+            )?,
+        )
+        .await?;
+    assert!(matches!(&projection_failure, Outcome::Failed { .. }));
+    assert_eq!(
+        projection_failure,
+        runner
+            .run_with_context(
+                first_task,
+                projection_operation,
+                invalid_projection,
+                json!({}),
+                ToolContext::new(
+                    first_context,
+                    projection_operation,
+                    projection_operation.to_string()
+                )?
+            )
+            .await?
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 3);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        journal
+            .replay(projection_operation, 0, 64)
+            .await?
+            .last()
+            .map(|record| &record.event),
+        Some(ExecutionEvent::ToolFailed {
+            reason: ToolFailureKind::ProjectionRejected,
+            ..
+        })
     ));
     Ok(())
 }
@@ -872,6 +955,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         description: "Echo".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
+        projection_schema: json!({}),
     };
     let digest = definition.digest()?;
     let operation = OperationId::from_bytes([14; 16]);

@@ -869,6 +869,7 @@ async fn worker_restart_with_options(
             description: "Read and reconcile".into(),
             input_schema: json!({"type":"object"}),
             output_schema: json!({"type":"string"}),
+            projection_schema: json!({"type":"string"}),
         },
         executor: tool.clone(),
         projection: tool.clone(),

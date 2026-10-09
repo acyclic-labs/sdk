@@ -4237,6 +4237,7 @@ impl TaskContext {
             bytes,
             media_type,
             display_name,
+            None,
         )
         .await
     }
@@ -4258,10 +4259,40 @@ impl TaskContext {
             bytes,
             media_type,
             display_name,
+            None,
         )
         .await
     }
 
+    /// Replaces a pinned source through the existing owner-bound publisher.
+    /// The operation must retain the same source generation and replacement bytes.
+    pub async fn stage_file_at(
+        &self,
+        operation_id: OperationId,
+        source: &FileRef,
+        bytes: &[u8],
+    ) -> Result<FileRef> {
+        self.scope.limits.validate_file(source)?;
+        if !read_granted(&self.scope.grants, source)? {
+            return Err(Error::Unauthorized(
+                "task scope cannot read this source".into(),
+            ));
+        }
+        self.stage_bound_file(
+            self.harness.content.as_ref(),
+            operation_id,
+            source.path(),
+            bytes,
+            source.descriptor().media_type(),
+            source.display_name(),
+            Some(source),
+        )
+        .await
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one owner-bound publication path retains its binding, identity, bytes, metadata and optional source precondition"
+    )]
     async fn stage_bound_file(
         &self,
         binding: Option<&ContentBindings>,
@@ -4270,6 +4301,7 @@ impl TaskContext {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
+        source: Option<&FileRef>,
     ) -> Result<FileRef> {
         if bytes.len() as u64 > self.scope.limits.file_bytes
             || path.len() > self.scope.limits.path_bytes
@@ -4291,9 +4323,19 @@ impl TaskContext {
                 "task scope cannot write this volume".into(),
             ));
         }
-        let file = writer
-            .stage(operation_id, path, bytes, media_type, display_name)
-            .await?;
+        let file = if let Some(source) = source {
+            if source.volume() != writer.volume() || source.path() != path {
+                return Err(Error::Unauthorized(
+                    "source differs from the owner-bound destination".into(),
+                ));
+            }
+            content.reader.verify(source).await?;
+            writer.stage_at(operation_id, source, bytes).await?
+        } else {
+            writer
+                .stage(operation_id, path, bytes, media_type, display_name)
+                .await?
+        };
         self.scope.limits.validate_file(&file)?;
         if file.volume() != writer.volume()
             || file.path() != path
@@ -6802,6 +6844,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
+            projection_schema: serde_json::json!({}),
         };
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),
@@ -7852,6 +7895,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({}),
+            projection_schema: serde_json::json!({}),
         };
         let invocation = ToolInvocation::for_model_call(
             OperationId::from_bytes([40; 16]),

@@ -364,7 +364,7 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
-                        validate_value(&tool.output_schema, value, "model tool result")?;
+                        validate_value(&tool.projection_schema, value, "model tool result")?;
                     }
                     ModelContentPart::Text { .. } | ModelContentPart::File { .. } => {
                         if message.role == ModelRole::Tool {
@@ -709,6 +709,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"string"}),
                 output_schema: json!({"type":"string"}),
+                projection_schema: json!({"type":"string"}),
             }],
             max_output_tokens: Some(32),
         })

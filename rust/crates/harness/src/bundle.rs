@@ -995,6 +995,9 @@ mod tests {
                 output_schema: json!({"type": "object", "properties": {
                     "tool": {"type": "string"}
                 }, "required": ["tool"], "additionalProperties": false}),
+                projection_schema: json!({"type": "object", "properties": {
+                    "tool": {"type": "string"}
+                }, "required": ["tool"], "additionalProperties": false}),
             })
         }
 

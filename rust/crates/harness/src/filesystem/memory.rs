@@ -463,6 +463,18 @@ impl ContentPublisher for MemoryContentPublisher {
         self.files.volume()
     }
 
+    fn stage_at<'a>(
+        &'a self,
+        operation_id: OperationId,
+        source: &'a FileRef,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            let persisted = self.files.stage_at(operation_id, source, bytes).await?;
+            self.retain(persisted, bytes)
+        })
+    }
+
     fn stage<'a>(
         &'a self,
         operation_id: OperationId,
@@ -545,6 +557,17 @@ impl MemoryHarnessStorage {
                     "required": ["generation", "entries", "has_more", "next_after"],
                     "additionalProperties": false
                 }),
+                projection_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "generation": {"type": "object"},
+                        "entries": {"type": "array", "items": {"type": "object"}},
+                        "has_more": {"type": "boolean"},
+                        "next_after": {"type": ["string", "null"]}
+                    },
+                    "required": ["generation", "entries", "has_more", "next_after"],
+                    "additionalProperties": false
+                }),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -578,6 +601,12 @@ impl MemoryHarnessStorage {
                     "required": ["file"],
                     "additionalProperties": false
                 }),
+                projection_schema: json!({
+                    "type": "object",
+                    "properties": {"file": {"type": "object"}},
+                    "required": ["file"],
+                    "additionalProperties": false
+                }),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -601,6 +630,7 @@ impl MemoryHarnessStorage {
                     "additionalProperties": false
                 }),
                 output_schema: json!({"type": "string"}),
+                projection_schema: json!({"type": "string"}),
             },
             executor: implementation.clone(),
             projection: implementation,

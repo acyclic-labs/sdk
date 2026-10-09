@@ -1247,7 +1247,11 @@ impl StockExecutor {
                 .projection
                 .project(&invocation, &result)
                 .and_then(|value| {
-                    validate_value(&tool.definition.output_schema, &value, "tool projection")?;
+                    validate_value(
+                        &tool.definition.projection_schema,
+                        &value,
+                        "tool projection",
+                    )?;
                     if crate::contract::canonical_json_bytes(&value)?.len() as u64
                         > self.limits.render_bytes
                     {
@@ -1360,7 +1364,7 @@ impl StockExecutor {
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
         validate_value(
-            &tool.definition.output_schema,
+            &tool.definition.projection_schema,
             &projection,
             "tool projection",
         )?;
@@ -1564,7 +1568,11 @@ pub(crate) async fn completed_tool_projection(
     let result = load_json::<ToolResult>(journal, result).await?;
     let projection = load_json::<Value>(journal, projection).await?;
     validate_value(&definition.output_schema, &result.value, "tool output")?;
-    validate_value(&definition.output_schema, &projection, "tool projection")?;
+    validate_value(
+        &definition.projection_schema,
+        &projection,
+        "tool projection",
+    )?;
     Ok(projection)
 }
 
@@ -2432,6 +2440,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
+                projection_schema: json!({"type": "object"}),
             },
             executor: Arc::new(FakeTool(AtomicUsize::new(0))),
             projection: Arc::new(Projection),
@@ -2525,6 +2534,7 @@ mod tests {
                     description: "Echo".into(),
                     input_schema: json!({"type": "object"}),
                     output_schema: json!({"type": "object"}),
+                    projection_schema: json!({"type": "object"}),
                 },
                 executor: tool_executor.clone(),
                 projection: Arc::new(Projection),
@@ -2644,6 +2654,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
+                projection_schema: json!({"type": "object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -2897,6 +2908,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
+                projection_schema: json!({"type": "object"}),
             },
             executor: Arc::new(FakeTool(AtomicUsize::new(0))),
             projection: Arc::new(Projection),
@@ -2957,6 +2969,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                projection_schema: json!({"type":"object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -3016,6 +3029,7 @@ mod tests {
                     "additionalProperties": false,
                 }),
                 output_schema: json!({"type": "object"}),
+                projection_schema: json!({"type": "object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -3072,6 +3086,7 @@ mod tests {
                     "additionalProperties": false,
                 }),
                 output_schema: json!({"type": "object"}),
+                projection_schema: json!({"type": "object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -3113,49 +3128,134 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
-        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
-        tools.register(crate::tool::Tool {
-            definition: crate::tool::ToolDefinition {
-                name: "example.echo".into(),
-                revision: "1".into(),
-                description: "Echo".into(),
-                input_schema: json!({"type":"object"}),
-                output_schema: json!({"type":"string"}),
-            },
-            executor: tool_executor.clone(),
-            projection: Arc::new(Projection),
-        })?;
-        let executor = StockExecutor::new(
-            Model::new("example", "model", "1", Value::Null)?,
-            model,
-            ContextPipeline::default(),
-            tools,
-        )
-        .with_tool_authority(
-            RuntimeScope::new(
-                Capabilities::new(["tool:call:example.echo"]),
-                Limits::default(),
-            )?,
-            None,
-        )?;
-        let journal = Journal::default();
-        let input = TurnInput {
-            operation_id: OperationId::from_bytes([78; 16]),
-            input: ModelContent::Text("hello".into()),
-            selected_context: None,
-            max_steps: 4,
+    async fn completed_tool_prefix_validates_retained_result_and_projection_independently()
+    -> Result<()> {
+        let definition = crate::tool::ToolDefinition {
+            name: "example.echo".into(),
+            revision: "1".into(),
+            description: "Structured result, text projection".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            projection_schema: json!({"type": "string"}),
         };
-        assert!(matches!(executor.execute(input.clone(), &journal).await,
+        // Each retained payload has a valid digest and canonical encoding.
+        // Failures below concern the independently admitted schemas.
+        for (canonical, projected, accepted) in [
+            (json!({"count": 2}), json!("two"), true),
+            (json!("bad result"), json!("two"), false),
+            (json!({"count": 2}), json!({"bad": "projection"}), false),
+        ] {
+            let journal = Journal::default();
+            let operation = OperationId::new();
+            let invocation = ToolInvocation::for_model_call(
+                operation,
+                0,
+                "call".into(),
+                definition.name.clone(),
+                json!({}),
+            );
+            let invocation_ref = stage_json(&journal, operation, "invocation", &invocation).await?;
+            let result = stage_json(
+                &journal,
+                operation,
+                "result",
+                &ToolResult { value: canonical },
+            )
+            .await?;
+            let projection = stage_json(&journal, operation, "projection", &projected).await?;
+            journal
+                .append(
+                    operation,
+                    "started".into(),
+                    ExecutionEvent::ToolStarted {
+                        step: 0,
+                        call_id: invocation.call_id.clone(),
+                        invocation: invocation_ref,
+                    },
+                )
+                .await?;
+            journal
+                .append(
+                    operation,
+                    "completed".into(),
+                    ExecutionEvent::ToolCompleted {
+                        step: 0,
+                        call_id: invocation.call_id.clone(),
+                        result,
+                        projection,
+                    },
+                )
+                .await?;
+            let records = journal.replay(operation, 0, 64).await?;
+            let retained = completed_tool_projection(
+                &journal,
+                &records,
+                0,
+                &invocation,
+                std::slice::from_ref(&definition),
+            )
+            .await;
+            if accepted {
+                assert_eq!(retained?, projected);
+            } else {
+                assert!(retained.is_err());
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() -> Result<()> {
+        // The executor returns an object. Each case invalidates exactly one
+        // contract, and replay must retain that terminal failure.
+        for (output_schema, projection_schema) in [
+            (json!({"type":"string"}), json!({"type":"object"})),
+            (json!({"type":"object"}), json!({"type":"string"})),
+        ] {
+            let model = Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            });
+            let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+            let mut tools = ToolRegistry::new();
+            tools.register(crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema: json!({"type":"object"}),
+                    output_schema,
+                    projection_schema,
+                },
+                executor: tool_executor.clone(),
+                projection: Arc::new(Projection),
+            })?;
+            let executor = StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                model,
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                None,
+            )?;
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: OperationId::from_bytes([78; 16]),
+                input: ModelContent::Text("hello".into()),
+                selected_context: None,
+                max_steps: 4,
+            };
+            assert!(matches!(executor.execute(input.clone(), &journal).await,
             Err(Error::Invalid(message)) if message.contains("pinned schema")));
-        assert!(matches!(executor.execute(input, &journal).await,
+            assert!(matches!(executor.execute(input, &journal).await,
             Err(Error::Invalid(message)) if message.contains("pinned schema")));
-        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        }
         Ok(())
     }
 

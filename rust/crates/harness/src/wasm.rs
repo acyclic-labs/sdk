@@ -336,6 +336,8 @@ struct WasmModelToolDefinitionWire {
     input_schema: serde_json::Value,
     #[tsify(type = "WasmModelJsonSchema")]
     output_schema: serde_json::Value,
+    #[tsify(type = "WasmModelJsonSchema")]
+    projection_schema: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
@@ -2481,6 +2483,7 @@ struct WasmToolDefinitionInput {
     description: String,
     input_schema: serde_json::Value,
     output_schema: serde_json::Value,
+    projection_schema: serde_json::Value,
 }
 
 impl From<WasmToolDefinitionInput> for ToolDefinition {
@@ -2491,6 +2494,7 @@ impl From<WasmToolDefinitionInput> for ToolDefinition {
             description: value.description,
             input_schema: value.input_schema,
             output_schema: value.output_schema,
+            projection_schema: value.projection_schema,
         }
     }
 }

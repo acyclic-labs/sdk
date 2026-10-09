@@ -446,7 +446,7 @@ impl McpCatalog {
         if let Some(old) = previous {
             for remote in &old.tools {
                 let definition = old.definition(remote)?;
-                next.withdraw_model_tool(&definition.name);
+                next.remove_from_model(&definition.name)?;
             }
         }
         for remote in &self.tools {
@@ -460,7 +460,7 @@ impl McpCatalog {
                 }),
                 projection: Arc::clone(projection),
             })?;
-            next.withdraw_model_tool(&definition.name);
+            next.remove_from_model(&definition.name)?;
         }
         for remote in self.selected_tools() {
             let definition = self.definition(remote)?;

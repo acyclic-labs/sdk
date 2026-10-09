@@ -178,7 +178,8 @@ where
     let mut tools = ToolRegistry::new();
     tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
-        output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}) },
+        output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
+        projection_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}) },
         executor: Arc::new(ForkPlan), projection: Arc::new(ForkPlan) })?;
     let mut executor = StockExecutor::new(
         Model::new("example", "exact", "1", Value::Null)?,

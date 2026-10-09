@@ -358,6 +358,11 @@ impl DurableToolRunner {
                 ));
             }
             validate_value(&definition.output_schema, &result.value, "tool output")?;
+            validate_value(
+                &definition.projection_schema,
+                &projection,
+                "tool projection",
+            )?;
             return Ok(Outcome::Succeeded(result.value));
         }
         if let Some(reason) = failed {
@@ -527,7 +532,14 @@ impl DurableToolRunner {
                 )
                 .await;
         };
-        if crate::contract::canonical_json_bytes(&projection)?.len() as u64 > projection_limit {
+        if validate_value(
+            &definition.projection_schema,
+            &projection,
+            "tool projection",
+        )
+        .is_err()
+            || crate::contract::canonical_json_bytes(&projection)?.len() as u64 > projection_limit
+        {
             return self
                 .fail(
                     task_id,
@@ -703,6 +715,7 @@ mod tests {
             description: "test resumable tool".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
+            projection_schema: json!({"type": "object"}),
         }
     }
 
