@@ -243,12 +243,19 @@ pub struct Tool {
     pub projection: Arc<dyn ToolProjection>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum ModelSelection {
+    Revision(String),
+    Ambiguous,
+    Hidden,
+}
+
 /// Deterministic registry retaining every pinned revision. A model request
 /// exposes exactly one selected revision per logical tool name.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     versions: BTreeMap<(String, String), Tool>,
-    selected: BTreeMap<String, Option<String>>,
+    selected: BTreeMap<String, ModelSelection>,
     catalog_revisions: BTreeMap<String, [u8; 32]>,
 }
 
@@ -279,11 +286,12 @@ impl ToolRegistry {
         let previous = self.versions.keys().any(|(logical, _)| logical == &name);
         self.versions.insert((name.clone(), revision.clone()), tool);
         if previous {
-            if self.selected.get(&name) != Some(&None) {
-                self.selected.remove(&name);
+            if self.selected.get(&name) != Some(&ModelSelection::Hidden) {
+                self.selected.insert(name, ModelSelection::Ambiguous);
             }
         } else {
-            self.selected.insert(name, Some(revision));
+            self.selected
+                .insert(name, ModelSelection::Revision(revision));
         }
         Ok(())
     }
@@ -296,8 +304,10 @@ impl ToolRegistry {
         {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
         }
-        self.selected
-            .insert(name.to_owned(), Some(revision.to_owned()));
+        self.selected.insert(
+            name.to_owned(),
+            ModelSelection::Revision(revision.to_owned()),
+        );
         Ok(())
     }
 
@@ -325,7 +335,8 @@ impl ToolRegistry {
         if !self.versions.keys().any(|(logical, _)| logical == name) {
             return Err(Error::NotFound(format!("tool {name}")));
         }
-        self.selected.insert(name.to_owned(), None);
+        self.selected
+            .insert(name.to_owned(), ModelSelection::Hidden);
         Ok(())
     }
 
@@ -361,7 +372,9 @@ impl ToolRegistry {
         if let Some((logical, revision)) = name.rsplit_once('@') {
             return self.get_version(logical, revision);
         }
-        let revision = self.selected.get(name)?.as_ref()?;
+        let ModelSelection::Revision(revision) = self.selected.get(name)? else {
+            return None;
+        };
         self.get_version(name, revision)
     }
 
@@ -375,11 +388,14 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Result<Vec<ToolDefinition>> {
         let mut definitions = Vec::with_capacity(self.selected.len());
         for (name, selection) in &self.selected {
-            let revision = selection.as_ref().ok_or_else(|| {
-                Error::Conflict(format!("tool {name} requires an explicit model revision"))
-            })?;
-            let Some(revision) = revision else {
-                continue;
+            let revision = match selection {
+                ModelSelection::Revision(revision) => revision,
+                ModelSelection::Hidden => continue,
+                ModelSelection::Ambiguous => {
+                    return Err(Error::Conflict(format!(
+                        "tool {name} requires an explicit model revision"
+                    )));
+                }
             };
             let tool = self
                 .get_version(name, revision)
