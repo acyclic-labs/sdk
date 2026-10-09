@@ -474,8 +474,9 @@ pub fn compile_all(
 ) -> Result<(), Error> {
     let cargo = cargo_path.unwrap_or_else(|| Path::new("cargo"));
     for source in sources {
-        let manifest = root
-            .join("rust/crates")
+        // Cargo resolves this beneath current_dir; do not pass Windows verbatim paths
+        // through build scripts to native tools such as protoc.
+        let manifest = Path::new("rust/crates")
             .join(package_directory(&source.scenario))
             .join("Cargo.toml");
         let mut command = Command::new(cargo);
@@ -520,8 +521,9 @@ pub fn execute_local(
         if source.scenario.mode != ScenarioMode::ExecuteLocal {
             continue;
         }
-        let manifest = root
-            .join("rust/crates")
+        // Cargo resolves this beneath current_dir; do not pass Windows verbatim paths
+        // through build scripts to native tools such as protoc.
+        let manifest = Path::new("rust/crates")
             .join(package_directory(&source.scenario))
             .join("Cargo.toml");
         let cargo = cargo_path.unwrap_or_else(|| Path::new("cargo"));
@@ -663,7 +665,7 @@ fn sanitize_compiler_environment(command: &mut Command) {
                 | "RUSTUP_TOOLCHAIN"
         ) || uppercase.starts_with("CARGO_CFG_")
             || (uppercase.starts_with("CARGO_BUILD_") && uppercase != "CARGO_BUILD_JOBS")
-            || uppercase.starts_with("CARGO_TARGET_")
+            || (uppercase.starts_with("CARGO_TARGET_") && uppercase != "CARGO_TARGET_DIR")
             || uppercase.starts_with("RUSTC_")
             || uppercase.starts_with("RUSTDOC_");
         if remove {
