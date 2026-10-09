@@ -15,7 +15,7 @@ tools/sdk-generator/
     dart/               Dart producer, pinned package and installed controls
     php/                PHP producer, offline Composer install and client controls
     cpp/                C++ producer and native message controls; installation pending
-    swift/              Swift producer and source consumer; installation pending
+    swift/              Swift producer, archive admission and installed message controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.

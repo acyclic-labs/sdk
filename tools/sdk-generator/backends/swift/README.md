@@ -26,10 +26,23 @@ Offline staging tests use command doubles and run in affected-backend CI without
 installing Swift. Native tool builds and consumer execution are separate local
 qualification steps. `tests/fixtures/consumer/Consumer.swift` checks populated
 bytes, unsigned maxima, optional zero, oneofs, maintained gRPC codecs and three
-RPC metadata entries. It has passed against the source prototype. It does not
-yet prove archive installation, all RPC methods or actual client/server calls.
-Installed-package qualification, negative compilation controls, native RPC and
-Rust-backed RPC remain pending.
+RPC metadata entries. It has passed against both the source prototype and an
+archive-installed package. Three independent invalid assignments to Actor bytes,
+Worker bytes and Stream optional integers fail with the intended compiler type
+errors against that installed package. All four compiled dependency source trees
+match their exact admitted Git revisions.
+
+`src/package.mjs` admits the archive against its external checksum, complete
+producer receipt, maintained source/tool pins and verified Rust authority.
+Offline controls reject unsafe members, links, duplicate paths, missing bindings,
+payload changes and substituted package metadata. Admission does not execute
+native consumers. A reusable installed qualifier, all-method native RPC controls
+and Rust-backed RPC qualification remain pending.
+
+`toolchains/qualification.json` pins the full SDK inventory artifact and exact
+dependency revisions. The inventory contains 2,317 files and 39 symlinks and has
+been compared with the checksum-verified official SDK archive. The inventory,
+SDK downloads and native build outputs remain outside the maintained source tree.
 
 `toolchains/build-generators.sh` accepts absolute paths in `SWIFT_HOME`,
 `PROTOBUF_SOURCE`, `GRPC_PROTOBUF_SOURCE`, `GRPC_SOURCE`, `COLLECTIONS_SOURCE`

@@ -1,0 +1,12 @@
+{
+  "sdk_inventory_sha256": "fa33910c1bb0e7191a8f190fde7e4d7a33f205d6b61ce1fe61fcb27f7d2266e9",
+  "sdk_archive_sha256": "bce85ea80f1471b85f39993f9285dbc798ec8e1eac5f677e24b2ac693856f9f8",
+  "sdk_files": 2317,
+  "sdk_links": 39,
+  "dependencies": [
+    { "name": "grpc-swift-2", "version": "2.4.3", "revision": "ac33066eb6edb1a21a6ca172ea8184a9b06f3cc7" },
+    { "name": "grpc-swift-protobuf", "version": "2.4.1", "revision": "176c5a434fd76f6f479848d1a8f7d44967534168" },
+    { "name": "swift-protobuf", "version": "1.38.1", "revision": "55d7a1cc5666b85c13464aea1c4b4a90feccb4c8" },
+    { "name": "swift-collections", "version": "1.7.2", "revision": "3b69cedbaa49957e97c092ae400bb57602ef941f" }
+  ]
+}
