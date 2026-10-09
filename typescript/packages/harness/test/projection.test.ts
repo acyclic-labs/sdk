@@ -92,7 +92,7 @@ test("explicit model selection resolves complete manifest-backed attachments bey
   const parts = projected.messages[0]?.content;
   expect(Array.isArray(parts) ? parts.length : 0).toBe(131);
   expect(Array.isArray(parts) ? parts[0] : null).toEqual({ kind: "file", file: content, policy: "bounded_full" });
-  expect(Array.isArray(parts) ? parts[1] : null).toEqual({ kind: "file", file: image, policy: "native" });
+  expect(Array.isArray(parts) ? parts[1] : null).toEqual({ kind: "file", file: image, policy: { native: { intent: { kind: "image", detail: "auto" }, maximum_bytes: 9007199254740991, maximum_work: 9007199254740991, configuration: null } } });
   const bounded = await selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
     ...options, maxProjectedAttachments: 1,
   });
@@ -150,7 +150,7 @@ test("tool projection links each result to its exact call, even when provider ca
   for (let index = 0; index < 2; index++) {
     const call = await artifact(`tool/call-${index}.json`, { call_id: "reused", name: `tool-${index}`, arguments: { index } });
     const result = await artifact(`tool/result-${index}.json`, { value: { index, full: "x".repeat(1024) } });
-    const projection = await artifact(`tool/projection-${index}.json`, { index });
+    const projection = await artifact(`tool/projection-${index}.json`, { kind: "json", value: { index } });
     state = conversationState(...state.messages, { id: callIds[index]!, sequence: BigInt(index * 2 + 1),
       kind: "tool_call", content: call, attachments: { kind: "inline", items: [] },
       reply_to: null, tool_call_id: "reused", extensions: {} });
@@ -163,8 +163,8 @@ test("tool projection links each result to its exact call, even when provider ca
   const options = { resolveManifest: async () => new Uint8Array(),
     resolveFile: async (file: FileRef) => bytes.get(file.path) ?? new Uint8Array(), maxRenderBytes: 256 };
   const projected = await selectModelContext(state, selection, options);
-  expect(projected.messages[1]?.content).toEqual({ kind: "tool_result", callId: "reused", name: "tool-0", value: { index: 0 } });
-  expect(projected.messages[3]?.content).toEqual({ kind: "tool_result", callId: "reused", name: "tool-1", value: { index: 1 } });
+  expect(projected.messages[1]?.content).toEqual({ kind: "tool_result", callId: "reused", name: "tool-0", content: { kind: "json", value: { index: 0 } } });
+  expect(projected.messages[3]?.content).toEqual({ kind: "tool_result", callId: "reused", name: "tool-1", content: { kind: "json", value: { index: 1 } } });
   await expect(selectModelContext(state, { ...selection, messageIds: [resultIds[0]!] }, options))
     .rejects.toThrow("lacks its call");
   const sourceResult = state.messages[3]!;
@@ -243,7 +243,7 @@ test("large primary text stays a reference while a primary image stays native", 
   const projected = await selectModelContext(state, { conversationRevision: 2n,
     messageIds: [id, fixtureId("04040404-0404-0404-0404-040404040404")] }, { maxRenderBytes: 8 });
   expect(projected.messages[0]?.content).toEqual([{ kind: "file", file: text, policy: "reference" }]);
-  expect(projected.messages[1]?.content).toEqual([{ kind: "file", file: image, policy: "native" }]);
+  expect(projected.messages[1]?.content).toEqual([{ kind: "file", file: image, policy: { native: { intent: { kind: "image", detail: "auto" }, maximum_bytes: 9007199254740991, maximum_work: 8, configuration: null } } }]);
 });
 
 test("safe integer limits above the WASM u32 ABI ceiling remain accepted", async () => {

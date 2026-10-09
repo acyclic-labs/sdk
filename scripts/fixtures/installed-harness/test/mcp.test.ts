@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  NativeContracts, WasmMcpHttpTransport, WasmMcpHttpInitialization, createBrowserMcpHttpProvider,
+  NativeContracts, WasmMcpHttpTransport, WasmMcpHttpInitialization, createBrowserMcpHttpProvider, jsonToolProjection,
   type McpCatalog,
 } from "@acyclic-labs/harness";
 
@@ -12,6 +12,7 @@ test("installed MCP exports preserve explicit schema exposure, search and stdio 
   const contracts = await NativeContracts.create();
   const catalog: McpCatalog = { server: "installed", revision: "1",
     schema_exposure: { kind: "selected", names: ["echo"] }, discovery: "search",
+    projection_schema: (await jsonToolProjection({})).schema,
     tools: ["echo", "hidden"].map(name => ({ name, description: `Find ${name}`, inputSchema: { type: "object" } })) };
   contracts.validateMcpCatalog(catalog, 2, 8192);
   expect(contracts.mcpModelDefinitions(catalog, 2, 8192).map(tool => tool.name)).toEqual(["mcp.installed.echo"]);

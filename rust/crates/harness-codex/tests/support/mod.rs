@@ -422,7 +422,7 @@ struct Identity;
 
 impl ToolProjection for Identity {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -439,6 +439,9 @@ fn tool(name: &str) -> Tool {
                 "additionalProperties": false
             }),
             output_schema: json!({"type": "object"}),
+            projection_schema: acyclic_harness::tool::json_projection_schema(
+                json!({"type":"object"}),
+            ),
         },
         executor: Arc::new(Echo),
         projection: Arc::new(Identity),

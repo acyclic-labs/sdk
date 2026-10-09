@@ -34,7 +34,7 @@ async function attachment(path: string, bytes: Uint8Array, mediaType: string): P
   return contracts.validate("file_ref", file);
 }
 
-test("Pi default projection resolves bounded text and native images but leaves references opaque", async () => {
+test("Pi default projection resolves bounded text and leaves image and document references opaque", async () => {
   const imageBytes = Uint8Array.of(1, 2, 3);
   const textBytes = new TextEncoder().encode("file text");
   const image = await attachment("images/chart.png", imageBytes, "image/png");
@@ -42,7 +42,7 @@ test("Pi default projection resolves bounded text and native images but leaves r
   const pdf = await attachment("reports/brief.pdf", Uint8Array.of(7), "application/pdf");
   const input: ModelRequest = { ...request, messages: [{ role: "user", content: [
     { kind: "text", text: "describe" },
-    { kind: "file", file: image, policy: "native" },
+    { kind: "file", file: image, policy: "reference" },
     { kind: "file", file: textFile, policy: "bounded_full" },
     { kind: "file", file: pdf, policy: "reference" },
   ] }] };
@@ -53,10 +53,10 @@ test("Pi default projection resolves bounded text and native images but leaves r
   };
   const projected = await projectPiRequest(input, { resolveFile, maxResolvedBytes: 64 });
   expect(projected.messages[0]?.content[0]).toEqual({ type: "text", text: "describe" });
-  expect(projected.messages[0]?.content[1]).toEqual({ type: "image", mediaType: "image/png", bytes: imageBytes });
+  expect(projected.messages[0]?.content[1]).toMatchObject({ type: "text" });
   expect(projected.messages[0]?.content[2]).toEqual({ type: "text", text: "file text" });
   expect(projected.messages[0]?.content[3]).toMatchObject({ type: "text" });
-  expect(reads).toEqual([image.path, textFile.path]);
+  expect(reads).toEqual([textFile.path]);
   let seen = false;
   const provider = piDefaultProvider({ resolveFile, maxResolvedBytes: 64,
     run: async function* (value) { seen = value.messages[0]?.content.length === 4; yield { type: "complete" as const, metadata: null }; },
@@ -68,18 +68,39 @@ test("Pi default projection resolves bounded text and native images but leaves r
   expect(events.at(-1)).toEqual({ kind: "completed", metadata: null });
 });
 
-test("Pi default projection fails closed for corrupt, oversized, or unsupported files", async () => {
-  const pdf = await attachment("reports/brief.pdf", Uint8Array.of(7), "application/pdf");
+test("Pi rejects native media across the request before reading supported files", async () => {
   const image = await attachment("images/chart.png", Uint8Array.of(7), "image/png");
-  const fileMessage = (policy: "native" | "bounded_full" | "reference"): ModelRequest => ({
-    ...request, messages: [{ role: "user", content: [{ kind: "file", file: pdf, policy }] }],
-  });
-  let read = false;
-  await expect(projectPiRequest(fileMessage("native"), { resolveFile: async () => { read = true; return Uint8Array.of(7); } })).rejects.toThrow("unsupported");
-  expect(read).toBe(false);
-  await expect(projectPiRequest(fileMessage("bounded_full"), { resolveFile: async () => Uint8Array.of(7) })).rejects.toThrow("unsupported");
-  const imageMessage: ModelRequest = { ...request, messages: [{ role: "user", content: [{ kind: "file", file: image, policy: "native" }] }] };
-  await expect(projectPiRequest(imageMessage)).rejects.toThrow("unavailable");
-  await expect(projectPiRequest(imageMessage, { resolveFile: async () => Uint8Array.of(8) })).rejects.toThrow();
-  await expect(projectPiRequest(imageMessage, { resolveFile: async () => Uint8Array.of(7), maxResolvedBytes: 0 })).rejects.toThrow("limit");
+  const text = await attachment("notes/input.txt", new TextEncoder().encode("input"), "text/plain");
+  const native = { kind: "file" as const, file: image, policy: { native: {
+    intent: { kind: "image" as const, detail: "auto" as const }, maximum_bytes: 64, maximum_work: 8, configuration: null,
+  } } };
+  for (const content of [native, { kind: "tool_result" as const, callId: "call", name: "inspect",
+    content: { kind: "parts" as const, parts: [native] } }]) {
+    let reads = 0;
+    const input: ModelRequest = { ...request, messages: [
+      { role: "user", content: { kind: "file", file: text, policy: "bounded_full" } },
+      { role: content.kind === "tool_result" ? "tool" : "user", content },
+    ] };
+    await expect(projectPiRequest(input, { resolveFile: async () => { reads++; return Uint8Array.of(7); } }))
+      .rejects.toThrow("unsupported native media policy");
+    expect(reads).toBe(0);
+  }
+  const input: ModelRequest = { ...request, messages: [{ role: "user", content: { kind: "file", file: text, policy: "bounded_full" } }] };
+  await expect(projectPiRequest(input)).rejects.toThrow("unavailable");
+  await expect(projectPiRequest(input, { resolveFile: async () => Uint8Array.of(8) })).rejects.toThrow();
+  await expect(projectPiRequest(input, { resolveFile: async () => Uint8Array.of(7), maxResolvedBytes: 0 })).rejects.toThrow("limit");
+});
+
+test("Pi projects canonical JSON and ordered tool data envelopes", async () => {
+  const file = await attachment("notes/input.txt", new TextEncoder().encode("input"), "text/plain");
+  const input: ModelRequest = { ...request, messages: [
+    { role: "tool", content: { kind: "tool_result", callId: "json", name: "inspect", content: { kind: "json", value: 12 } } },
+    { role: "tool", content: { kind: "tool_result", callId: "parts", name: "inspect", content: { kind: "parts", parts: [
+      { kind: "text", text: "before" }, { kind: "file", file, policy: "bounded_full" },
+    ] } } },
+  ] };
+  const projected = await projectPiRequest(input, { resolveFile: async () => new TextEncoder().encode("input") });
+  expect(projected.messages[0]?.content[0]).toEqual({ type: "tool_result", callId: "json", name: "inspect", value: 12 });
+  expect(projected.messages[1]?.content[0]).toEqual({ type: "tool_result", callId: "parts", name: "inspect",
+    value: [{ type: "text", text: "before" }, { type: "text", text: "input" }] });
 });

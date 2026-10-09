@@ -1,17 +1,20 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import {
-  DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef, type PinnedContextPath,
+  DEFAULT_LIMITS, jsonToolProjection, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef, type PinnedContextPath,
 } from "../src/index.js";
 import {
   prepareModelRequest, encodeModelPrefix, WasmReducer, validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
+import { publicModelContent } from "../src/projection.js";
+import type { NativeModelContent } from "../src/native-contracts.js";
 import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
 
 const contracts = await NativeContracts.create();
+const jsonProjection = await jsonToolProjection({});
 const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
 
@@ -84,7 +87,7 @@ test("generated context composition preserves existing file wires without reinte
   const base = { messages: [{ role: "user" as const, content: part },
     { role: "user" as const, content: [{ kind: "text" as const, text: "attached" }, part] },
     { role: "assistant" as const, content: { kind: "tool_call" as const, call_id: "call", name: "inspect", arguments: opaque } },
-    { role: "tool" as const, content: { kind: "tool_result" as const, call_id: "call", name: "inspect", value: opaque } }],
+    { role: "tool" as const, content: { kind: "tool_result" as const, call_id: "call", name: "inspect", content: { kind: "json" as const, value: opaque } } }],
   metadata: Object.fromEntries([["attachment", reference], ["__proto__", reference]]) };
   for (const placement of ["prepend", "append"] as const) {
     const projections = [
@@ -106,7 +109,7 @@ test("generated context composition preserves existing file wires without reinte
       for (const file of files) expect(typeof file.descriptor.byte_length).toBe("number");
       expect(() => prepareModelRequest({ model: { provider: "mock", name: "files", revision: "1", options: {} },
         messages: projected.messages, tools: [{ name: "inspect", revision: "1", description: "Inspect files",
-          inputSchema: {}, outputSchema: {} }], maxOutputTokens: 4096 }, DEFAULT_LIMITS)).not.toThrow();
+          inputSchema: {}, outputSchema: {}, projectionSchema: jsonProjection.schema }], maxOutputTokens: 4096 }, DEFAULT_LIMITS)).not.toThrow();
     }
   }
 });
@@ -153,7 +156,7 @@ test("native and WASM request construction preserve exact Unicode and paired too
     messages: wire.messages,
     tools: wire.tools.map((tool) => ({
       name: tool.name, revision: tool.revision, description: tool.description,
-      inputSchema: tool.input_schema, outputSchema: tool.output_schema,
+      inputSchema: tool.input_schema, outputSchema: tool.output_schema, projectionSchema: tool.projection_schema,
     })),
     maxOutputTokens: wire.max_output_tokens,
   };
@@ -204,7 +207,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
   try {
     const attachment = await stage(new TextEncoder().encode("attachment é\0🦀\r\n"), "attachment.txt", "text/plain");
     const tools = root.tools.map(tool => ({ name: tool.name, revision: tool.revision, description: tool.description,
-      inputSchema: tool.input_schema, outputSchema: tool.output_schema }));
+      inputSchema: tool.input_schema, outputSchema: tool.output_schema, projectionSchema: tool.projection_schema }));
     let parentRequest = prepareModelRequest({ model: root.model, messages: [...root.messages,
       { role: "user", content: [{ kind: "file", file: attachment, policy: "reference" }] }],
       tools, maxOutputTokens: 4096 }, DEFAULT_LIMITS);
@@ -228,7 +231,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
             yield { kind: "completed" as const, metadata: {} };
           }, async reconcile() { return undefined; } })
           .tool({ ...tools[0]!, inputSchema: { type: "string" }, outputSchema: { type: "string" },
-            parseInput: value => value, parseOutput: value => value }, {
+            parseInput: value => value, projection: await jsonToolProjection({ type: "string" }), parseOutput: value => value }, {
             async execute(invocation) { return { value: invocation.arguments }; }, async reconcile() { return undefined; },
           }).grant("tool:call:echo").build();
         await runtime.run(prompt);
@@ -246,7 +249,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
 });
 
 test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
-  for (const length of [62, 63]) {
+  for (const length of [38, 39]) {
     const value = "x".repeat(length);
     let calls = 0;
     const runtime = await Harness.builder(contracts).limits({ render_bytes: 64 })
@@ -255,18 +258,18 @@ test("tool results retain their pinned string schema and enforce the exact rende
           calls++;
           if (calls === 1) yield { kind: "tool_call" as const, callId: "read", name: "read", arguments: "go" };
           else {
-            expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "read", name: "read", value });
+            expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "read", name: "read", content: { kind: "json", value } });
             expect((contracts.decodeModelJson(request.serializedInput) as unknown as WasmModelRequestWire).messages.at(-1)?.content)
-              .toEqual({ kind: "tool_result", call_id: "read", name: "read", value });
+              .toEqual({ kind: "tool_result", call_id: "read", name: "read", content: { kind: "json", value } });
           }
           yield { kind: "completed" as const, metadata: {} };
         }, async reconcile() { return undefined; },
       }).tool({ name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
-        outputSchema: { type: "string" }, parseInput: value => value, parseOutput: value => value,
+        outputSchema: { type: "string" }, parseInput: value => value, projection: jsonProjection, parseOutput: value => value,
         handler: async () => value }).grant("tool:call:read").build();
-    if (length === 62) {
+    if (length === 38) {
       const result = await runtime.run("go");
-      expect(result.receipts.find(receipt => receipt.kind === "tool")).toMatchObject({ value, projection: value });
+      expect(result.receipts.find(receipt => receipt.kind === "tool")).toMatchObject({ value, projection: { kind: "json", value } });
       expect(calls).toBe(2);
     } else {
       await expect(runtime.run("go")).rejects.toThrow("render limit");
@@ -369,6 +372,59 @@ async function file(): Promise<FileRef> {
   });
 }
 
+async function nativeOptionPart() {
+  const media = await file();
+  const options = { ...media, path: "messages/options.json", display_name: "options.json",
+    descriptor: await descriptorFor(new TextEncoder().encode("{}"), "application/json") };
+  const configuration = {
+    source: { authority: { kind: "agent" as const, id: agent }, revision: 9_007_199_254_740_993n },
+    configuration: { extension: { name: "fixture.options", version: 1 },
+      schema_digest: Array(32).fill(1), content: options },
+    implementation_digest: Array(32).fill(2),
+  };
+  return { kind: "file" as const, file: media, policy: { native: {
+    intent: { kind: "image" as const, detail: "auto" as const },
+    maximum_bytes: 64, maximum_work: 8, configuration,
+  } } };
+}
+
+test("Rust inventory includes nested tool media and options while preserving original revisions", async () => {
+  const part = await nativeOptionPart();
+  const inventory = contracts.modelContentInventory({ kind: "tool_result", callId: "call", name: "inspect",
+    content: { kind: "parts", parts: [{ kind: "text", text: "attachment" }, part] } }, DEFAULT_LIMITS);
+  expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
+  expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
+  expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
+  expect(Object.isFrozen(inventory.nativeConfigurations[0])).toBe(true);
+  expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
+});
+
+test("public model content preserves original option revisions across Rust context projection", async () => {
+  const part = await nativeOptionPart();
+  const projected = contracts.applyContextProjection({ messages: [], metadata: {} },
+    [{ role: "user", content: part }], "prompt", "append", DEFAULT_LIMITS);
+  expect(publicModelContent(projected.messages[0]!.content as NativeModelContent)).toEqual(part);
+  const result = contracts.applyContextProjection({ messages: [], metadata: {} }, [
+    { role: "assistant", content: { kind: "tool_call", callId: "call", name: "inspect", arguments: {} } },
+    { role: "tool", content: { kind: "tool_result", callId: "call", name: "inspect",
+      content: { kind: "parts", parts: [part] } } },
+  ], "prompt", "append", DEFAULT_LIMITS);
+  expect(publicModelContent(result.messages[1]!.content as NativeModelContent))
+    .toEqual({ kind: "tool_result", callId: "call", name: "inspect", content: { kind: "parts", parts: [part] } });
+});
+
+test("local model dispatch rejects claimed native options before invoking a custom provider", async () => {
+  let calls = 0;
+  const runtime = await Harness.builder(contracts).model(
+    { provider: "mock", name: "native-options", revision: "pinned", options: {} }, {
+      async *generate() { calls += 1; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+  await expect(runtime.run({ prompt: "", content: [await nativeOptionPart()] })).rejects.toThrow(
+    "original native option admission is unavailable");
+  expect(calls).toBe(0);
+});
+
 test("WASM model validators preserve Rust limits and tool-name checks", async () => {
   const content = await file();
   expect(() => validateModelContent("hello", DEFAULT_LIMITS)).not.toThrow();
@@ -382,10 +438,12 @@ test("WASM model validators preserve Rust limits and tool-name checks", async ()
 test("WASM user-input validator rejects empty, tool, and malformed content", async () => {
   const content = await file();
   expect(() => validateUserInput("hello")).not.toThrow();
-  expect(() => validateUserInput({ kind: "file", file: content, policy: "native" })).not.toThrow();
+  expect(() => validateUserInput({ kind: "file", file: content, policy: { native: {
+    intent: { kind: "image", detail: "auto" }, maximum_bytes: 64, maximum_work: 8, configuration: null,
+  } } })).not.toThrow();
   expect(() => validateUserInput("")).toThrow();
   expect(() => validateUserInput([])).toThrow();
-  expect(() => validateUserInput({ kind: "tool_result", callId: "call", name: "lookup", value: {} })).toThrow();
+  expect(() => validateUserInput({ kind: "tool_result", callId: "call", name: "lookup", content: { kind: "json", value: {} } })).toThrow();
   expect(() => validateUserInput({ kind: "file", file: { ...content, path: "../escape" }, policy: "reference" })).toThrow();
 });
 
@@ -444,4 +502,21 @@ test("model event admission preserves full-width BigInts in provider JSON", () =
 
   const completed = contracts.admitModelEvent({ kind: "completed", metadata: { tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
   expect(completed.event).toEqual({ kind: "completed", metadata: { tokens: 1, cursor: value } });
+});
+
+
+test("public projection validator enforces complete JSON and Parts envelope byte bounds", () => {
+  const definition = { name: "inspect", revision: "1", description: "Inspect", inputSchema: {},
+    outputSchema: {}, projection: { schema: { type: "object" },
+      project: () => ({ kind: "json" as const, value: null }) } };
+  for (const projection of [
+    { kind: "json", value: "é\0🦀" },
+    { kind: "parts", parts: [{ kind: "text", text: "é\0🦀" }] },
+  ] as const) {
+    const exact = contracts.encodeCanonicalJson(projection).byteLength;
+    expect(() => contracts.validateToolProjection(definition, projection,
+      { ...DEFAULT_LIMITS, render_bytes: exact })).not.toThrow();
+    expect(() => contracts.validateToolProjection(definition, projection,
+      { ...DEFAULT_LIMITS, render_bytes: exact - 1 })).toThrow("render limit");
+  }
 });
