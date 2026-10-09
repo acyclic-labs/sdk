@@ -19,6 +19,8 @@ pub(super) struct OperationLocation {
     pub(super) operation_id: OperationId,
     pub(super) revision: u64,
     pub(super) intent_digest: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) effect_position: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -104,6 +106,7 @@ impl IndexedPublication {
             operation_id: event.operation_id,
             revision: event.revision,
             intent_digest: event.intent_digest,
+            effect_position: None,
         };
         let mut indexes = vec![(
             operation_path(authority, event.operation_id)?,
@@ -165,6 +168,17 @@ impl IndexedPublication {
             bytes: Bytes::from(bytes),
             indexes,
         })
+    }
+
+    pub(super) fn set_effect_position(&mut self, position: u64) -> Result<()> {
+        let (_, _, bytes) = self
+            .indexes
+            .first_mut()
+            .ok_or_else(|| Error::Storage("publication operation index is absent".into()))?;
+        let mut location: OperationLocation = crate::executor::decode_json(bytes)?;
+        location.effect_position = Some(position);
+        *bytes = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
+        Ok(())
     }
 
     pub(super) fn add_derived_index(&mut self, path: StreamPath, tail: u64, bytes: Bytes) {
@@ -385,15 +399,29 @@ pub(super) async fn verify_operation_locator<P: StreamProvider>(
         .filter(|bytes| *bytes <= maximum_bytes)
         .ok_or_else(|| Error::Invalid("operation lookup exceeds byte bound".into()))?;
     let event = super::history::verify_history_record(verifier, authority, sequence, &record)?;
-    if event.operation_id != location.operation_id
+    verify_operation_binding(authority, index, location, &record, &event)?;
+    Ok((event, consumed_bytes))
+}
+
+pub(super) fn verify_operation_binding(
+    authority: &Authority,
+    index: &Record,
+    location: &OperationLocation,
+    canonical: &Record,
+    event: &Event,
+) -> Result<()> {
+    if &location.authority != authority
+        || location.revision != event.revision
+        || canonical.sequence.checked_add(1) != Some(event.revision)
+        || event.operation_id != location.operation_id
         || event.intent_digest != location.intent_digest
-        || record.commit_id != index.commit_id
+        || canonical.commit_id != index.commit_id
     {
         return Err(Error::Storage(
             "operation location differs from its atomic canonical event".into(),
         ));
     }
-    Ok((event, consumed_bytes))
+    Ok(())
 }
 
 /// Loads one exact archived message without reconstructing a conversation projection.

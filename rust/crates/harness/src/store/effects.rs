@@ -46,7 +46,12 @@ async fn verified<P: StreamProvider>(
         return Err(Error::Invalid("effect lookup exceeds byte bound".into()));
     }
     let location: EffectLocation = crate::executor::decode_json(&record.value)?;
-    if location.effect_id != effect {
+    if location.effect_id != effect
+        || location
+            .location
+            .effect_position
+            .is_some_and(|position| position != record.sequence)
+    {
         return Err(Error::Storage("effect locator identity differs".into()));
     }
     let (event, bytes) = operations::verify_operation_locator(
@@ -112,9 +117,11 @@ pub(super) async fn add_publication_index<P: StreamProvider>(
             operation_id: event.operation_id,
             revision: event.revision,
             intent_digest: event.intent_digest,
+            effect_position: Some(expected),
         },
         effect_id,
     };
+    publication.set_effect_position(expected)?;
     publication.add_derived_index(
         path,
         expected,
@@ -197,4 +204,108 @@ pub(super) async fn read<P: StreamProvider>(
         events.push(event);
     }
     Ok(events)
+}
+
+/// Proves retirement against an already authenticated canonical record. The
+/// two derived records are charged without decoding the canonical event again.
+pub(super) async fn retirement_proof<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    event: &Event,
+    canonical: &Record,
+    maximum_bytes: u64,
+) -> Result<(bool, u64)> {
+    let EventPayload::EffectResolved { observation } = &event.payload else {
+        return Ok((false, 0));
+    };
+    if !crate::core::settled_effect(&observation.status) {
+        return Ok((false, 0));
+    }
+    if maximum_bytes == 0 {
+        return Err(Error::Invalid(
+            "effect retirement exceeds byte allowance".into(),
+        ));
+    }
+    let operation_path = operations::operation_path(authority, event.operation_id)?;
+    let Some(operation) = operations::one_record(client, &operation_path, 0).await? else {
+        return if tail(client, &operation_path).await? == 0 {
+            Ok((false, 0))
+        } else {
+            Err(Error::Storage("terminal operation index is missing".into()))
+        };
+    };
+    let mut used = operation.value.len() as u64;
+    if used > maximum_bytes {
+        return Err(Error::Invalid(
+            "effect retirement exceeds byte allowance".into(),
+        ));
+    }
+    if tail(client, &operation_path).await? != 1 {
+        return Err(Error::Storage(
+            "terminal operation index is not immutable".into(),
+        ));
+    }
+    let location: operations::OperationLocation = crate::executor::decode_json(&operation.value)?;
+    operations::verify_operation_binding(authority, &operation, &location, canonical, event)?;
+    let Some(position) = location.effect_position else {
+        return Ok((false, used));
+    };
+    if used == maximum_bytes {
+        return Err(Error::Invalid(
+            "effect retirement exceeds byte allowance".into(),
+        ));
+    }
+    let record = operations::one_record(client, &path(authority, observation.effect_id)?, position)
+        .await?
+        .ok_or_else(|| Error::Storage("terminal effect transition index is missing".into()))?;
+    used = used
+        .checked_add(record.value.len() as u64)
+        .filter(|bytes| *bytes <= maximum_bytes)
+        .ok_or_else(|| Error::Invalid("effect retirement exceeds byte allowance".into()))?;
+    let effect: EffectLocation = crate::executor::decode_json(&record.value)?;
+    if effect.effect_id != observation.effect_id
+        || effect.location != location
+        || record.commit_id != canonical.commit_id
+    {
+        return Err(Error::Storage(
+            "terminal effect index differs from original atomic publication".into(),
+        ));
+    }
+    Ok((true, used))
+}
+
+pub(super) async fn retirement_proof_for_event<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    event: &Event,
+) -> Result<bool> {
+    let EventPayload::EffectResolved { observation } = &event.payload else {
+        return Ok(false);
+    };
+    if !crate::core::settled_effect(&observation.status) {
+        return Ok(false);
+    }
+    let position = event
+        .revision
+        .checked_sub(1)
+        .ok_or_else(|| Error::Invalid("effect revision must be positive".into()))?;
+    let record = operations::one_record(
+        client,
+        &StreamPath::new(authority.stream_path()?)?,
+        position,
+    )
+    .await?
+    .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
+    if record.value.as_ref() != crate::wire_codec::encode_event(authority, event)?.as_slice() {
+        return Err(Error::Storage("terminal canonical event differs".into()));
+    }
+    retirement_proof(
+        client,
+        authority,
+        event,
+        &record,
+        2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+    )
+    .await
+    .map(|(verified, _)| verified)
 }
