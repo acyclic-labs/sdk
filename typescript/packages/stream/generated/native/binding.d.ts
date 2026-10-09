@@ -59,7 +59,12 @@ export declare class NativeStreamClient {
 
 /** One Rust-owned live follow cursor. A fresh cursor is required after close. */
 export declare class NativeStreamFollow {
-  /** Returns the next canonical `ReadResponse`, or an empty result at end/close. */
+  /**
+   * Returns the next canonical `ReadResponse`, or an empty result at end/close.
+   *
+   * Transient `Unavailable` items remain owned by the Rust cursor and are
+   * retried here. Terminal stream errors are returned in the result envelope.
+   */
   nextResult(): Promise<NativeStreamNextResult>
   /**
    * Cancels this cursor and waits for its transport stream to be released.

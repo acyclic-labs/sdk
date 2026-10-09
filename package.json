@@ -2,7 +2,9 @@
   "name": "@acyclic-labs/sdk-workspace",
   "private": true,
   "version": "0.0.0",
-  "workspaces": ["typescript/packages/*"],
+  "workspaces": [
+    "typescript/packages/*"
+  ],
   "scripts": {
     "build:wasm": "bun scripts/build-wasm.mjs",
     "build": "bun run build:wasm && tsc -b --force",
@@ -10,7 +12,7 @@
     "check:types": "tsc -p typescript/packages/filesystem/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/harness/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/inference/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/pi/tsconfig.type-tests.json --pretty false",
     "test:contracts": "tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node scripts/generate-public-rpc-matrix.mjs complete && node --test scripts/public-rpc-source.test.mjs && node typescript/packages/actors/test/grpc-conformance.mjs && node typescript/packages/stream/test/grpc-provider-conformance.mjs && node typescript/packages/stream/test/http-provider-conformance.mjs && node --test typescript/packages/objects/test/v2-conformance.mjs && bun test ./typescript/packages/objects/test/v2-conformance.mjs && node typescript/packages/objects/test/v2-grpc-conformance.mjs",
     "generate": "bun scripts/generate.mjs && bun scripts/generate-contracts.mjs write",
-    "check:generated": "bun scripts/check-stream-protocol-contract.mjs && bun scripts/check-generated.mjs && bun scripts/generate-contracts.mjs check",
+    "check:generated": "bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs && bun scripts/check-generated.mjs && bun scripts/generate-contracts.mjs check",
     "check:native-adapter": "bun run check && cargo build -p acyclic-fs-napi --locked && bun scripts/check-filesystem-napi.mjs --adapter",
     "test": "bun run check && bun run check:types && mkdir -p target && bun test --parallel=4 --reporter=junit --reporter-outfile=target/bun-test.xml typescript/packages && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts",
     "test:contracts:browser": "bun run --filter '@acyclic-labs/objects' build:wasm && bun run --filter '@acyclic-labs/stream' build:wasm && tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node typescript/packages/actors/test/browser-http-conformance.mjs",
@@ -26,5 +28,18 @@
     "ajv": "8.20.0",
     "fast-check": "4.10.2",
     "typescript": "7.0.2"
+  },
+  "description": "The Acyclic SDK is the open contract and composition layer for building recursive, fork-join agent systems. It contains the Rust harness, public service interfaces, customer-machine implementations, conformance suites, and TypeScript packages.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "patchedDependencies": {
+    "@napi-rs/cli@3.10.5": "patches/napi-rs-cli-3.10.5.patch"
   }
 }

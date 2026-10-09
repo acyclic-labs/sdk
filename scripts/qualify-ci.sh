@@ -121,6 +121,19 @@ stream_binding() {
     --output "$directory/bundle" --target-dir "$target_dir-stream-native"
   cp "$target_dir-stream-native/stream-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
 }
+client_bindings() {
+  local target family bundle
+  target="$(rustc --version --verbose | sed -n 's/^host: //p')"
+  for family in actors workers; do
+    bundle="$SDK_ARTIFACT_DIR/packages/$family-native/bundle"
+    node "scripts/build-$family-native.mjs" build --target "$target" \
+      --output "$bundle" --target-dir "$target_dir-$family-native"
+    cp "$target_dir-$family-native/$family-native-build-inputs.receipt.json" "$(dirname "$bundle")/producer-receipt.json"
+    node "scripts/build-$family-native.mjs" stage --bundle "$bundle"
+  done
+  # The live TLS fixture invokes this helper inside Bun's short test deadline.
+  cargo build --offline --locked -p acyclic-actors --example conformance-certificate
+}
 # The live native-mount tests are the only ignored acyclic-fs library tests.
 # Selecting them from the all-feature workspace build reuses its test binaries
 # instead of rebuilding acyclic-fs under a narrower feature resolution.
@@ -303,6 +316,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi release
     stream_binding
+    client_bindings
     bun run test
     bun scripts/check-typescript-tarballs.mjs
     # WASM builds are path-independent but not host-independent: panic
@@ -430,6 +444,9 @@ case "$lane" in
       bun run --filter '@acyclic-labs/harness' test:browser:mcp
     ;;
   typescript)
+    # Family admission resolves the locked Cargo graph offline before WASM
+    # compilation, so a cold runner needs the dependency index and crates first.
+    cargo fetch --locked
     # Pull requests and main pushes only; full runs cover this in the linux
     # lane. As there, check:generated runs after `bun run test` has built the
     # uncommitted packages, against the restored committed filesystem and
@@ -438,6 +455,7 @@ case "$lane" in
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
+    client_bindings
     bun run test
     git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm       typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts       typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts
     bun run check:generated
@@ -471,6 +489,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked --doc
     finish napi release x86_64
     stream_binding
+    client_bindings
     native_mount_tests
     fork_join_conformance
     ;;

@@ -9,6 +9,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { assertNativeReceipt, assertNativeSet, verifyNativeAssembly, writeCompanionManifest } from "./assemble-stream-native-package.mjs";
 import { normalizeBuildInputs, rustMetadata } from "./build-stream-native.mjs";
+import { writeWasmReceiptFixture } from "./fixtures/wasm-receipt.mjs";
 
 const sha = `sha256:${"a".repeat(64)}`;
 const revision = "1".repeat(40);
@@ -29,7 +30,7 @@ function inputs() {
 }
 function metadata(selected_target = target) {
   const raw = inputs();
-  return { selected_target, source_revision: revision, source_sha256: sha, source_files: [{ path: "source.rs", sha256: sha, bytes: 1 }], version: "0.2.0", targets: [target, "aarch64-apple-darwin"], build_inputs: normalizeBuildInputs(raw, { sourceRoot: "C:/producer/sdk", platform: "win32", targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir }) };
+  return { package: "acyclic-stream-napi", selected_target, source_revision: revision, source_sha256: sha, source_files: [{ path: "source.rs", sha256: sha, bytes: 1 }], version: "0.2.0", targets: [target, "aarch64-apple-darwin"], build_inputs: normalizeBuildInputs(raw, { sourceRoot: "C:/producer/sdk", platform: "win32", targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir }) };
 }
 
 test("neutral assembly requires complete unique Rust targets and a common source closure", () => {
@@ -56,12 +57,13 @@ test("publication verifies all companion archives and retained attestations befo
   const meta = { ...metadata(), schema: "acyclic.stream.native-targets.v1", targets: [target], artifacts, artifact: artifacts[2] };
   const generation = { ...meta, schema: "acyclic.stream.native-generation.v1", revision };
   const generationBytes = JSON.stringify(generation);
-  Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
+  const attestedMeta = Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
   const receipt = { schema: "acyclic.stream.native-build-inputs-receipt.v1", published_build_inputs_sha256: hash(meta.build_inputs), raw_build_inputs: inputs() };
-  const entry = { name: companionName, version: "0.2.0", asset: "native/companion.tgz", selected_target: target, os: ["win32"], cpu: ["x64"], artifact: meta.artifact, sha256: "", metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) };
-  const expectedInventory = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, source_sha256: meta.source_sha256, source_files: structuredClone(meta.source_files), parent: { name: "@acyclic-labs/stream", version: "0.2.0", private: false }, targets: [target], generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, meta.build_inputs.generator[field]])), companions: [{ selected_target: target, name: companionName, main: addon, os: ["win32"], cpu: ["x64"] }] };
+  const entry = { name: companionName, version: "0.2.0", asset: "native/companion.tgz", selected_target: target, os: ["win32"], cpu: ["x64"], artifact: meta.artifact, generation_sha256: attestedMeta.generation_sha256, sha256: "", metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) };
+  const expectedInventory = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, source_sha256: meta.source_sha256, source_files: structuredClone(meta.source_files), parent: { name: "@acyclic-labs/stream", version: "0.2.0", private: false, optionalDependencies: { [companionName]: "0.2.0" } }, targets: [target], generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, meta.build_inputs.generator[field]])), companions: [{ selected_target: target, name: companionName, main: addon, os: ["win32"], cpu: ["x64"], manifest: { name: companionName, version: "0.2.0", private: false, main: addon, os: ["win32"], cpu: ["x64"] } }] };
   try {
     await mkdir(join(output, "native"), { recursive: true });
+    const { wasmReceiptSha256 } = await writeWasmReceiptFixture(parent, "stream", revision, expectedInventory);
     for (const name of ["binding.cjs", "binding.d.ts"]) await put(join(parent, "generated/native", name), name);
     await put(join(companion, addon), addon);
     for (const [name, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", generationBytes], ["producer-receipt.json", JSON.stringify(receipt)]]) {
@@ -73,7 +75,7 @@ test("publication verifies all companion archives and retained attestations befo
     const pack = (source, asset) => execFileSync("tar", ["-czf", join(output, asset), "-C", source, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
     pack(join(directory, "companion"), entry.asset);
     entry.sha256 = bytesHash(await readFile(join(output, entry.asset)));
-    const index = { schema: "acyclic.stream.native-package-assembly.v2", source_commit: revision, source_sha256: sha, targets: [target], companions: [entry] };
+    const index = { schema: "acyclic.stream.native-package-assembly.v2", source_commit: revision, source_sha256: sha, targets: [target], companions: [entry], wasm_receipt_sha256: wasmReceiptSha256 };
     await json(join(parent, "generated/native/native-targets.json"), index);
     const parentAsset = "acyclic-labs-stream-0.2.0.tgz";
     pack(join(directory, "parent"), parentAsset);
@@ -82,14 +84,14 @@ test("publication verifies all companion archives and retained attestations befo
     await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n${entry.sha256}  ${entry.asset}\n`);
     await verifyNativeAssembly(output, revision, "0.2.0", expectedInventory);
     await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0"), /trusted native source inventory/);
-    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", { ...expectedInventory, targets: [target, "aarch64-apple-darwin"] }), /trusted Rust source inventory/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", { ...expectedInventory, targets: [target, "aarch64-apple-darwin"] }), /native assembly release identity or source differs/);
     const originalParent = JSON.parse(await readFile(join(parent, "package.json"), "utf8"));
     for (const [field, value] of Object.entries({ name: "@wrong/parent", version: "9.9.9", private: true })) {
       await json(join(parent, "package.json"), { ...originalParent, [field]: value });
       pack(join(directory, "parent"), parentAsset);
       parentReceipt.sha256 = bytesHash(await readFile(join(output, parentAsset)));
       await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
-      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /parent manifest differs/);
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /neutral parent manifest/);
     }
     await json(join(parent, "package.json"), originalParent);
     pack(join(directory, "parent"), parentAsset);
@@ -109,14 +111,14 @@ test("publication verifies all companion archives and retained attestations befo
     };
     await json(join(companion, "package.json"), { ...originalCompanion, private: undefined });
     await seal();
-    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /companion manifest differs/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /maintained source target mapping/);
     await json(join(companion, "package.json"), originalCompanion);
     for (const mutation of [{ name: "@acyclic-labs/stream-darwin-arm64", os: ["darwin"], cpu: ["arm64"] }, { main: "index.darwin-arm64.node" }, { libc: ["musl"] }]) {
       Object.assign(entry, originalEntry, mutation);
       await json(join(companion, "package.json"), { ...originalCompanion, ...mutation });
       await json(join(parent, "package.json"), { ...originalParent, optionalDependencies: { [entry.name]: "0.2.0" } });
       await seal();
-      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /maintained source target mapping/);
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /neutral parent manifest|maintained source target mapping/);
       for (const field of Object.keys(mutation)) delete entry[field];
     }
     Object.assign(entry, originalEntry);
@@ -136,7 +138,7 @@ test("publication verifies all companion archives and retained attestations befo
         await put(join(parent, "generated/native/attestations", target, name), bytes);
       }
       await seal();
-      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /trusted source inventory/);
+      await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /native assembly release identity or source differs|original source or target differs/);
       Object.assign(meta, originalMeta); Object.assign(generation, originalGeneration);
       index.source_sha256 = originalMeta.source_sha256;
     }
@@ -153,7 +155,7 @@ test("publication verifies all companion archives and retained attestations befo
     await rm(join(output, "native/stale.tgz"));
     const saved = await readFile(join(output, entry.asset));
     await put(join(output, entry.asset), "corrupt");
-    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /archive digest differs/);
+    await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /archive identity or digest differs/);
     await put(join(output, entry.asset), saved);
     await put(join(output, "SHA256SUMS"), `${parentReceipt.sha256}  ${parentAsset}\n`);
     await assert.rejects(verifyNativeAssembly(output, revision, "0.2.0", expectedInventory), /checksum inventory/);
@@ -181,7 +183,7 @@ test("real maintained companions for every Rust target pack as public and pass p
       const manifest = JSON.parse(await readFile(join(companion, "package.json"), "utf8"));
       // The pinned CLI omits private; the release writer must explicitly close that policy.
       assert.equal(manifest.private, undefined);
-      descriptors.push({ selected_target: selected, ...Object.fromEntries(["name", "main", "os", "cpu", "libc"].filter(field => manifest[field] !== undefined).map(field => [field, manifest[field]])) });
+      descriptors.push({ selected_target: selected, manifest, ...Object.fromEntries(["name", "main", "os", "cpu", "libc"].filter(field => manifest[field] !== undefined).map(field => [field, manifest[field]])) });
       const raw = inputs();
       raw.target = raw.generator.options.target = raw.linker.actual.target = selected;
       if (selected.endsWith("-apple-darwin")) {
@@ -192,7 +194,7 @@ test("real maintained companions for every Rust target pack as public and pass p
       const meta = { ...metadata(selected), schema: "acyclic.stream.native-targets.v1", targets, artifacts, artifact: artifacts[2], build_inputs: normalizeBuildInputs(raw, { sourceRoot: "C:/producer/sdk", platform: "win32", targetDir: raw.target_dir, outputDir: raw.generator.options.output_dir }) };
       const generation = { ...meta, schema: "acyclic.stream.native-generation.v1", revision };
       const generationBytes = JSON.stringify(generation);
-      Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
+      const attestedMeta = Object.assign(meta, { generation_sha256: `sha256:${bytesHash(generationBytes)}` });
       const receipt = { schema: "acyclic.stream.native-build-inputs-receipt.v1", published_build_inputs_sha256: hash(meta.build_inputs), raw_build_inputs: raw };
       const attestation = join(parent, "generated/native/attestations", selected);
       await mkdir(attestation, { recursive: true });
@@ -210,19 +212,20 @@ test("real maintained companions for every Rust target pack as public and pass p
       const args = ["pack", "--ignore-scripts", "--pack-destination", join(output, "native"), "--silent"];
       const packed = execFileSync(process.platform === "win32" && existsSync(npmCli) ? process.execPath : "npm", process.platform === "win32" && existsSync(npmCli) ? [npmCli, ...args] : args, { cwd: companion, encoding: "utf8" }).trim();
       await rename(join(output, "native", packed), join(output, asset));
-      entries.push({ name: manifest.name, version: manifest.version, asset, selected_target: selected, os: manifest.os, cpu: manifest.cpu, libc: manifest.libc, artifact: meta.artifact, sha256: bytesHash(await readFile(join(output, asset))), metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) });
+      entries.push({ name: manifest.name, version: manifest.version, asset, selected_target: selected, os: manifest.os, cpu: manifest.cpu, libc: manifest.libc, artifact: meta.artifact, generation_sha256: attestedMeta.generation_sha256, sha256: bytesHash(await readFile(join(output, asset))), metadata_sha256: bytesHash(JSON.stringify(meta)), receipt_sha256: bytesHash(JSON.stringify(receipt)) });
     }
     await rm(npmDir, { recursive: true });
     for (const name of ["binding.cjs", "binding.d.ts"]) await writeFile(join(parent, "generated/native", name), name);
     await json(join(parent, "package.json"), { ...sourceManifest, optionalDependencies: Object.fromEntries(entries.map(entry => [entry.name, entry.version])) });
-    const index = { schema: "acyclic.stream.native-package-assembly.v2", source_commit: revision, source_sha256: sha, targets, companions: entries };
+    const { wasmReceiptSha256 } = await writeWasmReceiptFixture(parent, "stream", revision, metadata());
+    const index = { schema: "acyclic.stream.native-package-assembly.v2", source_commit: revision, source_sha256: sha, targets, companions: entries, wasm_receipt_sha256: wasmReceiptSha256 };
     await json(join(parent, "generated/native/native-targets.json"), index);
     const asset = "acyclic-labs-stream-0.2.0.tgz";
     pack(join(directory, "parent"), asset);
     const parentReceipt = { name: sourceManifest.name, version: sourceManifest.version, asset, sha256: bytesHash(await readFile(join(output, asset))) };
     await json(join(output, "STREAM_NATIVE_PACKAGE.json"), { ...index, parent: parentReceipt });
     await writeFile(join(output, "SHA256SUMS"), [parentReceipt, ...entries].map(entry => `${entry.sha256}  ${entry.asset}`).join("\n") + "\n");
-    const expected = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, source_sha256: sha, source_files: metadata().source_files, parent: { name: sourceManifest.name, version: sourceManifest.version, private: false }, targets, generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, inputs().generator[field]])), companions: descriptors };
+    const expected = { schema: "acyclic.stream.native-source-inventory.v1", source_commit: revision, source_sha256: sha, source_files: metadata().source_files, parent: { ...sourceManifest, optionalDependencies: Object.fromEntries(entries.map(entry => [entry.name, entry.version])) }, targets, generator: Object.fromEntries(["package", "version", "package_sha256", "entry_sha256", "lock_sha256"].map(field => [field, inputs().generator[field]])), companions: descriptors };
     await verifyNativeAssembly(output, revision, sourceManifest.version, expected);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

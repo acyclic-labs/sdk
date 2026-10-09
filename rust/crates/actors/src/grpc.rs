@@ -208,6 +208,7 @@ pub async fn connect_with_ca_certificate(
         tls = tls.ca_certificate(Certificate::from_pem(ca));
     }
     let channel = Endpoint::from_shared(endpoint.to_owned())?
+        .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES)
         .tls_config(tls)?
         .connect()
         .await?;
