@@ -267,12 +267,6 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        context
-            .task()
-            .authorize_tool(&definition, &invocation)
-            .await?;
-        tool.executor
-            .authorize(Some(context.task().scope()), &invocation)?;
         let content_limit = self.limits.file_bytes.min(scope.limits().file_bytes);
         let projection_limit = self.limits.render_bytes.min(scope.limits().render_bytes);
         let projection_limits = Limits {
@@ -282,6 +276,16 @@ impl DurableToolRunner {
             attachments: self.limits.attachments.min(scope.limits().attachments),
             ..self.limits
         };
+        // Bound the borrowed typed input before canonical Value/buffer allocation.
+        // ToolInvocation uses ordinary compact JSON; sorting object keys does not
+        // change its byte count. Identity hashing below remains canonical.
+        crate::contract::validate_json_byte_bound(&invocation, content_limit)?;
+        tool.executor
+            .authorize_with_context(&context, &invocation)?;
+        context
+            .task()
+            .authorize_tool(&definition, &invocation)
+            .await?;
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(&(
             &task_id,
             &definition,
@@ -315,6 +319,11 @@ impl DurableToolRunner {
                     && failed.is_none()
                     && *call_id == invocation.call_id =>
                 {
+                    if reference.descriptor().byte_length() > content_limit {
+                        return Err(Error::Conflict(
+                            "durable tool invocation exceeds admitted descriptor limit".into(),
+                        ));
+                    }
                     let pinned: ToolInvocation =
                         load_json(self.journal.as_ref(), reference).await?;
                     if pinned != invocation {
