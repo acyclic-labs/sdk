@@ -39,3 +39,4 @@ jobs:
           set -euo pipefail
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
+          python3 -m unittest discover -s . -p 'qualify_test.py' -v
