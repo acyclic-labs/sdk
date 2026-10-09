@@ -941,9 +941,7 @@ where
         let relative = selected_root.clone();
         tokio::task::spawn_blocking(crate::obs::in_context(
             crate::obs::caller_context(),
-            move || {
-                validate_native_working_set_root(&validated_root, &relative, source_identity)
-            },
+            move || validate_native_working_set_root(&validated_root, &relative, source_identity),
         ))
         .await
         .map_err(|error| MountSourceError::Engine(error.to_string()))?

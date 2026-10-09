@@ -73,7 +73,9 @@ under their originating subscriber, including cancellation and unwinding.
 Objects RPC success includes body consumption and decoding. Streamed download
 success requires validated EOF and the selected length, rather than headers or
 merely receiving the expected bytes. Terminal errors record `err` and their
-semantic kind; unfinished or unpolled RPC/body drop records `err`/`cancelled`.
+semantic kind. Once an RPC span is created, dropping an unfinished RPC future
+or returned body records `err`/`cancelled`, including an unpolled returned body.
+A public async RPC future that is never polled creates no span.
 This is the consumer's lifetime: submitted native work may continue after
 consumer cancellation and retain its own span until actual completion. Native
 filesystem receipt spans record a terminal result only when the operation

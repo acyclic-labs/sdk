@@ -515,7 +515,6 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
     );
     assert!(capture.spans(span_name).is_empty());
     assert!(download.body.next().await.is_none());
-    drop(download);
     let completed = capture.spans(span_name);
     assert_eq!(completed.len(), 1);
     assert_eq!(
@@ -534,6 +533,7 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
             .fields
             .contains_key("error.kind")
     );
+    drop(download);
 
     for consumed in [0, 1, 2] {
         let before = capture.spans(span_name).len();
