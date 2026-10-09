@@ -392,17 +392,17 @@ export interface McpToolResult {
 }
 
 /**
- * Durable orchestration behavior represented as data.
- */
-export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
-
-/**
  * Complete declarative inventory, without granting file or option authority.
  */
 export interface WasmModelContentInventoryWire {
     files: readonly WasmFileRefWire[];
     nativeConfigurations: readonly WasmNativeConfigurationBindingWire[];
 }
+
+/**
+ * Durable orchestration behavior represented as data.
+ */
+export type Orchestration = { kind: "leaf" } | { kind: "join" } | { kind: "race" } | { kind: "quorum"; required: number } | { kind: "reduce"; reducer: EntrypointRef };
 
 /**
  * Exact portable HTTP input. Credentials belong to the bound provider.
@@ -1278,6 +1278,7 @@ export type WasmBrowserAdmission = { kind: "accepted"; task_id: string } | { kin
 export type WasmBrowserRecoveredWork = { kind: "idle" } | { kind: "claimed"; lease: WorkLease } | { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError };
 
 export type WasmBrowserWork = { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError } | { kind: "suspended"; task_id: string; revision: bigint } | { kind: "completed"; task_id: string } | { kind: "yielded"; lease: WorkLease } | { kind: "reconciling"; lease: WorkLease };
+
 export type WasmFileProjectionPolicy = "reference" | "bounded_full" | { native: WasmNativeMediaPolicyWire };
 
 export type WasmImageDetail = "auto" | "low" | "high";
@@ -1855,6 +1856,11 @@ export function jsonToolProjectionSchema(value_schema: WasmToolJsonSchema): Wasm
 export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
 
 /**
+ * Returns all media/options refs and original-admission claims without IO.
+ */
+export function modelContentInventory(content: WasmModelContentInput, limits: WasmModelLimitsInput): WasmModelContentInventoryWire;
+
+/**
  * Binds the exact native request without rounding its filesystem work counters
  * through JavaScript numbers. This performs no native dispatch or path lookup.
  */
@@ -1867,11 +1873,6 @@ export function nativeProcessApprovalDigest(task: string, command: string, reque
  * provider. Validation failures are thrown as stable error codes.
  */
 export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
-
-/**
- * Returns all media/options refs and original-admission claims without IO.
- */
-export function modelContentInventory(content: WasmModelContentInput, limits: WasmModelLimitsInput): WasmModelContentInventoryWire;
 
 /**
  * Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
@@ -2199,8 +2200,8 @@ export interface InitOutput {
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
     readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
-    readonly nativeProcessApprovalDigest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly modelContentInventory: (a: any, b: any) => [number, number, number];
+    readonly nativeProcessApprovalDigest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
