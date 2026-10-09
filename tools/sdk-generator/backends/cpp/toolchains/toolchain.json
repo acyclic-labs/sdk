@@ -1,0 +1,27 @@
+{
+  "cpp_plugin_version": "1.82.0",
+  "cpp_plugin": {
+    "win32-x64": {
+      "sha256": "470c59c68a11911002bf58aba25d1ab53087c31bc834a293b4df95d90864280f",
+      "url": "https://api.github.com/repos/grpc/grpc/tarball/742600a76f5717044cde93ba424500c680e2002a",
+      "sources": {
+        "grpc": {
+          "commit": "742600a76f5717044cde93ba424500c680e2002a",
+          "archive": "grpc-source.tar.gz",
+          "archive_sha256": "6efc839e73cbbddd13c31f1b87171bd220061ea92babcd3045733e22fdfe7b7e"
+        },
+        "protobuf": {
+          "version": "28.3",
+          "archive": "protobuf-28.3.tar.gz",
+          "archive_sha256": "7c3ebd7aaedd86fa5dc479a0fda803f602caaf78d8aff7ce83b89e1b8ae7442a"
+        },
+        "abseil": {
+          "commit": "4a2c63365eff8823a5221db86ef490e828306f9d",
+          "archive": "abseil.tar.gz",
+          "archive_sha256": "c9ce636ffd20fe5a7f8e448e0c84bbc7f0eb9d0408611944bfc8d18b1ed9b0dd"
+        }
+      },
+      "build_manifest_sha256": "1b9e3bf06038545724c6f72a2e6b6a43deb0754d78e0c0b002862cd8260f4e23"
+    }
+  }
+}

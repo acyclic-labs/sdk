@@ -14,6 +14,7 @@ tools/sdk-generator/
     ruby/               Ruby producer, pinned gem and installed controls
     dart/               Dart producer, pinned package and installed controls
     php/                PHP producer, offline Composer install and client controls
+    cpp/                C++ producer and native message controls; installation pending
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -21,7 +22,7 @@ Add a backend directory when it contains executable tooling; keep generated SDK
 source and package artifacts in their language package or requested output path.
 Do not check tool downloads, caches or generation output into this directory.
 
-Java, .NET, Ruby, Dart and PHP use the same layout within each backend:
+Java, .NET, Ruby, Dart, PHP and C++ use the same layout within each backend:
 
 ```text
 <backend>/
@@ -43,8 +44,8 @@ README for installed qualification commands.
 
 `.github/sdk-generator-backends.json` registers executable backends for focused
 CI and qualification input scoping. Routine CI runs only affected offline checks;
-shared-reader changes check its consumers, and archive-reader changes check Go
-and Dart. Backend README-only changes need no focused test run, while package
+shared-reader changes check its consumers, and archive-reader changes check Go,
+Dart and PHP. Backend README-only changes need no focused test run, while package
 templates remain checked. Unknown backend directories retain full qualification
 inputs until explicitly registered.
 

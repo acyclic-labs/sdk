@@ -1,0 +1,6 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(Protobuf 28.3 EXACT CONFIG)
+find_dependency(gRPC 1.82.0 EXACT CONFIG)
+include("${CMAKE_CURRENT_LIST_DIR}/AcyclicTransportTargets.cmake")
+check_required_components(AcyclicTransport)

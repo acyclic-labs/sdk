@@ -4,5 +4,6 @@
   { "name": "dotnet", "shared": ["authority"] },
   { "name": "ruby", "shared": ["authority"] },
   { "name": "dart", "shared": ["authority", "archive"] },
-  { "name": "php", "shared": ["authority", "archive"] }
+  { "name": "php", "shared": ["authority", "archive"] },
+  { "name": "cpp", "shared": ["authority"] }
 ]
