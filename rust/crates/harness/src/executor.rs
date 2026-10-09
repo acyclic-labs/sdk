@@ -604,6 +604,10 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        crate::context::validate_projected_context(&source, self.limits)?;
+        crate::contract::validate_json_byte_bound(&source, self.limits.file_bytes)?;
+        crate::contract::validate_json_byte_bound(&instruction, self.limits.file_bytes)?;
+        instruction.validate_limits(self.limits)?;
         let summary_output = self.output_budget()?;
         if summary_output.is_none() {
             return Err(Error::Invalid(
@@ -4074,6 +4078,73 @@ mod tests {
     }
 
     struct FakeTool(AtomicUsize);
+
+    #[tokio::test]
+    async fn oversized_summary_input_rejects_before_accounting_or_journal_publication() -> Result<()>
+    {
+        let provider = Arc::new(CountedModel {
+            capacity: 131_072,
+            ..Default::default()
+        });
+        let base = uncompacted_executor(
+            Model::new("test", "bounded-summary", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_max_output_tokens(1_024)?;
+        let message = |length| ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("x".repeat(length)),
+        };
+        for (messages, instruction, file_bytes) in [
+            (
+                vec![message(1), message(1)],
+                ModelContent::Text("summary".into()),
+                4_096,
+            ),
+            (
+                vec![message(4_097)],
+                ModelContent::Text("summary".into()),
+                4_096,
+            ),
+            (
+                vec![message(1)],
+                ModelContent::Text("x".repeat(4_097)),
+                4_096,
+            ),
+            // A valid rendered source still needs to fit its staged file.
+            (vec![message(128)], ModelContent::Text("summary".into()), 64),
+        ] {
+            let limits = Limits {
+                context_messages: 1,
+                render_bytes: 4_096,
+                file_bytes,
+                ..Limits::default()
+            };
+            let executor = base.clone().with_limits(limits);
+            let journal = Journal::default();
+            assert!(matches!(
+                executor
+                    .summarize(
+                        &journal,
+                        OperationId::new(),
+                        crate::context::Context {
+                            messages,
+                            ..Default::default()
+                        },
+                        instruction,
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            assert!(journal.0.lock().unwrap().is_empty());
+            assert!(journal.1.lock().unwrap().is_empty());
+        }
+        assert_eq!(provider.accounting_calls.load(Ordering::SeqCst), 0);
+        assert!(provider.requests.lock().unwrap().is_empty());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {

@@ -1061,6 +1061,69 @@ impl Context {
     }
 }
 
+/// A borrowed view of exactly the messages that will form a base or continuation.
+/// Preflight uses the ordinary Context wire fields before copying any payloads.
+struct ContextMessages<'a> {
+    first: &'a [ModelMessage],
+    user: Option<&'a ModelContent>,
+    second: &'a [ModelMessage],
+}
+
+impl Serialize for ContextMessages<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+
+        #[derive(Serialize)]
+        struct UserMessage<'a> {
+            role: ModelRole,
+            content: &'a ModelContent,
+        }
+
+        let mut sequence = serializer.serialize_seq(None)?;
+        for message in self.first {
+            sequence.serialize_element(message)?;
+        }
+        if let Some(content) = self.user {
+            sequence.serialize_element(&UserMessage {
+                role: ModelRole::User,
+                content,
+            })?;
+        }
+        for message in self.second {
+            sequence.serialize_element(message)?;
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedContext<'a> {
+    messages: ContextMessages<'a>,
+    metadata: &'a BTreeMap<String, FileRef>,
+    current_input_index: Option<u32>,
+}
+
+impl BorrowedContext<'_> {
+    fn validate_bounds(&self, limits: Limits) -> Result<()> {
+        let count = self
+            .messages
+            .first
+            .len()
+            .checked_add(usize::from(self.messages.user.is_some()))
+            .and_then(|count| count.checked_add(self.messages.second.len()))
+            .filter(|count| *count <= limits.context_messages);
+        if count.is_none() || self.metadata.len() > limits.attachments {
+            return Err(crate::Error::Invalid(
+                "context projection exceeded declared bounds".into(),
+            ));
+        }
+        crate::contract::validate_json_byte_bound(self, limits.render_bytes)
+    }
+}
+
 /// Inputs visible to every context stage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextInput {
@@ -1149,6 +1212,30 @@ impl ContextPipeline {
     /// This boundary contains no stage contributions and performs no source reads.
     pub fn base_context(input: &ContextInput, limits: Limits) -> Result<Context> {
         limits.validate()?;
+        let metadata = BTreeMap::new();
+        let messages = ContextMessages {
+            first: input
+                .selected_context
+                .as_ref()
+                .map_or(&[], |selected| selected.messages.as_slice()),
+            user: input.selected_context.is_none().then_some(&input.input),
+            second: &input.prior_messages,
+        };
+        let base_count = input
+            .selected_context
+            .as_ref()
+            .map_or(1, |selected| selected.messages.len());
+        let current_input_index = u32::try_from(base_count.checked_sub(1).ok_or_else(|| {
+            crate::Error::Invalid("current input is missing from context".into())
+        })?)
+        .map_err(|_| crate::Error::Invalid("current input index exceeds portable count".into()))?;
+        BorrowedContext {
+            messages,
+            metadata: &metadata,
+            current_input_index: Some(current_input_index),
+        }
+        .validate_bounds(limits)?;
+        input.input.validate_limits(limits)?;
         input.input.validate_user_input()?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
@@ -1171,16 +1258,12 @@ impl ContextPipeline {
             },
             |selected| selected.messages.clone(),
         );
-        let current_input_index = u32::try_from(base.len().checked_sub(1).ok_or_else(|| {
-            crate::Error::Invalid("current input is missing from context".into())
-        })?)
-        .map_err(|_| crate::Error::Invalid("current input index exceeds portable count".into()))?;
         let context = Context {
             messages: base
                 .into_iter()
                 .chain(input.prior_messages.iter().cloned())
                 .collect(),
-            metadata: BTreeMap::new(),
+            metadata,
             current_input_index: Some(current_input_index),
         };
         validate_projected_context(&context, limits)?;
@@ -1195,7 +1278,7 @@ impl ContextPipeline {
         let prefix = u32::try_from(retained.messages.len()).map_err(|_| {
             crate::Error::Invalid("base message count exceeds portable index".into())
         })?;
-        retained.current_input_index = Some(
+        let current_input_index = Some(
             delta
                 .current_input_index
                 .and_then(|index| prefix.checked_add(index))
@@ -1203,6 +1286,17 @@ impl ContextPipeline {
                     crate::Error::Invalid("continued base has no bounded current input".into())
                 })?,
         );
+        BorrowedContext {
+            messages: ContextMessages {
+                first: &retained.messages,
+                user: None,
+                second: &delta.messages,
+            },
+            metadata: &retained.metadata,
+            current_input_index,
+        }
+        .validate_bounds(limits)?;
+        retained.current_input_index = current_input_index;
         retained.messages.extend(delta.messages);
         validate_projected_context(&retained, limits)?;
         Ok(retained)
@@ -1274,6 +1368,138 @@ mod tests {
         model::{FileProjectionPolicy, ModelRole},
         resources::ProviderRef,
     };
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture compares borrowed and owned wire bounds for both base variants and checkpoint continuation"
+    )]
+    fn borrowed_context_preflight_matches_base_and_continuation_wire() -> Result<()> {
+        let user = ModelContent::Text("current 🦀 \"quoted\"\n".into());
+        let message = |role, text: &str| ModelMessage {
+            role,
+            content: ModelContent::Text(text.into()),
+        };
+        let selected = SelectedModelContext {
+            selection: crate::conversation::ModelContextSelection {
+                conversation_revision: 2,
+                message_ids: vec![uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2)],
+                checkpoint: None,
+            },
+            messages: vec![
+                message(ModelRole::System, "pinned instruction"),
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: user.clone(),
+                },
+            ],
+        };
+        for selected_context in [None, Some(selected)] {
+            let input = ContextInput {
+                input: user.clone(),
+                selected_context,
+                step: 0,
+                prior_messages: vec![message(ModelRole::Assistant, "prior answer")],
+            };
+            let base = ContextPipeline::base_context(&input, Limits::default())?;
+            let view = BorrowedContext {
+                messages: ContextMessages {
+                    first: input
+                        .selected_context
+                        .as_ref()
+                        .map_or(&[], |selected| selected.messages.as_slice()),
+                    user: input.selected_context.is_none().then_some(&input.input),
+                    second: &input.prior_messages,
+                },
+                metadata: &base.metadata,
+                current_input_index: base.current_input_index,
+            };
+            let encoded = crate::contract::canonical_json_bytes(&base)?;
+            assert_eq!(crate::contract::canonical_json_bytes(&view)?, encoded);
+            let exact = Limits {
+                render_bytes: encoded.len() as u64,
+                ..Limits::default()
+            };
+            assert_eq!(ContextPipeline::base_context(&input, exact)?, base);
+            assert!(matches!(
+                ContextPipeline::base_context(
+                    &input,
+                    Limits {
+                        render_bytes: exact.render_bytes - 1,
+                        ..exact
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+            assert!(matches!(
+                ContextPipeline::base_context(
+                    &input,
+                    Limits {
+                        context_messages: base.messages.len() - 1,
+                        ..Limits::default()
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+
+            let retained = Context {
+                messages: vec![message(ModelRole::System, "retained summary")],
+                ..Default::default()
+            };
+            let expected = Context {
+                messages: retained
+                    .messages
+                    .iter()
+                    .chain(&base.messages)
+                    .cloned()
+                    .collect(),
+                metadata: retained.metadata.clone(),
+                current_input_index: base.current_input_index.map(|index| index + 1),
+            };
+            let view = BorrowedContext {
+                messages: ContextMessages {
+                    first: &retained.messages,
+                    user: None,
+                    second: &base.messages,
+                },
+                metadata: &retained.metadata,
+                current_input_index: expected.current_input_index,
+            };
+            let encoded = crate::contract::canonical_json_bytes(&expected)?;
+            assert_eq!(crate::contract::canonical_json_bytes(&view)?, encoded);
+            let exact = Limits {
+                render_bytes: encoded.len() as u64,
+                ..Limits::default()
+            };
+            assert_eq!(
+                ContextPipeline::continue_base(retained.clone(), base.clone(), exact)?,
+                expected
+            );
+            assert!(matches!(
+                ContextPipeline::continue_base(
+                    retained.clone(),
+                    base.clone(),
+                    Limits {
+                        render_bytes: exact.render_bytes - 1,
+                        ..exact
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+            assert!(matches!(
+                ContextPipeline::continue_base(
+                    retained,
+                    base,
+                    Limits {
+                        context_messages: expected.messages.len() - 1,
+                        ..Limits::default()
+                    }
+                ),
+                Err(crate::Error::Invalid(_))
+            ));
+        }
+        Ok(())
+    }
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 

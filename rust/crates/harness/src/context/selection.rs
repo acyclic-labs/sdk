@@ -304,12 +304,12 @@ pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<(
     context.validate_current_input()?;
     if context.messages.len() > limits.context_messages
         || context.metadata.len() > limits.attachments
-        || crate::contract::canonical_json_bytes(context)?.len() as u64 > limits.render_bytes
     {
         return Err(Error::Invalid(
             "context projection exceeded declared bounds".into(),
         ));
     }
+    crate::contract::validate_json_byte_bound(context, limits.render_bytes)?;
     for message in &context.messages {
         message.content.validate_limits(limits)?;
     }
