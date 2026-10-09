@@ -1,0 +1,39 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 902e971768acfcd6aee3e31ee45739d8d908f573..8ed3da306ba4ffdddc970919ba5e7ac1ba95353b 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -6365,7 +6365,7 @@ ${createWasiFallbackChain(localName, pkgName, flavors, packageVersion, localWasi
+ 
+ if (!nativeBinding) {
+   if (loadErrors.length > 0) {
+-    const error = new Error(
++    const error = new AggregateError(loadErrors,
+       \`Cannot find native binding. \` +
+         \`npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). \` +
+         'Please try \`npm i\` again after removing both package-lock.json and node_modules directory.',
+diff --git a/dist/index.js b/dist/index.js
+index 917bb47d2a68d0c475eb658420157610c4a41c35..a3c3cdbbdf4f9eae4d33fe06e08a440c52ce5922 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -6339,7 +6339,7 @@ ${createWasiFallbackChain(localName, pkgName, flavors, packageVersion, localWasi
+ 
+ if (!nativeBinding) {
+   if (loadErrors.length > 0) {
+-    const error = new Error(
++    const error = new AggregateError(loadErrors,
+       \`Cannot find native binding. \` +
+         \`npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). \` +
+         'Please try \`npm i\` again after removing both package-lock.json and node_modules directory.',
+diff --git a/src/api/templates/js-binding.ts b/src/api/templates/js-binding.ts
+index 3a54dc8260f0deb2b9255a93718ae6e567a042c1..0f8ccc11785c5c49735da04fb8f96e9f8cd1d9da 100644
+--- a/src/api/templates/js-binding.ts
++++ b/src/api/templates/js-binding.ts
+@@ -496,7 +496,7 @@ ${createWasiFallbackChain(
+ 
+ if (!nativeBinding) {
+   if (loadErrors.length > 0) {
+-    const error = new Error(
++    const error = new AggregateError(loadErrors,
+       \`Cannot find native binding. \` +
+         \`npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). \` +
+         'Please try \`npm i\` again after removing both package-lock.json and node_modules directory.',

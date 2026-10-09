@@ -1,0 +1,63 @@
+{
+  "buildScript": "scripts/build-stream-native.mjs",
+  "companionDirectory": "native",
+  "features": [],
+  "key": "stream",
+  "manifestRelative": "rust/crates/stream-napi/Cargo.toml",
+  "npmPackage": "@acyclic-labs/stream",
+  "packageDirectory": "typescript/packages/stream",
+  "packageRelative": "typescript/packages/stream/package.json",
+  "rustPackageName": "acyclic-stream-napi",
+  "rustTarget": "acyclic_stream_napi",
+  "schema": "acyclic.native-family.v1",
+  "sourceRoots": [
+    ".cargo/config.toml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "buf.gen.yaml",
+    "buf.lock",
+    "buf.yaml",
+    "bun.lock",
+    "package.json",
+    "patches/napi-rs-cli-3.10.5.patch",
+    "rust-toolchain.toml",
+    "rust/crates/native-runtime",
+    "rust/crates/proto-codegen",
+    "rust/crates/stream",
+    "rust/crates/stream-napi",
+    "scripts/archive-utils.mjs",
+    "scripts/assemble-native-family.mjs",
+    "scripts/assemble-stream-native-package.mjs",
+    "scripts/build-native-family.mjs",
+    "scripts/build-stream-native.mjs",
+    "scripts/build-wasm.mjs",
+    "scripts/check-generated.mjs",
+    "scripts/ensure-bun.ps1",
+    "scripts/ensure-bun.sh",
+    "scripts/generate.mjs",
+    "scripts/generated-bindings.mjs",
+    "scripts/generated/native-families/stream.json",
+    "scripts/native-family.mjs",
+    "tsconfig.base.json",
+    "typescript/packages/stream/generated/proto",
+    "typescript/packages/stream/package.json",
+    "typescript/packages/stream/src",
+    "typescript/packages/stream/tsconfig.json"
+  ],
+  "targets": [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin"
+  ],
+  "version": "0.2.0",
+  "wasm": {
+    "artifact": "acyclic_stream",
+    "features": [
+      "wasm"
+    ],
+    "noDefaultFeatures": true,
+    "outName": "acyclic_stream_wasm",
+    "targetDirectory": "stream-wasm"
+  },
+  "wasmPackageName": "acyclic-stream"
+}

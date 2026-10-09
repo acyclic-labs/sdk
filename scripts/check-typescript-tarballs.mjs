@@ -40,7 +40,7 @@ for (const entry of packageEntries) {
 }
 
 const representativeExports = {
-  "@acyclic-labs/actors": "HttpActorsClient",
+  "@acyclic-labs/actors": "ActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
   "@acyclic-labs/harness": "Harness",
   "@acyclic-labs/inference": "InferenceClient",
@@ -105,7 +105,11 @@ for (const [name, exportName] of Object.entries(expected)) {
   }
 }
 const checks = {
-  "@acyclic-labs/actors": (m) => typeof m.HttpActorsClient === "function" && typeof m.CreateActorRequestSchema === "object",
+  "@acyclic-labs/actors": (m) => {
+    if (typeof m.ActorsClient !== "function" || typeof m.CreateActorRequestSchema !== "object") return false;
+    new m.ActorsClient({ endpoint: "https://actors.example.test", token: "tarball-smoke" });
+    return true;
+  },
   "@acyclic-labs/fs": (m) => typeof m.openBrowserFs === "function",
   "@acyclic-labs/harness": (m) => typeof m.Harness.builder === "function",
   "@acyclic-labs/inference": (m) => typeof m.InferenceClient === "function",
@@ -148,7 +152,7 @@ for (const [name, check] of Object.entries(checks)) {
   if (!(await check(module))) throw new Error(name + " representative API check failed");
 }
 console.log(${JSON.stringify(runtime)} + " import and representative API checks passed for " + Object.keys(expected).length + " packages");
-for (const [name, exported] of Object.entries({ actors: "createActorsGrpcClient", workers: "createWorkersGrpcClient", objects: "createObjectsV1GrpcClients", stream: "GrpcStreamProvider" })) {
+for (const [name, exported] of Object.entries({ workers: "createWorkersGrpcClient", objects: "createObjectsV1GrpcClients", stream: "GrpcStreamProvider" })) {
   const module = await import("@acyclic-labs/" + name + "/grpc");
   if (typeof module[exported] !== "function") throw new Error(name + " gRPC export is absent");
 }
@@ -169,8 +173,9 @@ const main = async () => {
     }
     const nativeTarballs = new Map();
     if (assembledDirectory) {
-      const assembly = JSON.parse(await readFile(join(assembledDirectory, "STREAM_NATIVE_PACKAGE.json"), "utf8"));
-      const { sourceNativeInventory, verifyNativeAssembly } = await import("./assemble-stream-native-package.mjs");
+      for (const family of ["stream", "actors"]) {
+      const assembly = JSON.parse(await readFile(join(assembledDirectory, `${family.toUpperCase()}_NATIVE_PACKAGE.json`), "utf8"));
+      const { sourceNativeInventory, verifyNativeAssembly } = await import(`./assemble-${family}-native-package.mjs`);
       const inventory = await sourceNativeInventory(assembly.source_commit);
       await verifyNativeAssembly(assembledDirectory, assembly.source_commit, assembly.parent.version, inventory);
       const host = run("rustc", ["-vV"]).match(/^host: (.+)$/m)?.[1];
@@ -185,6 +190,7 @@ const main = async () => {
         throw new Error("Rust host companion differs from the JavaScript runtime platform");
       }
       nativeTarballs.set(companion.name, join(assembledDirectory, companion.asset));
+      }
     }
     const manifests = await Promise.all(packageDirectories.map(packageJson));
     for (let i = 0; i < manifests.length; i += 1) {
@@ -241,14 +247,24 @@ const main = async () => {
         await readFile(join(packagesRoot, "stream/test/native-companion-installed.mjs")));
       run("node", ["stream-native-companion.mjs"], { cwd: tempRoot });
       run("bun", ["stream-native-companion.mjs"], { cwd: tempRoot });
+      await writeFile(join(tempRoot, "actors-native-companion.mjs"),
+        await readFile(join(packagesRoot, "actors/test/native-companion-installed.mjs")));
+      const identity = join(tempRoot, "actors-test-identity.json");
+      await writeFile(identity, run("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"]));
+      const actorsEnv = { ...process.env, ACTORS_TLS_IDENTITY: identity };
+      run("node", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
+      run("bun", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
+      await writeFile(join(tempRoot, "actors-native-fallback.mjs"),
+        await readFile(join(packagesRoot, "actors/test/native-fallback-installed.mjs")));
+      run("node", ["actors-native-fallback.mjs"], { cwd: tempRoot, env: actorsEnv });
     }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });
     run("bun", ["inference-widths.mjs"], { cwd: tempRoot });
     const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
       `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
-    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createActorsGrpcClient } from "@acyclic-labs/actors/grpc";', 'import { createWorkersGrpcClient } from "@acyclic-labs/workers/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";'];
-    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createActorsGrpcClient, createWorkersGrpcClient, createObjectsV1GrpcClients];\n`);
+    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createWorkersGrpcClient } from "@acyclic-labs/workers/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";'];
+    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createWorkersGrpcClient, createObjectsV1GrpcClients];\nconst actors = new package0({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
     await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({
       compilerOptions: {
         target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",

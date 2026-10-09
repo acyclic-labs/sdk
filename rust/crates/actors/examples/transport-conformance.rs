@@ -195,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     workers_grpc.cancel_job(request.clone()).await?;
     workers_http.cancel_job(&request).await?;
     let request = workers::wire::InvokeVersionRequest {
-        version_sha256: vec![1; 32],
+        version_sha256: vec![1; 32].into(),
         ..Default::default()
     };
     let pinned = workers_grpc

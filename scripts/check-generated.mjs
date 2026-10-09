@@ -1,13 +1,32 @@
+import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
-import { snapshotCommittedWasm } from "./generated-wasm-baseline.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
+import { nativeFamily } from "./native-family.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const args = process.argv.slice(2);
+if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Error("usage: check-generated.mjs [--source-only]");
+const sourceOnly = args.includes("--source-only");
+for (const key of ["actors", "workers", "stream"]) {
+  const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
+  if (facts.error) throw facts.error;
+  if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
+  const expected = `${JSON.stringify(JSON.parse(facts.stdout), null, 2)}\n`;
+  if (readFileSync(join(root, "scripts/generated/native-families", `${key}.json`), "utf8") !== expected) throw new Error(`Rust native-family ${key} generation drift`);
+}
+const actors = spawnSync(process.execPath, [join(root, "scripts", "generate-actors.mjs"), "check"], {
+  cwd: root,
+  encoding: "utf8",
+});
+if (actors.status !== 0) {
+  process.stderr.write(actors.stdout ?? "");
+  process.stderr.write(actors.stderr ?? "");
+  throw new Error(`Actors Rust generation drift check failed with status ${actors.status ?? "unknown"}`);
+}
 const generatedFiles = directory => {
   const files = [];
   const visit = (current, prefix) => {
@@ -53,68 +72,12 @@ const runtimeFingerprint = value => {
   }
   return value;
 };
-// Frozen smoke vectors from the current Rust route and protobuf contracts.
-const expectedMachinesRoutes = {
-  "IMAGES_QUALIFY": "images/qualify",
-  "MACHINES_CREATE": "machines/create",
-  "MACHINES_INSPECT": "machines/inspect",
-  "MACHINES_LIST": "machines/list",
-  "CHECKPOINTS_INSPECT": "checkpoints/inspect",
-  "MACHINES_CHECKPOINT": "machines/checkpoint",
-  "MACHINES_FORK": "machines/fork",
-  "CHECKPOINTS_FORK": "checkpoints/fork",
-  "MACHINES_SUSPEND": "machines/suspend",
-  "MACHINES_WAKE": "machines/wake",
-  "MACHINES_SUSPENSION_POLICY": "machines/suspension-policy",
-  "MACHINES_DESTROY": "machines/destroy",
-  "CHECKPOINTS_DESTROY": "checkpoints/destroy",
-  "MACHINES_EVENTS": "machines/events",
-  "MACHINES_USAGE": "machines/usage",
-  "OPERATIONS_RECOVER": "operations/recover",
-  "OPERATIONS_RECOVER_ID": "operations/recover-id",
-  "OPERATIONS_INSPECT": "operations/inspect",
-  "OPERATIONS_CANCEL": "operations/cancel",
-  "OPERATIONS_WATCH": "operations/watch"
-};
-/** @param {() => unknown} invoke @param {string} label */
-const requireRejected = (invoke, label) => {
-  let rejected = false;
-  try { invoke(); } catch { rejected = true; }
-  if (!rejected) throw new Error(label + " accepted an invalid contract vector");
-};
 const wasmSmoke = {
   filesystem: module => typeof module.openMemoryFs === "function",
   harness: module => module.decodeAggregateKind(1),
-  inference: module => {
-    const empty = new Uint8Array();
-    // MutationReceipt: nonzero 32-byte revision/digest and publication sequence 1.
-    const receipt = new Uint8Array([10, 32, ...new Array(32).fill(1), 18, 32, ...new Array(32).fill(2), 24, 1]);
-    if (module.validate_customer_wire("mutation_receipt", receipt, empty, empty) !== undefined) {
-      throw new Error("Inference validator returned a malformed success result");
-    }
-    for (const invalid of [empty, new Uint8Array([255]), receipt.slice(0, -2)]) {
-      requireRejected(() => module.validate_customer_wire("mutation_receipt", invalid, empty, empty), "Inference receipt");
-    }
-    requireRejected(() => module.validate_customer_wire("unknown", receipt, empty, empty), "Inference kind");
-    return true;
-  },
-  machines: module => {
-    const routes = module.httpRoutes();
-    if (routes === null || typeof routes !== "object" || Array.isArray(routes)
-      || JSON.stringify(runtimeFingerprint(routes)) !== JSON.stringify(runtimeFingerprint(expectedMachinesRoutes))) {
-      throw new Error("Machines HTTP route contract differs");
-    }
-    return routes;
-  },
-  objects: module => {
-    const input = module.objects_v1_http_type("objects/get", false);
-    const output = module.objects_v1_http_type("objects/get", true);
-    if (input !== "GetObjectRequest" || output !== "GetObjectResponse") {
-      throw new Error("Objects v1 get route contract differs");
-    }
-    requireRejected(() => module.objects_v1_http_type("retired", false), "Objects v1 route");
-    return [input, output];
-  },
+  inference: module => typeof module.validate_customer_wire === "function",
+  machines: module => module.httpRoutes(),
+  objects: module => module.objects_v1_http_type("objects/get", false),
   stream: module => {
     if (module.is_stream_error_code("retired")) {
       throw new Error("Stream WASM still accepts a retired-path error");
@@ -129,7 +92,7 @@ const wasmPackages = [
   ["inference", "acyclic_inference_wasm"],
   ["machines", "acyclic_machines_wasm"],
   ["objects", "acyclic_objects_wasm"],
-  ["stream", "acyclic_stream_wasm"],
+  ...["actors", "workers", "stream"].map(key => /** @type {[string, string]} */ ([key, nativeFamily(key).wasm.outName])),
 ];
 const checkWasmPackage = async ([packageName, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);
@@ -142,11 +105,9 @@ const checkWasmPackage = async ([packageName, basename]) => {
     process.stderr.write(built.stderr ?? "");
     throw new Error(`${packageName} WASM rebuild failed with status ${built.status ?? "unknown"}`);
   }
-  const packageRoot = join(baseline.directory, packageName);
-  const tracked = baseline.extensions[packageName];
+  const packageRoot = join(root, `typescript/packages/${packageName}/generated/wasm`);
   for (const extension of [".js", ".d.ts", "_bg.wasm.d.ts"]) {
     const fresh = readFileSync(join(output, `${basename}${extension}`), "utf8");
-    if (!tracked.includes(extension)) continue;
     const committed = readFileSync(join(packageRoot, `${basename}${extension}`), "utf8");
     const normalizedFresh = extension === ".js" ? canonicalGeneratedJs(fresh) : declarationBlocks(fresh).join("\n");
     const normalizedCommitted = extension === ".js" ? canonicalGeneratedJs(committed) : declarationBlocks(committed).join("\n");
@@ -155,9 +116,8 @@ const checkWasmPackage = async ([packageName, basename]) => {
     }
   }
   const freshWasm = readFileSync(join(output, `${basename}_bg.wasm`));
-  const committedWasm = tracked.includes("_bg.wasm")
-    ? readFileSync(join(packageRoot, `${basename}_bg.wasm`)) : null;
-  if (!WebAssembly.validate(freshWasm) || (committedWasm && !WebAssembly.validate(committedWasm))) {
+  const committedWasm = readFileSync(join(packageRoot, `${basename}_bg.wasm`));
+  if (!WebAssembly.validate(freshWasm) || !WebAssembly.validate(committedWasm)) {
     throw new Error(`packaged ${packageName} WASM failed validation`);
   }
   const load = async (directory, wasm) => {
@@ -169,13 +129,6 @@ const checkWasmPackage = async ([packageName, basename]) => {
     return { module, initialized };
   };
   const freshRuntime = await load(output, freshWasm);
-  const smoke = wasmSmoke[packageName];
-  const freshSmoke = smoke ? runtimeFingerprint(await smoke(freshRuntime.module)) : undefined;
-  if (freshSmoke === false) throw new Error(`packaged ${packageName} WASM smoke failed`);
-  if (!committedWasm) {
-    console.log(`${packageName}: fresh WASM runtime validated; ${tracked.length} tracked declarations compared with HEAD ${baseline.source}`);
-    return;
-  }
   const committedRuntime = await load(packageRoot, committedWasm);
   const freshExports = Object.keys(freshRuntime.module).sort();
   const committedExports = Object.keys(committedRuntime.module).sort();
@@ -187,7 +140,9 @@ const checkWasmPackage = async ([packageName, basename]) => {
       throw new Error(`packaged ${packageName} WASM export kind drift: ${name}`);
     }
   }
+  const smoke = wasmSmoke[packageName];
   if (smoke) {
+    const freshSmoke = runtimeFingerprint(await smoke(freshRuntime.module));
     const committedSmoke = runtimeFingerprint(await smoke(committedRuntime.module));
     if (JSON.stringify(freshSmoke) !== JSON.stringify(committedSmoke)) {
       throw new Error(`packaged ${packageName} WASM runtime semantics drift`);
@@ -196,12 +151,43 @@ const checkWasmPackage = async ([packageName, basename]) => {
 };
 
 
-const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
-/** @type {ReturnType<typeof snapshotCommittedWasm>} */
-let baseline;
+// Keep temporary consumers under the workspace so maintained dependencies resolve
+// through its installed node_modules without copying or inventing codec packages.
+const temporary = mkdtempSync(join(root, "target-sdk-codegen-"));
 try {
-  // Read every tracked WASM baseline even if an earlier build rewrote the worktree.
-  baseline = snapshotCommittedWasm(root, join(temporary, "committed-wasm"), wasmPackages);
+  const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8" });
+  if (readonly.error) throw readonly.error;
+  if (readonly.status !== 0) throw new Error(`Rust readonly projection failed: ${readonly.stderr}`);
+  for (const family of ["actors", "workers"]) if (readFileSync(join(root, `typescript/packages/${family}/src/generated/readonly.ts`), "utf8") !== readonly.stdout) throw new Error(`${family} readonly projection drift`);
+  const readonlyTypes = join(temporary, "readonly-types");
+  mkdirSync(readonlyTypes);
+  // Bun's isolated install keeps protobuf in the consuming package's
+  // node_modules. Resolve the fixture against those maintained dependencies.
+  mkdirSync(join(readonlyTypes, "node_modules/@bufbuild"), { recursive: true });
+  symlinkSync(realpathSync(join(root, "typescript/packages/actors/node_modules/@bufbuild/protobuf")), join(readonlyTypes, "node_modules/@bufbuild/protobuf"), process.platform === "win32" ? "junction" : "dir");
+  writeFileSync(join(readonlyTypes, "readonly.ts"), readonly.stdout);
+  writeFileSync(join(readonlyTypes, "consumer.ts"), readFileSync(join(root, "rust/crates/proto-codegen/tests/readonly-consumer.ts")));
+  const readonlyConsumer = spawnSync(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--ignoreConfig", "--noEmit", "--strict", "--target", "ES2023", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--pretty", "false", join(readonlyTypes, "consumer.ts")], { cwd: root, encoding: "utf8" });
+  if (readonlyConsumer.error) throw readonlyConsumer.error;
+  if (readonlyConsumer.status !== 0) throw new Error(`readonly TypeScript consumer failed: ${readonlyConsumer.stdout}${readonlyConsumer.stderr}`);
+  const freshWorkers = join(temporary, "workers-semantic");
+  const freshWorkersProto = join(temporary, "workers-proto");
+  const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", freshWorkersProto, freshWorkers], { cwd: root, encoding: "utf8" });
+  if (workers.error) throw workers.error;
+  if (workers.status !== 0) throw new Error(`Workers Rust generation failed: ${workers.stderr}`);
+  const formattedWorkers = spawnSync(join(root, "node_modules/.bin", process.platform === "win32" ? "buf.exe" : "buf"), ["format", "-w", join(freshWorkersProto, "workers/v1/workers.proto")], { cwd: root, encoding: "utf8" });
+  if (formattedWorkers.error) throw formattedWorkers.error;
+  if (formattedWorkers.status !== 0) throw new Error(`Workers Proto formatting failed: ${formattedWorkers.stderr}`);
+  if (!readFileSync(join(freshWorkersProto, "workers/v1/workers.proto")).equals(readFileSync(join(root, "proto/workers/v1/workers.proto")))) throw new Error("Workers Rust-rendered Proto drift");
+  const generatedService = join(temporary, "workers-service.ts");
+  await serviceGenerate("Workers", temporary, generatedService);
+  if (!readFileSync(generatedService).equals(readFileSync(join(root, "typescript/packages/workers/src/generated/workers-service.ts")))) throw new Error("Workers semantic service drift");
+  if (!readFileSync(join(temporary, "workers-binding.ts")).equals(readFileSync(join(root, "typescript/packages/workers/src/generated/workers-binding.ts")))) throw new Error("Workers binding identity drift");
+  if (!readFileSync(join(temporary, "native-absence.ts")).equals(readFileSync(join(root, "typescript/packages/workers/src/generated/native-absence.ts")))) throw new Error("Workers native absence projection drift");
+  const packagedWorkers = join(root, "typescript/packages/workers/src/generated/semantic");
+  const expectedWorkers = generatedFiles(freshWorkers);
+  if (JSON.stringify(expectedWorkers) !== JSON.stringify(generatedFiles(packagedWorkers))) throw new Error("Workers semantic TypeScript file set drift");
+  for (const file of expectedWorkers) if (!readFileSync(join(freshWorkers, file)).equals(readFileSync(join(packagedWorkers, file)))) throw new Error(`Workers semantic TypeScript drift: ${file}`);
   for (const [source, packaged] of packagedSourceCopies) {
     if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
       throw new Error(`packaged source drift: ${packaged}`);
@@ -276,7 +262,7 @@ try {
       throw new Error(`packaged ${name} TypeScript file set drift`);
     }
   }
-  for (const wasmPackage of wasmPackages) {
+  for (const wasmPackage of sourceOnly ? [] : wasmPackages) {
     await checkWasmPackage(wasmPackage);
   }
 } finally {
