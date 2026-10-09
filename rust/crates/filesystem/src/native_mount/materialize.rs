@@ -601,7 +601,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             }
             let destination_root = options.destination.clone();
             let relative = relative.to_path_buf();
-            let (destination, stage_root, _restore_lock) =
+            let (destination, stage_root, restore_lock) =
                 tokio::task::spawn_blocking(crate::obs::in_context(worker_context.clone(), {
                     let destination_root = destination_root.clone();
                     let relative = relative.clone();
@@ -631,60 +631,40 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                 Ok(receipt) => receipt,
                 Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
                     let work = *failure.work;
-                    tokio::task::spawn_blocking(crate::obs::in_context(
-                        worker_context.clone(),
-                        move || {
-                            let parent = held_parent(&destination_root, &relative)
-                                .map_err(materialize_io_error)?;
-                            let name = relative
-                                .file_name()
-                                .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
-                            remove_any(&stage_root)?;
-                            remove_restored_path(
-                                &parent,
-                                Path::new(name),
-                                &destination_root,
-                                &relative,
-                            )
-                        },
-                    ))
-                    .await
-                    .map_err(|error| {
-                        OperationFailure::new(MaterializeError::Engine(error.to_string()), work)
-                    })?
-                    .map_err(|error| OperationFailure::new(MaterializeError::Io(error), work))?;
+                    restore_io(worker_context, restore_lock, work, move || {
+                        let parent = held_parent(&destination_root, &relative)
+                            .map_err(materialize_io_error)?;
+                        let name = relative
+                            .file_name()
+                            .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
+                        remove_any(&stage_root)?;
+                        remove_restored_path(&parent, Path::new(name), &destination_root, &relative)
+                    })
+                    .await?;
                     return Ok(OperationReceipt {
                         value: HostPathRestore::Removed,
                         work,
                     });
                 }
                 Err(failure) => {
-                    let _ = tokio::task::spawn_blocking(crate::obs::in_context(
-                        worker_context.clone(),
-                        move || remove_any(&stage_root),
-                    ))
+                    let _ = restore_io(worker_context, restore_lock, *failure.work, move || {
+                        remove_any(&stage_root)
+                    })
                     .await;
                     return Err(failure);
                 }
             };
-            tokio::task::spawn_blocking(crate::obs::in_context(
-                worker_context.clone(),
-                move || {
-                    publish_restore(
-                        &destination_root,
-                        &relative,
-                        &destination,
-                        &staged,
-                        &stage_root,
-                        replacement,
-                    )
-                },
-            ))
-            .await
-            .map_err(|error| {
-                OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
-            })?
-            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+            restore_io(worker_context, restore_lock, receipt.work, move || {
+                publish_restore(
+                    &destination_root,
+                    &relative,
+                    &destination,
+                    &staged,
+                    &stage_root,
+                    replacement,
+                )
+            })
+            .await?;
             Ok(OperationReceipt {
                 value: HostPathRestore::Restored,
                 work: receipt.work,
@@ -693,6 +673,23 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         .await,
         |receipt| &receipt.work,
     )
+}
+
+async fn restore_io<T: Send + 'static, E: Into<MaterializeError> + Send + 'static>(
+    context: crate::obs::OperationSpan,
+    lock: File,
+    work: WorkCounters,
+    operation: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, OperationFailure<MaterializeError>> {
+    let operation = move || {
+        // A cancelled waiter must not release the fence while host I/O continues.
+        let _restore_lock = lock;
+        operation()
+    };
+    tokio::task::spawn_blocking(crate::obs::in_context(context, operation))
+        .await
+        .map_err(|error| OperationFailure::new(MaterializeError::Engine(error.to_string()), work))?
+        .map_err(|error| OperationFailure::new(error.into(), work))
 }
 
 fn materialize_io_error(error: MaterializeError) -> std::io::Error {
@@ -2395,6 +2392,50 @@ mod restore_recovery_tests {
         // Blocking: a child another test forks shares the lock's open file
         // until it execs, so a release can take a moment to be observed.
         let _next = acquire_restore_lock(relative, &destination, true)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let relative = Path::new("entry");
+        let destination = temporary.path().join(relative);
+        let lock = acquire_restore_lock(relative, &destination, true)?;
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(restore_io(
+            crate::obs::caller_context(),
+            lock,
+            WorkCounters::default(),
+            move || {
+                let _ = started.send(());
+                // Dropping release on an early test exit also unblocks the worker.
+                blocked.recv().map_err(std::io::Error::other)?;
+                let _ = finished.send(());
+                Ok::<_, std::io::Error>(())
+            },
+        ));
+        entered.await?;
+        waiter.abort();
+        let cancelled = waiter.await;
+        let competing = acquire_restore_lock(relative, &destination, false);
+        let fenced = matches!(
+            &competing,
+            Err(MaterializeError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        );
+        drop(competing);
+        // Release before assertions: even the broken-lock mutation must finish.
+        release.send(())?;
+        completion.await?;
+        // Acquiring is the completion barrier for the worker's final lock drop.
+        let _next = acquire_restore_lock(relative, &destination, true)?;
+        assert!(cancelled.is_err_and(|error| error.is_cancelled()));
+        assert!(
+            fenced,
+            "cancelled waiter released a still-running restore's lock"
+        );
         Ok(())
     }
 

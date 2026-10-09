@@ -406,28 +406,19 @@ impl NativeWatch {
         let result = crate::obs::scope(&span, || {
             let options = options.validate()?;
             let requested_root = root.as_ref();
-            let admission = requested_root
-                .symlink_metadata()
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let admission = requested_root.symlink_metadata()?;
             if admission.file_type().is_symlink() {
                 return Err(NativeWatchError::RootIsNotDirectory);
             }
-            let root = requested_root
-                .canonicalize()
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
-            let root_file =
-                open_native_root(&root).map_err(|error| NativeWatchError::Io(error.to_string()))?;
-            let metadata = root_file
-                .metadata()
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let root = requested_root.canonicalize()?;
+            let root_file = open_native_root(&root)?;
+            let metadata = root_file.metadata()?;
             if !metadata.is_dir() {
                 return Err(NativeWatchError::RootIsNotDirectory);
             }
-            let root_identity = NativeRootIdentity::from_file(&root_file)
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let root_identity = NativeRootIdentity::from_file(&root_file)?;
             #[cfg(windows)]
-            let complete = crate::native_host::reports_every_change(&root_file)
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let complete = crate::native_host::reports_every_change(&root_file)?;
             #[cfg(not(windows))]
             let complete = true;
             let capacity = usize::try_from(options.maximum_queued_changes)
@@ -1583,6 +1574,12 @@ pub enum NativeWatchError {
     /// Exact work overflowed or exceeded the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+}
+
+impl From<std::io::Error> for NativeWatchError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
 }
 
 #[cfg(test)]

@@ -4089,7 +4089,7 @@ impl Filesystem for FuseProjection {
             callback_span!(TRACE, unlink, ino = parent.0),
         );
         respond!(reply, &_request.1, self.remove_name(parent.0, name), |()| {
-            reply.ok()
+            reply.ok();
         });
     }
 
@@ -4100,7 +4100,7 @@ impl Filesystem for FuseProjection {
             callback_span!(TRACE, rmdir, ino = parent.0),
         );
         respond!(reply, &_request.1, self.remove_name(parent.0, name), |()| {
-            reply.ok()
+            reply.ok();
         });
     }
 
