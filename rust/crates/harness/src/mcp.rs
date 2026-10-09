@@ -397,6 +397,7 @@ impl McpCatalog {
             description: remote.description.clone(),
             input_schema: remote.input_schema.clone(),
             output_schema: Value::Object(output_schema),
+            projection_schema: crate::tool::json_projection_schema(json!({})),
         })
     }
 
@@ -446,7 +447,7 @@ impl McpCatalog {
         if let Some(old) = previous {
             for remote in &old.tools {
                 let definition = old.definition(remote)?;
-                next.withdraw_model_tool(&definition.name);
+                next.remove_from_model(&definition.name)?;
             }
         }
         for remote in &self.tools {
@@ -460,7 +461,7 @@ impl McpCatalog {
                 }),
                 projection: Arc::clone(projection),
             })?;
-            next.withdraw_model_tool(&definition.name);
+            next.remove_from_model(&definition.name)?;
         }
         for remote in self.selected_tools() {
             let definition = self.definition(remote)?;
@@ -661,7 +662,7 @@ mod tests {
     struct Projection;
     impl ToolProjection for Projection {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(result.value.clone())
+            Ok(json!({"kind":"json","value":result.value}))
         }
     }
     fn catalog(revision: &str, names: &[&str]) -> McpCatalog {

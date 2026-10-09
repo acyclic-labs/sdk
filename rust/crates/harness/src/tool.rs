@@ -22,12 +22,14 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema for invocation arguments.
     pub input_schema: Value,
-    /// JSON Schema for the successful result.
+    /// JSON Schema for the canonical successful executor value.
     pub output_schema: Value,
+    /// JSON Schema for the model-facing projection, independently of the result.
+    pub projection_schema: Value,
 }
 
 impl ToolDefinition {
-    /// Validates the name and both schemas.
+    /// Validates the name and all three independently pinned schemas.
     pub fn validate(&self) -> Result<()> {
         validate_tool_name(&self.name)?;
         validate_component_label(&self.revision, "tool revision")?;
@@ -36,10 +38,26 @@ impl ToolDefinition {
                 "tool name and revision cannot contain the version separator".into(),
             ));
         }
-        for schema in [&self.input_schema, &self.output_schema] {
+        for schema in [
+            &self.input_schema,
+            &self.output_schema,
+            &self.projection_schema,
+        ] {
             crate::contract::compile_json_schema(schema, "tool")?;
         }
         Ok(())
+    }
+
+    /// Validates and decodes the complete model-visible projection envelope.
+    /// Bare values are rejected even when an unconstrained schema accepts them.
+    pub(crate) fn validate_projection(
+        &self,
+        value: &Value,
+    ) -> Result<crate::model::ToolResultContent> {
+        validate_value(&self.projection_schema, value, "tool projection")?;
+        serde_json::from_value(value.clone()).map_err(|error| {
+            Error::Invalid(format!("tool projection envelope is invalid: {error}"))
+        })
     }
 
     /// Immutable approval identity for the exact model-visible definition.
@@ -47,6 +65,14 @@ impl ToolDefinition {
         self.validate()?;
         crate::contract::canonical_json_digest(self)
     }
+}
+
+/// Declares an explicit JSON result envelope for the supplied value schema.
+/// The value schema is a child schema; local references resolve from the complete envelope.
+#[must_use]
+pub fn json_projection_schema(value_schema: Value) -> Value {
+    serde_json::json!({"type":"object","properties":{"kind":{"const":"json"},"value":value_schema},
+        "required":["kind","value"],"additionalProperties":false})
 }
 
 /// One admitted invocation.
@@ -140,6 +166,16 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
+    /// Checks original task-bound resources before replay, dispatch or reconciliation.
+    /// Context-independent adapters retain the same scoped authorization gate.
+    fn authorize_with_context(
+        &self,
+        context: &crate::runtime::ToolContext,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        self.authorize(Some(context.task().scope()), invocation)
+    }
+
     /// Executes an already admitted invocation.
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>>;
 
@@ -173,7 +209,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
 
 /// Replaceable mapping from tool results into model-visible context.
 pub trait ToolProjection: acyclic_stream::ProviderPlatform {
-    /// Projects without side effects and preserves the definition's output schema.
+    /// Produces the complete serialized ToolResultContent envelope without effects.
+    /// The independently pinned projection schema validates this full envelope.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 }
 
@@ -199,12 +236,19 @@ pub struct Tool {
     pub projection: Arc<dyn ToolProjection>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum ModelSelection {
+    Revision(String),
+    Ambiguous,
+    Hidden,
+}
+
 /// Deterministic registry retaining every pinned revision. A model request
 /// exposes exactly one selected revision per logical tool name.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     versions: BTreeMap<(String, String), Tool>,
-    selected: BTreeMap<String, Option<String>>,
+    selected: BTreeMap<String, ModelSelection>,
     catalog_revisions: BTreeMap<String, [u8; 32]>,
 }
 
@@ -235,9 +279,12 @@ impl ToolRegistry {
         let previous = self.versions.keys().any(|(logical, _)| logical == &name);
         self.versions.insert((name.clone(), revision.clone()), tool);
         if previous {
-            self.selected.insert(name, None);
+            if self.selected.get(&name) != Some(&ModelSelection::Hidden) {
+                self.selected.insert(name, ModelSelection::Ambiguous);
+            }
         } else {
-            self.selected.insert(name, Some(revision));
+            self.selected
+                .insert(name, ModelSelection::Revision(revision));
         }
         Ok(())
     }
@@ -250,15 +297,11 @@ impl ToolRegistry {
         {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
         }
-        self.selected
-            .insert(name.to_owned(), Some(revision.to_owned()));
+        self.selected.insert(
+            name.to_owned(),
+            ModelSelection::Revision(revision.to_owned()),
+        );
         Ok(())
-    }
-
-    /// Withdraws a model-visible name while retaining its admitted revisions.
-    /// Existing invocations continue to resolve through `get_version`.
-    pub fn withdraw_model_tool(&mut self, name: &str) {
-        self.selected.remove(name);
     }
 
     /// Pins complete dynamic installation identity, including empty visibility.
@@ -275,6 +318,18 @@ impl ToolRegistry {
             ));
         }
         self.catalog_revisions.insert(namespace.into(), revision);
+        Ok(())
+    }
+
+    /// Removes a logical tool from future model catalogs without deleting its
+    /// immutable versions. Already admitted operations can still resolve their
+    /// pinned version; calling `select_model_version` explicitly restores it.
+    pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
+        if !self.versions.keys().any(|(logical, _)| logical == name) {
+            return Err(Error::NotFound(format!("tool {name}")));
+        }
+        self.selected
+            .insert(name.to_owned(), ModelSelection::Hidden);
         Ok(())
     }
 
@@ -310,7 +365,9 @@ impl ToolRegistry {
         if let Some((logical, revision)) = name.rsplit_once('@') {
             return self.get_version(logical, revision);
         }
-        let revision = self.selected.get(name)?.as_ref()?;
+        let ModelSelection::Revision(revision) = self.selected.get(name)? else {
+            return None;
+        };
         self.get_version(name, revision)
     }
 
@@ -324,9 +381,15 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Result<Vec<ToolDefinition>> {
         let mut definitions = Vec::with_capacity(self.selected.len());
         for (name, selection) in &self.selected {
-            let revision = selection.as_ref().ok_or_else(|| {
-                Error::Conflict(format!("tool {name} requires an explicit model revision"))
-            })?;
+            let revision = match selection {
+                ModelSelection::Revision(revision) => revision,
+                ModelSelection::Hidden => continue,
+                ModelSelection::Ambiguous => {
+                    return Err(Error::Conflict(format!(
+                        "tool {name} requires an explicit model revision"
+                    )));
+                }
+            };
             let tool = self
                 .get_version(name, revision)
                 .ok_or_else(|| Error::Storage("selected tool revision is not registered".into()))?;
@@ -360,7 +423,7 @@ mod tests {
     struct Projection;
     impl ToolProjection for Projection {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(result.value.clone())
+            Ok(serde_json::json!({"kind":"json","value":result.value}))
         }
     }
 
@@ -395,6 +458,7 @@ mod tests {
                     description: "Echo".into(),
                     input_schema: json!({}),
                     output_schema: json!({}),
+                    projection_schema: crate::tool::json_projection_schema(json!({})),
                 },
                 executor: Arc::new(Executor),
                 projection: Arc::new(Projection),
@@ -411,6 +475,26 @@ mod tests {
                 .map(|tool| tool.definition.revision.as_str()),
             Some("2")
         );
+        tools.remove_from_model("example.echo")?;
+        assert!(tools.definitions()?.is_empty());
+        assert!(tools.get("example.echo").is_none());
+        assert!(tools.get_version("example.echo", "1").is_some());
+        assert!(tools.get_version("example.echo", "2").is_some());
+        assert!(tools.get("example.echo@1").is_some());
+        let mut replacement = tools
+            .get_version("example.echo", "1")
+            .ok_or_else(|| Error::NotFound("test tool".into()))?
+            .clone();
+        replacement.definition.revision = "3".into();
+        tools.register(replacement)?;
+        assert!(tools.definitions()?.is_empty());
+        assert!(tools.get_version("example.echo", "3").is_some());
+        assert!(matches!(
+            tools.remove_from_model("missing"),
+            Err(Error::NotFound(_))
+        ));
+        tools.select_model_version("example.echo", "1")?;
+        assert_eq!(tools.definitions()?[0].revision, "1");
         Ok(())
     }
 
@@ -418,6 +502,64 @@ mod tests {
         id: InteractionId,
         operation: OperationId,
         digest: [u8; 32],
+    }
+
+    #[test]
+    fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
+        let definition = ToolDefinition {
+            name: "example.result".into(),
+            revision: "1".into(),
+            description: "Keep a structured result and project text".into(),
+            input_schema: json!({"type": "null"}),
+            output_schema: json!({"type": "object", "required": ["count"],
+                "properties": {"count": {"type": "integer"}}, "additionalProperties": false}),
+            projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
+        };
+        definition.validate()?;
+        let permissive = ToolDefinition {
+            projection_schema: json!({}),
+            ..definition.clone()
+        };
+        assert!(
+            permissive
+                .validate_projection(&json!("old bare projection"))
+                .is_err()
+        );
+        assert!(
+            permissive
+                .validate_projection(&json!({"kind":"parts","parts":[
+                    {"kind":"tool_call","call_id":"nested","name":"nested","arguments":{}}
+                ]}))
+                .is_err()
+        );
+        validate_value(&definition.output_schema, &json!({"count": 2}), "result")?;
+        validate_value(
+            &definition.projection_schema,
+            &json!({"kind":"json","value":"two"}),
+            "projection",
+        )?;
+        assert!(validate_value(&definition.output_schema, &json!("two"), "result").is_err());
+        assert!(
+            validate_value(
+                &definition.projection_schema,
+                &json!({"count": 2}),
+                "projection"
+            )
+            .is_err()
+        );
+        let mut changed = definition.clone();
+        changed.projection_schema = json!({"type": "integer"});
+        assert_ne!(definition.digest()?, changed.digest()?);
+        changed.projection_schema = json!({"type": "not-a-schema-type"});
+        assert!(changed.validate().is_err());
+        let mut missing =
+            serde_json::to_value(definition).map_err(|error| Error::Invalid(error.to_string()))?;
+        missing
+            .as_object_mut()
+            .expect("definition object")
+            .remove("projection_schema");
+        assert!(serde_json::from_value::<ToolDefinition>(missing).is_err());
+        Ok(())
     }
     impl ToolApprovalVerifier for Approved {
         fn verify<'a>(
@@ -446,6 +588,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({}),
+            projection_schema: crate::tool::json_projection_schema(json!({})),
         };
         let digest = definition.digest()?;
         let operation_id = OperationId::from_bytes([8; 16]);

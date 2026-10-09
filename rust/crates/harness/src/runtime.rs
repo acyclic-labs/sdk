@@ -6744,7 +6744,16 @@ mod tests {
                         role: crate::model::ModelRole::User,
                         content: ModelContent::Part(ModelContentPart::File {
                             file: foreign,
-                            policy: crate::model::FileProjectionPolicy::Native,
+                            policy: crate::model::FileProjectionPolicy::Native(
+                                crate::model::NativeMediaPolicy {
+                                    intent: crate::model::NativeMediaIntent::Image {
+                                        detail: crate::model::ImageDetail::Auto
+                                    },
+                                    maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+                                    maximum_work: 4096,
+                                    configuration: None
+                                }
+                            ),
                         }),
                     }],
                     None
@@ -6858,6 +6867,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
+            projection_schema: crate::tool::json_projection_schema(serde_json::json!({})),
         };
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),
@@ -7908,6 +7918,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({}),
+            projection_schema: crate::tool::json_projection_schema(serde_json::json!({})),
         };
         let invocation = ToolInvocation::for_model_call(
             OperationId::from_bytes([40; 16]),

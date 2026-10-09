@@ -210,7 +210,7 @@ impl ToolExecutor for NoopTool {
 }
 impl ToolProjection for NoopTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(serde_json::json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -456,6 +456,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         description: "No-op".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
     };
     let executions = Arc::new(AtomicUsize::new(0));
     let reconciliations = Arc::new(AtomicUsize::new(0));
@@ -475,9 +476,23 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         description: "Pinned invalid result".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({"type":"string"}),
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
     };
     registry.register(Tool {
         definition: invalid_output.clone(),
+        executor: counted.clone(),
+        projection: Arc::new(NoopTool),
+    })?;
+    let invalid_projection = ToolDefinition {
+        name: "example.invalid-projection".into(),
+        revision: "1".into(),
+        description: "Valid canonical result with an invalid model projection".into(),
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({}),
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
+    };
+    registry.register(Tool {
+        definition: invalid_projection.clone(),
         executor: counted,
         projection: Arc::new(NoopTool),
     })?;
@@ -874,6 +889,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         description: "Echo".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
+        projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
     };
     let digest = definition.digest()?;
     let operation = OperationId::from_bytes([14; 16]);
@@ -1079,7 +1095,14 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         },
         ModelContentPart::File {
             file: file.clone(),
-            policy: FileProjectionPolicy::Native,
+            policy: FileProjectionPolicy::Native(acyclic_harness::model::NativeMediaPolicy {
+                intent: acyclic_harness::model::NativeMediaIntent::Image {
+                    detail: acyclic_harness::model::ImageDetail::Auto,
+                },
+                maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                maximum_work: 4096,
+                configuration: None,
+            }),
         },
     ]);
     let invalid = FileRef::new(
@@ -1097,7 +1120,16 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                     operation_id,
                     input: ModelContent::Part(ModelContentPart::File {
                         file: invalid,
-                        policy: FileProjectionPolicy::Native
+                        policy: FileProjectionPolicy::Native(
+                            acyclic_harness::model::NativeMediaPolicy {
+                                intent: acyclic_harness::model::NativeMediaIntent::Image {
+                                    detail: acyclic_harness::model::ImageDetail::Auto
+                                },
+                                maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                                maximum_work: 4096,
+                                configuration: None
+                            }
+                        )
                     }),
                     selected_context: None,
                     max_steps: 1

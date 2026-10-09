@@ -152,7 +152,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
 struct Projection;
 impl ToolProjection for Projection {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(result.value.clone())
+        Ok(json!({"kind":"json","value":result.value}))
     }
 }
 

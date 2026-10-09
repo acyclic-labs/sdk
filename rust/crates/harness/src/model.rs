@@ -430,9 +430,9 @@ impl NativeMediaPolicy {
     /// Validates declarative bounds before any input or options are read.
     pub fn validate(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
         fn finite(value: u64) -> Result<()> {
-            if value == 0 || value == u64::MAX {
+            if value == 0 || value > crate::conversation::MAX_EXACT_JS_INTEGER {
                 return Err(Error::Invalid(
-                    "native media ceiling must be positive and finite".into(),
+                    "native media ceiling must be positive and exactly portable".into(),
                 ));
             }
             Ok(())
@@ -482,9 +482,11 @@ impl NativeMediaPolicy {
 
 impl FileProjectionPolicy {
     fn validate_file(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
+        if let Self::Native(policy) = self {
+            return policy.validate(file, limits);
+        }
         limits.validate_file(file)?;
         match self {
-            Self::Native(policy) => policy.validate(file, limits),
             Self::BoundedFull if file.descriptor().byte_length() > limits.render_bytes => {
                 Err(Error::Invalid("model file exceeds render limit".into()))
             }
@@ -503,7 +505,7 @@ impl FileProjectionPolicy {
 }
 
 impl ToolResultContent {
-    fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
+    pub(crate) fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
                 return Err(Error::Invalid(
@@ -1155,7 +1157,7 @@ mod tests {
                 configuration: None,
             };
             valid.validate(&media, Limits::default())?;
-            for value in [0, u64::MAX] {
+            for value in [0, crate::conversation::MAX_EXACT_JS_INTEGER + 1, u64::MAX] {
                 let mut invalid = valid.clone();
                 invalid.maximum_bytes = value;
                 assert!(invalid.validate(&media, Limits::default()).is_err());
@@ -1170,6 +1172,9 @@ mod tests {
         for intent in [
             NativeMediaIntent::Audio {
                 maximum_duration_ms: 0,
+            },
+            NativeMediaIntent::Audio {
+                maximum_duration_ms: crate::conversation::MAX_EXACT_JS_INTEGER + 1,
             },
             NativeMediaIntent::Video {
                 maximum_duration_ms: u64::MAX,
