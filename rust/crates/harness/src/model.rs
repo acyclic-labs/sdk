@@ -130,12 +130,7 @@ impl ModelContent {
                     return Err(Error::Invalid("model text exceeds render limit".into()));
                 }
                 ModelContentPart::File { file, policy } => {
-                    limits.validate_file(file)?;
-                    if *policy == FileProjectionPolicy::BoundedFull
-                        && file.descriptor().byte_length() > limits.render_bytes
-                    {
-                        return Err(Error::Invalid("model file exceeds render limit".into()));
-                    }
+                    policy.validate_file(file, limits)?;
                 }
                 ModelContentPart::ToolCall {
                     name, arguments, ..
@@ -149,9 +144,12 @@ impl ModelContent {
                         ));
                     }
                 }
-                ModelContentPart::ToolResult { name, value, .. } => {
+                ModelContentPart::ToolResult { name, content, .. } => {
                     crate::registry::validate_component_label(name, "tool name")?;
-                    if crate::contract::canonical_json_bytes(value)?.len() as u64
+                    content.validate_limits(limits)?;
+                    let envelope = serde_json::to_value(content)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    if crate::contract::canonical_json_bytes(&envelope)?.len() as u64
                         > limits.render_bytes
                     {
                         return Err(Error::Invalid(
@@ -161,6 +159,11 @@ impl ModelContent {
                 }
                 ModelContentPart::Text { .. } => {}
             }
+        }
+        if self.file_refs().len() > limits.attachments.saturating_add(1) {
+            return Err(Error::Invalid(
+                "model content reference count exceeds attachment limit".into(),
+            ));
         }
         Ok(())
     }
@@ -193,20 +196,84 @@ impl ModelContent {
         Ok(())
     }
 
-    /// Returns every immutable file referenced by one typed input.
+    /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> Vec<&FileRef> {
-        match self {
-            Self::Part(ModelContentPart::File { file, .. }) => vec![file],
-            Self::Text(_) | Self::Part(_) => Vec::new(),
-            Self::Parts(parts) => parts
-                .iter()
-                .filter_map(|part| match part {
-                    ModelContentPart::File { file, .. } => Some(file),
-                    _ => None,
-                })
-                .collect(),
+        let mut files = Vec::new();
+        for part in self.parts() {
+            match part {
+                ModelContentPart::File { file, policy } => policy.append_refs(file, &mut files),
+                ModelContentPart::ToolResult {
+                    content: ToolResultContent::Parts { parts },
+                    ..
+                } => {
+                    for part in parts {
+                        if let ModelDataPart::File { file, policy } = part {
+                            policy.append_refs(file, &mut files);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
+        files
+    }
+
+    /// Detects native media in ordinary data and paired result data.
+    /// Option JSON files alone never make a message native media.
+    #[must_use]
+    pub fn contains_native_media(&self) -> bool {
+        self.parts().iter().any(|part| match part {
+            ModelContentPart::File {
+                policy: FileProjectionPolicy::Native(_),
+                ..
+            } => true,
+            ModelContentPart::ToolResult {
+                content: ToolResultContent::Parts { parts },
+                ..
+            } => parts.iter().any(|part| {
+                matches!(
+                    part,
+                    ModelDataPart::File {
+                        policy: FileProjectionPolicy::Native(_),
+                        ..
+                    }
+                )
+            }),
+            _ => false,
+        })
+    }
+
+    /// Claims that the original authenticated host must verify before dispatch.
+    #[must_use]
+    pub fn native_configurations(&self) -> Vec<&NativeConfigurationBinding> {
+        let mut bindings = Vec::new();
+        for part in self.parts() {
+            match part {
+                ModelContentPart::File {
+                    policy: FileProjectionPolicy::Native(policy),
+                    ..
+                } => {
+                    bindings.extend(policy.configuration.iter());
+                }
+                ModelContentPart::ToolResult {
+                    content: ToolResultContent::Parts { parts },
+                    ..
+                } => {
+                    for part in parts {
+                        if let ModelDataPart::File {
+                            policy: FileProjectionPolicy::Native(policy),
+                            ..
+                        } = part
+                        {
+                            bindings.extend(policy.configuration.iter());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        bindings
     }
 }
 
@@ -243,21 +310,242 @@ pub enum ModelContentPart {
         call_id: String,
         /// Registered tool name.
         name: String,
-        /// Model-visible result projection.
-        value: Value,
+        /// Complete model-visible result projection envelope.
+        content: ToolResultContent,
     },
 }
 
 /// File handling policy selected before provider dispatch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileProjectionPolicy {
     /// Metadata-only file reference, with no byte read.
     Reference,
     /// Verified, bounded text bytes.
     BoundedFull,
-    /// Verified provider-native input such as an image.
-    Native,
+    /// Explicit bounded provider-native intent, verified at the adapter boundary.
+    Native(NativeMediaPolicy),
+}
+/// Data in a tool result cannot contain another call or result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ModelDataPart {
+    /// Exact text.
+    Text {
+        /// Exact model-visible text.
+        text: String,
+    },
+    /// Immutable data with an explicit resolution policy.
+    File {
+        /// Immutable media identity.
+        file: FileRef,
+        /// Explicit resolution intent.
+        policy: FileProjectionPolicy,
+    },
+}
+
+/// The complete model-visible projection envelope.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolResultContent {
+    /// Explicit JSON projection.
+    Json {
+        /// Exact schema-defined JSON value.
+        value: Value,
+    },
+    /// Ordered, nonrecursive text and file data.
+    Parts {
+        /// Ordered text and file data.
+        parts: Vec<ModelDataPart>,
+    },
+}
+
+/// Claim to verify against original task admission and linked implementation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeConfigurationBinding {
+    /// Original immutable extension admission event.
+    pub source: crate::core::EventReference,
+    /// Exact registered option schema and immutable JSON file.
+    pub configuration: crate::core::ExtensionConfiguration,
+    /// Original owner-linked executable implementation.
+    pub implementation_digest: [u8; 32],
+}
+
+/// Explicit common image quality intent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDetail {
+    /// Select adapter image quality.
+    Auto,
+    /// Request low image detail.
+    Low,
+    /// Request high image detail.
+    High,
+}
+
+/// Requested modality is independent of the stored file's MIME type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeMediaIntent {
+    /// Provider-native image with explicit detail.
+    Image {
+        /// Explicit native image detail.
+        detail: ImageDetail,
+    },
+    /// Entire audio input with a finite duration ceiling.
+    Audio {
+        /// Positive finite maximum source duration.
+        maximum_duration_ms: u64,
+    },
+    /// Entire video input with finite duration and frame ceilings.
+    Video {
+        /// Positive finite maximum source duration.
+        maximum_duration_ms: u64,
+        /// Positive finite maximum source frame count.
+        maximum_frames: u32,
+    },
+    /// Entire document with a finite page ceiling.
+    Document {
+        /// Positive finite maximum source page count.
+        maximum_pages: u32,
+    },
+}
+
+/// Explicit native input contract; no implicit conversion or fallback.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMediaPolicy {
+    /// Common modality and processing intent.
+    pub intent: NativeMediaIntent,
+    /// Positive finite byte ceiling, also bounded by task content limits.
+    pub maximum_bytes: u64,
+    /// Positive finite work ceiling interpreted by the selected adapter.
+    pub maximum_work: u64,
+    /// Optional immutable registered adapter options; never bearer authority.
+    pub configuration: Option<NativeConfigurationBinding>,
+}
+
+impl NativeMediaPolicy {
+    /// Validates declarative bounds before any input or options are read.
+    pub fn validate(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
+        fn finite(value: u64) -> Result<()> {
+            if value == 0 || value == u64::MAX {
+                return Err(Error::Invalid(
+                    "native media ceiling must be positive and finite".into(),
+                ));
+            }
+            Ok(())
+        }
+        limits.validate_file(file)?;
+        finite(self.maximum_bytes)?;
+        finite(self.maximum_work)?;
+        if file.descriptor().byte_length() > self.maximum_bytes {
+            return Err(Error::Invalid("native media exceeds byte ceiling".into()));
+        }
+        match &self.intent {
+            NativeMediaIntent::Image { .. } => {}
+            NativeMediaIntent::Audio {
+                maximum_duration_ms,
+            } => finite(*maximum_duration_ms)?,
+            NativeMediaIntent::Video {
+                maximum_duration_ms,
+                maximum_frames,
+            } => {
+                finite(*maximum_duration_ms)?;
+                if *maximum_frames == 0 || *maximum_frames == u32::MAX {
+                    return Err(Error::Invalid(
+                        "native video frame ceiling must be positive and finite".into(),
+                    ));
+                }
+            }
+            NativeMediaIntent::Document { maximum_pages } => {
+                if *maximum_pages == 0 || *maximum_pages == u32::MAX {
+                    return Err(Error::Invalid(
+                        "native document page ceiling must be positive and finite".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(binding) = &self.configuration {
+            limits.validate_file(&binding.configuration.content)?;
+            if binding.configuration.content.descriptor().media_type() != "application/json"
+                || binding.configuration.content.descriptor().byte_length() > limits.render_bytes
+            {
+                return Err(Error::Invalid("native options require bounded JSON".into()));
+            }
+        }
+        // Shape/bounds do not authenticate the source, configuration or code.
+        Ok(())
+    }
+}
+
+impl FileProjectionPolicy {
+    fn validate_file(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
+        limits.validate_file(file)?;
+        match self {
+            Self::Native(policy) => policy.validate(file, limits),
+            Self::BoundedFull if file.descriptor().byte_length() > limits.render_bytes => {
+                Err(Error::Invalid("model file exceeds render limit".into()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
+        files.push(file);
+        if let Self::Native(policy) = self {
+            if let Some(binding) = &policy.configuration {
+                files.push(&binding.configuration.content);
+            }
+        }
+    }
+}
+
+impl ToolResultContent {
+    fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
+        if let Self::Parts { parts } = self {
+            if parts.len() > limits.attachments.saturating_add(1) {
+                return Err(Error::Invalid(
+                    "tool result exceeds attachment limit".into(),
+                ));
+            }
+            let mut references = 0usize;
+            for part in parts {
+                match part {
+                    ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes => {
+                        return Err(Error::Invalid(
+                            "tool result text exceeds render limit".into(),
+                        ));
+                    }
+                    ModelDataPart::File { file, policy } => {
+                        policy.validate_file(file, limits)?;
+                        references = references.checked_add(1).ok_or_else(|| {
+                            Error::Invalid("tool result reference count overflow".into())
+                        })?;
+                        if matches!(
+                            policy,
+                            FileProjectionPolicy::Native(NativeMediaPolicy {
+                                configuration: Some(_),
+                                ..
+                            })
+                        ) {
+                            references = references.checked_add(1).ok_or_else(|| {
+                                Error::Invalid("tool result reference count overflow".into())
+                            })?;
+                        }
+                    }
+                    ModelDataPart::Text { .. } => {}
+                }
+            }
+            if references > limits.attachments.saturating_add(1) {
+                return Err(Error::Invalid(
+                    "tool result reference count exceeds limit".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Largest byte count representable by a model request manifest.
@@ -352,7 +640,7 @@ impl ModelRequest {
                     ModelContentPart::ToolResult {
                         call_id,
                         name,
-                        value,
+                        content,
                     } => {
                         ToolInvocation::validate_identity(call_id, name)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
@@ -364,7 +652,9 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
-                        validate_value(&tool.output_schema, value, "model tool result")?;
+                        let envelope = serde_json::to_value(content)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                        validate_value(&tool.projection_schema, &envelope, "model tool result")?;
                     }
                     ModelContentPart::Text { .. } | ModelContentPart::File { .. } => {
                         if message.role == ModelRole::Tool {
@@ -724,6 +1014,213 @@ mod tests {
     use crate::conversation::Limits;
     use serde_json::json;
 
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered native wire scenario checks traversal, limits and negative controls"
+    )]
+    fn native_result_traversal_preserves_media_options_and_nonrecursive_shape() -> Result<()> {
+        let mut reader = PrefixReader::default();
+        let media = store_prefix_bytes(&mut reader, vec![1, 2, 3], "image/png", 90)?;
+        let options = store_prefix_bytes(
+            &mut reader,
+            b"{\"detail\":\"high\"}".to_vec(),
+            "application/json",
+            91,
+        )?;
+        let binding = NativeConfigurationBinding {
+            source: crate::core::EventReference {
+                authority: crate::core::Authority {
+                    kind: crate::core::AggregateKind::Agent,
+                    id: "native-owner".into(),
+                },
+                revision: 1,
+            },
+            configuration: crate::core::ExtensionConfiguration {
+                extension: crate::core::ExtensionDependency {
+                    name: "native.options".into(),
+                    version: 1,
+                },
+                schema_digest: [7; 32],
+                content: options.clone(),
+            },
+            implementation_digest: [8; 32],
+        };
+        let policy = NativeMediaPolicy {
+            intent: NativeMediaIntent::Image {
+                detail: ImageDetail::High,
+            },
+            maximum_bytes: 64,
+            maximum_work: 64,
+            configuration: Some(binding.clone()),
+        };
+        let file = ModelContentPart::File {
+            file: media.clone(),
+            policy: FileProjectionPolicy::Native(policy.clone()),
+        };
+        let result = ModelContentPart::ToolResult {
+            call_id: "native-call".into(),
+            name: "native.tool".into(),
+            content: ToolResultContent::Parts {
+                parts: vec![
+                    ModelDataPart::Text {
+                        text: "before".into(),
+                    },
+                    ModelDataPart::File {
+                        file: media.clone(),
+                        policy: FileProjectionPolicy::Native(policy.clone()),
+                    },
+                    ModelDataPart::Text {
+                        text: "after".into(),
+                    },
+                ],
+            },
+        };
+        for content in [
+            ModelContent::Part(file.clone()),
+            ModelContent::Parts(vec![file]),
+            ModelContent::Part(result.clone()),
+            ModelContent::Parts(vec![result]),
+        ] {
+            content.validate_limits(Limits::default())?;
+            assert!(
+                content
+                    .validate_limits(Limits {
+                        attachments: 0,
+                        ..Limits::default()
+                    })
+                    .is_err()
+            );
+            assert!(content.contains_native_media());
+            assert_eq!(content.file_refs(), vec![&media, &options]);
+            assert_eq!(content.native_configurations(), vec![&binding]);
+            let wire = serde_json::to_value(&content)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let decoded: ModelContent =
+                serde_json::from_value(wire).map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(decoded, content);
+        }
+        for content in [
+            ModelContent::Part(ModelContentPart::File {
+                file: options.clone(),
+                policy: FileProjectionPolicy::Reference,
+            }),
+            ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "json-call".into(),
+                name: "native.tool".into(),
+                content: ToolResultContent::Json {
+                    value: json!({"file":options}),
+                },
+            }),
+        ] {
+            assert!(!content.contains_native_media());
+            assert!(content.native_configurations().is_empty());
+        }
+        assert!(
+            serde_json::from_value::<ModelDataPart>(
+                json!({"kind":"tool_call","call_id":"nested","name":"native.tool","arguments":{}})
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_value::<ToolResultContent>(json!("old bare value")).is_err());
+        assert!(serde_json::from_value::<FileProjectionPolicy>(json!("native")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered native wire scenario checks traversal, limits and negative controls"
+    )]
+    fn native_intents_reject_nonfinite_bounds_and_bind_exact_request_bytes() -> Result<()> {
+        let mut reader = PrefixReader::default();
+        let media = store_prefix_bytes(&mut reader, vec![1, 2, 3], "image/png", 92)?;
+        for intent in [
+            NativeMediaIntent::Image {
+                detail: ImageDetail::Low,
+            },
+            NativeMediaIntent::Audio {
+                maximum_duration_ms: 1000,
+            },
+            NativeMediaIntent::Video {
+                maximum_duration_ms: 1000,
+                maximum_frames: 24,
+            },
+            NativeMediaIntent::Document { maximum_pages: 2 },
+        ] {
+            let valid = NativeMediaPolicy {
+                intent,
+                maximum_bytes: 64,
+                maximum_work: 64,
+                configuration: None,
+            };
+            valid.validate(&media, Limits::default())?;
+            for value in [0, u64::MAX] {
+                let mut invalid = valid.clone();
+                invalid.maximum_bytes = value;
+                assert!(invalid.validate(&media, Limits::default()).is_err());
+                let mut invalid = valid.clone();
+                invalid.maximum_work = value;
+                assert!(invalid.validate(&media, Limits::default()).is_err());
+            }
+            let mut short = valid;
+            short.maximum_bytes = 2;
+            assert!(short.validate(&media, Limits::default()).is_err());
+        }
+        for intent in [
+            NativeMediaIntent::Audio {
+                maximum_duration_ms: 0,
+            },
+            NativeMediaIntent::Video {
+                maximum_duration_ms: u64::MAX,
+                maximum_frames: 24,
+            },
+            NativeMediaIntent::Video {
+                maximum_duration_ms: 1000,
+                maximum_frames: 0,
+            },
+            NativeMediaIntent::Document {
+                maximum_pages: u32::MAX,
+            },
+        ] {
+            let invalid = NativeMediaPolicy {
+                intent,
+                maximum_bytes: 64,
+                maximum_work: 64,
+                configuration: None,
+            };
+            assert!(invalid.validate(&media, Limits::default()).is_err());
+        }
+        let mut original = request()?;
+        original.messages[0].content = ModelContent::Part(ModelContentPart::File {
+            file: media,
+            policy: FileProjectionPolicy::Native(NativeMediaPolicy {
+                intent: NativeMediaIntent::Image {
+                    detail: ImageDetail::Low,
+                },
+                maximum_bytes: 64,
+                maximum_work: 64,
+                configuration: None,
+            }),
+        });
+        let prepared = PreparedModelRequest::prepare(original.clone(), Limits::default())?;
+        if let ModelContent::Part(ModelContentPart::File {
+            policy: FileProjectionPolicy::Native(policy),
+            ..
+        }) = &mut original.messages[0].content
+        {
+            policy.intent = NativeMediaIntent::Image {
+                detail: ImageDetail::High,
+            };
+        }
+        let changed = PreparedModelRequest::prepare(original, Limits::default())?;
+        assert_ne!(
+            prepared.manifest().request_digest,
+            changed.manifest().request_digest
+        );
+        Ok(())
+    }
+
     fn request() -> Result<ModelRequest> {
         Ok(ModelRequest {
             model: Model::new("mock", "exact", "pinned", json!({}))?,
@@ -733,10 +1230,11 @@ mod tests {
             }],
             tools: vec![crate::tool::ToolDefinition {
                 name: "echo".into(),
-                revision: "schema-1".into(),
+                revision: "schema-2".into(),
                 description: "Echo".into(),
                 input_schema: json!({"type":"string"}),
                 output_schema: json!({"type":"string"}),
+                projection_schema: json!({"type":"object","properties":{"kind":{"const":"json"},"value":{"type":"string"}},"required":["kind","value"],"additionalProperties":false}),
             }],
             max_output_tokens: Some(32),
         })
@@ -757,7 +1255,7 @@ mod tests {
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: "call-1".into(),
                     name: "echo".into(),
-                    value: json!("é"),
+                    content: ToolResultContent::Json { value: json!("é") },
                 }),
             },
         ]);
@@ -1031,10 +1529,10 @@ mod tests {
         changed.messages[1].role = ModelRole::User;
         candidates.push(changed);
         let mut changed = valid.clone();
-        if let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
+        if let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
             &mut changed.messages[2].content
         {
-            *value = json!(42);
+            *content = ToolResultContent::Json { value: json!(42) };
         }
         candidates.push(changed);
         let mut changed = valid.clone();
