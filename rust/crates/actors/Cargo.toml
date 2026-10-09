@@ -10,10 +10,9 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
-acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
-protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
 serde_json.workspace = true
 serde.workspace = true
@@ -44,10 +43,9 @@ tracing-subscriber.workspace = true
 
 [build-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
-acyclic-protify-proc-macro = { version = "=0.2.0", path = "../../vendor/protify-proc-macro-0.1.4" }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 prost = "=0.14.4"
 protoc-bin-vendored = "=3.3.0"
-protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 tonic-prost-build = "=0.14.6"
 ts-rs = "=12.0.1"
 thiserror.workspace = true

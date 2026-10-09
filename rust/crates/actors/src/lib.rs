@@ -222,7 +222,7 @@ mod tests {
         assert!(!subscription(&invalid));
 
         let mut create = wire::CreateActorRequest {
-            code_sha256: vec![1; 32].into(),
+            code_sha256: vec![1; 32],
             home_region: "eu".into(),
             bindings: vec![],
             limits: Some(wire::ActorLimits {

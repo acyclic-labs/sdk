@@ -1,7 +1,6 @@
 //! Workers declarations own the schema; maintained generators own wire and transport code.
-use protify::*;
+
 mod generated {
-    use super::*;
     #[allow(
         dead_code,
         missing_docs,
@@ -14,19 +13,10 @@ mod generated {
         include!("domain.rs");
     }
     pub use domain::*;
-    proto_package!(
-        WORKERS_PACKAGE,
-        name = "acyclic.workers.v1",
-        files = [WORKERS_FILE]
-    );
-    define_proto_file!(
-        WORKERS_FILE,
-        name = "workers/v1/workers.proto",
-        package = WORKERS_PACKAGE,
-        options = [
-            proto_option!("go_package" => "github.com/acyclic-labs/sdk/go/gen/workers/v1;workersv1")
-        ],
-        messages = [
+
+    #[acyclic_contract_derive::file(
+        family = "workers",
+        messages(
             CodeVersionProto,
             DeploymentProto,
             PublishVersionRequestProto,
@@ -51,12 +41,13 @@ mod generated {
             InvokeDeploymentRequestProto,
             InvokeResponseProto,
             ErrorProto
-        ],
-        enums = [JobState, ErrorCode],
-        services = [WorkersService]
-    );
+        ),
+        enums(JobState, ErrorCode),
+        services(WorkersService)
+    )]
+    pub struct WorkersFile;
     /// Public Workers v1 operations over the Rust-owned contract.
-    #[proto_service]
+    #[acyclic_contract_derive::service]
     pub enum WorkersService {
         /// Publish exact module bytes under their expected immutable digest.
         PublishVersion {
@@ -95,7 +86,7 @@ mod generated {
         },
     }
 }
-pub(crate) use generated::WORKERS_FILE;
+pub(crate) use generated::WorkersFile;
 /// Strong semantic types.
 #[allow(
     unused_imports,
@@ -132,6 +123,5 @@ pub mod job_target {
 }
 /// Render the canonical schema from these executable declarations.
 pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-    std::fs::create_dir_all(root.as_ref().join("workers/v1"))?;
-    generated::WORKERS_PACKAGE::get_package().render_files(root.as_ref())
+    WorkersFile::render(root.as_ref())
 }

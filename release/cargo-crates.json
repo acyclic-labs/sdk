@@ -3,7 +3,7 @@
   "acyclic-machines",
   "acyclic-native-runtime",
   "acyclic-objects",
-  "acyclic-protify-proc-macro",
+  "acyclic-contract-derive",
   "acyclic-tonic-web-wasm-client",
   "acyclic-grpc-observability",
   "acyclic-actors",

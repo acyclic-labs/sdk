@@ -84,9 +84,11 @@ fn submit_multifault_retains_canonical_admission_precedence() {
             target: Some(wire::job_target::Target::DeploymentAlias("a".to_owned())),
         }),
         input: Some(wire::Payload {
-            source: Some(wire::payload::Source::InlineBytes(
-                vec![1; crate::MAX_INLINE_BYTES + 1].into(),
-            )),
+            source: Some(wire::payload::Source::InlineBytes(vec![
+                1;
+                crate::MAX_INLINE_BYTES
+                    + 1
+            ])),
         }),
         // Missing retry and limits must not replace the earlier inline-payload violation.
         idempotency_key: "i".to_owned(),
@@ -111,7 +113,7 @@ fn production_ingress_preserves_wide_u64_and_required_presence() {
                 target: Some(wire::job_target::Target::DeploymentAlias("a".to_owned())),
             }),
             input: Some(wire::Payload {
-                source: Some(wire::payload::Source::InlineBytes(vec![].into())),
+                source: Some(wire::payload::Source::InlineBytes(vec![])),
             }),
             limits: Some(wire::JobLimits {
                 timeout_millis: u64::MAX,
@@ -139,7 +141,7 @@ fn production_ingress_preserves_wide_u64_and_required_presence() {
     for value in [1, (1_u64 << 53) + 1, u64::MAX] {
         let request = wire::SelectDeploymentRequest {
             alias: "a".to_owned(),
-            version_sha256: vec![1; 32].into(),
+            version_sha256: vec![1; 32],
             idempotency_key: "i".to_owned(),
             expected_revision: Some(value),
         };
@@ -159,7 +161,7 @@ fn response_optional_presence_and_u64_survive_production_conversion() {
     for version in [
         None,
         Some(wire::CodeVersion {
-            sha256: vec![1; 32].into(),
+            sha256: vec![1; 32],
             size_bytes: u64::MAX,
         }),
     ] {
@@ -178,8 +180,8 @@ fn response_optional_presence_and_u64_survive_production_conversion() {
         let value = wire::InvokeResponse {
             status: 201,
             headers: vec![],
-            body: vec![0, 255].into(),
-            resolved_sha256: vec![1; 32].into(),
+            body: vec![0, 255],
+            resolved_sha256: vec![1; 32],
             resolved_revision: revision,
         };
         let bytes =
@@ -327,7 +329,7 @@ async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_deta
             target: Some(wire::job_target::Target::DeploymentAlias("a".to_owned())),
         }),
         input: Some(wire::Payload {
-            source: Some(wire::payload::Source::InlineBytes(vec![].into())),
+            source: Some(wire::payload::Source::InlineBytes(vec![])),
         }),
         limits: Some(wire::JobLimits {
             timeout_millis: u64::MAX,
@@ -344,8 +346,8 @@ async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_deta
         (
             "PublishVersion",
             wire::PublishVersionRequest {
-                javascript_module: module.to_vec().into(),
-                expected_sha256: Sha256::digest(module).to_vec().into(),
+                javascript_module: module.to_vec(),
+                expected_sha256: Sha256::digest(module).to_vec(),
                 idempotency_key: "i".to_owned(),
             }
             .encode_to_vec(),
@@ -354,7 +356,7 @@ async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_deta
             "SelectDeployment",
             wire::SelectDeploymentRequest {
                 alias: "a".to_owned(),
-                version_sha256: vec![1; 32].into(),
+                version_sha256: vec![1; 32],
                 idempotency_key: "i".to_owned(),
                 expected_revision: Some(u64::MAX),
             }
@@ -379,7 +381,7 @@ async fn every_descriptor_method_reaches_its_generated_rpc_and_keeps_status_deta
         (
             "InvokeVersion",
             wire::InvokeVersionRequest {
-                version_sha256: vec![1; 32].into(),
+                version_sha256: vec![1; 32],
                 ..Default::default()
             }
             .encode_to_vec(),
@@ -496,7 +498,7 @@ fn response_conversion_rejects_unknown_enum_and_preserves_optional_result_bytes(
     for result in [
         None,
         Some(wire::JobResult {
-            body: vec![0, 255, 128].into(),
+            body: vec![0, 255, 128],
         }),
     ] {
         let value = wire::InspectJobResponse {
