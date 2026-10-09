@@ -2758,45 +2758,88 @@ mod tests {
     #[tokio::test]
     async fn a_denied_follow_reports_access_denied_once_and_then_ends()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        for denial in [0, 2] {
-            let provider = Arc::new(FiniteFollow {
-                inner: MemoryStream::default(),
-                follows: AtomicUsize::new(0),
-                tail_delay: std::time::Duration::ZERO,
-                denial: Some(denial),
-            });
-            provider
-                .inner
-                .append(AppendRequest {
-                    path: StreamPath::new("accounts/events")?,
-                    records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
-                    if_tail: Some(0),
-                    idempotency_key: None,
+        let provider = Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::ZERO,
+            denial: Some(2),
+        });
+        provider
+            .inner
+            .append(AppendRequest {
+                path: StreamPath::new("accounts/events")?,
+                records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&admissions);
+        let service = StreamServiceServer::with_interceptor(
+            Service::new(Arc::clone(&provider)),
+            move |request: Request<()>| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .is_some_and(|value| value == "Bearer denied-open")
+                {
+                    return Err(Status::permission_denied("fixture authorization denied"));
+                }
+                Ok(request)
+            },
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
                 })
+                .await
+        });
+        let bound = std::time::Duration::from_secs(2);
+        let result = tokio::time::timeout(bound, async {
+            let channel = Endpoint::from_shared(format!("http://{address}"))?
+                .connect()
                 .await?;
-            let transport = Client::from_channels(
-                Arc::from([provider_channel(Service::new(Arc::clone(&provider)))]),
-                "fixture",
-            )?;
-            let items = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                transport
+            let mut sequences = Vec::new();
+            for token in ["fixture", "denied-open"] {
+                let client = Client::from_channels(Arc::from([channel.clone()]), token)?;
+                let items = client
                     .follow(StreamPath::new("accounts/events")?, 0)
                     .await?
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            let sequences = items
-                .into_iter()
-                .map(|item| item.map(|record| record.sequence))
-                .collect::<Vec<_>>();
-            let expected = (0..u64::try_from(denial)?)
-                .map(Ok)
-                .chain([Err(StreamError::AccessDenied)])
-                .collect::<Vec<_>>();
-            assert_eq!(sequences, expected);
-            assert_eq!(provider.follows.load(Ordering::Relaxed), 1);
+                    .collect::<Vec<_>>()
+                    .await;
+                sequences.push(
+                    items
+                        .into_iter()
+                        .map(|item| item.map(|record| record.sequence))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(sequences)
+        })
+        .await;
+        let _ = shutdown_tx.send(());
+        let stopped = tokio::time::timeout(bound, &mut server).await;
+        if stopped.is_err() {
+            server.abort();
+            let _ = tokio::time::timeout(bound, &mut server).await;
         }
+        let sequences = result??;
+        stopped???;
+        assert_eq!(
+            sequences,
+            vec![
+                vec![Ok(0), Ok(1), Err(StreamError::AccessDenied)],
+                vec![Err(StreamError::AccessDenied)],
+            ]
+        );
+        assert_eq!(admissions.load(Ordering::Relaxed), 2);
+        assert_eq!(provider.follows.load(Ordering::Relaxed), 1);
         Ok(())
     }
 
