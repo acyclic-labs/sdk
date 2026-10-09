@@ -207,11 +207,14 @@ export interface WasmModelLimitsInput {
     readonly tool_calls_per_step: number | bigint;
     readonly context_messages: number | bigint;
 }
+export type WasmModelToolResultContentInput =
+| Readonly<{ kind: "json"; value: unknown }>
+| Extract<WasmToolResultContent, { kind: "parts" }>;
 type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
 Part extends { readonly kind: "tool_call"; readonly call_id: string }
     ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
     : Part extends { readonly kind: "tool_result"; readonly call_id: string }
-    ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+    ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
     : Part;
 export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
 export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
@@ -350,6 +353,11 @@ export interface McpCatalog {
      */
     discovery: McpDiscoveryPolicy;
     /**
+     * Host-selected schema for complete model-facing result envelopes.
+     * Pinned independently of remote canonical outputs with this catalog revision.
+     */
+    projection_schema: Value;
+    /**
      * Complete bounded catalog, not a partially fetched `tools/list` page.
      */
     tools: McpToolDefinition[];
@@ -375,6 +383,152 @@ export interface McpToolResult {
      * Opaque protocol metadata retained for the owning consumer.
      */
     _meta?: WasmToolJsonValue;
+}
+
+/**
+ * Canonical successful write/edit result, independent of model projection.
+ */
+export interface FileResult {
+    /**
+     * Exact retained publication result with workspace and content identity.
+     */
+    file: WasmFileRefWire;
+}
+
+/**
+ * Complete declarative inventory, without granting file or option authority.
+ */
+export interface WasmModelContentInventoryWire {
+    files: readonly WasmFileRefWire[];
+    nativeConfigurations: readonly WasmNativeConfigurationBindingWire[];
+}
+
+/**
+ * Complete literal-search accounting with bounded retained match positions.
+ */
+export interface SearchMatches {
+    /**
+     * Ordered, possibly overlapping exact UTF-8 match intervals.
+     */
+    matches: TextRange[];
+    /**
+     * All matches in the verified source, including omitted intervals.
+     */
+    total_matches: number;
+    /**
+     * Exact count of additional matches excluded from the retained result.
+     */
+    omitted_matches: number;
+    /**
+     * Individual byte comparisons actually performed.
+     */
+    work: number;
+}
+
+/**
+ * Consumer-selected ceilings for an explicit partial read.
+ */
+export interface ReadOptions {
+    /**
+     * Maximum verified source bytes, checked before source I/O by adapters.
+     */
+    maximum_input_bytes: number;
+    /**
+     * Maximum selected UTF-8 bytes, independent of the source allowance.
+     */
+    maximum_text_bytes: number;
+}
+
+/**
+ * Consumer-selected finite literal-search allowances.
+ */
+export interface SearchOptions {
+    /**
+     * Maximum verified source bytes, checked before I/O by adapters.
+     */
+    maximum_input_bytes: number;
+    /**
+     * Maximum nonempty literal needle bytes.
+     */
+    maximum_query_bytes: number;
+    /**
+     * Maximum individual byte comparisons across all candidates.
+     */
+    maximum_work: number;
+    /**
+     * Maximum retained match intervals; remaining matches are counted.
+     */
+    maximum_matches: number;
+}
+
+/**
+ * Durable literal-search result, independent of its model projection.
+ */
+export interface SearchResult {
+    /**
+     * Original reference, including provider, volume, generation and content identity.
+     */
+    file: WasmFileRefWire;
+    /**
+     * Exact literal searched in that source.
+     */
+    query: string;
+    /**
+     * Complete match accounting with explicitly bounded retained positions.
+     */
+    matches: SearchMatches;
+}
+
+/**
+ * Durable read result retaining exact source identity and explicit omissions.
+ */
+export interface ReadResult {
+    /**
+     * Original reference, including provider, volume, generation and content identity.
+     */
+    file: WasmFileRefWire;
+    /**
+     * Exact selected bytes and omitted source intervals.
+     */
+    selection: TextSelection;
+}
+
+/**
+ * Exact UTF-8 byte interval; offsets refer to the original immutable source.
+ */
+export interface TextRange {
+    /**
+     * Inclusive byte offset.
+     */
+    start: number;
+    /**
+     * Exclusive byte offset.
+     */
+    end: number;
+}
+
+/**
+ * Exact immutable UTF-8 file read arguments.
+ */
+export interface ReadFileInput {
+    /**
+     * Owner-authorized immutable source.
+     */
+    file: WasmFileRefWire;
+}
+
+/**
+ * Exact immutable source and byte interval supplied by the caller.
+ */
+export interface ReadInput {
+    /**
+     * Owner-authorized immutable source.
+     */
+    file: WasmFileRefWire;
+    /**
+     * Exact UTF-8 byte interval; no implicit rounding or truncation.
+     */
+    range: TextRange;
 }
 
 /**
@@ -435,6 +589,24 @@ export interface McpStdioRequest {
 }
 
 /**
+ * Exact replacement against one pinned file generation.
+ */
+export interface EditFileInput {
+    /**
+     * Owner-authorized immutable source.
+     */
+    file: WasmFileRefWire;
+    /**
+     * One exact nonempty unambiguous needle.
+     */
+    old_text: string;
+    /**
+     * Exact replacement, including an empty deletion.
+     */
+    new_text: string;
+}
+
+/**
  * Explicit bounded selection from a pinned source.
  */
 export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
@@ -462,9 +634,28 @@ export interface ContextDiscoveryLimits {
 }
 
 /**
+ * Explicit model representation, independent of the retained canonical result.
+ */
+export type ProjectionMode = "full" | "reference";
+
+/**
  * Explicit model schema exposure for an installed complete catalog.
  */
 export type McpSchemaExposure = { kind: "eager" } | { kind: "selected"; names: string[] };
+
+/**
+ * Explicit single-file V4A update arguments.
+ */
+export interface PatchFileInput {
+    /**
+     * Owner-authorized immutable source generation.
+     */
+    file: WasmFileRefWire;
+    /**
+     * Nonempty exact V4A update diff fragment.
+     */
+    diff: string;
+}
 
 /**
  * Frontmatter only; the body is not fetched or injected by discovery.
@@ -545,6 +736,20 @@ export interface PinnedContextPath {
 }
 
 /**
+ * Literal search arguments; there is no implicit regex, directory or shell search.
+ */
+export interface SearchInput {
+    /**
+     * Owner-authorized immutable source.
+     */
+    file: WasmFileRefWire;
+    /**
+     * Nonempty case-sensitive UTF-8 literal, including overlapping matches.
+     */
+    query: string;
+}
+
+/**
  * Mutable context assembled for one model step.
  */
 export interface Context {
@@ -593,6 +798,28 @@ export interface McpToolsPage {
      * Opaque server cursor for the next explicitly admitted discovery request.
      */
     nextCursor?: string;
+}
+
+/**
+ * One explicit partial read, including the exact omitted source intervals.
+ */
+export interface TextSelection {
+    /**
+     * Selected source interval.
+     */
+    range: TextRange;
+    /**
+     * Exact selected UTF-8 with original line endings.
+     */
+    text: string;
+    /**
+     * Bytes excluded before the selection.
+     */
+    omitted_before: number;
+    /**
+     * Bytes excluded after the selection.
+     */
+    omitted_after: number;
 }
 
 /**
@@ -750,6 +977,28 @@ export interface InstructionScope {
 }
 
 /**
+ * Single-operation UTF-8 publication arguments.
+ */
+export interface WriteFileInput {
+    /**
+     * Valid public destination path.
+     */
+    path: string;
+    /**
+     * Exact content bytes encoded as UTF-8.
+     */
+    text: string;
+    /**
+     * Stored MIME type.
+     */
+    media_type: string;
+    /**
+     * Human-readable file name.
+     */
+    display_name: string;
+}
+
+/**
  * Stable wire identity used during compatibility handshakes.
  */
 export interface ProtocolIdentity {
@@ -876,6 +1125,20 @@ export interface WasmModelToolDefinitionWire {
     description: string;
     input_schema: WasmModelJsonSchema;
     output_schema: WasmModelJsonSchema;
+    projection_schema: WasmModelJsonSchema;
+}
+
+export interface WasmNativeConfigurationBindingWire {
+    source: WasmEventReferenceWire;
+    configuration: WasmExtensionConfigurationWire;
+    implementation_digest: readonly number[];
+}
+
+export interface WasmNativeMediaPolicyWire {
+    intent: WasmNativeMediaIntent;
+    maximum_bytes: number;
+    maximum_work: number;
+    configuration: WasmNativeConfigurationBindingWire | undefined;
 }
 
 export interface WasmTaskAdmissionInput {
@@ -944,15 +1207,23 @@ export interface WasmToolDependencyDefinition {
     version: string;
 }
 
-export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
+export type WasmFileProjectionPolicy = "reference" | "bounded_full" | { native: WasmNativeMediaPolicyWire };
+
+export type WasmImageDetail = "auto" | "low" | "high";
 
 export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
 
-export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
+export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: WasmToolResultContent };
+
+export type WasmModelDataPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy };
 
 export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 
 export type WasmModelRole = "system" | "user" | "assistant" | "tool";
+
+export type WasmNativeMediaIntent = { kind: "image"; detail: WasmImageDetail } | { kind: "audio"; maximum_duration_ms: number } | { kind: "video"; maximum_duration_ms: number; maximum_frames: number } | { kind: "document"; maximum_pages: number };
+
+export type WasmToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: WasmModelDataPart[] };
 
 
 /**
@@ -1319,9 +1590,19 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 export function forkSeedFromReport(report: any): any;
 
 /**
+ * Wraps a consumer's JSON value schema in the complete typed projection envelope.
+ */
+export function jsonToolProjectionSchema(value_schema: WasmToolJsonSchema): WasmToolJsonSchema;
+
+/**
  * Projects the host-selected schema exposure through the ordinary model wire.
  */
 export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
+
+/**
+ * Returns all media/options refs and original-admission claims without IO.
+ */
+export function modelContentInventory(content: WasmModelContentInput, limits: WasmModelLimitsInput): WasmModelContentInventoryWire;
 
 /**
  * Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
@@ -1478,6 +1759,11 @@ export function validateToolDefinition(definition: any): void;
 export function validateToolInvocation(definition: any, invocation: any): void;
 
 /**
+ * Validates the explicit result envelope without granting file or option authority.
+ */
+export function validateToolProjection(definition: WasmToolDefinitionInput, projection: WasmModelToolResultContentInput, limits: WasmModelLimitsInput): void;
+
+/**
  * Validates one successful tool result against its registered definition.
  */
 export function validateToolResult(definition: any, result: any): void;
@@ -1578,7 +1864,9 @@ export interface InitOutput {
     readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
     readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
+    readonly modelContentInventory: (a: any, b: any) => [number, number, number];
     readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
@@ -1605,6 +1893,7 @@ export interface InitOutput {
     readonly validateTaskRequirements: (a: any) => [number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
+    readonly validateToolProjection: (a: any, b: any, c: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly validateToolValue: (a: any, b: any) => [number, number, number];
     readonly validateUserInput: (a: any) => [number, number];
