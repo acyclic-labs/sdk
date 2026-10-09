@@ -2236,6 +2236,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             },
             executor: tool.clone(),
             projection: Arc::new(Projection),

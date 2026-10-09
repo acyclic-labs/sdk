@@ -2629,14 +2629,29 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
 pub fn validate_tool_projection(
     #[wasm_bindgen(unchecked_param_type = "WasmToolDefinitionInput")] definition: JsValue,
     #[wasm_bindgen(unchecked_param_type = "WasmModelToolResultContentInput")] projection: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
     definition.validate().map_err(js_error)?;
     let projection: serde_json::Value = from_js(projection)?;
+    let limits: Limits = from_js(limits)?;
     definition
         .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(Limits::default()))
+        .and_then(|content| content.validate_limits(limits))
         .map_err(js_error)
+}
+
+/// Returns the complete ordered media and native option inventory without IO or authority.
+#[wasm_bindgen(js_name = modelContentFileRefs, unchecked_return_type = "WasmFileRefWire[]")]
+pub fn model_content_file_refs(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<JsValue, JsValue> {
+    let content: ModelContent = from_js(content)?;
+    content
+        .validate_limits(from_js(limits)?)
+        .map_err(js_error)?;
+    to_js_admitted(&content.file_refs())
 }
 
 /// Public facade input for the shared request constructor.
