@@ -2262,24 +2262,12 @@ impl Reducer {
                     _ => false,
                 })
             {
-                let published =
-                    self.conversation
-                        .messages
-                        .iter()
-                        .take(inherited_count)
-                        .any(|message| {
-                            message.content == *file
-                                || match &message.attachments {
-                                    crate::conversation::ReferencedAttachments::Inline {
-                                        items,
-                                    } => items.iter().any(|item| item.file == *file),
-                                    crate::conversation::ReferencedAttachments::Manifest {
-                                        manifest,
-                                        ..
-                                    } => manifest == file,
-                                }
-                                || message.extensions.values().any(|value| value == file)
-                        });
+                // The first pass indexed every direct reference, including
+                // complete FileRef metadata. Reuse it instead of rescanning the
+                // parent prefix for each child/attached-reader grant.
+                let published = published_refs
+                    .get(&file.read_capability()?)
+                    .is_some_and(|published| published == file);
                 match &grant.attachment_manifest {
                     None if !published => {
                         return Err(Error::Invalid(

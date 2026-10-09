@@ -699,6 +699,33 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .is_err(),
                 "fork must bind inherited prefix display metadata"
             );
+            let mut extra_reference = seed.clone();
+            extra_reference
+                .reference_grants
+                .push(acyclic_harness::fork::ReferenceGrant {
+                    file: FileRef::new(
+                        previous_file.volume().clone(),
+                        previous_file.path(),
+                        previous_file.version(),
+                        previous_file.descriptor().clone(),
+                        "unpublished-display-name.txt",
+                    )?,
+                    reader: child_agent,
+                    attachment_manifest: None,
+                });
+            extra_reference.validate()?;
+            assert!(
+                aggregate
+                    .reducer()
+                    .plan(&fork_command(
+                        level + 82,
+                        aggregate.reducer().revision(),
+                        &grant_scope,
+                        extra_reference
+                    )?)
+                    .is_err(),
+                "a retained original grant cannot authorize extra unpublished FileRef metadata"
+            );
             let child_reference_scope = child_issuer.root(
                 "child-reference-reader",
                 seed.reference_capabilities(child_agent)?,
