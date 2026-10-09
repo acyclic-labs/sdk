@@ -1377,7 +1377,7 @@ mod tests {
             prepared.manifest().request_digest
         );
         let mut changed = prepared.request().clone();
-        changed.tools[0].revision = "schema-2".into();
+        changed.tools[0].revision = "schema-3".into();
         assert_ne!(
             PreparedModelRequest::prepare(changed, Limits::default())?
                 .manifest()
