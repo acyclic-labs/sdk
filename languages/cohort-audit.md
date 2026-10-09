@@ -70,6 +70,33 @@ bounded tests and compile-time method counts cannot establish universal lifetime
 or transport guarantees. Unsupported cases need concrete maintained-tool or
 platform evidence. Missing admission is pending work, not a target exclusion.
 
+### Producer and consumer findings before reuse
+
+The historical Go producer `go/cmd/sdk-go-producer/main.go`, read with SHA-256
+`7e3d0ecd856be85d10aaca6e21ea803689d574331f260d07e2d53146feba4feb`,
+deletes `outputRoot` at line 120 before tool and input validation. Its request
+check establishes argument equality, but does not establish that the output is
+disjoint from the source, authority, request, or filesystem root. Do not run
+this producer until destination containment and overlap checks are repaired and
+verified against adversarial paths. Its `samePath` also compares case-insensitively
+on every platform, which cannot establish path identity on case-sensitive hosts.
+At lines 146-170, `validation/v1/options.proto` can enter generation by file
+existence without the family-input digest checks. The accepted exporter must
+attest every transitive generator input, including custom options, before reuse.
+These are source findings; no destructive invocation was attempted.
+
+The historical JVM consumer
+`jvm/src/test/java/dev/acyclic/transport/RpcScenarioEvidenceTest.java`, read with
+SHA-256 `a54f1c2149e37f411e4f5b4f3593bb763cd746250964f69378ee10ce2e70add7`,
+selects an in-process server when `ACYCLIC_FIXTURE_ENDPOINT` is absent. That
+server returns empty generated responses (lines 179-204); this can exercise
+dispatch and marshalling but cannot establish canonical Rust service behavior.
+The remote branch strips the URL scheme and calls `usePlaintext()` (lines
+162-163), so it cannot establish TLS qualification even with an HTTPS URL.
+Keep in-process dispatch, Rust-backed remote semantics, and TLS evidence as
+separate gates. Reusing its scenario count as complete semantic coverage would
+exceed the consumer's actual scope.
+
 Supply executable snippets and scoped results to the docs owner with exact Rust
 source, package version, package hash, snippet source hash, runtime/compiler and
 observed output. Preserve the docs owner's TypeScript receipt interface without
