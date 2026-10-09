@@ -5,7 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import "./check-compatibility-digests.mjs";
+import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -231,13 +232,7 @@ const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+
 if (nativePackageVersion !== filesystemVersion) {
   throw new Error("filesystem native companion version does not match package metadata");
 }
-for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
-  for (const [field, path] of Object.entries(artifacts)) {
-    if (compatibility.families[family][field] !== await digest(path)) {
-      throw new Error(`${family} ${field} mismatch`);
-    }
-  }
-}
+
 // Generated code runs only on the protobuf runtime of its generator's release.
 const protobufRuntime = (await load("package.json")).devDependencies?.["@bufbuild/protoc-gen-es"];
 for (const [stem, packages] of packagedTypeScriptBindings) {

@@ -384,6 +384,7 @@ case "$lane" in
     test "$("$binary" --version)" = "$expected"
     ;;
   policy)
+    node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
     if [[ "$full_qualification" != true ]]; then
