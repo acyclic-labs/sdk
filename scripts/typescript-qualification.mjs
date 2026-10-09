@@ -38,8 +38,7 @@ async function create(output, sourceSha, buildReceipt) {
   // Keep verify-only publication staging independent of the archive validator:
   // publish-npm.yml copies this script without its repository-local imports.
   const { validateArchive } = await import("./validate-npm-package.mjs");
-  const buildSha256 = digest(buildReceipt)[0];
-  const build = readCompilerBuild(buildReceipt, sourceSha);
+  const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha);
   const archiveUtils = await import("./archive-utils.mjs");
   const packages = expectedAssets().map(({ directory, ...packageEntry }) => {
     const archive = join(output, packageEntry.asset);
@@ -65,14 +64,21 @@ async function create(output, sourceSha, buildReceipt) {
   }
   const target = join(output, "QUALIFICATION.json");
   if (existsSync(target)) fail("qualification receipt already exists");
-  if (sourceSha !== checkedGit(["rev-parse", "HEAD"]).trim() || buildSha256 !== digest(buildReceipt)[0] || JSON.stringify(build.source_files) !== JSON.stringify(compilerSource()) || JSON.stringify(build.outputs) !== JSON.stringify(compilerOutputs())) fail("compiler receipt, inputs or outputs changed during archive admission");
+  if (sourceSha !== checkedGit(["rev-parse", "HEAD"]).trim() || buildSha256 !== createHash("sha256").update(readReceiptBytes(buildReceipt, 16_777_216)).digest("hex") || JSON.stringify(build.source_files) !== JSON.stringify(compilerSource()) || JSON.stringify(build.outputs) !== JSON.stringify(compilerOutputs())) fail("compiler receipt, inputs or outputs changed during archive admission");
   const provenance = { revision: 1, scope: "typescript-compiler", source_sha256: build.source_sha256, compiler_build_receipt_sha256: `sha256:${buildSha256}`, rust_producers_qualified: false };
   writeFileSync(target, `${JSON.stringify({ ...provenance, source_commit: sourceSha, packages })}\n`, { flag: "wx" });
 }
 
-function readCompilerBuild(path, sourceSha) {
+function readReceiptBytes(path, limit) {
+  const info = lstatSync(path);
+  if (!info.isFile() || info.size > limit) fail("receipt must be a regular file within its size bound");
   const payload = readFileSync(path);
-  if (payload.length > 16_777_216) fail("compiler build receipt exceeds its size bound");
+  if (payload.length !== info.size) fail("receipt changed while it was being read");
+  return payload;
+}
+
+function readCompilerBuild(path, sourceSha) {
+  const payload = readReceiptBytes(path, 16_777_216);
   const build = JSON.parse(payload.toString("utf8"));
   if (!build || Object.keys(build).sort().join() !== "executions,outputs,runtime,rust_producers_qualified,schema,scope,source_commit,source_files,source_sha256" || build.schema !== "acyclic.typescript-build-receipt.v1" || build.scope !== "typescript-compiler" || build.rust_producers_qualified !== false) fail("compiler build receipt scope is invalid");
   if (!/^v\d+\.\d+\.\d+/.test(build.runtime) || !Array.isArray(build.executions) || build.executions.length !== consumerCommands().length) fail("compiler build receipt executions are invalid");
@@ -88,12 +94,11 @@ function readCompilerBuild(path, sourceSha) {
   const encoded = source.map(file => `${file.path}\0${file.sha256}\0${file.bytes}\n`).join("");
   if (build.source_sha256 !== `sha256:${createHash("sha256").update(encoded).digest("hex")}`) fail("compiler build receipt source digest differs");
   if (JSON.stringify(build.outputs) !== JSON.stringify(compilerOutputs(build.executions[2].stdout))) fail("compiler build receipt output differs from checkout");
-  return build;
+  return { build, receiptSha256: createHash("sha256").update(payload).digest("hex") };
 }
 
 function readReceipt(path) {
-  const payload = readFileSync(path);
-  if (payload.length > MAX_RECEIPT_BYTES) fail("qualification receipt exceeds its size bound");
+  const payload = readReceiptBytes(path, MAX_RECEIPT_BYTES);
   const receipt = JSON.parse(payload.toString("utf8"));
   const keys = "compiler_build_receipt_sha256,packages,revision,rust_producers_qualified,scope,source_commit,source_sha256";
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || Object.keys(receipt).sort().join() !== keys) {

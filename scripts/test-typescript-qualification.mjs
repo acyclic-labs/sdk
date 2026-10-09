@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,22 @@ function packageEntries() {
 }
 
 const entries = packageEntries();
+
+for (const command of ["create", "verify"]) {
+  test(`${command} rejects an oversized receipt before inspecting archives or source`, () => {
+    const work = mkdtempSync(join(tmpdir(), "acyclic-oversized-receipt-"));
+    try {
+      const receipt = join(work, "receipt.json");
+      writeFileSync(receipt, "");
+      truncateSync(receipt, command === "create" ? 16_777_217 : 1_048_577);
+      const args = command === "create" ? [command, work, "a".repeat(40), receipt] : [command, receipt, "a".repeat(40), "absent.tgz", join(work, "absent.tgz")];
+      const result = spawnSync(process.execPath, [qualification, ...args], { encoding: "utf8" });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /receipt must be a regular file within its size bound/);
+      assert.equal(existsSync(join(work, "QUALIFICATION.json")), false);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+}
 
 for (const command of ["create", "consumer"]) {
   test(`${command} requires its compiler receipt argument`, () => {
@@ -79,7 +95,7 @@ for (const mutation of ["source", "stale-dist"]) {
       git(["init", "--quiet"]);
       git(["config", "user.name", "qualification-test"]);
       git(["config", "user.email", "qualification@example.invalid"]);
-      git(["add", "."]); git(["commit", "--quiet", "-m", "captured source fixture"]);
+      git(["add", "."]); git(["-c", "commit.gpgSign=false", "-c", `core.hooksPath=${join(stage, "target/no-hooks")}`, "commit", "--quiet", "-m", "captured source fixture"]);
       const outputs = releasePackages.map(({ directory }) => {
         const path = `typescript/packages/${directory}/dist/index.js`;
         mkdirSync(dirname(join(stage, path)), { recursive: true });
@@ -96,7 +112,7 @@ for (const mutation of ["source", "stale-dist"]) {
       const receipt = join(stage, "target/BUILD.json");
       const result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "consumer", fakeBun, receipt], { encoding: "utf8" });
       assert.notEqual(result.status, 0);
-      assert.match(result.stderr, mutation === "source" ? /compiler source changed/ : /dist inventory differs from files emitted/);
+      assert.match(result.stderr, mutation === "source" ? /compiler source changed|compiler source is not a clean captured checkout/ : /dist inventory differs from files emitted/);
       assert.equal(existsSync(receipt), false);
     } finally { rmSync(stage, { recursive: true, force: true }); }
   });
@@ -147,7 +163,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       };
       git(["init", "--quiet"]);
       git(["add", "."]);
-      git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=", "commit", "--quiet", "-m", "fixture"]);
+      git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "-c", `core.hooksPath=${join(stage, "target/no-hooks")}`, "commit", "--quiet", "-m", "fixture"]);
       const sourceCommit = git(["rev-parse", "HEAD"]).trim();
       const record = path => {
         const bytes = readFileSync(join(stage, path));
