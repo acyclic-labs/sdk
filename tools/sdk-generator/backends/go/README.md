@@ -67,8 +67,12 @@ node tools/sdk-generator/backends/go/qualify.mjs \
 ```
 
 The qualifier verifies the archive, receipt inventory and all authority input
-hashes before extracting a fresh local installation. It runs without network
-access to module proxies, records tool/control/log hashes, and retains outputs
+hashes before extracting a fresh local installation.
+Every source is verified, including descriptor-less import entries. Optional
+descriptors are verified when supplied; Actors, Workers and Stream must each
+have an attested descriptor for their installed equality controls.
+It runs without network access to module proxies, records tool/control/log
+hashes, and retains outputs
 for inspection on failure. It compares every protobuf API descriptor field,
 excluding source comments and Buf's file-level image metadata tag 8042 only.
 Other unknown descriptor fields remain part of equality. See the

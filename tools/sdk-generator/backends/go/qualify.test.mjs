@@ -70,6 +70,9 @@ function fixture(t) {
     return { source, source_sha256: sha256(Buffer.from(name)), descriptor: "shared.bin",
       descriptor_sha256: sha256(Buffer.from("shared descriptor fixture")) };
   });
+  mkdirSync(join(authority, "validation", "v1"), { recursive: true });
+  writeFileSync(join(authority, "validation", "v1", "options.proto"), "attested import only");
+  families.push({ source: "validation/v1/options.proto", source_sha256: sha256(Buffer.from("attested import only")) });
   const manifest = Buffer.from(JSON.stringify({ schema: "acyclic.sdk.rust-authority.v1", authority: "rust",
     source_revision: "test-only", families }));
   writeFileSync(join(authority, "rust-authority.json"), manifest);
@@ -108,10 +111,33 @@ test("successful workflow uses verified shared descriptor paths and isolated wor
   const descriptors = JSON.parse(calls.at(-1).options.env.SDK_DESCRIPTOR_FILES);
   assert.equal(new Set(Object.values(descriptors)).size, 1);
   for (const path of Object.values(descriptors)) assert.equal(readFileSync(path, "utf8"), "shared descriptor fixture");
+  assert.equal(readFileSync(join(args.output, "authority/validation/v1/options.proto"), "utf8"), "attested import only");
   assert.equal(result.negative_type_controls_rejected, 3);
   assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(result.embedded_runtime_qualified, false);
   assert.deepEqual(JSON.parse(readFileSync(join(args.output, "qualification.json"), "utf8")), result);
+});
+
+test("descriptor-less imports are digest-checked and tested families still require descriptors", t => {
+  const { args } = fixture(t);
+  const manifestPath = join(args.authority, "rust-authority.json");
+  const manifest = JSON.parse(readFileSync(manifestPath));
+  delete manifest.families[0].descriptor;
+  delete manifest.families[0].descriptor_sha256;
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  writeFileSync(manifestPath, bytes);
+  const receipt = JSON.parse(readFileSync(args.receipt));
+  receipt.authority_manifest_sha256 = sha256(bytes);
+  writeFileSync(args.receipt, JSON.stringify(receipt));
+  const calls = [];
+  assert.throws(() => qualify(args, commands(calls)), /tested family lacks an attested descriptor/);
+  assert.equal(calls.length, 0);
+  assert.equal(existsSync(args.output), false);
+  const other = fixture(t);
+  writeFileSync(join(other.args.authority, "validation/v1/options.proto"), "drift");
+  assert.throws(() => qualify(other.args, commands(calls)), /authority input digest mismatch/);
+  assert.equal(calls.length, 0);
+  assert.equal(existsSync(other.args.output), false);
 });
 
 for (const failure of ["positive", "negative"]) test(`${failure} failure cannot produce qualification`, t => {

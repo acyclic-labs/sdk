@@ -11,7 +11,7 @@ const within = (root, path) => {
   const child = relative(root, path);
   return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
 };
-const canonical = name => name !== "." && name !== "" && !posix.isAbsolute(name)
+const canonical = name => typeof name === "string" && name !== "." && name !== "" && !posix.isAbsolute(name)
   && !name.includes("\\") && !name.includes(":") && !name.split("/").includes("..")
   && posix.normalize(name) === name;
 
@@ -68,9 +68,11 @@ export function qualify(args, command = spawnSync) {
     || manifest.source_revision !== receipt.source_revision) throw new Error("Rust source authority mismatch");
   const inputs = new Map();
   const descriptors = new Map();
+  const sources = new Set();
   for (const family of manifest.families) {
-    if (descriptors.has(family.source)) throw new Error("duplicate authority family");
-    for (const field of ["source", "descriptor"]) {
+    if (sources.has(family.source)) throw new Error("duplicate authority family");
+    sources.add(family.source);
+    for (const field of ["source", ...(family.descriptor ? ["descriptor"] : [])]) {
       const name = family[field];
       if (!canonical(name)) throw new Error("unsafe authority path");
       const path = realpathSync(join(authority, name));
@@ -79,7 +81,7 @@ export function qualify(args, command = spawnSync) {
       if (sha256(bytes) !== family[`${field}_sha256`]) throw new Error("Rust authority input digest mismatch");
       inputs.set(name, bytes);
     }
-    descriptors.set(family.source, family.descriptor);
+    if (family.descriptor) descriptors.set(family.source, family.descriptor);
   }
   if (targets.some(name => !descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
   const entries = verifyArchive(archive, args.sha256, receipt);
