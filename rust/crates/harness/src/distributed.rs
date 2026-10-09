@@ -2133,7 +2133,7 @@ fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     type LostSessionAck = crate::test_stream::LostSessionAck<acyclic_stream::MemoryStream>;

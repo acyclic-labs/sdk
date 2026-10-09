@@ -1363,7 +1363,7 @@ fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
     OperationId::from_bytes(bytes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::{

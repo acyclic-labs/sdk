@@ -2834,7 +2834,7 @@ macro_rules! transition_kinds {
         }
 
         impl TransitionKind {
-            #[cfg(test)]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             const ALL: &[Self] = &[$(Self::$kind,)*];
 
             const fn spec(self) -> (&'static str, &'static str, &'static str) {
@@ -3173,7 +3173,7 @@ fn json_digest(value: &Value) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use serde_json::json;

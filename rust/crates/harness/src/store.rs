@@ -1291,7 +1291,7 @@ fn stream_idempotency_key(path: &str, value: &IdempotencyKey) -> Result<StreamId
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::{
