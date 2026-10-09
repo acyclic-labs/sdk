@@ -285,7 +285,7 @@ impl MockAdapter {
         };
         Ok(CapturedPart::Media(Box::new(MediaCapture {
             file: file.clone(),
-            policy: policy.clone(),
+            policy: policy.as_ref().clone(),
             bytes,
             options_bytes,
             options,
