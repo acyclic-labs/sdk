@@ -35,6 +35,9 @@ const tree = [
   blob("typescript/packages/filesystem/package.json"),
   blob("rust/crates/harness-codex/src/lib.rs"),
   blob("rust/crates/harness/tests/effects.rs"),
+  blob("rust/crates/sdk-docs/src/lib.rs"),
+  blob("rust/crates/sdk-generation/src/main.rs"),
+  blob("rust/crates/sdk-generation/scripts/qualify-typescript-snippets.mjs"),
   blob("README.md"),
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
@@ -81,7 +84,13 @@ test("TypeScript sources execute only TypeScript-observing lanes", () => {
 
 test("Rust that no package compiles skips the TypeScript lane", () => {
   const before = laneKeys(lanes, tree);
-  for (const path of ["rust/crates/harness-codex/src/lib.rs", "rust/crates/harness/tests/effects.rs"]) {
+  for (const path of [
+    "rust/crates/harness-codex/src/lib.rs",
+    "rust/crates/harness/tests/effects.rs",
+    "rust/crates/sdk-docs/src/lib.rs",
+    "rust/crates/sdk-generation/src/main.rs",
+    "rust/crates/sdk-generation/scripts/qualify-typescript-snippets.mjs",
+  ]) {
     const after = differing(before, laneKeys(lanes, changed(path)));
     assert.ok(after.includes("gate") && !after.includes("typescript"), path);
   }
@@ -536,6 +545,8 @@ test("the core lanes cover the Rust workspace, docs crate, and TypeScript worksp
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
+  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
+  assert.match(script, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
   const policy = script.slice(script.indexOf("\n  policy)"));
   assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
   const typescript = script.match(/^  typescript\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
