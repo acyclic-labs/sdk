@@ -43,7 +43,8 @@ export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefiniti
   McpBrowserResponseHead } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Pinned composition values generated from the production Rust types. */
 export type { Context, ContextAttribute, ContextSourceValue, ContextSelection,
-  CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacity, ModelTokenCount,
+  CompactionPolicy, CompactionRetention, ThresholdCompaction,
+  ModelContextCapacity as ModelContextCapacityWire, ModelTokenCount as ModelTokenCountWire,
   ContextRepresentation, ContextExtent, ContextRenderMode, ContextPlacement,
   ContextRoot, InstructionScope, ContextDiscoveryPolicy, ContextDiscoveryLimits,
   ContextDiscovery, ContextReloadPolicy, ContextDiscoveryReader, ContextDirectoryQuery,

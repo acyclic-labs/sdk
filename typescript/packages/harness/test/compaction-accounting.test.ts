@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  DEFAULT_LIMITS, NativeContracts, type ModelTokenCount,
+  DEFAULT_LIMITS, NativeContracts, type ModelTokenCountWire,
 } from "../src/index.js";
 import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 
@@ -22,8 +22,8 @@ test("canonical accounting rejects lossy UTF-16 requests, values and keys", () =
       model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
       messages: [{ role: "user", content: replacement }], tools: [], max_output_tokens: 1_024,
     };
-    const count: ModelTokenCount = {
-      request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCount["request_digest"],
+    const count: ModelTokenCountWire = {
+      request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
       fixed_tokens: 100, message_tokens: [new TextEncoder().encode(replacement).byteLength + 10],
     };
     expect(contracts.validateModelTokenCount(request, count, DEFAULT_LIMITS)).toBeGreaterThan(100n);
@@ -72,8 +72,8 @@ test("generated provider accounting binds canonical requests, dimensions and por
     max_output_tokens: 1_024,
   };
   // This consumer's declared token units are UTF-8 bytes plus fixed framing.
-  const count: ModelTokenCount = {
-    request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCount["request_digest"],
+  const count: ModelTokenCountWire = {
+    request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
     fixed_tokens: 100,
     message_tokens: [new TextEncoder().encode("Ã©ðŸ¦€").byteLength + 10],
   };
@@ -87,7 +87,7 @@ test("generated provider accounting binds canonical requests, dimensions and por
     expect(() => contracts.validateModelTokenCount(request,
       { ...count, message_tokens: messageTokens }, DEFAULT_LIMITS)).toThrow();
   }
-  const wrongDigest = count.request_digest.slice() as ModelTokenCount["request_digest"];
+  const wrongDigest = count.request_digest.slice() as ModelTokenCountWire["request_digest"];
   wrongDigest[0] = (wrongDigest[0] ?? 0) ^ 1;
   expect(() => contracts.validateModelTokenCount(request,
     { ...count, request_digest: wrongDigest }, DEFAULT_LIMITS)).toThrow();
@@ -98,7 +98,7 @@ test("generated provider accounting binds canonical requests, dimensions and por
       { ...count, message_tokens: [invalid] }, DEFAULT_LIMITS)).toThrow();
   }
   expect(() => contracts.validateModelTokenCount(request,
-    { ...count, unexpected: true } as ModelTokenCount, DEFAULT_LIMITS)).toThrow();
+    { ...count, unexpected: true } as ModelTokenCountWire, DEFAULT_LIMITS)).toThrow();
 });
 
 

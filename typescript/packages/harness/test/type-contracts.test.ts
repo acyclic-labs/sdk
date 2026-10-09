@@ -4,7 +4,7 @@ import type {
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   NativeModelContent, NativeModelContentPart,
-  CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacity, ModelTokenCount,
+  CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
 } from "../src/index.js";
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
@@ -27,9 +27,18 @@ type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPar
 type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, WasmModelContent>>;
 
 type _CompactionContractsUseGeneratedRustShapes = Assert<Equal<
-  [CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacity, ModelTokenCount],
+  [CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire],
   [RustCompactionPolicy, RustCompactionRetention, RustThresholdCompaction, RustModelContextCapacity, RustModelTokenCount]
 >>;
+type _CapacityFacadeUsesRustCounts = Assert<Equal<
+  ModelContextCapacity,
+  Readonly<{ contextTokens: RustModelContextCapacity["context_tokens"]; outputTokens: RustModelContextCapacity["output_tokens"] }>
+>>;
+type _AccountingFacadeUsesRustCounts = Assert<Equal<
+  ModelTokenCount,
+  Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
+>>;
+
 type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelRole,
   "system" | "user" | "assistant" | "tool">>;
 type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
