@@ -27,7 +27,7 @@ use acyclic_harness::{
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
-        ModelProvider, ModelRequest,
+        ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
@@ -359,11 +359,48 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert_ne!(first_terminal?, second_terminal?);
     assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 3);
     let paged = OperationId::from_bytes([57; 16]);
+    let invalid_request = journal_a
+        .stage(
+            paged,
+            "invalid-request".into(),
+            b"null".to_vec(),
+            "application/json",
+        )
+        .await?;
+    assert!(
+        journal_a
+            .append(
+                paged,
+                "invalid-model-start".into(),
+                ExecutionEvent::ModelStarted {
+                    step: 0,
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
+                    request_digest: *blake3::hash(b"null").as_bytes(),
+                    request: invalid_request,
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    let prepared = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: Model::new("fixture", "paged", "1", Value::Null)?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("paged request".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(1),
+        },
+        Limits::default(),
+    )?;
+    let request_digest = prepared.manifest().request_digest;
     let paged_request = journal_a
         .stage(
             paged,
             "paged-request".into(),
-            b"null".to_vec(),
+            prepared.bytes().to_vec(),
             "application/json",
         )
         .await?;
@@ -375,7 +412,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 ExecutionEvent::ModelStarted {
                     step,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
-                    request_digest: [57; 32],
+                    request_digest,
                     request: paged_request.clone(),
                 },
             )
@@ -396,7 +433,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: acyclic_harness::executor::ModelPurpose::Response,
-                request_digest: [57; 32],
+                request_digest,
                 request: paged_request.clone(),
             },
         )
@@ -414,7 +451,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 ExecutionEvent::ModelStarted {
                     step: 70,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
-                    request_digest: [57; 32],
+                    request_digest,
                     request: paged_request.clone(),
                 },
             )

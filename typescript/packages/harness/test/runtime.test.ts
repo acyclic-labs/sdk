@@ -1,4 +1,4 @@
-import { syntheticAccounting } from "./support/model-accounting.js";
+import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { describe, expect, test } from "bun:test";
 import {
   Batch,
@@ -1923,6 +1923,78 @@ describe("typed agent runtime", () => {
     await runtime.run(input);
     expect(contentReads).toBe(1);
     expect(observed[0]?.content).toEqual(validContent);
+  });
+
+  test("model provider callbacks are captured once per binding and retain their receiver", async () => {
+    type Provider = import("../src/model.js").ModelProvider;
+    type StatefulProvider = Provider & { dispatches: number };
+    const accounting = syntheticAccounting(contracts);
+    const reads = { contextCapacity: 0, countTokens: 0, generate: 0, reconcile: 0 };
+    const called: string[] = [];
+    let admitted: Parameters<Provider["generate"]>[0] | undefined;
+    const provider: StatefulProvider = {
+      dispatches: 0,
+      contextCapacity(this: StatefulProvider, model) {
+        expect(this).toBe(provider);
+        called.push("capacity");
+        return accounting.contextCapacity(model);
+      },
+      countTokens(this: StatefulProvider, request) {
+        expect(this).toBe(provider);
+        called.push("count");
+        return accounting.countTokens(request);
+      },
+      async *generate(this: StatefulProvider, request) {
+        expect(this).toBe(provider);
+        this.dispatches++;
+        admitted = request;
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile(this: StatefulProvider) {
+        expect(this).toBe(provider);
+        called.push("reconcile");
+        return undefined;
+      },
+    };
+    const callbacks = { contextCapacity: provider.contextCapacity, countTokens: provider.countTokens,
+      generate: provider.generate, reconcile: provider.reconcile };
+    const names = Object.keys(callbacks) as (keyof typeof callbacks)[];
+    for (const name of names) Object.defineProperty(provider, name, {
+      configurable: true, get() { reads[name]++; return callbacks[name]; },
+    });
+    const runtime = await Harness.builder(contracts).model(testModel, provider).build();
+    const scope = ExecutionScope.create().model({ ...testModel, revision: "scoped" }, provider);
+    const scoped = await runtime.scoped(scope);
+    expect(reads).toEqual({ contextCapacity: 2, countTokens: 2, generate: 2, reconcile: 2 });
+    for (const name of names) Object.defineProperty(provider, name, {
+      configurable: true, value() { throw new Error("replacement must require a new binding"); },
+    });
+    await runtime.run("root");
+    await scoped.run("child");
+    expect(provider.dispatches).toBe(2);
+    const binding = scope.modelBinding;
+    if (!binding || !admitted) throw new Error("expected an admitted scoped request");
+    expect(Object.isFrozen(binding.provider)).toBe(true);
+    expect(binding.provider.contextCapacity(binding.identity)).toEqual(accounting.contextCapacity(binding.identity));
+    const count = binding.provider.countTokens(admitted);
+    expect(count).toEqual(accounting.countTokens(admitted));
+    await binding.provider.reconcile({ operationId: "binding-probe", step: 0,
+      requestDigest: count.requestDigest, observed: [] });
+    expect(called).toEqual(["capacity", "count", "reconcile"]);
+    expect(reads).toEqual({ contextCapacity: 2, countTokens: 2, generate: 2, reconcile: 2 });
+  });
+
+  test("model provider callbacks must all be present before binding", () => {
+    for (const name of ["contextCapacity", "countTokens", "generate", "reconcile"]) {
+      let dispatches = 0;
+      const provider = { ...syntheticAccounting(contracts), async *generate() {
+        dispatches++; yield { kind: "completed" as const, metadata: {} };
+      }, async reconcile() { return undefined; } };
+      Object.defineProperty(provider, name, { value: undefined });
+      expect(() => Harness.builder(contracts).model(testModel, provider)).toThrow("model provider requires");
+      expect(() => ExecutionScope.create().model(testModel, provider)).toThrow("model provider requires");
+      expect(dispatches).toBe(0);
+    }
   });
 
   test("model identity and options are pinned at binding, including scoped overrides", async () => {

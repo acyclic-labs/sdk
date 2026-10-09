@@ -1,4 +1,4 @@
-import { syntheticAccounting } from "./support/model-accounting.js";
+import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import {

@@ -1,4 +1,4 @@
-import { syntheticAccounting } from "./support/model-accounting.js";
+import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,

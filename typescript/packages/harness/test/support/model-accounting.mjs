@@ -1,10 +1,9 @@
-import type { NativeContracts } from "../../src/native-contracts.js";
-import type { ModelContent, ModelContentPart, ModelProvider } from "../../src/model.js";
-
 /** This synthetic provider declares UTF-8 bytes as token units, including file
  * bodies. Counting the complete canonical request as fixed framing deliberately
  * overcounts message descriptors, so schemas/options are never omitted. */
-export function syntheticAccounting(contracts: NativeContracts): Pick<ModelProvider, "contextCapacity" | "countTokens"> {
+/** @param {import("../../src/native-contracts.js").NativeContracts} contracts
+ * @returns {Pick<import("../../src/model.js").ModelProvider, "contextCapacity" | "countTokens">} */
+export function syntheticAccounting(contracts) {
   return {
     contextCapacity() { return { contextTokens: 1_048_576, outputTokens: 16_384 }; },
     countTokens(request) {
@@ -21,8 +20,9 @@ export function syntheticAccounting(contracts: NativeContracts): Pick<ModelProvi
   };
 }
 
-function fileBytes(content: ModelContent): number {
-  const parts: readonly ModelContentPart[] = typeof content === "string" ? []
+/** @param {import("../../src/model.js").ModelContent} content */
+function fileBytes(content) {
+  const parts = typeof content === "string" ? []
     : "kind" in content ? [content] : content;
   return parts.reduce((bytes, part) => bytes + (part.kind === "file" ? part.file.descriptor.byte_length : 0), 0);
 }
