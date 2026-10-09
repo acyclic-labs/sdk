@@ -32,6 +32,9 @@ pub const MAX_FORK_REFERENCE_BYTES: u64 = u64::MAX;
 /// Largest sequence representable by the contract.
 pub const MAX_FORK_INHERITED_MESSAGES: u64 = u64::MAX;
 
+mod summary;
+pub use summary::*;
+
 type DirectManifestReads = BTreeSet<(String, AgentId)>;
 type ManifestMemberGrants = BTreeMap<String, BTreeMap<String, BTreeSet<AgentId>>>;
 

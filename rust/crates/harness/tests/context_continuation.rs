@@ -1078,6 +1078,26 @@ async fn assert_checkpoint_tail_source(
     )
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
+    let prepared_summary = acyclic_harness::fork::prepare_summary_fork_context(
+        aggregate.reducer(),
+        acyclic_harness::fork::SummaryForkSelection {
+            checkpoint: reference.clone(),
+            limits,
+            history_limits: budget,
+        },
+        journal,
+        &original,
+        &history,
+        &cursor,
+        &content,
+    )
+    .await?;
+    assert_eq!(prepared_summary.parent(), aggregate.reducer().authority());
+    assert_eq!(prepared_summary.parent_revision(), cursor.through_revision);
+    assert_eq!(prepared_summary.through_sequence(), 20);
+    assert_eq!(prepared_summary.selection().checkpoint, *reference);
+    assert_eq!(prepared_summary.checkpoint(), &checkpoint);
+    assert_eq!(prepared_summary.context(), &imported);
     let id = uuid::Uuid::new_v4();
     aggregate
         .execute(acyclic_harness::core::Command {
@@ -1128,6 +1148,22 @@ async fn assert_checkpoint_tail_source(
         .await
         .is_err()
     );
+    // A changed parent cannot silently relabel an old authenticated capture.
+    assert!(matches!(
+        acyclic_harness::fork::prepare_summary_fork_context(
+            aggregate.reducer(),
+            prepared_summary.selection().clone(),
+            journal,
+            &original,
+            &history,
+            &cursor,
+            &content,
+        )
+        .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(prepared_summary.through_sequence(), 20);
+    assert_eq!(prepared_summary.context(), &imported);
     let later = history.pin(0).await?;
     assert_eq!(
         load_canonical_checkpoint_through(
