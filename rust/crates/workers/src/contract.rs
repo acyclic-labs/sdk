@@ -114,11 +114,11 @@ pub use generated::{
 };
 /// Published payload source oneof.
 pub mod payload {
-    pub use super::generated::payload::SourceProto as Source;
+    pub use super::generated::domain::payload::SourceProto as Source;
 }
 /// Published job target oneof.
 pub mod job_target {
-    pub use super::generated::job_target::TargetProto as Target;
+    pub use super::generated::domain::job_target::TargetProto as Target;
 }
 /// Render the canonical schema from these executable declarations.
 pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<()> {
