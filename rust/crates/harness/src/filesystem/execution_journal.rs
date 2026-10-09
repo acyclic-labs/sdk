@@ -1936,6 +1936,304 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one real four-record canonical source barrier timeline uses its fixed fixture identities"
+    )]
+    async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_restore()
+    -> Result<()> {
+        use crate::conversation::{
+            ContentPublisher as _, ConversationMessage, MessageKind, ModelContextSelection,
+        };
+        use crate::core::{Action, AggregateKind, Authority, AuthorityIssuer, Command};
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<
+            acyclic_stream::MemoryStream,
+        >::default());
+        let client = StreamClient::new(provider.clone());
+        let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
+        let host = Arc::new(FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            fs_provider.clone(),
+        )?);
+        let agent = AgentId::new();
+        let volume = VolumeRef::new(
+            fs_provider,
+            "cold-source",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        host.create_volume(&volume).await?;
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: crate::ConversationId::new().to_string(),
+        };
+        let issuer = AuthorityIssuer::new("cold-canonical-owner", [72; 32], authority.clone());
+        let scope = issuer.root_for_agent(
+            agent,
+            "owner",
+            crate::Capabilities::new([
+                "conversation:bind".into(),
+                "conversation:append".into(),
+                "conversation:select_context".into(),
+                volume.capability(VolumeOperation::Read)?,
+                volume.capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let content = Arc::new(super::super::FilesystemContentVerifier::new(
+            host.clone(),
+            issuer.verifier(),
+            scope.clone(),
+            4096,
+        )?);
+        let publisher = super::super::FilesystemContentPublisher::new(
+            host.clone(),
+            volume.clone(),
+            &issuer.verifier(),
+            &scope,
+            4096,
+        )?;
+        let mut aggregate = StreamAggregate::open(
+            &client,
+            authority.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?
+        .with_content_verifier(content.clone())
+        .with_resident_event_limit(1)?;
+        aggregate
+            .execute(Command {
+                operation_id: OperationId::new(),
+                idempotency_key: crate::IdempotencyKey::new("cold-bind")?,
+                expected_revision: 0,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            })
+            .await?;
+        let mut ids = Vec::new();
+        let mut references = Vec::new();
+        for (position, kind) in [
+            MessageKind::User,
+            MessageKind::Interaction,
+            MessageKind::Assistant,
+            MessageKind::User,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sequence = position as u64 + 1;
+            let file = publisher
+                .stage(
+                    OperationId::new(),
+                    &format!("messages/{sequence}.txt"),
+                    format!("canonical-{sequence}").as_bytes(),
+                    "text/plain",
+                    "message.txt",
+                )
+                .await?;
+            let id = uuid::Uuid::new_v4();
+            let reply_to = if kind == MessageKind::Assistant {
+                ids.first().copied()
+            } else {
+                None
+            };
+            aggregate
+                .execute(Command {
+                    operation_id: OperationId::new(),
+                    idempotency_key: crate::IdempotencyKey::new(format!(
+                        "cold-message-{sequence}"
+                    ))?,
+                    expected_revision: aggregate.reducer().revision(),
+                    scope: scope.clone(),
+                    causal_parent: None,
+                    action: Action::AppendConversationMessage {
+                        message: Box::new(ConversationMessage {
+                            id,
+                            sequence,
+                            kind,
+                            content: file.clone(),
+                            attachments: Vec::new().into(),
+                            reply_to,
+                            tool_call_id: None,
+                            extensions: Default::default(),
+                        }),
+                    },
+                })
+                .await?;
+            ids.push(id);
+            references.push(file);
+        }
+        let omitted_operation = OperationId::new();
+        let omitted = ModelContextSelection {
+            conversation_revision: 4,
+            message_ids: vec![ids[3]],
+            checkpoint: None,
+        };
+        let complete_operation = OperationId::new();
+        let complete = ModelContextSelection {
+            conversation_revision: 4,
+            message_ids: vec![ids[0], ids[2], ids[3]],
+            checkpoint: None,
+        };
+        for (operation, selection) in [
+            (omitted_operation, omitted.clone()),
+            (complete_operation, complete.clone()),
+        ] {
+            aggregate
+                .execute(Command {
+                    operation_id: operation,
+                    idempotency_key: crate::IdempotencyKey::new(format!(
+                        "cold-selection:{operation}"
+                    ))?,
+                    expected_revision: aggregate.reducer().revision(),
+                    scope: scope.clone(),
+                    causal_parent: None,
+                    action: Action::SelectModelContext { selection },
+                })
+                .await?;
+        }
+        let limits = Limits {
+            context_messages: 3,
+            file_bytes: 4096,
+            render_bytes: 4096,
+            ..Limits::default()
+        };
+        async fn source(
+            history: &crate::conversation::ConversationState,
+            selection: ModelContextSelection,
+            content: &dyn ContentResidencyVerifier,
+            limits: Limits,
+        ) -> Result<crate::context::Context> {
+            let selected = select_model_context_at_revision(
+                history,
+                selection,
+                content,
+                limits.context_messages,
+                limits.attachments,
+                limits.render_bytes,
+                limits.attachments,
+            )
+            .await?;
+            let input = selected
+                .messages
+                .last()
+                .ok_or_else(|| Error::NotFound("cold current input".into()))?
+                .content
+                .clone();
+            crate::context::ContextPipeline::base_context(
+                &crate::context::ContextInput {
+                    input,
+                    selected_context: Some(selected),
+                    step: 0,
+                    prior_messages: Vec::new(),
+                },
+                limits,
+            )
+        }
+        let history = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::NotFound("cold history".into()))?;
+        let omitted_source = source(history, omitted.clone(), content.as_ref(), limits).await?;
+        let complete_source = source(history, complete.clone(), content.as_ref(), limits).await?;
+        let placeholder = references
+            .last()
+            .ok_or_else(|| Error::NotFound("cold placeholder".into()))?
+            .clone();
+        // This tests the actual source barrier, not complete checkpoint publication:
+        // no summary admission or compaction-envelope validity is asserted here.
+        let envelope = |operation_id, selection| crate::context::CanonicalContextCheckpoint {
+            operation_id,
+            selection,
+            source: placeholder.clone(),
+            retained: placeholder.clone(),
+            compaction: placeholder.clone(),
+        };
+        let new_journal = || {
+            FilesystemExecutionJournal::new_with_schemas(
+                client.clone(),
+                host.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                SchemaRegistry::new(),
+                scope.clone(),
+                4096,
+            )
+            .map(|journal| journal.with_input_verifier(content.clone()))
+        };
+        let journal = new_journal()?.with_history_read_limits(crate::store::HistoryReadLimits {
+            maximum_events: 4,
+            maximum_bytes: 16_384,
+        })?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(
+            matches!(journal.verify_canonical_source(&envelope(omitted_operation, omitted), &omitted_source, limits).await,
+            Err(Error::Conflict(message)) if message.contains("skips uncovered canonical history"))
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 10);
+        assert!(journal.conversation_projection.lock().await.is_none());
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        journal
+            .verify_canonical_source(
+                &envelope(complete_operation, complete.clone()),
+                &complete_source,
+                limits,
+            )
+            .await?;
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 10);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        assert!(journal.conversation_projection.lock().await.is_none());
+        let mut altered = complete_source.clone();
+        altered
+            .messages
+            .last_mut()
+            .ok_or_else(|| Error::NotFound("cold source input".into()))?
+            .content = crate::model::ModelContent::Text("altered source".into());
+        assert!(
+            matches!(journal.verify_canonical_source(&envelope(complete_operation, complete.clone()), &altered, limits).await,
+            Err(Error::Conflict(message)) if message.contains("canonical base and delta"))
+        );
+        // Model projection fits three records, while the independent range work
+        // bound must count the intervening Interaction record as well.
+        let bounded = new_journal()?;
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            bounded
+                .verify_canonical_source(
+                    &envelope(complete_operation, complete.clone()),
+                    &complete_source,
+                    limits
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        let byte_bounded =
+            new_journal()?.with_history_read_limits(crate::store::HistoryReadLimits {
+                maximum_events: 4,
+                maximum_bytes: 1,
+            })?;
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            byte_bounded
+                .verify_canonical_source(
+                    &envelope(complete_operation, complete),
+                    &complete_source,
+                    limits
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
     fn other(purpose: ModelPurpose) -> ModelPurpose {
         match purpose {
             ModelPurpose::Response => ModelPurpose::Summary,
