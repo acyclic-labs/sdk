@@ -205,7 +205,12 @@ async fn stock_turn_recovery(cancel: bool) -> Result<()> {
                 ));
                 assert_eq!(model.generated.load(Ordering::SeqCst), 1);
                 assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
-                assert_eq!(runtime.task_host().outcome(task).await?, None);
+                assert_eq!(
+                    runtime.task_host().outcome(task).await?,
+                    Some(Outcome::Indeterminate {
+                        operation_id: operation
+                    }),
+                );
             } else {
                 let WorkPull::Claimed(recovered) = recovered else {
                     return Err(Error::Invalid(

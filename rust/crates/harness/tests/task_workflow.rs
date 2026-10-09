@@ -863,6 +863,7 @@ async fn worker_restart_with_options(
         labels: BTreeMap::new(),
     };
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
+    let mut model_execution = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
         approval_tool: with_model_approval,
@@ -1096,7 +1097,35 @@ async fn worker_restart_with_options(
             .with_payload_store(payloads.clone());
         let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
+            // A passive model approval has no reservation. Inspecting its
+            // original execution must neither acquire authority nor publish.
+            let passive = if with_model_approval {
+                let execution = model_execution.ok_or_else(|| Error::NotFound("model execution".into()))?;
+                let journal = stream.stream(format!("harness/v2/execution/{execution}"))?;
+                let workspace = acyclic_harness::filesystem::workspace_ref(provider.clone(), &volume.storage_name()?)?;
+                let before = (journal.tail().await?, filesystem.resolve(&workspace).await?,
+                    stream.stream("harness/v2/coordinator/events")?.tail().await?);
+                let callbacks = (model.generated.load(Ordering::SeqCst), model.reconciled.load(Ordering::SeqCst),
+                    tool.executed.load(Ordering::SeqCst), tool.reconciled.load(Ordering::SeqCst));
+                assert!(coordinator.scheduler().operation(operation)
+                    .ok_or_else(|| Error::NotFound("passive task".into()))?.reservation.is_none());
+                let old = old_lease.as_ref().ok_or_else(|| Error::NotFound("original approval lease".into()))?;
+                assert!(runtime.task_host().journal_owner(task, LeaseFence::from(&old.reservation)).await.is_err());
+                Some((journal, workspace, before, callbacks))
+            } else { None };
             assert!(!runtime.poll_task_wake(task).await?);
+            if let Some((journal, workspace, before, callbacks)) = passive {
+                assert_eq!(journal.tail().await?, before.0);
+                assert_eq!(filesystem.resolve(&workspace).await?, before.1);
+                assert_eq!(stream.stream("harness/v2/coordinator/events")?.tail().await?, before.2);
+                assert_eq!((model.generated.load(Ordering::SeqCst), model.reconciled.load(Ordering::SeqCst),
+                    tool.executed.load(Ordering::SeqCst), tool.reconciled.load(Ordering::SeqCst)), callbacks);
+                coordinator.refresh().await?;
+                let retained = coordinator.scheduler().operation(operation)
+                    .ok_or_else(|| Error::NotFound("passive task".into()))?;
+                assert_eq!(retained.phase, acyclic_harness::scheduler::OperationPhase::Suspended);
+                assert!(retained.reservation.is_none());
+            }
             if with_timer || with_mail_receive || with_child || with_approval_wait {
                 let cursor = discovery_cursor
                     .as_ref()
@@ -1379,6 +1408,13 @@ async fn worker_restart_with_options(
         let Some(outcome) = boxed_restart_phase(|| async {
         let outcome = if with_command {
             if !reopened {
+                if with_model_approval {
+                    // Obtain the namespace from the public, effect-free
+                    // production constructor rather than repeat its hash rule.
+                    model_execution = Some(runtime.stock_execution(task, LeaseFence::from(&lease.reservation),
+                        OperationId::from_bytes([26;16]), Model::new("test", "interrupted", "1", Value::Null)?,
+                        model.clone(), ContextPipeline::default()).await?.operation_id());
+                }
                 assert!(
                     matches!(runtime.resume_task(lease.clone(), &NoCommands, 0).await,
                     TaskWorkerAttempt::Unresolved { lease: retained, error: Error::Invalid(_) } if retained == lease)
