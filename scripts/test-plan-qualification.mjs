@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
+import { posix } from "node:path";
+import { runInNewContext } from "node:vm";
+import { packagedSourceCopies } from "./generated-bindings.mjs";
 
 import {
   chooseLanes,
@@ -77,6 +80,47 @@ test("Rust that no package compiles skips the TypeScript lane", () => {
   }
   const wasm = differing(before, laneKeys(lanes, changed("rust/crates/stream/src/lib.rs")));
   assert.ok(wasm.includes("typescript"));
+});
+
+test("every generated source copy invalidates the TypeScript fingerprint on either side", () => {
+  const inputs = [...new Set(packagedSourceCopies.flat())];
+  const entries = inputs.map(path => blob(path));
+  const before = laneKeys(lanes, entries).typescript;
+  for (const path of inputs) {
+    const mutated = entries.map(entry => entry.endsWith(`\t${path}`) ? blob(path, "b".repeat(40)) : entry);
+    assert.notEqual(laneKeys(lanes, mutated).typescript, before, path);
+  }
+  const conformance = "rust/crates/conformance/";
+  const actual = new Set(inputs.filter(path => path.startsWith(conformance)));
+  const inventory = new Set(readdirSync(`${conformance}vectors`, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => `${entry.parentPath}/${entry.name}`.replaceAll("\\", "/")));
+  assert.deepEqual(actual, inventory, "the copy inventory must cover the complete packaged conformance vector set");
+  for (const path of ["Cargo.toml", "src/main.rs", "src/bin/qualify.rs"]) {
+    const unrelated = [...entries, blob(`${conformance}${path}`)];
+    assert.equal(laneKeys(lanes, unrelated).typescript, before, path);
+    unrelated[unrelated.length - 1] = blob(`${conformance}${path}`, "b".repeat(40));
+    assert.equal(laneKeys(lanes, unrelated).typescript, before, path);
+  }
+});
+
+test("the actual generated-copy guard rejects a mutation of every packaged conformance vector", () => {
+  const source = readFileSync("scripts/check-generated.mjs", "utf8");
+  const start = source.indexOf("  for (const [source, packaged] of packagedSourceCopies) {");
+  const end = source.indexOf("  const harnessSuite", start);
+  assert.ok(start >= 0 && end > start, "the maintained copy guard must remain identifiable");
+  const guard = source.slice(start, end);
+  const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
+  const check = () => runInNewContext(guard, { packagedSourceCopies, readFileSync: path => files.get(path), join: posix.join, root: "." });
+  assert.doesNotThrow(check);
+  for (const [, packaged] of packagedSourceCopies.filter(([, path]) => path.startsWith("rust/crates/conformance/"))) {
+    const original = files.get(packaged);
+    assert.ok(original, packaged);
+    files.set(packaged, Buffer.concat([original, Buffer.from(" ")]));
+    assert.throws(check, { message: `packaged source drift: ${packaged}` });
+    files.set(packaged, original);
+  }
+  assert.doesNotThrow(check);
 });
 
 test("the filesystem package manifest reaches native binding lanes", () => {
