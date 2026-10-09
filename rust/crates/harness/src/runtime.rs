@@ -18,10 +18,7 @@ use crate::{
         InteractionTicket, ResolutionReceipt,
     },
     live::{TaskGroup, TaskHandle},
-    model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
-        ModelRequest,
-    },
+    model::{Model, ModelEvent, ModelMessage, ModelProvider, ModelRequest},
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},
     scheduler::InboxItem,
@@ -6231,6 +6228,7 @@ impl std::ops::Deref for ToolContext {
 mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
+    use crate::model::{ModelContent, ModelContentPart};
     use crate::resources::ProviderRef;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -207,6 +207,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
+            "operation:cancel".to_owned(),
             "task:spawn:fixture.file_replay@1".to_owned(),
             "tool:call:acyclic.read_file".to_owned(),
             "tool:call:acyclic.write_file".to_owned(),

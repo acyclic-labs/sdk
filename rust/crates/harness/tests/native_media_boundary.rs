@@ -10,21 +10,23 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 use acyclic_fs::Fs;
 use acyclic_harness::{
-    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result,
+    Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     bundle::HarnessBuilder,
-    context::{ModelContextCapacity, ModelTokenCount},
+    context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, ExtensionDependency,
-        ExtensionForkPolicy, Reducer, SchemaRegistry,
+        ExtensionForkPolicy, Reducer, SchemaRegistry, Scope,
     },
+    distributed::{WorkPull, Worker},
+    executor::TurnInput,
     extension::{ExtensionIdentity, ExtensionRegistry, ExtensionRuntime, NativeExtension},
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-        FilesystemHost,
+        FilesystemHost, FilesystemTaskRuntime,
     },
     model::{
         FileProjectionPolicy, ImageDetail, Model, ModelAttempt, ModelContent, ModelContentPart,
@@ -33,15 +35,20 @@ use acyclic_harness::{
         PreparedModelRequest, ToolResultContent,
     },
     resources::ProviderRef,
-    runtime::{ContentBindings, TaskDefinition, TaskRegistry},
+    runtime::{ContentBindings, DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
+    },
+    workflow::{
+        MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream, StreamClient};
 use futures::stream;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -194,14 +201,34 @@ struct Capture {
     parts: Vec<CapturedPart>,
 }
 
+type NativeReceipts = BTreeMap<([u8; 16], u32), (ModelDispatch, Vec<ModelEvent>)>;
+
 struct MockAdapter {
     reader: Arc<ReaderSpy>,
     counts: AtomicUsize,
     generates: AtomicUsize,
     wrong_count_digest: AtomicBool,
     captures: Mutex<Vec<Capture>>,
+    // Provider-owned receipts survive runtime reconstruction in this memory fixture.
+    receipts: Mutex<NativeReceipts>,
+    receipts_enabled: bool,
+    interrupt_after_capture: AtomicBool,
+    reconciles: AtomicUsize,
 }
 impl MockAdapter {
+    fn new(reader: Arc<ReaderSpy>) -> Self {
+        Self {
+            reader,
+            counts: AtomicUsize::new(0),
+            generates: AtomicUsize::new(0),
+            wrong_count_digest: AtomicBool::new(false),
+            captures: Mutex::new(Vec::new()),
+            receipts: Mutex::new(BTreeMap::new()),
+            receipts_enabled: false,
+            interrupt_after_capture: AtomicBool::new(false),
+            reconciles: AtomicUsize::new(0),
+        }
+    }
     fn selection(model: &Model) -> Result<()> {
         if model.provider != "fixture-native"
             || model.name != "all"
@@ -376,19 +403,51 @@ impl ModelProvider for MockAdapter {
                     request_bytes: request.bytes().to_vec(),
                     parts,
                 });
-            Ok(ModelEvent::Completed {
+            let event = ModelEvent::Completed {
                 metadata: Value::Null,
-            })
+            };
+            if self.receipts_enabled {
+                let key = (dispatch.operation_id.into_bytes(), dispatch.step);
+                let previous = self
+                    .receipts
+                    .lock()
+                    .map_err(|_| Error::Storage("fixture receipt lock".into()))?
+                    .insert(key, (dispatch, vec![event.clone()]));
+                if previous.is_some() {
+                    return Err(Error::Conflict(
+                        "fixture attempted duplicate generation".into(),
+                    ));
+                }
+            }
+            if self.interrupt_after_capture.swap(false, Ordering::SeqCst) {
+                return Err(Error::Storage(
+                    "fixture response lost after native capture".into(),
+                ));
+            }
+            Ok(event)
         }))
     }
     fn reconcile<'a>(
         &'a self,
-        _: ModelAttempt,
+        attempt: ModelAttempt,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "live fixture has no durable model route".into(),
-            ))
+        self.reconciles.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let receipts = self
+                .receipts
+                .lock()
+                .map_err(|_| Error::Storage("fixture receipt lock".into()))?;
+            let Some((dispatch, events)) =
+                receipts.get(&(attempt.operation_id.into_bytes(), attempt.step))
+            else {
+                return Ok(None);
+            };
+            if dispatch.request_digest != attempt.request_digest
+                || !events.starts_with(&attempt.observed)
+            {
+                return Err(Error::Conflict("fixture original attempt differs".into()));
+            }
+            Ok(Some(events[attempt.observed.len()..].to_vec()))
         })
     }
 }
@@ -488,6 +547,11 @@ async fn exercise_live_native_boundary() -> Result<()> {
             write,
             "extension:configure".into(),
             "extension:activate".into(),
+            "operation:declare".into(),
+            "operation:observe".into(),
+            "operation:cancel".into(),
+            "model:generate".into(),
+            "task:spawn:fixture.native_replay@1".into(),
         ]),
     );
     let writer = FilesystemContentPublisher::new(
@@ -626,13 +690,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         corrupt: AtomicBool::new(false),
         missing: AtomicBool::new(false),
     });
-    let adapter = Arc::new(MockAdapter {
-        reader: reader.clone(),
-        counts: AtomicUsize::new(0),
-        generates: AtomicUsize::new(0),
-        wrong_count_digest: AtomicBool::new(false),
-        captures: Mutex::new(Vec::new()),
-    });
+    let adapter = Arc::new(MockAdapter::new(reader.clone()));
     let projector = Arc::new(NativeProjector(selected.iter().skip(2).cloned().collect()));
     let definition = ToolDefinition {
         name: "fixture.media_tool".into(),
@@ -721,6 +779,10 @@ async fn exercise_live_native_boundary() -> Result<()> {
         .ok_or_else(|| Error::NotFound("image for option capability".into()))?
         .0
         .clone();
+    let durable_selected = selected.clone();
+    let durable_scope = RuntimeScope::new(owner.capabilities().clone(), Limits::default())?
+        .with_extensions_from(&agent)?
+        .with_extension_runtime(linked.clone())?;
     let test_adapter = adapter.clone();
     let test_reader = reader.clone();
     tasks.register(TaskDefinition::live(
@@ -1033,8 +1095,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
     );
     let journal = Arc::new(FilesystemExecutionJournal::new(
         StreamClient::new(Arc::new(MemoryStream::default())),
-        host,
-        volume,
+        host.clone(),
+        volume.clone(),
         journal_issuer.verifier(),
         journal_scope,
         65_536,
@@ -1101,6 +1163,16 @@ async fn exercise_live_native_boundary() -> Result<()> {
         runtime.spawn(&task, ()).await?.result().await?,
         Outcome::Succeeded(())
     );
+    exercise_retained_native_boundary(
+        host.clone(),
+        volume.clone(),
+        owner.clone(),
+        durable_scope,
+        reader.clone(),
+        durable_selected,
+        &writer,
+    )
+    .await?;
     let current = agent
         .extension_admission()?
         .ok_or_else(|| Error::NotFound("new native selection".into()))?;
@@ -1202,6 +1274,244 @@ async fn exercise_live_native_boundary() -> Result<()> {
     );
     assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
     assert_eq!(adapter.generates.load(Ordering::SeqCst), generated);
+    Ok(())
+}
+
+// A real admitted task and its original lease drive the production stock journal.
+// Memory providers and the provider-owned receipt are retained across composition
+// reopen; this is not an OS process restart or default fork/compaction proof.
+struct ReplayMachine {
+    identity: MachineIdentity,
+    schema: Value,
+}
+impl ResumableMachine for ReplayMachine {
+    fn identity(&self) -> &MachineIdentity {
+        &self.identity
+    }
+    fn state_schema(&self) -> &Value {
+        &self.schema
+    }
+    fn initialize(&self, input: &Value) -> Result<Value> {
+        Ok(input.clone())
+    }
+    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
+        Ok(MachineTransition {
+            state: state.clone(),
+            commands: Vec::new(),
+            status: MachineStatus::Completed {
+                value: state.clone(),
+            },
+        })
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fixture explicitly supplies original admission and provider bindings"
+)]
+async fn exercise_retained_native_boundary<A, O>(
+    host: Arc<FilesystemHost<A, O>>,
+    volume: VolumeRef,
+    signed: Scope,
+    scope: RuntimeScope,
+    reader: Arc<ReaderSpy>,
+    selected: Vec<(FileRef, NativeMediaPolicy)>,
+    writer: &FilesystemContentPublisher<A, O>,
+) -> Result<()>
+where
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+{
+    let machine: Arc<dyn ResumableMachine> = Arc::new(ReplayMachine {
+        identity: MachineIdentity {
+            name: "fixture.native_replay".into(),
+            version: "1".into(),
+            digest: [114; 32],
+        },
+        schema: json!({"type":"integer"}),
+    });
+    let definition = TaskDefinition::<u64, u64>::resumable(
+        machine.clone(),
+        json!({"type":"integer"}),
+        json!({"type":"integer"}),
+    )?;
+    let mut tasks = TaskRegistry::default();
+    tasks.register(definition)?;
+    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1")?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine)?;
+    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let admission = OperationId::from_bytes([115; 16]);
+    let task = TaskId::from_bytes(admission.into_bytes());
+    // Journal storage is task-owned; original Agent extension selection remains
+    // pinned in the separately retained runtime scope.
+    let issuer = AuthorityIssuer::new(
+        "native-replay-task",
+        [23; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: task.to_string(),
+        },
+    );
+    let signed = issuer.root_for_agent(
+        signed
+            .agent()
+            .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?,
+        "native-replay-task-owner",
+        signed.capabilities().clone(),
+    );
+    let turn = OperationId::from_bytes([116; 16]);
+    let mut model = MockAdapter::new(reader);
+    model.receipts_enabled = true;
+    model.interrupt_after_capture.store(true, Ordering::SeqCst);
+    let adapter = Arc::new(model);
+    let content = ModelContent::Parts(
+        selected
+            .iter()
+            .map(|(file, policy)| ModelContentPart::File {
+                file: file.clone(),
+                policy: FileProjectionPolicy::Native(policy.clone()),
+            })
+            .collect(),
+    );
+    let mut fence = None;
+    let mut first_capture = None;
+    let mut completed = None;
+    for pass in 0..3 {
+        let runtime = FilesystemTaskRuntime::open(
+            stream.clone(),
+            host.clone(),
+            volume.clone(),
+            issuer.verifier(),
+            signed.clone(),
+            scope.clone(),
+            tasks.clone(),
+            machines.clone(),
+            ToolRegistry::default(),
+            SessionLimits {
+                active_tasks: 1,
+                total_tasks: 1,
+                depth: 1,
+                model_steps: 1,
+            },
+            1,
+            65_536,
+        )
+        .await?;
+        if pass == 0 {
+            assert!(matches!(
+                runtime
+                    .harness()
+                    .admit(admission, &definition, 7, None)
+                    .await?,
+                Admission::Accepted(_)
+            ));
+            let worker = Worker {
+                id: "native-replay".into(),
+                available: ResourceSnapshot::default(),
+                labels: BTreeMap::new(),
+            };
+            let lease = match runtime.task_host().pull_work(&worker).await? {
+                WorkPull::Claimed(lease) => lease,
+                WorkPull::Idle => return Err(Error::NotFound("original task lease".into())),
+                WorkPull::Unresolved { error, .. } => return Err(error),
+            };
+            runtime.task_host().start_task(&lease).await?;
+            fence = Some(LeaseFence::from(&lease.reservation));
+        }
+        let original = runtime.task_host().observe_admission(task).await?;
+        assert_eq!(original.extensions.as_ref(), scope.extensions());
+        let context = runtime.harness().durable_context(task, admission).await?;
+        assert_eq!(context.scope().extensions(), scope.extensions());
+        let execution = runtime
+            .stock_execution(
+                task,
+                fence
+                    .clone()
+                    .ok_or_else(|| Error::NotFound("original lease".into()))?,
+                turn,
+                Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+                adapter.clone(),
+                ContextPipeline::default(),
+            )
+            .await?
+            .with_max_output_tokens(16)?;
+        let input = TurnInput {
+            operation_id: execution.operation_id(),
+            input: content.clone(),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let result = execution.execute(input).await;
+        if pass == 0 {
+            assert!(matches!(result, Err(Error::Storage(_))), "{result:?}");
+            assert_eq!(adapter.generates.load(Ordering::SeqCst), 1);
+            assert_eq!(adapter.reconciles.load(Ordering::SeqCst), 0);
+            let capture = adapter
+                .captures
+                .lock()
+                .map_err(|_| Error::Storage("capture lock".into()))?
+                .first()
+                .cloned()
+                .ok_or_else(|| Error::NotFound("native dispatch capture".into()))?;
+            let media = capture
+                .parts
+                .iter()
+                .filter_map(|part| {
+                    if let CapturedPart::Media(media) = part {
+                        Some(media)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(media.len(), selected.len());
+            for (captured, (file, policy)) in media.iter().zip(&selected) {
+                assert_eq!(&captured.file, file);
+                assert_eq!(&captured.policy, policy);
+                assert_eq!(captured.options, Some(json!({"mode":"strict","scale":2})));
+            }
+            first_capture = Some(capture);
+        } else {
+            let output = result?;
+            if let Some(previous) = &completed {
+                assert_eq!(&output, previous);
+            }
+            completed = Some(output);
+            assert_eq!(adapter.generates.load(Ordering::SeqCst), 1);
+            assert_eq!(adapter.reconciles.load(Ordering::SeqCst), 1);
+            let captures = adapter
+                .captures
+                .lock()
+                .map_err(|_| Error::Storage("capture lock".into()))?;
+            assert_eq!(captures.len(), 1);
+            assert_eq!(captures.first(), first_capture.as_ref());
+        }
+        drop(execution);
+        drop(runtime);
+        if pass == 0 {
+            // Change the mutable source paths after the request/receipt are pinned.
+            // Reopen must validate and reconcile the original generation references.
+            writer
+                .stage(
+                    OperationId::new(),
+                    "media/0.bin",
+                    b"replaced mutable media",
+                    "application/octet-stream",
+                    "replacement",
+                )
+                .await?;
+            writer
+                .stage(
+                    OperationId::new(),
+                    "options.json",
+                    br#"{"mode":"strict","scale":4}"#,
+                    "application/json",
+                    "replacement options",
+                )
+                .await?;
+        }
+    }
     Ok(())
 }
 

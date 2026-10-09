@@ -397,6 +397,7 @@ impl McpCatalog {
             description: remote.description.clone(),
             input_schema: remote.input_schema.clone(),
             output_schema: Value::Object(output_schema),
+            projection_schema: crate::tool::json_projection_schema(json!({})),
         })
     }
 
@@ -661,7 +662,7 @@ mod tests {
     struct Projection;
     impl ToolProjection for Projection {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(result.value.clone())
+            Ok(json!({"kind":"json","value":result.value}))
         }
     }
     fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
