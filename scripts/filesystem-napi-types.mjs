@@ -22,7 +22,7 @@ export async function render(_, root) {
   // command also publishes native binaries/loaders through filesystem locks;
   // those artifacts are qualified separately and are not inputs to this check.
   const generated = spawnSync(process.env.ACYCLIC_CARGO_BIN || "cargo", [
-    "build", "--locked", "--manifest-path", "rust/crates/filesystem-napi/Cargo.toml", "--target-dir", target,
+    "check", "--locked", "--manifest-path", "rust/crates/filesystem-napi/Cargo.toml", "--target-dir", target,
   ], { cwd: root, stdio: "inherit", env: {
     ...process.env,
     NAPI_TYPE_DEF_TMP_FOLDER: typeDefDir,
