@@ -10,7 +10,11 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 let fixture;
 let runtime;
 try {
-  fixture = await taskFixture(crypto.randomUUID());
+  fixture = await taskFixture(crypto.randomUUID(), "acyclic.stock_turn");
+  fixture.registry.registerStockTurn();
+  let duplicateRegistrationRejected = false;
+  try { fixture.registry.registerStockTurn(); } catch { duplicateRegistrationRejected = true; }
+  assert(duplicateRegistrationRejected, "duplicate stock task registration was accepted");
   let requests = 0;
   let reconciliations = 0;
   let returns = 0;
@@ -45,8 +49,16 @@ try {
   await runtime.initializeVolume();
   const command = crypto.randomUUID();
   const file = await runtime.stage(command, "model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
-  const admission = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file, operation: command, kind: "acyclic.model.v1" });
+  const operation = crypto.randomUUID();
+  const input = { payload: file, operation_id: command, kind: "acyclic.model.v1" };
+  const admission = await runtime.admit(operation, "acyclic.stock_turn", "1", input);
   assert(admission.kind === "accepted", describe(admission));
+  const retry = await runtime.admit(operation, "acyclic.stock_turn", "1", input);
+  assert(retry.kind === "accepted" && retry.task_id === admission.task_id, "exact stock admission retry changed task identity");
+  let changedAdmissionRejected = false;
+  try { await runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, operation_id: crypto.randomUUID() }); }
+  catch { changedAdmissionRejected = true; }
+  assert(changedAdmissionRejected, "stock admission accepted a changed model command");
   const worker = { id: "model-worker", available: {}, labels: {} };
   result.dataset.waiting = "retain interrupted model prefix";
   const first = await runtime.workerTick(worker, null, 128, 4);
@@ -61,7 +73,8 @@ try {
   const recovered = await runtime.resume(first.work.lease, 4);
   assert(recovered.kind === "completed", `model recovery did not complete: ${describe(recovered)}`);
   assert(requests === 1 && reconciliations === 1, "recovery repeated model generation or reconciliation");
-  assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "durable model workflow result differs");
+  const output = (await runtime.outcome(admission.task_id))?.Succeeded;
+  assert(output?.text === "committed" && output.steps === 1n, `durable stock model result differs: ${describe(output)}`);
   const duplicate = await runtime.workerTick(worker, null, 128, 4);
   assert(duplicate.work === null && requests === 1 && reconciliations === 1, "duplicate wake repeated model dispatch");
   result.dataset.status = "passed";

@@ -72,6 +72,15 @@ impl StockTurnMachine {
     /// The input is one ref-only `acyclic.model.v1` command, never inline media
     /// or a separately captured model/tool execution context.
     pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<WorkflowCommand, TurnOutput>> {
+        self.registered_definition()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn wire_definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
+        self.registered_definition()
+    }
+
+    fn registered_definition<I, O>(self: &Arc<Self>) -> Result<TaskDefinition<I, O>> {
         TaskDefinition::resumable(self.clone(), command_schema(), output_schema())?
             .requires("model")
     }

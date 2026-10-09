@@ -2,7 +2,7 @@ import init, { WasmReducer, WasmTaskRegistry, WasmTaskRuntime } from "../generat
 
 // Test composition only: every actor opens the real ordinary runtime. Transport
 // messages carry wake/control hints; no test callback implements scheduling.
-export async function taskFixture(id) {
+export async function taskFixture(id, taskName = "test.browser") {
   await init();
   const owner = new WasmReducer({ kind: "task", id }, "browser-task", new Uint8Array(32).fill(23), []);
   const agent = "15151515-1515-1515-1515-151515151515";
@@ -11,7 +11,7 @@ export async function taskFixture(id) {
   const scope = owner.issueScopeForAgent(agent, "owner", [
     "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
     "timer:wait", "mail:send", "mail:read", "tool:call:test.effect", "model:generate",
-    "task:spawn:test.browser@1", owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
+    `task:spawn:${taskName}@1`, owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
   ]);
   const registry = new WasmTaskRegistry();
   let transitions = 0;

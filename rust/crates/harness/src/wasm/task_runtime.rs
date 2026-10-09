@@ -11,8 +11,8 @@ use crate::{
     core::Scope,
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
     filesystem::{
-        FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, TaskWakeCursor,
-        TaskWorkerAttempt, TaskWorkerOutcome,
+        FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, StockTurnMachine,
+        TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
     },
     model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
@@ -507,12 +507,32 @@ impl WasmTaskRegistry {
         for requirement in definition.requirements {
             task = task.requires(requirement).map_err(js_error)?;
         }
+        self.register_definition(machine, task)
+    }
+
+    /// Registers the Rust stock-turn adapter over the ordinary model outbox.
+    /// Registration starts no worker and grants no model or task authority.
+    #[wasm_bindgen(js_name = registerStockTurn)]
+    pub fn register_stock_turn(&mut self) -> std::result::Result<(), JsValue> {
+        let machine = Arc::new(StockTurnMachine::new());
+        let task = machine.wire_definition().map_err(js_error)?;
+        self.register_definition(machine, task)
+    }
+}
+
+impl WasmTaskRegistry {
+    fn register_definition(
+        &mut self,
+        machine: Arc<dyn ResumableMachine>,
+        task: TaskDefinition<Value, Value>,
+    ) -> std::result::Result<(), JsValue> {
         // Only NotFound means this exact task key is vacant, including when an
         // occupied key has different Rust types. With exclusive synchronous
         // access, task insertion cannot conflict after machine registration.
+        let identity = machine.identity();
         if !matches!(
             self.tasks
-                .get_version::<Value, Value>(&machine.identity.name, &machine.identity.version),
+                .get_version::<Value, Value>(&identity.name, &identity.version),
             Err(Error::NotFound(_))
         ) {
             return Err(js_error(Error::Conflict(
