@@ -12,6 +12,7 @@ tools/sdk-generator/
     java/               Java producer and Java/Kotlin/Scala consumer qualification
     dotnet/             C# producer, pinned package and installed controls
     ruby/               Ruby producer, pinned gem and installed controls
+    dart/               Dart producer, pinned package and installed controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -19,7 +20,7 @@ Add a backend directory when it contains executable tooling; keep generated SDK
 source and package artifacts in their language package or requested output path.
 Do not check tool downloads, caches or generation output into this directory.
 
-Java, .NET and Ruby use the same layout within each backend:
+Java, .NET, Ruby and Dart use the same layout within each backend:
 
 ```text
 <backend>/
@@ -38,6 +39,13 @@ lives in `src/` with offline tests in `tests/`.
 Generated packages, qualification receipts, downloads and caches belong in
 explicit output directories outside this source tree. Consult each backend's
 README for installed qualification commands.
+
+`.github/sdk-generator-backends.json` registers executable backends for focused
+CI and qualification input scoping. Routine CI runs only affected offline checks;
+shared-reader changes check its consumers, and archive-reader changes check Go
+and Dart. Backend README-only changes need no focused test run, while package
+templates remain checked. Unknown backend directories retain full qualification
+inputs until explicitly registered.
 
 From the repository root:
 

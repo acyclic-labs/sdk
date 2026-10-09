@@ -1,0 +1,7 @@
+[
+  { "name": "go", "shared": ["archive"] },
+  { "name": "java", "shared": ["authority"] },
+  { "name": "dotnet", "shared": ["authority"] },
+  { "name": "ruby", "shared": ["authority"] },
+  { "name": "dart", "shared": ["authority", "archive"] }
+]
