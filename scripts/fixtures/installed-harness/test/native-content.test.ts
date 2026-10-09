@@ -39,15 +39,6 @@ test("installed local runtime rejects unsupported original option admission befo
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(
     { provider: "mock", name: "installed-native-options", revision: "pinned", options: {} }, {
-      contextCapacity() { return { contextTokens: 1_048_576, outputTokens: 16_384 }; },
-      countTokens(request) {
-        return {
-          requestDigest: contracts.digestCanonicalJson(contracts.decodeCanonicalJson(request.serializedInput)),
-          fixedTokens: request.serializedInput.byteLength + 512,
-          messageTokens: request.messages.map(message => 512 + contracts.modelContentInventory(message.content, DEFAULT_LIMITS).files
-            .reduce((total, file) => total + file.descriptor.byte_length, 0)),
-        };
-      },
       async *generate() { calls++; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
