@@ -37,9 +37,10 @@ fn value<T: Serialize>(input: T) -> Result<Value> {
 }
 
 fn definition(variant: &str, tool: Tool) -> Result<Value> {
-    tool.definition.validate()?;
-    let digest = tool.definition.digest()?;
-    Ok(json!({"variant":variant,"definition":tool.definition,"definition_digest":digest}))
+    let definition = tool.definition;
+    definition.validate()?;
+    let digest = definition.digest()?;
+    Ok(json!({"variant":variant,"definition":definition,"definition_digest":digest}))
 }
 
 fn invocation(name: &str, arguments: Value) -> ToolInvocation {
