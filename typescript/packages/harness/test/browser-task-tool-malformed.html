@@ -4,6 +4,7 @@
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
 import { taskFixture } from "./browser-task-fixture.mjs";
+import { jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
 const result = document.querySelector("#result");
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -18,7 +19,8 @@ try {
   const requests = [];
   fixture.registry.registerTool({ name: "test.effect", revision: "1", description: "Retained effect with malformed delivery",
     input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
-    output_schema: { type: "string" } }, invocation => {
+    output_schema: { type: "string" },
+    projection_schema: jsonToolProjectionSchema({ type: "string" }) }, invocation => {
     executions++;
     assert(localStorage.getItem(effectKey) === null, "malformed receipt caused effect redispatch");
     localStorage.setItem(effectKey, JSON.stringify(invocation));
@@ -30,7 +32,7 @@ try {
   }, (_, canonical) => {
     projections++;
     assert(canonical.value === "committed", "projection lost the canonical effect result");
-    return canonical.value;
+    return { kind: "json", value: canonical.value };
   });
   const bind = runtime => runtime.configureModel({ provider: "browser-test", name: "tool", revision: "1", options: {} },
     async function* (_, dispatch) {

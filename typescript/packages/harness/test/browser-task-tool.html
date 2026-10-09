@@ -4,6 +4,7 @@
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
 import { taskFixture } from "./browser-task-fixture.mjs";
+import { jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
 const result = document.querySelector("#result");
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -25,7 +26,9 @@ try {
   let projections = 0;
   const definition = { name: "test.effect", revision: "1", description: "Retained browser effect",
     input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
-    output_schema: { type: "string" } };
+    output_schema: { type: "string" },
+    projection_schema: jsonToolProjectionSchema({ type: "object", properties: { observed: { type: "string" } },
+      required: ["observed"], additionalProperties: false }) };
   fixture.registry.registerTool(definition, async invocation => {
     executions++;
     if (remote) return callRemote("execute", invocation);
@@ -41,7 +44,7 @@ try {
     return { value: effect.arguments.value };
   }, (_, canonical) => {
     projections++;
-    return { observed: canonical.value };
+    return { kind: "json", value: { observed: canonical.value } };
   });
   let rejected = false;
   try { fixture.registry.registerTool({ ...definition, description: "changed" }, () => {}, () => {}, () => {}); }
