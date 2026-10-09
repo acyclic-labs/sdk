@@ -4,10 +4,10 @@ import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpath
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../shared/authority.mjs";
+import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const pinned = JSON.parse(readFileSync(join(directory, "toolchain.json"))).qualification;
+const pinned = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"))).qualification;
 const coordinate = "acyclic.sdk.transport";
 const version = "0.2.0-alpha.1";
 const packageName = `Acyclic.Sdk.Transport.${version}.nupkg`;
@@ -38,7 +38,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
   try { lstatSync(output); throw new Error("qualification output must be absent"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authority, dotnetHome, nuget, cache, directory]) {
+  for (const input of [packageRoot, authority, dotnetHome, nuget, cache, dirname(directory)]) {
     if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
   }
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
@@ -55,7 +55,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     payload.set(name, readInput(packageRoot, name, receipt.output_sha256[name]));
   }
   for (const name of [projectName, "packages.lock.json", "global.json", "README.md"]) {
-    if (!payload.has(name) || sha256(payload.get(name)) !== sha256(readFileSync(join(directory, "package", name)))) {
+    if (!payload.has(name) || sha256(payload.get(name)) !== sha256(readFileSync(join(directory, "../templates/package", name)))) {
       throw new Error("package build metadata differs from the pinned template");
     }
   }
@@ -130,7 +130,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const archive = join(feed, packageName);
   const assembly = join(project, "bin", "Release", "net8.0", "Acyclic.Sdk.Transport.dll");
   const assemblyHash = sha256(readFileSync(assembly));
-  const controls = join(directory, "testdata", "consumer");
+  const controls = join(directory, "../tests/fixtures", "consumer");
   const snapshots = join(output, "authority"); mkdirSync(snapshots);
   const descriptors = targets.map((name, index) => {
     const file = join(snapshots, `${index}.bin`); writeFileSync(file, approved.inputs.get(approved.descriptors.get(name)), { flag: "wx" }); return file;
@@ -163,7 +163,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     dotnet_sdk: toolchain.dotnet_sdk, nuget_version: toolchain.nuget_version, deterministic_timestamp: toolchain.deterministic_timestamp,
     tool_sha256: { nuget: sha256(readFileSync(nuget)), ...Object.fromEntries(files(dotnetHome).map(name => [`dotnet/${name}`, sha256(readFileSync(join(dotnetHome, name)))])) },
     dependency_archive_sha256: Object.fromEntries([...archives].map(([name, bytes]) => [name, sha256(bytes)])),
-    qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../shared/authority.mjs"))),
+    qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     toolchain_sha256: sha256(JSON.stringify(toolchain)),
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),

@@ -40,9 +40,15 @@ jobs:
           const changed = process.env.GITHUB_EVENT_NAME === 'pull_request'
             ? execFileSync('git', ['diff', '--name-only', '-z', 'HEAD^', 'HEAD'], { encoding: 'utf8' }).split('\0')
             : ['.github/workflows/sdk-generator.yml'];
-          const go = changed.some(path => path.startsWith('tools/sdk-generator/backends/go/')
-            || path === 'scripts/archive-utils.mjs' || path === '.github/workflows/sdk-generator.yml');
-          appendFileSync(process.env.GITHUB_OUTPUT, `go=${go}\n`);
+          const workflow = changed.includes('.github/workflows/sdk-generator.yml');
+          for (const backend of ['go', 'java', 'dotnet']) {
+            const affected = workflow || changed.some(path =>
+              (path.startsWith(`tools/sdk-generator/backends/${backend}/`)
+                && path !== `tools/sdk-generator/backends/${backend}/README.md`)
+              || (backend === 'go' ? path === 'scripts/archive-utils.mjs'
+                : path.startsWith('tools/sdk-generator/shared/')));
+            appendFileSync(process.env.GITHUB_OUTPUT, `${backend}=${affected}\n`);
+          }
           JS
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.scope.outputs.go == 'true'
@@ -57,6 +63,10 @@ jobs:
           set -euo pipefail
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
-          node --test qualify.test.mjs
-      - name: Check shared Java and .NET staging
-        run: node --test --test-concurrency=1 tools/sdk-generator/backends/java/generate.test.mjs tools/sdk-generator/backends/java/qualify.test.mjs tools/sdk-generator/backends/dotnet/generate.test.mjs tools/sdk-generator/backends/dotnet/qualify.test.mjs
+          node --test tests/qualify.test.mjs
+      - name: Check Java and JVM staging
+        if: steps.scope.outputs.java == 'true'
+        run: node --test --test-concurrency=1 tools/sdk-generator/backends/java/tests/*.test.mjs
+      - name: Check .NET staging
+        if: steps.scope.outputs.dotnet == 'true'
+        run: node --test --test-concurrency=1 tools/sdk-generator/backends/dotnet/tests/*.test.mjs

@@ -10,13 +10,11 @@ boundary and its applicable conformance checks.
 
 ```text
 java/
-  generate.mjs          authority validation, descriptor snapshots and generation
-  generate.test.mjs     offline admission and staging controls
-  qualify.mjs           opt-in offline build and installed-consumer runner
-  qualify.test.mjs      runner success, admission and failure controls
-  toolchain.json        maintained generator versions and published host hashes
-  package/pom.xml      pinned Java package dependencies and build plugins
-  testdata/consumer/    installed descriptor, wire, RPC-shape and type controls
+  src/                  generation and installed qualification runners
+  tests/                offline admission and runner controls
+    fixtures/           Java installed-consumer sources
+  templates/package/    pinned Maven package template
+  toolchains/           generator versions and published host checksums
 ```
 
 From the repository root, with an immutable source snapshot containing
@@ -24,7 +22,7 @@ From the repository root, with an immutable source snapshot containing
 source and supplied descriptor:
 
 ```sh
-node tools/sdk-generator/backends/java/generate.mjs \
+node tools/sdk-generator/backends/java/src/generate.mjs \
   --source-root /immutable-source --authority /rust-export \
   --protoc /tools/protoc --grpc-java /tools/protoc-gen-grpc-java \
   --output /new-package
@@ -45,7 +43,7 @@ Protoc must report `libprotoc 28.3` and match the host's SHA-256 in
 `../../shared/protoc.json` before execution. Compiler pins come from the official
 Maven Central artifacts and are checked against their published checksums.
 The grpc-java 1.75.0 executable must match
-the host's SHA-256 in `toolchain.json`, obtained from the published
+the host's SHA-256 in `toolchains/toolchain.json`, obtained from the published
 [Maven Central artifacts](https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/).
 The backend does not download tools. Its receipt records the manifest, all
 inputs, generator/tool identities and every output digest. The POM pins protobuf
@@ -56,7 +54,7 @@ older generated code within the supported major version, as documented in the
 Run the lightweight generator controls with:
 
 ```sh
-node --test --test-concurrency=1 tools/sdk-generator/backends/java/generate.test.mjs tools/sdk-generator/backends/java/qualify.test.mjs
+node --test --test-concurrency=1 tools/sdk-generator/backends/java/tests/generate.test.mjs tools/sdk-generator/backends/java/tests/qualify.test.mjs
 ```
 
 These controls use a command double and establish staging and runner behavior.
@@ -64,7 +62,7 @@ Run actual installed qualification separately with JDK 17.0.14, Maven 3.9.9 and
 an exclusively owned dependency cache prepared by the package build above:
 
 ```sh
-node tools/sdk-generator/backends/java/qualify.mjs \
+node tools/sdk-generator/backends/java/src/qualify.mjs \
   --package /new-package --authority /rust-export \
   --java-home /jdk-17.0.14 --maven-home /maven-3.9.9 \
   --cache /owned-cache --output /new-qualification
