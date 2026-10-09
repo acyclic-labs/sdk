@@ -218,9 +218,10 @@ chmod +x "$gate/bin/rustup" "$gate/bin/cargo-nextest"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 2 ]]
+[[ "${#cargo_calls[@]}" -eq 3 ]]
 [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${cargo_calls[1]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]]
+[[ "${cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 full="$work/full"
 mkdir -p "$full/temp" "$full/artifacts" "$full/tools/cargo/bin" "$full/bin"
@@ -247,9 +248,10 @@ chmod +x "$full/bin/rustup" "$full/tools/cargo/bin/cargo-llvm-cov"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t full_cargo_calls <"$full/cargo.log"
-[[ "${#full_cargo_calls[@]}" -eq 3 ]]
+[[ "${#full_cargo_calls[@]}" -eq 4 ]]
 [[ "${full_cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${full_cargo_calls[1]}" == 'llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path '*'/coverage/lcov.info' ]]
-[[ "${full_cargo_calls[2]}" == 'llvm-cov report --summary-only' ]]
+[[ "${full_cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]]
+[[ "${full_cargo_calls[2]}" == 'llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path '*'/coverage/lcov.info' ]]
+[[ "${full_cargo_calls[3]}" == 'llvm-cov report --summary-only' ]]
 
 echo 'qualification preflight tests passed'

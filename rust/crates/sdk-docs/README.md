@@ -46,11 +46,14 @@ entry. Each [`GeneratedSource`](src/lib.rs) entry identifies the exact physical
 file, a relative logical path such as `generated/actors/wire.rs`, and its
 SHA-256 digest (with or without the `sha256:` prefix). The library canonicalizes
 the physical file, rejects symlink or reparse-point paths, rejects absolute or
-escaping logical paths, rejects duplicate mappings, and verifies the digest
+escaping logical paths, rejects duplicate physical mappings and conflicting
+logical digests, and verifies the digest
 before projection and again after projection. The resulting `SourceSpan.path`
 uses the logical path while retaining Rustdoc's line and column coordinates;
-generated-source inputs are transient and do not add fields to the v2 output
-schema.
+generated-source inputs are transient and do not add fields to the output
+schema. Distinct physical files with identical bytes may share one logical
+path; every physical alias is independently attested and resolves to that
+same published source identity.
 
 Crate-root `//!` documentation becomes a guide at the crate path. Public module
 documentation becomes a guide at that module's Rust path; its title is the
@@ -61,13 +64,18 @@ definition's documentation when the reexport has none.
 
 The publication root contains `sdk-docs-versions.v1.json` and its
 `sdk-docs-versions.v1.schema.json`. The index's `latest` entry is always the
-stable release with the greatest SemVer; `releases` contains the stable
-release entries, and `preview` is one independent optional preview entry.
+registry-released stable version with the greatest SemVer whose retained
+package evidence contains no yanked owner. Candidates and prereleases cannot
+become `latest`; it is absent when no stable release is eligible. `releases`
+contains stable release entries, `historicalPrereleases` preserves released
+prereleases, `releaseCandidates` contains candidates, and `preview` is one
+independent optional preview entry.
 Resolve each entry's `dataFile` relative to the index root rather than
 reconstructing a path from an untrusted version string. Release data is stored
-under `releases/<version>/sdk-docs-data.v2.json`; preview data is stored under
-`preview/<version>/sdk-docs-data.v2.json`. Each version directory also contains
-its `sdk-docs-data.v2.schema.json`.
+under `releases/<version>/sdk-docs-data.v1.json`; candidate data is stored under
+`release-candidates/<version>/sdk-docs-data.v1.json`; preview data is stored under
+`preview/<version>/sdk-docs-data.v1.json`. Each version directory also contains
+its `sdk-docs-data.v1.schema.json`.
 
 The selected data file contains its own `version`, `channel`, `source`,
 `navigation`, and `families`. The `version`, `channel`, and
@@ -80,4 +88,4 @@ publishers may target the same output directory; each publisher holds this
 lock across index validation, bundle writes, and index replacement so entries
 are not lost.
 
-The current contract is `sdk-docs-data.v2`; every new bundle includes Rust/Cargo-derived package and search records alongside navigation and families. `packageMetadata` must identify the Cargo package, Rust crate, and Rust crate version for every Rustdoc input; the preview label never becomes an installable package version. The version index remains `sdk-docs-versions.v1` so release selection and latest-version semantics are unchanged. Existing immutable `sdk-docs-data.v1` releases remain valid index entries and are read with their original schema rules when a later v2 release is added; only v2 bundles are written by this library.
+The canonical contract is `sdk-docs-data.v1`. Every bundle requires Rust/Cargo-derived package and search records alongside navigation and families. `packageMetadata` identifies the Cargo package, Rust crate, and Rust crate version for every Rustdoc input; the preview label never becomes an installable package version. The `sdk-docs-versions.v1` index selects immutable version bundles using this same contract.

@@ -223,9 +223,11 @@ test("the workflow keeps full qualification off routine pull requests", () => {
 });
 
 test("the core lanes cover the Rust workspace, docs crate, and TypeScript workspace", () => {
-  const script = readFileSync("scripts/qualify-ci.sh", "utf8");
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
+  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
+  assert.match(script, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
   const policy = script.slice(script.indexOf("\n  policy)"));
   assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
   const typescript = script.slice(script.indexOf("\n  typescript)"));

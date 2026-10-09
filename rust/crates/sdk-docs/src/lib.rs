@@ -3,22 +3,36 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-use rustdoc_types::{Crate, FORMAT_VERSION, Id, Item, ItemEnum, ItemKind};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+/// Native projections and immutable identities for historical releases.
+pub mod historical;
 mod public_api;
+/// Cargo/Rustdoc-owned profile projections.
+pub mod rustdoc_profiles;
+/// Rust-owned executable examples and generated consumer projections.
+pub mod scenarios;
 
-pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v2";
-pub const LEGACY_DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
+pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
 pub const VERSION_INDEX_SCHEMA_VERSION: &str = "sdk-docs-versions.v1";
 pub const GENERATOR_VERSION: &str = "0.1.0";
+
+/// Return a relocation-invariant digest for a Rustdoc receipt. Rustdoc span
+/// filenames are normalized to repository-relative or basename identities
+/// before hashing, while the receipt bytes used for projection remain intact.
+pub fn rustdoc_digest(path: &Path, repository_root: &Path) -> Result<String, Error> {
+    let bytes = fs::read(path)?;
+    let normalized = normalized_rustdoc_digest_bytes(&bytes, repository_root)?;
+    Ok(format!("sha256:{}", sha256_hex(&normalized)))
+}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -27,9 +41,24 @@ pub enum Channel {
     Release,
 }
 
+/// Whether a qualified bundle is a candidate or an actual registry release.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicationStatus {
+    #[default]
+    Candidate,
+    RegistryReleased,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_source: Option<historical::CapturedSource>,
+    #[serde(default)]
+    pub publication_status: PublicationStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released_packages: Vec<historical::ReleasedPackage>,
     pub revision: String,
     pub source_state: String,
     /// Digest of the trusted source manifest supplied by the generation launcher.
@@ -173,10 +202,8 @@ pub struct DocsData {
     pub channel: Channel,
     pub source: SourceInfo,
     pub navigation: Navigation,
-    #[serde(default)]
     #[schemars(required)]
     pub packages: PackageCatalog,
-    #[serde(default)]
     #[schemars(required)]
     pub search: SearchIndex,
     pub families: Vec<Family>,
@@ -185,6 +212,12 @@ pub struct DocsData {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_source: Option<historical::CapturedSource>,
+    #[serde(default)]
+    pub publication_status: PublicationStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released_packages: Vec<historical::ReleasedPackage>,
     pub version: String,
     pub channel: Channel,
     pub revision: String,
@@ -195,6 +228,10 @@ pub struct VersionEntry {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionIndex {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_candidates: Vec<VersionEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_prereleases: Vec<VersionEntry>,
     pub schema: String,
     pub latest: Option<VersionEntry>,
     pub releases: Vec<VersionEntry>,
@@ -255,6 +292,31 @@ impl From<serde_json::Error> for Error {
 
 /// Build a stable public data projection from one or more typed rustdoc JSON files.
 pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
+    build_data_inner(input, None, &[])
+}
+
+/// Project Cargo-owned binary guides alongside public library APIs, retaining
+/// the current source's candidate publication status.
+pub fn build_data_with_binaries(
+    input: &BuildInput,
+    binaries: &[historical::BinaryInput],
+) -> Result<DocsData, Error> {
+    build_data_inner(input, None, binaries)
+}
+
+fn build_data_inner(
+    input: &BuildInput,
+    historical: Option<&historical::Input>,
+    binaries: &[historical::BinaryInput],
+) -> Result<DocsData, Error> {
+    if binaries
+        .iter()
+        .any(|binary| !input.rustdoc_files.contains(&binary.rustdoc_file))
+    {
+        return Err(Error::Invalid(
+            "binary input is absent from Rustdoc inputs".into(),
+        ));
+    }
     if input.version.trim().is_empty() {
         return Err(Error::Invalid("version must not be empty".into()));
     }
@@ -264,7 +326,11 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         ));
     }
     if input.channel == Channel::Release {
-        stable_version(&input.version)?;
+        if historical.is_some() {
+            Version::parse(&input.version).map_err(|e| Error::Invalid(e.to_string()))?;
+        } else {
+            stable_version(&input.version)?;
+        }
     }
     if input.revision.len() < 40
         || input.revision.len() > 64
@@ -292,7 +358,14 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
     if !matches!(
         input.source_state.as_str(),
         "captured-snapshot" | "working-tree" | "release-tag"
-    ) {
+    ) && !(input.source_state == "registry-archives"
+        && historical.is_some_and(|scope| {
+            matches!(
+                &scope.captured_source,
+                Some(historical::CapturedSource::RegistryArchives { .. })
+            )
+        }))
+    {
         return Err(Error::Invalid(
             "source state must be captured-snapshot, working-tree, or release-tag".into(),
         ));
@@ -329,11 +402,16 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         input_digest.update(metadata.version.as_bytes());
         input_digest.update([0]);
         let bytes = fs::read(path)?;
+        // Rustdoc embeds absolute source filenames in spans.  Those paths are
+        // producer-local metadata, so normalize them before deriving the
+        // input identity; the parsed receipt remains untouched for source
+        // mapping and generated-source attestation.
+        let digest_bytes = normalized_rustdoc_digest_bytes(&bytes, &repository_root)?;
         if let Some(name) = path.file_name() {
             input_digest.update(name.to_string_lossy().as_bytes());
         }
         input_digest.update([0]);
-        input_digest.update(&bytes);
+        input_digest.update(&digest_bytes);
         let krate: Crate = serde_json::from_slice(&bytes).map_err(|e| {
             Error::Invalid(format!(
                 "{} is not valid typed rustdoc JSON: {e}",
@@ -365,20 +443,32 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             }
             _ => {}
         }
-        if krate.includes_private {
+        let binary = binaries.iter().find(|binary| binary.rustdoc_file == *path);
+        if krate.includes_private && binary.is_none() {
             return Err(Error::Invalid(format!(
                 "{} includes private rustdoc items; public-api requires normal public JSON",
                 path.display()
             )));
         }
         format_versions.insert(krate.format_version);
-        let family = build_family(
-            &repository_root,
-            &generated_sources,
-            path,
-            &bytes,
-            &krate,
-        )?;
+        let family_root = if let Some(scope) = historical {
+            historical::package_root(&repository_root, scope, metadata)?
+        } else {
+            repository_root.clone()
+        };
+        if historical.is_some_and(|scope| {
+            matches!(
+                &scope.captured_source,
+                Some(historical::CapturedSource::RegistryArchives { .. })
+            )
+        }) {
+            historical::validate_relative_package_spans(&family_root, &krate)?;
+        }
+        let family = if let Some(binary) = binary {
+            historical::binary_family(&family_root, &generated_sources, &krate, binary)?
+        } else {
+            build_family(&family_root, &generated_sources, path, &bytes, &krate)?
+        };
         if family.crate_name != metadata.crate_name {
             return Err(Error::Invalid(format!(
                 "{} has Rust crate {}, but Cargo metadata names {}",
@@ -417,6 +507,11 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         version: input.version.clone(),
         channel: input.channel.clone(),
         source: SourceInfo {
+            captured_source: Some(historical::CapturedSource::Git {
+                revision: input.revision.clone(),
+            }),
+            publication_status: PublicationStatus::Candidate,
+            released_packages: Vec::new(),
             revision: input.revision.clone(),
             source_state: input.source_state.clone(),
             source_sha256: input.source_sha256.clone(),
@@ -429,8 +524,117 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         search,
         families,
     };
+    let mut data = data;
+    if let Some(historical) = historical {
+        if let Some(captured) = &historical.captured_source {
+            data.source.captured_source = Some(captured.clone());
+        }
+        data.source.publication_status = PublicationStatus::RegistryReleased;
+        data.source.released_packages = historical.released_packages.clone();
+        historical::validate_release_identity(&data)?;
+    }
     validate_source_info(&data.source, &input.channel)?;
     Ok(data)
+}
+
+/// Merge one feature/target Rustdoc projection into the existing family
+/// catalog. Profile receipts are additional views of the same published
+/// crate, so they contribute public items without creating a second family or
+/// package entry. IDs are stable from the rendered identity, independent of
+/// Rustdoc's per-receipt numeric IDs.
+pub fn merge_profile_catalog(data: &mut DocsData, variant: DocsData) -> Result<(), Error> {
+    if data.schema != variant.schema
+        || data.schema_version != variant.schema_version
+        || data.version != variant.version
+        || data.channel != variant.channel
+        || data.source.revision != variant.source.revision
+        || data.source.captured_source != variant.source.captured_source
+        || data.source.source_state != variant.source.source_state
+        || data.source.source_sha256 != variant.source.source_sha256
+        || data.source.generator != variant.source.generator
+    {
+        return Err(Error::Invalid(
+            "profile catalog has a different docs/source identity".into(),
+        ));
+    }
+
+    for variant_family in variant.families {
+        let family = data
+            .families
+            .iter_mut()
+            .find(|family| family.crate_name == variant_family.crate_name)
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "profile family {} is absent from the generated docs catalog",
+                    variant_family.crate_name
+                ))
+            })?;
+
+        let mut existing = family
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    (item.path.clone(), item.kind.clone(), item.signature.clone()),
+                    item.id.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut id_map = BTreeMap::<String, String>::new();
+        let mut pending: Vec<ApiItem> = Vec::new();
+        for mut item in variant_family.items {
+            let key = (item.path.clone(), item.kind.clone(), item.signature.clone());
+            if let Some(existing_id) = existing.get(&key) {
+                id_map.insert(item.id, existing_id.clone());
+                continue;
+            }
+
+            let digest = sha256_hex(format!("{}\0{}\0{}", key.0, key.1, key.2).as_bytes());
+            let mut id = format!("profile-{digest}");
+            if family.items.iter().any(|candidate| candidate.id == id)
+                || pending.iter().any(|candidate: &ApiItem| candidate.id == id)
+            {
+                id.push_str("-variant");
+            }
+            id_map.insert(item.id.clone(), id.clone());
+            item.id = id;
+            existing.insert(key, item.id.clone());
+            pending.push(item);
+        }
+        for mut item in pending {
+            item.parent_id = item
+                .parent_id
+                .map(|parent| id_map.get(&parent).cloned().unwrap_or(parent));
+            family.items.push(item);
+        }
+        family.items.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(left.kind.cmp(&right.kind))
+                .then(left.signature.cmp(&right.signature))
+                .then(left.id.cmp(&right.id))
+        });
+
+        let mut guide_paths = family
+            .guides
+            .iter()
+            .map(|guide| guide.path.clone())
+            .collect::<BTreeSet<String>>();
+        for guide in variant_family.guides {
+            if guide_paths.insert(guide.path.clone()) {
+                family.guides.push(guide);
+            }
+        }
+        family
+            .guides
+            .sort_by(|left, right| left.path.cmp(&right.path));
+    }
+
+    data.navigation = Navigation {
+        entries: navigation_entries(&data.families),
+    };
+    data.search = search_index(&data.families);
+    Ok(())
 }
 
 /// Write data, its Schemars-generated schema, and the guarded version index.
@@ -438,32 +642,70 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
 /// A persistent output-directory lock serializes concurrent publications
 /// across index validation, bundle writes, and index replacement.
 pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Result<(), Error> {
+    write_bundle_inner(data, output_dir, mark_latest, true, false)
+}
+
+/// Write immutable data without admitting it into the version catalog.
+/// Producers may qualify sidecars before calling [`write_bundle`] to publish.
+pub fn write_bundle_files(
+    data: &DocsData,
+    output_dir: &Path,
+    mark_latest: bool,
+) -> Result<(), Error> {
+    write_bundle_inner(data, output_dir, mark_latest, false, false)
+}
+
+/// Catalog namespace shared by documentation and qualification sidecars.
+pub fn publication_namespace(channel: &Channel, status: &PublicationStatus) -> &'static str {
+    match channel {
+        Channel::Release if *status == PublicationStatus::Candidate => "release-candidates",
+        Channel::Release => "releases",
+        Channel::Preview => "preview",
+    }
+}
+
+fn write_bundle_inner(
+    data: &DocsData,
+    output_dir: &Path,
+    mark_latest: bool,
+    publish: bool,
+    historical: bool,
+) -> Result<(), Error> {
     if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
         return Err(Error::Invalid(
             "cannot publish data with an unsupported docs schema".into(),
         ));
     }
     if data.channel == Channel::Release {
-        stable_version(&data.version)?;
+        if historical {
+            historical::validate_release_identity(data)?;
+        } else {
+            stable_version(&data.version)?;
+        }
+    }
+    if !data.source.released_packages.is_empty() {
+        historical::validate_release_identity(data)?;
+    }
+    if mark_latest && data.source.publication_status != PublicationStatus::RegistryReleased {
+        return Err(Error::Invalid(
+            "a release candidate cannot be marked latest without verified registry releases".into(),
+        ));
     }
     if mark_latest && data.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
     }
     validate_source_info(&data.source, &data.channel)?;
-    validate_navigation(&data)?;
+    validate_navigation(data)?;
     reject_reparse_ancestors(output_dir)?;
     fs::create_dir_all(output_dir)?;
     let _publication_lock = lock_publication(output_dir)?;
     let index = load_version_index(output_dir)?;
-    let channel_dir = match data.channel {
-        Channel::Release => "releases",
-        Channel::Preview => "preview",
-    };
+    let channel_dir = publication_namespace(&data.channel, &data.source.publication_status);
     let version_dir = output_dir
         .join(channel_dir)
         .join(safe_version(&data.version)?);
     let data_file = format!(
-        "{channel_dir}/{}/sdk-docs-data.v2.json",
+        "{channel_dir}/{}/sdk-docs-data.v1.json",
         safe_version(&data.version)?
     );
     let data_bytes = serde_json::to_vec_pretty(data)?;
@@ -479,6 +721,9 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
         }
     }
     let entry = VersionEntry {
+        captured_source: data.source.captured_source.clone(),
+        publication_status: data.source.publication_status.clone(),
+        released_packages: data.source.released_packages.clone(),
         version: data.version.clone(),
         channel: data.channel.clone(),
         revision: data.source.revision.clone(),
@@ -492,7 +737,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     atomic_write(&data_path, &data_bytes, true)?;
     let schema = schema_json()?;
     atomic_write(
-        &version_dir.join("sdk-docs-data.v2.schema.json"),
+        &version_dir.join("sdk-docs-data.v1.schema.json"),
         &serde_json::to_vec_pretty(&schema)?,
         true,
     )?;
@@ -501,18 +746,20 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
         &serde_json::to_vec_pretty(&schemars::schema_for!(VersionIndex))?,
         true,
     )?;
-    atomic_write(
-        &output_dir.join("sdk-docs-versions.v1.json"),
-        &serde_json::to_vec_pretty(&updated_index)?,
-        false,
-    )?;
+    if publish {
+        atomic_write(
+            &output_dir.join("sdk-docs-versions.v1.json"),
+            &serde_json::to_vec_pretty(&updated_index)?,
+            false,
+        )?;
+    }
     Ok(())
 }
 
 fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
     reject_reparse_ancestors(&index_path)?;
-    let index = if index_path.exists() {
+    let mut index = if index_path.exists() {
         let metadata = fs::symlink_metadata(&index_path)?;
         if !metadata.is_file() {
             return Err(Error::Invalid(format!(
@@ -523,6 +770,8 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
         serde_json::from_slice::<VersionIndex>(&fs::read(&index_path)?)?
     } else {
         VersionIndex {
+            release_candidates: Vec::new(),
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: Vec::new(),
@@ -535,6 +784,22 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
             index.schema
         )));
     }
+    let mut verified = Vec::new();
+    for entry in index.releases.drain(..) {
+        if entry.publication_status == PublicationStatus::Candidate {
+            index.release_candidates.push(entry);
+        } else {
+            verified.push(entry);
+        }
+    }
+    index.releases = verified;
+    if index
+        .latest
+        .as_ref()
+        .is_some_and(|entry| entry.publication_status == PublicationStatus::Candidate)
+    {
+        index.latest = None;
+    }
     validate_version_index(&index, output_dir)?;
     Ok(index)
 }
@@ -544,6 +809,7 @@ fn lock_publication(output_dir: &Path) -> Result<File, Error> {
     reject_reparse_ancestors(&lock_path)?;
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)?;
@@ -559,8 +825,48 @@ fn lock_publication(output_dir: &Path) -> Result<File, Error> {
 }
 
 fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(), Error> {
+    let mut candidates = HashSet::new();
+    for entry in &index.release_candidates {
+        if entry.publication_status != PublicationStatus::Candidate
+            || !entry.released_packages.is_empty()
+        {
+            return Err(Error::Invalid(
+                "candidate catalog entry claims registry release evidence".into(),
+            ));
+        }
+        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        if !candidates.insert(&entry.version) {
+            return Err(Error::Invalid("duplicate release candidate".into()));
+        }
+    }
+    let mut prereleases = HashSet::new();
+    for entry in &index.historical_prereleases {
+        if Version::parse(&entry.version)
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .pre
+            .is_empty()
+            || entry.publication_status != PublicationStatus::RegistryReleased
+            || entry.released_packages.is_empty()
+        {
+            return Err(Error::Invalid(
+                "historical prerelease requires a released prerelease identity".into(),
+            ));
+        }
+        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        if !prereleases.insert(&entry.version) {
+            return Err(Error::Invalid("duplicate historical prerelease".into()));
+        }
+    }
     let mut release_versions = HashSet::new();
     for entry in &index.releases {
+        if entry.publication_status != PublicationStatus::RegistryReleased
+            || entry.released_packages.is_empty()
+        {
+            return Err(Error::Invalid(
+                "stable release catalog requires verified registry evidence".into(),
+            ));
+        }
+        stable_version(&entry.version)?;
         validate_version_entry(entry, &Channel::Release, output_dir)?;
         if !release_versions.insert(entry.version.as_str()) {
             return Err(Error::Invalid(format!(
@@ -573,6 +879,7 @@ fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(),
         validate_version_entry(preview, &Channel::Preview, output_dir)?;
     }
     if let Some(latest) = &index.latest {
+        stable_version(&latest.version)?;
         validate_version_entry(latest, &Channel::Release, output_dir)?;
         let Some(release) = index
             .releases
@@ -596,15 +903,29 @@ fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(),
 }
 
 fn validate_latest_release(index: &VersionIndex) -> Result<(), Error> {
-    let Some(maximum) = index.releases.iter().max_by(|left, right| {
-        match (
-            release_version(&left.version),
-            release_version(&right.version),
-        ) {
-            (Ok(left), Ok(right)) => left.cmp(&right),
-            _ => left.version.cmp(&right.version),
+    let Some(maximum) = index
+        .releases
+        .iter()
+        .filter(|entry| {
+            entry.publication_status == PublicationStatus::RegistryReleased
+                && !entry.released_packages.is_empty()
+                && !entry.released_packages.iter().any(|package| package.yanked)
+        })
+        .max_by(|left, right| {
+            match (
+                release_version(&left.version),
+                release_version(&right.version),
+            ) {
+                (Ok(left), Ok(right)) => left.cmp(&right),
+                _ => left.version.cmp(&right.version),
+            }
+        })
+    else {
+        if index.latest.is_some() {
+            return Err(Error::Invalid(
+                "stable latest requires a verified non-yanked release".into(),
+            ));
         }
-    }) else {
         return Ok(());
     };
     match index.latest.as_ref() {
@@ -633,7 +954,11 @@ fn validate_version_entry(
     }
     match entry.channel {
         Channel::Release => {
-            stable_version(&entry.version)?;
+            if entry.released_packages.is_empty() {
+                stable_version(&entry.version)?;
+            } else {
+                Version::parse(&entry.version).map_err(|e| Error::Invalid(e.to_string()))?;
+            }
         }
         Channel::Preview => {
             safe_version(&entry.version)?;
@@ -660,6 +985,12 @@ fn validate_version_entry(
         )));
     }
     let channel_dir = match entry.channel {
+        Channel::Release
+            if entry.publication_status == PublicationStatus::Candidate
+                && entry.data_file.starts_with("release-candidates/") =>
+        {
+            "release-candidates"
+        }
         Channel::Release => "releases",
         Channel::Preview => "preview",
     };
@@ -704,10 +1035,8 @@ fn validate_version_entry(
             data_path.display()
         )));
     }
-    if schema == DATA_SCHEMA_VERSION {
-        validate_v2_document_shape(&data_bytes, &entry.version)?;
-        validate_v2_schema_sidecar(output_dir, entry)?;
-    }
+    validate_document_shape(&data_bytes, &entry.version)?;
+    validate_schema_sidecar(output_dir, entry)?;
     let data: DocsData = serde_json::from_slice(&data_bytes).map_err(|error| {
         Error::Invalid(format!(
             "version index entry {} data file is not valid DocsData: {error}",
@@ -738,28 +1067,46 @@ fn validate_version_entry(
             entry.version
         )));
     }
+    if data.source.publication_status != entry.publication_status {
+        return Err(Error::Invalid(
+            "version entry publication status differs from immutable data".into(),
+        ));
+    }
+    if data.source.captured_source != entry.captured_source {
+        return Err(Error::Invalid(
+            "version entry captured source differs from immutable data".into(),
+        ));
+    }
+    if data.source.released_packages != entry.released_packages {
+        return Err(Error::Invalid(
+            "version index released package identities differ from immutable data".into(),
+        ));
+    }
+    if !entry.released_packages.is_empty() {
+        historical::validate_release_identity(&data)?;
+    }
     validate_source_info(&data.source, &data.channel)?;
     validate_navigation(&data)?;
     Ok(())
 }
 
-fn validate_v2_schema_sidecar(output_dir: &Path, entry: &VersionEntry) -> Result<(), Error> {
+fn validate_schema_sidecar(output_dir: &Path, entry: &VersionEntry) -> Result<(), Error> {
     let data_path = output_dir.join(&entry.data_file);
     let sidecar_path = data_path
         .parent()
-        .ok_or_else(|| Error::Invalid("v2 data file has no version directory".into()))?
-        .join("sdk-docs-data.v2.schema.json");
+        .ok_or_else(|| Error::Invalid("data file has no version directory".into()))?
+        .join("sdk-docs-data.v1.schema.json");
     reject_reparse_ancestors(&sidecar_path)?;
     let metadata = fs::symlink_metadata(&sidecar_path).map_err(|_| {
         Error::Invalid(format!(
-            "version index entry {} refers to a missing v2 schema sidecar {}",
+            "version index entry {} refers to a missing schema sidecar {}",
             entry.version,
             sidecar_path.display()
         ))
     })?;
     if !metadata.is_file() {
         return Err(Error::Invalid(format!(
-            "version index entry {} v2 schema sidecar is not a regular file {}",
+            "version index entry {} schema sidecar is not a regular file {}",
             entry.version,
             sidecar_path.display()
         )));
@@ -768,35 +1115,35 @@ fn validate_v2_schema_sidecar(output_dir: &Path, entry: &VersionEntry) -> Result
     let actual = fs::read(&sidecar_path)?;
     if actual != expected {
         return Err(Error::Invalid(format!(
-            "version index entry {} v2 schema sidecar does not match the pinned schema",
+            "version index entry {} schema sidecar does not match the pinned schema",
             entry.version
         )));
     }
     Ok(())
 }
 
-fn validate_v2_document_shape(data_bytes: &[u8], version: &str) -> Result<(), Error> {
+fn validate_document_shape(data_bytes: &[u8], version: &str) -> Result<(), Error> {
     let value: serde_json::Value = serde_json::from_slice(data_bytes).map_err(|error| {
         Error::Invalid(format!(
-            "version index entry {version} v2 data file is not valid DocsData JSON: {error}"
+            "version index entry {version} data file is not valid DocsData JSON: {error}"
         ))
     })?;
     let object = value.as_object().ok_or_else(|| {
         Error::Invalid(format!(
-            "version index entry {version} v2 data file must be a JSON object"
+            "version index entry {version} data file must be a JSON object"
         ))
     })?;
     for key in ["schema", "schemaVersion"] {
         if object.get(key).and_then(serde_json::Value::as_str) != Some(DATA_SCHEMA_VERSION) {
             return Err(Error::Invalid(format!(
-                "version index entry {version} v2 data file must set {key} to {DATA_SCHEMA_VERSION}"
+                "version index entry {version} data file must set {key} to {DATA_SCHEMA_VERSION}"
             )));
         }
     }
     for key in ["packages", "search"] {
         if !object.contains_key(key) {
             return Err(Error::Invalid(format!(
-                "version index entry {version} v2 data file requires {key}"
+                "version index entry {version} data file requires {key}"
             )));
         }
     }
@@ -804,10 +1151,8 @@ fn validate_v2_document_shape(data_bytes: &[u8], version: &str) -> Result<(), Er
 }
 
 fn data_schema_for_file(data_file: &str) -> Option<&'static str> {
-    if data_file.ends_with("/sdk-docs-data.v2.json") {
+    if data_file.ends_with("/sdk-docs-data.v1.json") {
         Some(DATA_SCHEMA_VERSION)
-    } else if data_file.ends_with("/sdk-docs-data.v1.json") {
-        Some(LEGACY_DATA_SCHEMA_VERSION)
     } else {
         None
     }
@@ -820,6 +1165,64 @@ fn merge_version_index(
     mark_latest: bool,
 ) -> Result<VersionIndex, Error> {
     validate_version_index(&index, output_dir)?;
+    if entry.channel == Channel::Release && entry.publication_status == PublicationStatus::Candidate
+    {
+        if mark_latest || !entry.released_packages.is_empty() {
+            return Err(Error::Invalid(
+                "release candidate cannot claim stable latest".into(),
+            ));
+        }
+        if let Some(existing) = index
+            .release_candidates
+            .iter()
+            .find(|item| item.version == entry.version)
+        {
+            if existing != entry {
+                return Err(Error::Invalid(format!(
+                    "refusing to rewrite release candidate {}",
+                    entry.version
+                )));
+            }
+        } else {
+            index.release_candidates.push(entry.clone());
+            index.release_candidates.sort_by(|a, b| {
+                match (release_version(&a.version), release_version(&b.version)) {
+                    (Ok(a), Ok(b)) => a.cmp(&b),
+                    _ => a.version.cmp(&b.version),
+                }
+            });
+        }
+        return Ok(index);
+    }
+    if entry.channel == Channel::Release
+        && !Version::parse(&entry.version)
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .pre
+            .is_empty()
+    {
+        if entry.released_packages.is_empty() || mark_latest {
+            return Err(Error::Invalid(
+                "historical prereleases cannot be stable latest".into(),
+            ));
+        }
+        if let Some(existing) = index
+            .historical_prereleases
+            .iter()
+            .find(|item| item.version == entry.version)
+        {
+            if existing != entry {
+                return Err(Error::Invalid(
+                    "refusing to rewrite historical prerelease identity or digest".into(),
+                ));
+            }
+        } else {
+            index.historical_prereleases.push(entry.clone());
+            index
+                .historical_prereleases
+                .sort_by(|a, b| a.version.cmp(&b.version));
+        }
+        return Ok(index);
+    }
     if entry.channel == Channel::Release {
         if let Some(existing) = index
             .releases
@@ -920,7 +1323,7 @@ fn build_family(
         // `impl From<&ActorId> for String`. Keep that local implementation
         // occurrence instead of treating the receiver path as an external
         // definition.
-        if path.first() != Some(&crate_name) && !is_local_impl_member(&krate, public_item) {
+        if path.first() != Some(&crate_name) && !is_local_impl_member(krate, public_item) {
             return Err(Error::Invalid(format!(
                 "{} public-api item {} ({}) does not resolve to the crate root: {}",
                 json_path.display(),
@@ -1112,7 +1515,6 @@ fn validate_generated_catalog(data: &DocsData) -> Result<(), Error> {
     Ok(())
 }
 
-
 fn package_metadata_for_path<'a>(
     metadata: &'a [PackageMetadata],
     path: &Path,
@@ -1159,9 +1561,7 @@ fn validate_navigation(data: &DocsData) -> Result<(), Error> {
             "navigation entries must exactly match the sorted family entries".into(),
         ));
     }
-    if data.schema == DATA_SCHEMA_VERSION {
-        validate_generated_catalog(data)?;
-    }
+    validate_generated_catalog(data)?;
     Ok(())
 }
 
@@ -1385,7 +1785,7 @@ fn attest_generated_sources(
     sources: &[GeneratedSource],
 ) -> Result<HashMap<PathBuf, GeneratedSource>, Error> {
     let mut attested = HashMap::new();
-    let mut logical_paths = HashSet::new();
+    let mut logical_paths = HashMap::<String, String>::new();
     let mut physical_paths = HashSet::new();
     for source in sources {
         let logical_path = normalize_generated_logical_path(&source.logical_path)?;
@@ -1394,10 +1794,17 @@ fn attest_generated_sources(
         } else {
             logical_path.clone()
         };
-        if !logical_paths.insert(logical_key) {
-            return Err(Error::Invalid(format!(
-                "generated source logical path is duplicated: {logical_path}"
-            )));
+        validate_generated_sha256(&source.sha256)?;
+        let digest = source
+            .sha256
+            .trim_start_matches("sha256:")
+            .to_ascii_lowercase();
+        if let Some(previous) = logical_paths.insert(logical_key, digest.clone()) {
+            if previous != digest {
+                return Err(Error::Invalid(format!(
+                    "generated source logical path has conflicting digests: {logical_path}"
+                )));
+            }
         }
         let repository_path = repository_root.join(&logical_path);
         reject_reparse_ancestors(&repository_path)?;
@@ -1504,6 +1911,63 @@ fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
     Ok(components.join("/"))
 }
 
+fn normalized_rustdoc_digest_bytes(bytes: &[u8], repository_root: &Path) -> Result<Vec<u8>, Error> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    normalize_rustdoc_filenames(&mut value, repository_root);
+    // External-crate load paths describe the physical Cargo output, not API
+    // content. Omit only these paths from the digest copy; retain the original
+    // typed Rustdoc JSON and receipts for artifact/provenance verification.
+    if let Some(crates) = value
+        .get_mut("external_crates")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for external in crates.values_mut() {
+            if let Some(record) = external.as_object_mut() {
+                record.remove("path");
+            }
+        }
+    }
+    Ok(serde_json::to_vec(&value)?)
+}
+
+fn normalize_rustdoc_filenames(value: &mut serde_json::Value, repository_root: &Path) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "filename" {
+                    if let serde_json::Value::String(filename) = child {
+                        *filename = stable_rustdoc_filename(filename, repository_root);
+                        continue;
+                    }
+                }
+                normalize_rustdoc_filenames(child, repository_root);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                normalize_rustdoc_filenames(child, repository_root);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn stable_rustdoc_filename(filename: &str, repository_root: &Path) -> String {
+    let path = PathBuf::from(filename);
+    if !path.is_absolute() {
+        return filename.replace('\\', "/");
+    }
+    if let Ok(canonical) = path.canonicalize() {
+        if let Ok(relative) = canonical.strip_prefix(repository_root) {
+            return format!("<root>/{}", normalize_path(relative));
+        }
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("<external>/{name}"))
+        .unwrap_or_else(|| "<external>/generated-source".into())
+}
+
 fn validate_generated_sha256(value: &str) -> Result<(), Error> {
     let digest = value.strip_prefix("sha256:").unwrap_or(value);
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -1532,15 +1996,48 @@ fn source_span_at_root(
         repository_root.join(&span.filename)
     };
     reject_reparse_ancestors(&source_path)?;
-    let source_path = source_path.canonicalize().map_err(|error| {
-        Error::Invalid(format!(
-            "cannot resolve rustdoc source span {}: {error}",
-            span.filename.display()
-        ))
-    })?;
+    let source_path = match source_path.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let basename = span.filename.file_name().ok_or_else(|| {
+                Error::Invalid(format!(
+                    "rustdoc source span has no filename: {}",
+                    span.filename.display()
+                ))
+            })?;
+            let matches = generated_sources
+                .values()
+                .filter(|generated| generated.physical_path.file_name() == Some(basename))
+                .collect::<Vec<_>>();
+            let [generated] = matches.as_slice() else {
+                let reason = if matches.is_empty() {
+                    "no attested generated source matches"
+                } else {
+                    "attested generated source basename is ambiguous"
+                };
+                return Err(Error::Invalid(format!(
+                    "cannot resolve rustdoc source span {}: {reason}",
+                    span.filename.display()
+                )));
+            };
+            return Ok(SourceSpan {
+                path: normalize_path(&generated.logical_path),
+                begin_line: span.begin.0,
+                begin_column: span.begin.1,
+                end_line: span.end.0,
+                end_column: span.end.1,
+            });
+        }
+        Err(error) => {
+            return Err(Error::Invalid(format!(
+                "cannot resolve rustdoc source span {}: {error}",
+                span.filename.display()
+            )))
+        }
+    };
     let path = if let Some(generated) = generated_sources.get(&source_path) {
         normalize_path(&generated.logical_path)
-    } else if let Ok(relative) = source_path.strip_prefix(&repository_root) {
+    } else if let Ok(relative) = source_path.strip_prefix(repository_root) {
         normalize_path(relative)
     } else {
         return Err(Error::Invalid(format!(
@@ -1744,7 +2241,7 @@ fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return metadata.file_attributes() & 0x400 != 0;
+        metadata.file_attributes() & 0x400 != 0
     }
     #[cfg(not(windows))]
     {
@@ -1781,6 +2278,31 @@ fn validate_source_digest(value: &str) -> Result<(), Error> {
 }
 
 fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Error> {
+    if let Some(captured) = &source.captured_source {
+        if captured.revision()? != source.revision {
+            return Err(Error::Invalid(
+                "captured source identity differs from revision".into(),
+            ));
+        }
+        if matches!(
+            captured,
+            historical::CapturedSource::RegistryArchives { .. }
+        ) && (source.source_state != "registry-archives"
+            || source.publication_status != PublicationStatus::RegistryReleased
+            || *channel != Channel::Release)
+        {
+            return Err(Error::Invalid(
+                "registry archive source requires verified historical release scope".into(),
+            ));
+        }
+    }
+    if (source.publication_status == PublicationStatus::RegistryReleased)
+        != !source.released_packages.is_empty()
+    {
+        return Err(Error::Invalid(
+            "publication status does not match verified released package identities".into(),
+        ));
+    }
     if source.revision.len() < 40
         || source.revision.len() > 64
         || !source.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1792,7 +2314,12 @@ fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Er
     if !matches!(
         source.source_state.as_str(),
         "captured-snapshot" | "working-tree" | "release-tag"
-    ) {
+    ) && !(source.source_state == "registry-archives"
+        && matches!(
+            &source.captured_source,
+            Some(historical::CapturedSource::RegistryArchives { .. })
+        ))
+    {
         return Err(Error::Invalid("unsupported source state".into()));
     }
     if matches!(channel, Channel::Release) && source.source_state == "working-tree" {
@@ -1838,7 +2365,8 @@ fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Er
 fn release_version(version: &str) -> Result<Version, Error> {
     stable_version(version)
 }
-fn safe_version(version: &str) -> Result<String, Error> {
+/// Encode a documentation version as an injective, portable path segment.
+pub fn safe_version(version: &str) -> Result<String, Error> {
     if version.is_empty() {
         return Err(Error::Invalid(format!(
             "invalid version path segment: {version:?}"
@@ -1960,9 +2488,9 @@ pub fn schema_json() -> Result<serde_json::Value, Error> {
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| Error::Invalid("DocsData schema properties are missing".into()))?;
     for field in ["schema", "schemaVersion"] {
-        let property = properties
-            .get_mut(field)
-            .ok_or_else(|| Error::Invalid(format!("DocsData schema property {field} is missing")))?;
+        let property = properties.get_mut(field).ok_or_else(|| {
+            Error::Invalid(format!("DocsData schema property {field} is missing"))
+        })?;
         property["const"] = serde_json::Value::String(DATA_SCHEMA_VERSION.into());
     }
     Ok(schema)
@@ -1973,6 +2501,107 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[test]
+    fn rustdoc_digest_omits_only_external_crate_load_paths() {
+        let original = serde_json::json!({
+            "external_crates": {"1": {
+                "name": "dependency", "html_root_url": "https://example.invalid/docs",
+                "path": "checkout-a/target/dependency.rlib"
+            }},
+            "index": {"0": {"path": "demo::Witness", "filename": "src/lib.rs"}}
+        });
+        let digest = |value: &serde_json::Value| {
+            normalized_rustdoc_digest_bytes(&serde_json::to_vec(value).unwrap(), Path::new("."))
+                .unwrap()
+        };
+        let mut relocated = original.clone();
+        relocated["external_crates"]["1"]["path"] =
+            serde_json::json!("checkout-b/target/dependency.rlib");
+        assert_eq!(digest(&original), digest(&relocated));
+        for (pointer, value) in [
+            ("/external_crates/1/name", "different_dependency"),
+            (
+                "/external_crates/1/html_root_url",
+                "https://example.invalid/other",
+            ),
+            ("/index/0/path", "demo::Other"),
+            ("/index/0/filename", "src/other.rs"),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = serde_json::json!(value);
+            assert_ne!(digest(&original), digest(&changed), "{pointer}");
+        }
+        assert_eq!(
+            original["external_crates"]["1"]["path"],
+            "checkout-a/target/dependency.rlib"
+        );
+    }
+
+    #[test]
+    fn profile_catalog_union_retains_feature_only_items() {
+        let source = SourceInfo {
+            captured_source: None,
+            publication_status: PublicationStatus::Candidate,
+            released_packages: Vec::new(),
+            revision: "a".repeat(40),
+            source_state: "working-tree".into(),
+            source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+            input_sha256: "c".repeat(64),
+            rustdoc_format_versions: vec![FORMAT_VERSION],
+            generator: "sdk-docs/test".into(),
+        };
+        let item = |id: &str, name: &str| ApiItem {
+            id: id.into(),
+            parent_id: None,
+            name: name.into(),
+            kind: "struct".into(),
+            path: format!("demo::{name}"),
+            signature: format!("pub struct {name}"),
+            docs: Some(format!("{name} docs")),
+            links: BTreeMap::new(),
+            source: None,
+            reexport: None,
+            reexport_target: None,
+        };
+        let family = |items| Family {
+            slug: "demo".into(),
+            title: "Demo".into(),
+            crate_name: "demo".into(),
+            items,
+            guides: Vec::new(),
+        };
+        let base = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "0.2.0-preview".into(),
+            channel: Channel::Preview,
+            source: source.clone(),
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            packages: PackageCatalog::default(),
+            search: SearchIndex::default(),
+            families: vec![family(vec![item("1", "Base")])],
+        };
+        let variant = DocsData {
+            families: vec![family(vec![item("1", "Base"), item("2", "FeatureOnly")])],
+            ..base.clone()
+        };
+        let mut merged = base;
+        merge_profile_catalog(&mut merged, variant).expect("profile family should merge");
+        let items = &merged.families[0].items;
+        assert_eq!(items.len(), 2);
+        assert!(items
+            .iter()
+            .any(|item| item.name == "FeatureOnly" && item.id.starts_with("profile-")));
+        assert!(merged
+            .search
+            .entries
+            .iter()
+            .any(|entry| entry.path == "demo::FeatureOnly"));
+    }
+
     #[test]
     fn schema_is_stable_and_identifies_the_public_contract() {
         let first = schema_json().expect("schema should serialize");
@@ -1985,26 +2614,29 @@ mod tests {
         assert!(required.iter().any(|field| field == "packages"));
         assert!(required.iter().any(|field| field == "search"));
         assert_eq!(first["properties"]["schema"]["const"], DATA_SCHEMA_VERSION);
-        assert_eq!(first["properties"]["schemaVersion"]["const"], DATA_SCHEMA_VERSION);
+        assert_eq!(
+            first["properties"]["schemaVersion"]["const"],
+            DATA_SCHEMA_VERSION
+        );
         let mut wrong = serde_json::json!({
-            "schema": "sdk-docs-data.v1",
+            "schema": "unsupported-sdk-docs-data",
             "schemaVersion": DATA_SCHEMA_VERSION,
             "packages": {},
             "search": {}
         });
-        let error = validate_v2_document_shape(
+        let error = validate_document_shape(
             &serde_json::to_vec(&wrong).expect("wrong-schema fixture should serialize"),
             "1.0.0",
         )
-        .expect_err("v2 schema validator must reject the wrong schema constant");
+        .expect_err("schema validator must reject the wrong schema constant");
         assert!(error.to_string().contains("must set schema"));
         wrong["schema"] = DATA_SCHEMA_VERSION.into();
-        wrong["schemaVersion"] = "sdk-docs-data.v1".into();
-        let error = validate_v2_document_shape(
+        wrong["schemaVersion"] = "unsupported-sdk-docs-data".into();
+        let error = validate_document_shape(
             &serde_json::to_vec(&wrong).expect("wrong-version fixture should serialize"),
             "1.0.0",
         )
-        .expect_err("v2 schema validator must reject the wrong schemaVersion constant");
+        .expect_err("schema validator must reject the wrong schemaVersion constant");
         assert!(error.to_string().contains("must set schemaVersion"));
     }
     #[test]
@@ -2028,19 +2660,15 @@ mod tests {
         assert_eq!(safe_version("con.txt").unwrap(), "~636f6e2e747874");
         assert_eq!(safe_version("a/b").unwrap(), "~612f62");
         assert_eq!(safe_version(&"a".repeat(255)).unwrap().len(), 255);
-        assert!(
-            safe_version(&"a".repeat(256))
-                .unwrap_err()
-                .to_string()
-                .contains("exceeds 255 bytes")
-        );
+        assert!(safe_version(&"a".repeat(256))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 255 bytes"));
         assert_eq!(safe_version(&":".repeat(127)).unwrap().len(), 255);
-        assert!(
-            safe_version(&":".repeat(128))
-                .unwrap_err()
-                .to_string()
-                .contains("exceeds 255 bytes")
-        );
+        assert!(safe_version(&":".repeat(128))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 255 bytes"));
     }
 
     #[test]
@@ -2098,6 +2726,29 @@ mod tests {
         assert_eq!(projected.end_line, 8);
         assert_eq!(projected.end_column, 9);
 
+        let staged = repository_root.join("target/out/staged/wire.rs");
+        fs::create_dir_all(staged.parent().expect("staged source has a parent"))
+            .expect("staged source directory should be writable");
+        fs::write(&staged, bytes).expect("staged source should be writable");
+        let staged_attested = attest_generated_sources(
+            &repository_root,
+            &[GeneratedSource {
+                physical_path: staged,
+                logical_path: PathBuf::from("generated/actors/staged-wire.rs"),
+                sha256: digest,
+            }],
+        )
+        .expect("staged generated source should be attested");
+        let missing_span = rustdoc_types::Span {
+            filename: external_root.join("missing/wire.rs"),
+            begin: (2, 1),
+            end: (3, 5),
+        };
+        let staged_projection =
+            source_span_at_root(&repository_root, &staged_attested, &missing_span)
+                .expect("missing external span should resolve to its attested staged basename");
+        assert_eq!(staged_projection.path, "generated/actors/staged-wire.rs");
+
         let in_tree_span = rustdoc_types::Span {
             filename: in_tree.clone(),
             begin: (1, 1),
@@ -2118,11 +2769,9 @@ mod tests {
 
         let error = source_span_at_root(&repository_root, &HashMap::new(), &external_span)
             .expect_err("unattested external source must be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("without an attested generated source")
-        );
+        assert!(error
+            .to_string()
+            .contains("without an attested generated source"));
 
         let mut bad_digest = generated.clone();
         bad_digest.sha256 = "0".repeat(64);
@@ -2150,11 +2799,9 @@ mod tests {
             non_portable.logical_path = PathBuf::from(logical_path);
             let error = attest_generated_sources(&repository_root, &[non_portable])
                 .expect_err("non-portable generated logical path must be rejected");
-            assert!(
-                error
-                    .to_string()
-                    .contains("contains a non-portable segment")
-            );
+            assert!(error
+                .to_string()
+                .contains("contains a non-portable segment"));
         }
 
         let collision_path = repository_root.join("generated/actors/existing.rs");
@@ -2170,17 +2817,40 @@ mod tests {
         collision.logical_path = PathBuf::from("generated/actors/existing.rs");
         let error = attest_generated_sources(&repository_root, &[collision])
             .expect_err("generated logical path colliding with repository source must be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("collides with a repository path")
-        );
+        assert!(error
+            .to_string()
+            .contains("collides with a repository path"));
 
         let mut duplicate = generated.clone();
         duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
         let error = attest_generated_sources(&repository_root, &[generated.clone(), duplicate])
-            .expect_err("normalized duplicate logical paths must be rejected");
-        assert!(error.to_string().contains("logical path is duplicated"));
+            .expect_err("duplicate physical paths must be rejected");
+        assert!(error.to_string().contains("physical path is duplicated"));
+
+        let alias_path = external_root.join("alias/wire.rs");
+        fs::create_dir_all(alias_path.parent().unwrap()).unwrap();
+        fs::write(&alias_path, bytes).unwrap();
+        let mut alias = generated.clone();
+        alias.physical_path = alias_path.clone();
+        let aliases =
+            attest_generated_sources(&repository_root, &[generated.clone(), alias.clone()]).expect(
+                "identical independently attested physical aliases share one logical identity",
+            );
+        assert_eq!(aliases.len(), 2);
+        let alias_span = rustdoc_types::Span {
+            filename: alias_path.clone(),
+            begin: (7, 3),
+            end: (8, 9),
+        };
+        assert_eq!(
+            source_span_at_root(&repository_root, &aliases, &alias_span).unwrap(),
+            projected
+        );
+        fs::write(&alias_path, b"pub struct Conflicting;\n").unwrap();
+        alias.sha256 = sha256_hex(b"pub struct Conflicting;\n");
+        let error = attest_generated_sources(&repository_root, &[generated.clone(), alias])
+            .expect_err("one logical identity must never refer to different bytes");
+        assert!(error.to_string().contains("conflicting digests"));
 
         fs::write(&external, b"pub struct Changed;\n").expect("generated source should be mutable");
         let error = attest_generated_sources(&repository_root, &[generated])
@@ -2249,6 +2919,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -2263,8 +2936,12 @@ mod tests {
                     crate_name: "zeta".into(),
                 }],
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: vec![
                 Family {
                     slug: "zeta".into(),
@@ -2282,13 +2959,11 @@ mod tests {
                 },
             ],
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("publication must reject stale or incomplete navigation");
-        assert!(
-            error
-                .to_string()
-                .contains("navigation entries must exactly match")
-        );
+        assert!(error
+            .to_string()
+            .contains("navigation entries must exactly match"));
         assert!(!output.exists());
     }
 
@@ -2461,7 +3136,7 @@ mod tests {
             let occurrence = public_api::PublicItemSignature {
                 id: Id(id),
                 parent_id: Some(Id(7)),
-                display: format!("{name}"),
+                display: name.to_string(),
                 path: vec![
                     "alloc".into(),
                     "string".into(),
@@ -2615,12 +3290,10 @@ mod tests {
                 end_column: 43,
             })
         );
-        assert!(
-            family
-                .items
-                .iter()
-                .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default")
-        );
+        assert!(family
+            .items
+            .iter()
+            .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default"));
 
         let mut external_trait = fixture;
         external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);
@@ -2647,6 +3320,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "working-tree".into(),
                 source_sha256: None,
@@ -2657,11 +3333,15 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("a release cannot publish an unbound working tree");
         assert!(error.to_string().contains("requires captured-snapshot"));
         assert!(!output.exists());
@@ -2669,146 +3349,10 @@ mod tests {
         data.source.source_state = "captured-snapshot".into();
         data.source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
         data.source.rustdoc_format_versions.clear();
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("publication must include Rustdoc format metadata");
         assert!(error.to_string().contains("format metadata"));
         assert!(!output.exists());
-    }
-
-    #[test]
-    fn legacy_v1_release_remains_readable_when_v2_is_added() {
-        let output =
-            std::env::temp_dir().join(format!("sdk-docs-legacy-v1-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&output);
-        let family = Family {
-            slug: "legacy".into(),
-            title: "Legacy".into(),
-            crate_name: "legacy".into(),
-            items: Vec::new(),
-            guides: Vec::new(),
-        };
-        let old_data = DocsData {
-            schema: DATA_SCHEMA_VERSION.into(),
-            schema_version: DATA_SCHEMA_VERSION.into(),
-            version: "1.0.0".into(),
-            channel: Channel::Release,
-            source: SourceInfo {
-                revision: "a".repeat(40),
-                source_state: "captured-snapshot".into(),
-                source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
-                input_sha256: "c".repeat(64),
-                rustdoc_format_versions: vec![FORMAT_VERSION],
-                generator: "sdk-docs/0.1.0".into(),
-            },
-            navigation: Navigation {
-                entries: vec![NavigationEntry {
-                    slug: "legacy".into(),
-                    title: "Legacy".into(),
-                    crate_name: "legacy".into(),
-                }],
-            },
-            packages: package_catalog(&[(
-                family.clone(),
-                PackageMetadata {
-                    rustdoc_file: PathBuf::new(),
-                    package_name: "legacy-package".into(),
-                    crate_name: "legacy".into(),
-                    version: "1.0.0".into(),
-                },
-            )]),
-            search: search_index(std::slice::from_ref(&family)),
-            families: vec![family],
-        };
-        let mut old_value = serde_json::to_value(&old_data).expect("old fixture should serialize");
-        old_value["schema"] = LEGACY_DATA_SCHEMA_VERSION.into();
-        old_value["schemaVersion"] = LEGACY_DATA_SCHEMA_VERSION.into();
-        old_value
-            .as_object_mut()
-            .expect("old fixture should be an object")
-            .remove("packages");
-        old_value
-            .as_object_mut()
-            .expect("old fixture should be an object")
-            .remove("search");
-        let old_bytes = serde_json::to_vec_pretty(&old_value).expect("old fixture should encode");
-        let old_path = output.join("releases/1.0.0/sdk-docs-data.v1.json");
-        fs::create_dir_all(old_path.parent().expect("old data parent should exist"))
-            .expect("old data parent should be creatable");
-        fs::write(&old_path, &old_bytes).expect("old data should be writable");
-        let old_entry = VersionEntry {
-            version: "1.0.0".into(),
-            channel: Channel::Release,
-            revision: "a".repeat(40),
-            data_file: "releases/1.0.0/sdk-docs-data.v1.json".into(),
-            data_sha256: sha256_hex(&old_bytes),
-        };
-        let old_index = VersionIndex {
-            schema: VERSION_INDEX_SCHEMA_VERSION.into(),
-            latest: Some(old_entry.clone()),
-            releases: vec![old_entry],
-            preview: None,
-        };
-        fs::write(
-            output.join("sdk-docs-versions.v1.json"),
-            serde_json::to_vec_pretty(&old_index).expect("old index should encode"),
-        )
-        .expect("old index should be writable");
-
-        let new_data = DocsData {
-            schema: DATA_SCHEMA_VERSION.into(),
-            schema_version: DATA_SCHEMA_VERSION.into(),
-            version: "2.0.0".into(),
-            channel: Channel::Release,
-            source: SourceInfo {
-                revision: "d".repeat(40),
-                source_state: "captured-snapshot".into(),
-                source_sha256: Some(format!("sha256:{}", "e".repeat(64))),
-                input_sha256: "f".repeat(64),
-                rustdoc_format_versions: vec![FORMAT_VERSION],
-                generator: "sdk-docs/0.1.0".into(),
-            },
-            navigation: Navigation { entries: Vec::new() },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
-            families: Vec::new(),
-        };
-        let old_index_bytes = fs::read(output.join("sdk-docs-versions.v1.json"))
-            .expect("old index should remain readable");
-        let same_version = DocsData {
-            version: "1.0.0".into(),
-            source: SourceInfo {
-                revision: "d".repeat(40),
-                ..new_data.source.clone()
-            },
-            ..new_data.clone()
-        };
-        let error = write_bundle(&same_version, &output, true)
-            .expect_err("v1 to v2 publication at one version must be immutable");
-        assert!(error.to_string().contains("refusing to rewrite release 1.0.0"));
-        assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
-        assert_eq!(
-            fs::read(output.join("sdk-docs-versions.v1.json"))
-                .expect("old index should remain"),
-            old_index_bytes
-        );
-        write_bundle(&new_data, &output, true).expect("v2 publication should preserve v1 history");
-
-        assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
-        let index: VersionIndex = serde_json::from_slice(
-            &fs::read(output.join("sdk-docs-versions.v1.json")).expect("index should exist"),
-        )
-        .expect("mixed index should deserialize");
-        assert_eq!(index.latest.as_ref().map(|entry| entry.version.as_str()), Some("2.0.0"));
-        assert_eq!(index.releases.len(), 2);
-        assert!(index
-            .releases
-            .iter()
-            .any(|entry| entry.data_file.ends_with("sdk-docs-data.v1.json")));
-        let old_roundtrip: DocsData = serde_json::from_slice(&old_bytes).expect("v1 should read");
-        assert_eq!(old_roundtrip.schema, LEGACY_DATA_SCHEMA_VERSION);
-        assert_eq!(old_roundtrip.version, "1.0.0");
-        validate_version_index(&index, &output).expect("old and new entries should validate");
-        fs::remove_dir_all(output).expect("test output should be removable");
     }
 
     #[test]
@@ -2824,6 +3368,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -2834,17 +3381,19 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("directory at the index path must block publication");
-        assert!(
-            error
-                .to_string()
-                .contains("version index is not a regular file")
-        );
+        assert!(error
+            .to_string()
+            .contains("version index is not a regular file"));
         assert!(output.join("sdk-docs-versions.v1.json").is_dir());
         assert!(!output.join("releases").exists());
         fs::remove_dir_all(output).expect("test output should be removable");
@@ -2860,6 +3409,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -2870,15 +3422,19 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("initial release should write");
+        write_bundle(&data, &output, false).expect("initial release should write");
         let mut conflicting = data;
         conflicting.source.revision = "b".repeat(40);
         let error =
-            write_bundle(&conflicting, &output, true).expect_err("release rewrite must fail");
+            write_bundle(&conflicting, &output, false).expect_err("release rewrite must fail");
         assert!(error.to_string().contains("refusing to rewrite"));
         fs::remove_dir_all(output).expect("test output should be removable");
     }
@@ -2890,13 +3446,18 @@ mod tests {
         let _ = fs::remove_dir_all(&output);
         fs::create_dir_all(&output).expect("output directory should be creatable");
         let malformed = VersionIndex {
+            release_candidates: Vec::new(),
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: vec![VersionEntry {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 version: "1.0.0".into(),
                 channel: Channel::Release,
                 revision: "a".repeat(40),
-                data_file: "releases/1.0.0/sdk-docs-data.v2.json".into(),
+                data_file: "release-candidates/1.0.0/sdk-docs-data.v1.json".into(),
                 data_sha256: "0".repeat(64),
             }],
             preview: None,
@@ -2914,6 +3475,9 @@ mod tests {
             version: "2.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "b".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
@@ -2924,11 +3488,15 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("malformed prior index must block publication");
         assert!(error.to_string().contains("missing data file"));
         assert_eq!(
@@ -2937,12 +3505,12 @@ mod tests {
         );
         assert!(!output.join("releases").exists());
 
-        let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
+        let data_path = output.join("release-candidates/1.0.0/sdk-docs-data.v1.json");
         fs::create_dir_all(data_path.parent().expect("data file should have a parent"))
             .expect("prior data directory should be creatable");
         fs::write(&data_path, b"prior data").expect("prior data should be writable");
         let prior_data = fs::read(&data_path).expect("prior data should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("wrong prior data hash must block publication");
         assert!(error.to_string().contains("data digest does not match"));
         assert_eq!(
@@ -2967,6 +3535,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -2977,32 +3548,44 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("initial release should write");
-        let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
+        write_bundle(&data, &output, false).expect("initial release should write");
+        let data_path = output.join("release-candidates/1.0.0/sdk-docs-data.v1.json");
         let valid = fs::read(&data_path).expect("valid bundle should be readable");
-        let schema_path = output.join("releases/1.0.0/sdk-docs-data.v2.schema.json");
-        let schema = fs::read(&schema_path).expect("v2 schema sidecar should be readable");
+        let schema_path = output.join("release-candidates/1.0.0/sdk-docs-data.v1.schema.json");
+        let schema = fs::read(&schema_path).expect("schema sidecar should be readable");
         let index_path = output.join("sdk-docs-versions.v1.json");
         let index_before_sidecar_failure =
             fs::read(&index_path).expect("index should be readable before sidecar checks");
         fs::remove_file(&schema_path).expect("schema sidecar should be removable");
-        let error = write_bundle(&data, &output, true)
-            .expect_err("missing v2 schema sidecar must block publication");
-        assert!(error.to_string().contains("missing v2 schema sidecar"));
-        assert_eq!(valid, fs::read(&data_path).expect("data must remain unchanged"));
+        let error = write_bundle(&data, &output, false)
+            .expect_err("missing schema sidecar must block publication");
+        assert!(error.to_string().contains("missing schema sidecar"));
+        assert_eq!(
+            valid,
+            fs::read(&data_path).expect("data must remain unchanged")
+        );
         assert_eq!(
             index_before_sidecar_failure,
             fs::read(&index_path).expect("index must remain unchanged")
         );
         fs::write(&schema_path, b"{}").expect("corrupt schema sidecar should be writable");
-        let error = write_bundle(&data, &output, true)
-            .expect_err("corrupt v2 schema sidecar must block publication");
-        assert!(error.to_string().contains("does not match the pinned schema"));
-        assert_eq!(valid, fs::read(&data_path).expect("data must remain unchanged"));
+        let error = write_bundle(&data, &output, false)
+            .expect_err("corrupt schema sidecar must block publication");
+        assert!(error
+            .to_string()
+            .contains("does not match the pinned schema"));
+        assert_eq!(
+            valid,
+            fs::read(&data_path).expect("data must remain unchanged")
+        );
         assert_eq!(
             index_before_sidecar_failure,
             fs::read(&index_path).expect("index must remain unchanged")
@@ -3012,7 +3595,7 @@ mod tests {
             serde_json::from_slice(&valid).expect("valid bundle should be JSON");
         missing_packages
             .as_object_mut()
-            .expect("v2 bundle should be an object")
+            .expect("bundle should be an object")
             .remove("packages");
         let missing_packages_bytes = serde_json::to_vec_pretty(&missing_packages)
             .expect("missing-package bundle should serialize");
@@ -3022,7 +3605,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
         let missing_digest = sha256_hex(&missing_packages_bytes);
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.data_sha256 = missing_digest.clone();
         }
         if let Some(latest) = &mut index.latest {
@@ -3034,13 +3617,16 @@ mod tests {
         )
         .expect("index should be writable");
         let before_missing = fs::read(&index_path).expect("index should remain readable");
-        let error = write_bundle(&data, &output, true)
-            .expect_err("v2 bundle without packages must block publication");
+        let error = write_bundle(&data, &output, false)
+            .expect_err("bundle without packages must block publication");
         assert!(error.to_string().contains("requires packages"));
-        assert_eq!(before_missing, fs::read(&index_path).expect("index should be unchanged"));
+        assert_eq!(
+            before_missing,
+            fs::read(&index_path).expect("index should be unchanged")
+        );
         fs::write(&data_path, &valid).expect("valid bundle should be restored");
         let valid_digest = sha256_hex(&valid);
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.data_sha256 = valid_digest.clone();
         }
         if let Some(latest) = &mut index.latest {
@@ -3058,7 +3644,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
         let digest = sha256_hex(invalid);
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.data_sha256 = digest.clone();
         }
         if let Some(latest) = &mut index.latest {
@@ -3070,7 +3656,7 @@ mod tests {
         )
         .expect("index should be writable");
         let before = fs::read(&index_path).expect("index should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("hash-valid invalid JSON must block publication");
         assert!(error.to_string().contains("not valid DocsData"));
         assert_eq!(
@@ -3091,6 +3677,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3101,16 +3690,20 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("initial release should write");
+        write_bundle(&data, &output, false).expect("initial release should write");
         let index_path = output.join("sdk-docs-versions.v1.json");
         let mut index: VersionIndex =
             serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
                 .expect("index should parse");
-        for entry in &mut index.releases {
+        for entry in &mut index.release_candidates {
             entry.revision = "b".repeat(40);
         }
         if let Some(latest) = &mut index.latest {
@@ -3122,13 +3715,11 @@ mod tests {
         )
         .expect("index should be writable");
         let before = fs::read(&index_path).expect("index should remain readable");
-        let error = write_bundle(&data, &output, true)
+        let error = write_bundle(&data, &output, false)
             .expect_err("bundle revision mismatch must block publication");
-        assert!(
-            error
-                .to_string()
-                .contains("data revision does not match the index")
-        );
+        assert!(error
+            .to_string()
+            .contains("data revision does not match the index"));
         assert_eq!(
             before,
             fs::read(&index_path).expect("index should be unchanged")
@@ -3137,7 +3728,7 @@ mod tests {
     }
 
     #[test]
-    fn version_index_advances_latest_and_preview_without_rewriting_releases() {
+    fn version_index_advances_candidates_and_preview_without_rewriting_data() {
         let output =
             std::env::temp_dir().join(format!("sdk-docs-lifecycle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output);
@@ -3147,6 +3738,9 @@ mod tests {
             version: "1.0.0".into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: "1".repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
@@ -3157,25 +3751,29 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
-        write_bundle(&data, &output, true).expect("first release should write");
+        write_bundle(&data, &output, false).expect("first release should write");
         data.version = "1.1.0".into();
         data.source.revision = "2".repeat(40);
-        write_bundle(&data, &output, true).expect("latest should advance to the next release");
+        write_bundle(&data, &output, false).expect("latest should advance to the next release");
         data.version = "0.9.0".into();
         data.source.revision = "9".repeat(40);
-        write_bundle(&data, &output, true).expect("an older release should remain immutable");
+        write_bundle(&data, &output, false).expect("an older release should remain immutable");
         data.version = "0.10.0".into();
         data.source.revision = "8".repeat(40);
-        write_bundle(&data, &output, true).expect("semantic release ordering should be accepted");
+        write_bundle(&data, &output, false).expect("semantic release ordering should be accepted");
         data.version = "preview-1".into();
         data.channel = Channel::Preview;
         data.source.revision = "3".repeat(40);
         write_bundle(&data, &output, false).expect("preview should write");
-        let preview_data_path = output.join("preview/preview-1/sdk-docs-data.v2.json");
+        let preview_data_path = output.join("preview/preview-1/sdk-docs-data.v1.json");
         let preview_bytes =
             fs::read(&preview_data_path).expect("preview data should remain readable");
         let preview_index_path = output.join("sdk-docs-versions.v1.json");
@@ -3209,7 +3807,7 @@ mod tests {
         .expect("index should parse");
         assert_eq!(
             index
-                .releases
+                .release_candidates
                 .iter()
                 .map(|entry| entry.version.as_str())
                 .collect::<Vec<_>>(),
@@ -3217,35 +3815,43 @@ mod tests {
         );
         assert_eq!(
             index.latest.as_ref().map(|entry| entry.version.as_str()),
-            Some("1.1.0")
+            None
         );
         assert_eq!(
             index.preview.as_ref().map(|entry| entry.version.as_str()),
             Some("branch_ABC")
         );
-        assert!(
-            output
-                .join("preview/branch_abc/sdk-docs-data.v2.json")
-                .is_file()
-        );
-        assert!(
-            output
-                .join("preview/~6272616e63685f414243/sdk-docs-data.v2.json")
-                .is_file()
-        );
+        assert!(output
+            .join("preview/branch_abc/sdk-docs-data.v1.json")
+            .is_file());
+        assert!(output
+            .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
+            .is_file());
         fs::remove_dir_all(output).expect("test output should be removable");
     }
 
     #[test]
     fn version_index_latest_must_be_the_maximum_release() {
         let entry = |version: &str| VersionEntry {
+            captured_source: None,
+            publication_status: PublicationStatus::RegistryReleased,
+            released_packages: vec![historical::ReleasedPackage {
+                package: "policy-fixture".into(),
+                version: version.into(),
+                yanked: false,
+                registry_checksum: "a".repeat(64),
+                source_revision: "a".repeat(40),
+                path_in_vcs: "fixture".into(),
+            }],
             version: version.into(),
             channel: Channel::Release,
             revision: "a".repeat(40),
-            data_file: format!("releases/{version}/sdk-docs-data.v2.json"),
+            data_file: format!("release-candidates/{version}/sdk-docs-data.v1.json"),
             data_sha256: "b".repeat(64),
         };
         let stale = VersionIndex {
+            release_candidates: Vec::new(),
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: Some(entry("1.0.0")),
             releases: vec![entry("1.0.0"), entry("2.0.0")],
@@ -3256,6 +3862,8 @@ mod tests {
         assert!(error.to_string().contains("maximum release 2.0.0"));
 
         let missing = VersionIndex {
+            release_candidates: Vec::new(),
+            historical_prereleases: Vec::new(),
             schema: VERSION_INDEX_SCHEMA_VERSION.into(),
             latest: None,
             releases: vec![entry("1.0.0")],
@@ -3277,6 +3885,9 @@ mod tests {
             version: version.into(),
             channel: Channel::Release,
             source: SourceInfo {
+                captured_source: None,
+                publication_status: PublicationStatus::Candidate,
+                released_packages: Vec::new(),
                 revision: revision.to_string().repeat(40),
                 source_state: "captured-snapshot".into(),
                 source_sha256: Some(format!("sha256:{}", revision.to_string().repeat(64))),
@@ -3287,8 +3898,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         let first_data = make_data("1.0.0", 'a');
@@ -3298,13 +3913,13 @@ mod tests {
         let first_barrier = Arc::clone(&barrier);
         let first = thread::spawn(move || {
             first_barrier.wait();
-            write_bundle(&first_data, &first_output, true)
+            write_bundle(&first_data, &first_output, false)
         });
         let second_output = output.clone();
         let second_barrier = Arc::clone(&barrier);
         let second = thread::spawn(move || {
             second_barrier.wait();
-            write_bundle(&second_data, &second_output, true)
+            write_bundle(&second_data, &second_output, false)
         });
         first
             .join()
@@ -3321,7 +3936,7 @@ mod tests {
         .expect("index should parse");
         assert_eq!(
             index
-                .releases
+                .release_candidates
                 .iter()
                 .map(|entry| entry.version.as_str())
                 .collect::<Vec<_>>(),
@@ -3329,9 +3944,9 @@ mod tests {
         );
         assert_eq!(
             index.latest.as_ref().map(|entry| entry.version.as_str()),
-            Some("2.0.0")
+            None
         );
-        for entry in &index.releases {
+        for entry in &index.release_candidates {
             let bytes = fs::read(output.join(&entry.data_file)).expect("bundle should exist");
             assert_eq!(sha256_hex(&bytes), entry.data_sha256);
         }
@@ -3406,13 +4021,15 @@ mod tests {
         assert_eq!(preview.packages.entries[0].version, "1.0.0");
         let mut mismatched_metadata = input.clone();
         mismatched_metadata.package_metadata[0].crate_name = "different-crate".into();
-        let error = build_data(&mismatched_metadata)
-            .expect_err("Cargo crate identity mismatch must fail");
-        assert!(error.to_string().contains("Cargo metadata names different-crate"));
+        let error =
+            build_data(&mismatched_metadata).expect_err("Cargo crate identity mismatch must fail");
+        assert!(error
+            .to_string()
+            .contains("Cargo metadata names different-crate"));
         let mut missing_metadata = input.clone();
         missing_metadata.package_metadata[0].version.clear();
-        let error = build_data(&missing_metadata)
-            .expect_err("missing Cargo package version must fail");
+        let error =
+            build_data(&missing_metadata).expect_err("missing Cargo package version must fail");
         assert!(error
             .to_string()
             .contains("requires package name, crate name, and version"));
@@ -3619,12 +4236,10 @@ mod tests {
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
         assert_eq!(alias.docs.as_deref(), Some("hidden"));
-        assert!(
-            alias
-                .links
-                .get("target link")
-                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
-        );
+        assert!(alias
+            .links
+            .get("target link")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         assert!(!alias.links.contains_key("alias-only"));
         let linked = family
             .items
@@ -3634,12 +4249,10 @@ mod tests {
         // Rustdoc resolves the alias reference to definition id 3; the
         // public occurrence map still exposes the reachable `demo::Visible`
         // use path rather than confusing the use item id with the definition.
-        assert!(
-            linked
-                .links
-                .get("alias target")
-                .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned()))
-        );
+        assert!(linked
+            .links
+            .get("alias target")
+            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
         let associated_paths = linked
             .links
             .get("associated target")
@@ -3682,12 +4295,10 @@ mod tests {
             .iter()
             .find(|guide| guide.path == "demo::nested")
             .expect("the public module guide should be projected");
-        assert!(
-            guide
-                .links
-                .get("associated target")
-                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
-        );
+        assert!(guide
+            .links
+            .get("associated target")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         let linked_roundtrip: ApiItem = serde_json::from_value(
             serde_json::to_value(linked).expect("non-empty links should serialize"),
         )
