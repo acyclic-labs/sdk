@@ -59,6 +59,15 @@ impl Reducer {
     /// Closed checkpoint-covered conversation prefixes are represented by their
     /// authenticated logical cut and digest. Terminal projections still need cold retention.
     pub fn snapshot(&self) -> Result<Snapshot> {
+        self.snapshot_with_event_limit(self.events.len())
+    }
+
+    /// Captures the same authenticated projection with a bounded retry suffix.
+    /// A nonempty projection must retain its head event for canonical binding.
+    pub fn snapshot_with_event_limit(&self, maximum_events: usize) -> Result<Snapshot> {
+        if maximum_events == 0 && self.revision != 0 {
+            return Err(Error::Invalid("snapshot must retain its head event".into()));
+        }
         let conversation = self.checkpointed_conversation()?;
         let projection = Projection {
             lifecycle: self.lifecycle,
@@ -79,7 +88,12 @@ impl Reducer {
             format_version: 6,
             authority: self.authority.clone(),
             revision: self.revision,
-            events: self.events.iter().cloned().collect(),
+            events: self
+                .events
+                .iter()
+                .skip(self.events.len().saturating_sub(maximum_events))
+                .cloned()
+                .collect(),
             projection,
             state_digest: [0; 32],
             attestation: [0; 32],

@@ -1089,6 +1089,20 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .map_err(|_| Error::Storage("conversation projection is absent".into()))?;
         aggregate.set_limits(limits)?;
         let through = aggregate.tail_revision().await?;
+        if through.saturating_sub(aggregate.reducer().revision())
+            > u64::from(crate::store::DEFAULT_PROJECTION_EVENTS)
+        {
+            *aggregate = StreamAggregate::open(
+                &self.stream,
+                self.verifier.audience().clone(),
+                self.verifier.clone(),
+                self.schemas.clone(),
+            )
+            .await?
+            .with_content_verifier(Arc::clone(verifier));
+            aggregate.set_limits(limits)?;
+            return Ok(aggregate);
+        }
         while !aggregate
             .refresh_through(through, EXECUTION_REPLAY_PAGE_RECORDS)
             .await?
