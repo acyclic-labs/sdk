@@ -1,0 +1,6 @@
+{application, acyclic_sdk_transport,
+ [{description, "Rust-authoritative Acyclic transport messages and gRPC clients"},
+  {vsn, "0.1.0"},
+  {modules, []},
+  {applications, [kernel, stdlib, grpcbox]},
+  {licenses, ["Apache-2.0"]}]}.
