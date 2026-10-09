@@ -413,11 +413,15 @@ test("the workflow keeps full qualification off routine pull requests", () => {
 });
 
 test("the core lanes cover the Rust workspace, docs crate, and TypeScript workspace", () => {
-  const script = readFileSync("scripts/qualify-ci.sh", "utf8");
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
   const policy = script.slice(script.indexOf("\n  policy)"));
   assert.match(policy, /^ +cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/m);
-  const typescript = script.slice(script.indexOf("\n  typescript)"));
-  assert.match(typescript, /bun run test\n(?: .*\n)+? +bun run check:generated\n/);
+  const typescript = script.match(/^  typescript\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
+  assert.ok(typescript, "missing TypeScript lane");
+  const testCommand = typescript.search(/^ +bun run test$/m);
+  const generatedCommand = typescript.search(/^ +bun run check:generated$/m);
+  assert.ok(testCommand >= 0, "TypeScript lane must run tests");
+  assert.ok(generatedCommand > testCommand, "TypeScript generated check must follow tests");
 });
