@@ -767,6 +767,41 @@ where
         Ok(TaskWorkerTick { wake, work })
     }
 
+    /// Polls and claims only the original admitted task, then uses the same
+    /// fenced worker execution path. An active uncertain lease must instead be
+    /// reconciled and supplied to `resume_task`; this never guesses ownership.
+    pub async fn run_operation(
+        &self,
+        worker: &crate::distributed::Worker,
+        task: TaskId,
+        commands: &dyn TaskCommandHost,
+        maximum_transitions: u32,
+    ) -> Result<Option<TaskWorkerAttempt>> {
+        if worker.id.trim().is_empty() || maximum_transitions == 0 {
+            return Err(Error::Invalid(
+                "invalid targeted worker allowance or identity".into(),
+            ));
+        }
+        // Verify the original admission before touching this task's passive wake.
+        let admission = self.host.observe_admission(task).await?;
+        self.poll_task_wake(task).await?;
+        Ok(
+            match self
+                .host
+                .pull_operation(worker, admission.operation_id)
+                .await?
+            {
+                crate::distributed::WorkPull::Idle => None,
+                crate::distributed::WorkPull::Claimed(lease) => {
+                    Some(self.resume_task(lease, commands, maximum_transitions).await)
+                }
+                crate::distributed::WorkPull::Unresolved { lease, error } => {
+                    Some(TaskWorkerAttempt::Unresolved { lease, error })
+                }
+            },
+        )
+    }
+
     /// Resumes an explicit lease; every error returns the original attempt
     /// so callers can reconcile or verify it without silently releasing capacity.
     pub async fn resume_task(

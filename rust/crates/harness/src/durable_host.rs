@@ -528,6 +528,25 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await
     }
 
+    /// Claims this original operation without owner-wide task selection.
+    pub async fn pull_operation(
+        &self,
+        worker: &crate::distributed::Worker,
+        operation_id: OperationId,
+    ) -> Result<crate::distributed::WorkPull> {
+        self.coordinator
+            .lock()
+            .await
+            .pull_owned_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                worker,
+                operation_id,
+            )
+            .await
+    }
+
     /// Durably retains one timer identity without holding a waiting future.
     /// The existing owner-authenticated workflow wake supplies later admission.
     #[cfg(feature = "filesystem")]
