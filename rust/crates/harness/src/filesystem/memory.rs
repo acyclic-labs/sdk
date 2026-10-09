@@ -1442,9 +1442,13 @@ mod tests {
                 "one.txt",
             )
             .await?;
+        let expected_projection = json!({"kind":"json","value":"pinned text"});
+        let render_bytes = serde_json::to_vec(&expected_projection)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .len() as u64;
         let mut limits = Limits {
             file_bytes: 4_096,
-            render_bytes: 32,
+            render_bytes,
             ..Limits::default()
         };
         let tool = owner
@@ -1462,8 +1466,20 @@ mod tests {
         assert_eq!(result.value, json!("pinned text"));
         assert_eq!(
             tool.projection.project(&invocation, &result)?,
-            json!("pinned text")
+            expected_projection
         );
+        let bounded_tool = owner.default_tools(Limits {
+            render_bytes: render_bytes - 1,
+            ..limits
+        })?;
+        assert!(matches!(
+            bounded_tool
+                .get("acyclic.read_file")
+                .ok_or_else(|| Error::NotFound("bounded projection tool".into()))?
+                .projection
+                .project(&invocation, &result),
+            Err(Error::Invalid(_))
+        ));
         assert_eq!(
             tool.executor.reconcile(invocation.clone()).await?,
             Some(result)
