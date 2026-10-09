@@ -75,6 +75,32 @@ impl<P: StreamProvider> HistoryReader<P> {
         .await
     }
 
+    /// Resolves one message at the pinned boundary using its atomic locator.
+    /// Reads at most one locator and one canonical record; no history scan or
+    /// reducer hydration occurs. The byte budget includes both encoded records.
+    pub async fn conversation_message(
+        &self,
+        cursor: &HistoryCursor,
+        message_id: uuid::Uuid,
+        maximum_bytes: u64,
+    ) -> Result<Option<crate::conversation::ConversationMessage>> {
+        self.verifier.verify_audience(&cursor.authority)?;
+        if cursor.after_revision > cursor.through_revision
+            || cursor.through_revision > self.committed_tail().await?
+        {
+            return Err(Error::Invalid("message lookup cursor is invalid".into()));
+        }
+        super::operations::find_message(
+            &self.client,
+            &cursor.authority,
+            &self.verifier,
+            message_id,
+            cursor.through_revision,
+            maximum_bytes,
+        )
+        .await
+    }
+
     /// Captures a committed boundary once for explicit archival traversal.
     pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
         let through_revision = self.committed_tail().await?;

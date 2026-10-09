@@ -1676,6 +1676,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
+                .await?
+                .with_resident_event_limit(1)?,
+        );
+        let agent = crate::AgentId::from_bytes([8; 16]);
+        let file = content()?;
+        let scope = issuer().root_for_agent(
+            agent,
+            "message-writer",
+            Capabilities::new([
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                file.read_capability()?,
+            ]),
+        );
+        writer
+            .execute(Command {
+                operation_id: OperationId::from_bytes([101; 16]),
+                idempotency_key: IdempotencyKey::new("message-index-bind")?,
+                expected_revision: 0,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            })
+            .await?;
+        let reader = writer.history_reader()?;
+        let empty = reader.pin(0).await?;
+        let message = |sequence| crate::conversation::ConversationMessage {
+            id: uuid::Uuid::from_u128(u128::from(sequence)),
+            sequence,
+            kind: crate::conversation::MessageKind::User,
+            content: file.clone(),
+            attachments: Vec::new().into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: Default::default(),
+        };
+        let mut first_command = None;
+        for sequence in 1..=10_000u64 {
+            let next = Command {
+                operation_id: OperationId::from_bytes(
+                    uuid::Uuid::from_u128(u128::from(sequence) + 100_000).into_bytes(),
+                ),
+                idempotency_key: IdempotencyKey::new(format!("message-index-{sequence}"))?,
+                expected_revision: writer.reducer().revision(),
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::AppendConversationMessage {
+                    message: Box::new(message(sequence)),
+                },
+            };
+            if sequence == 1 {
+                first_command = Some(next.clone());
+            }
+            writer.execute(next).await?;
+        }
+        assert_eq!(writer.reducer().events().len(), 1);
+        let pinned = reader.pin(0).await?;
+        let future = message(10_001);
+        writer
+            .execute(Command {
+                operation_id: OperationId::from_bytes([99; 16]),
+                idempotency_key: IdempotencyKey::new("message-after-pin")?,
+                expected_revision: writer.reducer().revision(),
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::AppendConversationMessage {
+                    message: Box::new(future.clone()),
+                },
+            })
+            .await?;
+        assert!(matches!(
+            writer
+                .execute(
+                    first_command.ok_or_else(|| Error::Invalid("missing first command".into()))?
+                )
+                .await?,
+            ApplyResult::Replayed { .. }
+        ));
+        // Forge a separate-commit locator pointing at the signed first message.
+        let first_path = format!(
+            "harness/v2/conversation-messages/conversations/conversation-1/{}",
+            message(1).id
+        );
+        let records = client
+            .stream(&first_path)?
+            .read(0, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let mut forged: Value = crate::executor::decode_json(
+            &records
+                .first()
+                .ok_or_else(|| Error::Storage("message index missing".into()))?
+                .value,
+        )?;
+        let forged_id = uuid::Uuid::from_u128(50_000);
+        forged["message_id"] = json!(forged_id);
+        client
+            .stream(format!(
+                "harness/v2/conversation-messages/conversations/conversation-1/{forged_id}"
+            ))?
+            .append(crate::contract::canonical_json_bytes(&forged)?)
+            .await?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        for sequence in [1, 5_000, 10_000] {
+            provider.observation_reads.store(0, Ordering::SeqCst);
+            assert_eq!(
+                reader
+                    .conversation_message(&pinned, message(sequence).id, 65_536)
+                    .await?,
+                Some(message(sequence))
+            );
+            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+            assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        }
+        assert!(
+            reader
+                .conversation_message(&pinned, future.id, 65_536)
+                .await?
+                .is_none()
+        );
+        assert!(
+            reader
+                .conversation_message(&empty, message(1).id, 65_536)
+                .await?
+                .is_none()
+        );
+        let current = reader.pin(0).await?;
+        assert_eq!(
+            reader
+                .conversation_message(&current, future.id, 65_536)
+                .await?,
+            Some(future)
+        );
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader.conversation_message(&pinned, message(1).id, 1).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            reader
+                .conversation_message(&pinned, forged_id, 65_536)
+                .await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result<()> {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let mut writer = with_content(
