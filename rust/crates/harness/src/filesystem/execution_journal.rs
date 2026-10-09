@@ -37,10 +37,13 @@ use std::{
 
 #[derive(Default)]
 struct ExecutionSummary {
+    operation: Option<OperationId>,
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
+    prepared_contexts: HashSet<u32>,
+    compacted_contexts: HashSet<u32>,
     // None is a completed dispatch. Its event/call bodies are no longer needed.
-    models: BTreeMap<u32, Option<ModelEventAdmission>>,
+    models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
 }
 
@@ -50,14 +53,39 @@ impl ExecutionSummary {
             ExecutionEvent::Started { request_digest } => {
                 self.tail == 0 && *request_digest != [0; 32]
             }
+            ExecutionEvent::ContextPrepared { step, .. } => {
+                self.tail > 0
+                    && !self.prepared_contexts.contains(step)
+                    && !self
+                        .models
+                        .contains_key(&(*step, crate::executor::ModelPurpose::Response))
+            }
+            ExecutionEvent::ContextCompacted { step, .. } => {
+                self.prepared_contexts.contains(step)
+                    && !self.compacted_contexts.contains(step)
+                    && matches!(
+                        self.models
+                            .get(&(*step, crate::executor::ModelPurpose::Summary)),
+                        Some(None)
+                    )
+                    && !self
+                        .models
+                        .contains_key(&(*step, crate::executor::ModelPurpose::Response))
+            }
             ExecutionEvent::ModelStarted {
                 step,
+                purpose,
                 request_digest,
                 ..
-            } => self.tail > 0 && *request_digest != [0; 32] && !self.models.contains_key(step),
-            ExecutionEvent::Model { step, .. } => {
-                self.models.get(step).is_some_and(Option::is_some)
+            } => {
+                self.tail > 0
+                    && *request_digest != [0; 32]
+                    && !self.models.contains_key(&(*step, *purpose))
             }
+            ExecutionEvent::Model { step, purpose, .. } => self
+                .models
+                .get(&(*step, *purpose))
+                .is_some_and(Option::is_some),
             ExecutionEvent::ToolStarted { step, call_id, .. } => {
                 self.tail > 0
                     && !call_id.is_empty()
@@ -88,9 +116,9 @@ impl ExecutionSummary {
         limits: Limits,
     ) -> Result<()> {
         self.require_next(event)?;
-        if let ExecutionEvent::Model { step, .. } = event {
+        if let ExecutionEvent::Model { step, purpose, .. } = event {
             self.models
-                .get(step)
+                .get(&(*step, *purpose))
                 .and_then(Option::as_ref)
                 .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?
                 .validate_next(
@@ -119,14 +147,20 @@ impl ExecutionSummary {
         self.validate_next(&record.event, model, limits)?;
         let digest = crate::contract::canonical_json_digest(&record.event)?;
         match &record.event {
-            ExecutionEvent::ModelStarted { step, .. } => {
-                self.models
-                    .insert(*step, Some(ModelEventAdmission::default()));
+            ExecutionEvent::ContextPrepared { step, .. } => {
+                self.prepared_contexts.insert(*step);
             }
-            ExecutionEvent::Model { step, .. } => {
+            ExecutionEvent::ContextCompacted { step, .. } => {
+                self.compacted_contexts.insert(*step);
+            }
+            ExecutionEvent::ModelStarted { step, purpose, .. } => {
+                self.models
+                    .insert((*step, *purpose), Some(ModelEventAdmission::default()));
+            }
+            ExecutionEvent::Model { step, purpose, .. } => {
                 let state = self
                     .models
-                    .get_mut(step)
+                    .get_mut(&(*step, *purpose))
                     .ok_or_else(|| Error::Storage("model dispatch is missing".into()))?;
                 let admission = state
                     .as_mut()
@@ -208,6 +242,8 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
+    conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
+    history_read_limits: Option<crate::store::HistoryReadLimits>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
@@ -263,9 +299,16 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("quiescence requires a task-owned execution journal".into())
-        })?;
+        if summary.operation != Some(operation) {
+            *summary = ExecutionSummary {
+                operation: Some(operation),
+                ..ExecutionSummary::default()
+            };
+        }
+        let limits = self
+            .owner
+            .as_ref()
+            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
         loop {
             let page = Box::pin(self.replay_verified(
                 operation,
@@ -277,7 +320,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(());
             }
             for (record, model) in page {
-                summary.accept(&record, model.as_ref(), owner.input_limits())?;
+                summary.accept(&record, model.as_ref(), limits)?;
             }
         }
     }
@@ -318,7 +361,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .await
     }
 
-    async fn append_owned(
+    async fn append_validated(
         &self,
         operation_id: OperationId,
         expected_tail: Option<u64>,
@@ -336,12 +379,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 "execution journal compare-and-append is invalid".into(),
             ));
         }
-        let (owner, _) = self
-            .owner
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("task journal owner required".into()))?;
+        let owner = self.owner.as_ref().map(|(owner, _)| owner);
         let model = self.verify_event_refs(&event).await?;
-        let limits = owner.input_limits();
+        let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
+        self.verify_canonical_publication(operation_id, &event, limits)
+            .await?;
         let (key, retry_digest, bytes) = Observation::encode(operation_id, claim_id, &event)?;
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::contract::canonical_json_digest(&event)?;
@@ -350,7 +392,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         // No payload bodies are retained in this rebuildable index.
         loop {
             Box::pin(self.refresh_summary(operation_id, &mut summary)).await?;
-            owner.verify_execution(operation_id, &event).await?;
+            if let Some(owner) = owner {
+                owner.verify_execution(operation_id, &event).await?;
+            }
             if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
                 if *previous != event_digest {
                     return Err(Error::Conflict(
@@ -363,10 +407,22 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(false);
             }
             summary.validate_next(&event, model.as_ref(), limits)?;
-            if owner
-                .append_execution(operation_id, summary.tail, &key, bytes.clone(), &event)
+            let committed = if let Some(owner) = owner {
+                owner
+                    .append_execution(operation_id, summary.tail, &key, bytes.clone(), &event)
+                    .await?
+            } else {
+                self.append_local(
+                    operation_id,
+                    summary.tail,
+                    key.clone(),
+                    bytes.clone(),
+                    &retry_digest,
+                    &event,
+                )
                 .await?
-            {
+            };
+            if committed {
                 let sequence = summary.tail + 1;
                 summary.accept(
                     &ExecutionRecord {
@@ -379,6 +435,315 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     limits,
                 )?;
                 return Ok(true);
+            }
+        }
+    }
+
+    async fn verify_canonical_publication(
+        &self,
+        operation_id: OperationId,
+        event: &ExecutionEvent,
+        limits: Limits,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let ExecutionEvent::ContextCompacted {
+            step,
+            projection,
+            compaction,
+            ..
+        } = event
+        else {
+            return Ok(());
+        };
+        limits.validate_file(projection)?;
+        let projection =
+            crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection)
+                .await?;
+        crate::context::validate_projected_context(&projection.context, limits)?;
+        let Some(reference) = &projection.checkpoint else {
+            if projection.canonical.is_some() {
+                return Err(Error::Invalid(
+                    "canonical publication has no checkpoint".into(),
+                ));
+            }
+            return Ok(());
+        };
+        limits.validate_file(reference)?;
+        let envelope = crate::executor::load_json::<crate::context::CanonicalContextCheckpoint>(
+            self, reference,
+        )
+        .await?;
+        envelope.validate(limits)?;
+        if *step != 0
+            || envelope.operation_id != operation_id
+            || projection.canonical.as_ref() != Some(&envelope.source)
+            || &envelope.compaction != compaction
+        {
+            return Err(Error::Invalid(
+                "canonical publication differs from its envelope".into(),
+            ));
+        }
+        let source =
+            crate::executor::load_json::<crate::context::Context>(self, &envelope.source).await?;
+        let retained =
+            crate::executor::load_json::<crate::context::Context>(self, &envelope.retained).await?;
+        let proof =
+            crate::executor::load_json::<crate::context::CompactionReference>(self, compaction)
+                .await?;
+        envelope.validate_projection(&source, &retained, &proof, limits)?;
+        self.verify_canonical_source(&envelope, &source, limits)
+            .await?;
+        self.verify_canonical_summary(operation_id, &envelope, &source, &proof, limits)
+            .await
+    }
+
+    async fn verify_canonical_source(
+        &self,
+        envelope: &crate::context::CanonicalContextCheckpoint,
+        source: &crate::context::Context,
+        limits: Limits,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let previous = match &envelope.selection.checkpoint {
+            Some(reference) => {
+                Some(crate::executor::load_canonical_checkpoint(self, reference, limits).await?)
+            }
+            None => None,
+        };
+        let after = previous
+            .as_ref()
+            .map_or(0, |(previous, _)| previous.selection.conversation_revision);
+        let verifier = self
+            .input_verifier
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("canonical source reader is not bound".into()))?;
+        limits.validate()?;
+        let reader = crate::store::HistoryReader::new(
+            &self.stream,
+            self.verifier.audience(),
+            self.verifier.clone(),
+        )?;
+        let event = reader
+            .operation_event(envelope.operation_id)
+            .await?
+            .ok_or_else(|| {
+                Error::Conflict("checkpoint source selection is not the committed admission".into())
+            })?;
+        let crate::core::EventPayload::ModelContextSelected { selection } = event.payload else {
+            return Err(Error::Conflict(
+                "checkpoint operation is not a model-context selection".into(),
+            ));
+        };
+        if selection != envelope.selection {
+            return Err(Error::Conflict(
+                "checkpoint source selection is not the committed admission".into(),
+            ));
+        }
+        let cursor = crate::store::HistoryCursor {
+            authority: self.verifier.audience().clone(),
+            after_revision: 0,
+            through_revision: event.revision,
+        };
+        let history_limits = if let Some(limits) = self.history_read_limits {
+            limits
+        } else {
+            let maximum_events = u32::try_from(limits.context_messages).map_err(|_| {
+                Error::Invalid("canonical delta count exceeds portable history bound".into())
+            })?;
+            let maximum_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
+                .checked_mul(2)
+                .and_then(|bytes| bytes.checked_mul(u64::from(maximum_events)))
+                .ok_or_else(|| Error::Invalid("canonical delta byte bound overflows".into()))?;
+            crate::store::HistoryReadLimits {
+                maximum_events,
+                maximum_bytes,
+            }
+        };
+        let loaded = reader
+            .conversation_range(
+                &cursor,
+                after,
+                envelope.selection.conversation_revision,
+                history_limits,
+            )
+            .await?;
+        let delta =
+            project_canonical_delta(loaded, &envelope.selection, verifier.as_ref(), limits).await?;
+        let expected = match previous {
+            Some((_, retained)) => {
+                crate::context::ContextPipeline::continue_base(retained, delta, limits)?
+            }
+            None => delta,
+        };
+        if source != &expected {
+            return Err(Error::Conflict(
+                "checkpoint source differs from its canonical base and delta".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn verify_canonical_summary(
+        &self,
+        operation: OperationId,
+        envelope: &crate::context::CanonicalContextCheckpoint,
+        source: &crate::context::Context,
+        proof: &crate::context::CompactionReference,
+        limits: Limits,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        use crate::executor::ModelPurpose;
+        let summary = proof
+            .summary
+            .as_ref()
+            .filter(|summary| summary.step == 0)
+            .ok_or_else(|| Error::Invalid("canonical summary belongs to another step".into()))?;
+        let (_, records) = crate::executor::replay_execution(
+            self,
+            operation,
+            limits.model_events_per_step.saturating_add(2),
+            |event| {
+                matches!(
+                    event,
+                    ExecutionEvent::ContextPrepared { step: 0, .. }
+                        | ExecutionEvent::ModelStarted {
+                            step: 0,
+                            purpose: ModelPurpose::Summary,
+                            ..
+                        }
+                        | ExecutionEvent::Model {
+                            step: 0,
+                            purpose: ModelPurpose::Summary,
+                            ..
+                        }
+                )
+            },
+        )
+        .await?;
+        let mut prepared = None;
+        let mut request = None;
+        let mut output = String::new();
+        let mut completed = false;
+        for record in records {
+            match record.event {
+                ExecutionEvent::ContextPrepared { projection, .. } => {
+                    let projection = crate::executor::load_json::<
+                        crate::executor::ResponseProjection,
+                    >(self, &projection)
+                    .await?;
+                    prepared = projection.canonical;
+                }
+                ExecutionEvent::ModelStarted {
+                    request: reference, ..
+                } => {
+                    request = Some(crate::model::PreparedModelRequest::decode(
+                        &self.load(&reference).await?,
+                        limits,
+                    )?);
+                }
+                ExecutionEvent::Model { event, .. } => {
+                    let event = crate::executor::load_json::<ModelEvent>(self, &event).await?;
+                    match event {
+                        ModelEvent::Content { delta } => {
+                            if (output.len() as u64)
+                                .checked_add(delta.len() as u64)
+                                .is_none_or(|length| length > limits.render_bytes)
+                            {
+                                return Err(Error::Invalid(
+                                    "canonical summary output exceeds bounds".into(),
+                                ));
+                            }
+                            output.push_str(&delta);
+                        }
+                        ModelEvent::Completed { .. } => completed = true,
+                        ModelEvent::Reasoning { .. } => {}
+                        ModelEvent::ToolCall { .. } => {
+                            return Err(Error::Invalid(
+                                "canonical summary requested a tool".into(),
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(Error::Storage(
+                        "canonical summary selection is invalid".into(),
+                    ));
+                }
+            }
+        }
+        if prepared.as_ref() != Some(&envelope.source) || !completed || output.is_empty() {
+            return Err(Error::Conflict(
+                "canonical summary lacks its prepared source or settled output".into(),
+            ));
+        }
+        let request = request
+            .ok_or_else(|| Error::Conflict("canonical summary has no admitted request".into()))?;
+        verify_summary_prefix(&request, source, summary.source_messages)?;
+        limits.validate_file(&summary.output)?;
+        if self.load(&summary.output).await? != output.as_bytes() {
+            return Err(Error::Conflict(
+                "canonical summary output differs from admitted observations".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn append_local(
+        &self,
+        operation_id: OperationId,
+        tail: u64,
+        key: StreamKey,
+        bytes: Bytes,
+        retry_digest: &str,
+        event: &ExecutionEvent,
+    ) -> Result<bool>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        match self
+            .path(operation_id)?
+            .append_batch(vec![bytes], Some(tail), Some(key))
+            .await
+        {
+            Ok(AppendOutcome::Committed(receipt))
+                if receipt.start == tail && receipt.end == tail + 1 =>
+            {
+                Ok(true)
+            }
+            Ok(AppendOutcome::Committed(_)) => Err(Error::Storage(
+                "execution journal append receipt is invalid".into(),
+            )),
+            Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
+            Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
+                "execution journal retry identity reused".into(),
+            )),
+            Err(_) => {
+                let records = self
+                    .replay(operation_id, tail, 1)
+                    .await
+                    .map_err(|_| Error::Indeterminate(operation_id))?;
+                if records
+                    .iter()
+                    .any(|record| record.idempotency_key == retry_digest && &record.event == event)
+                {
+                    Ok(true)
+                } else {
+                    Err(Error::Indeterminate(operation_id))
+                }
             }
         }
     }
@@ -463,6 +828,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             interactions,
             owner: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            conversation_projection: tokio::sync::Mutex::new(None),
+            history_read_limits: None,
         })
     }
 
@@ -499,6 +866,22 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             private_volume,
             self.maximum_payload_bytes,
         )?);
+        Ok(self)
+    }
+
+    /// Sets a separate finite work/byte allowance for cold canonical deltas.
+    /// All canonical message kinds count toward this work limit. Without an
+    /// override, the admitted context-message limit also bounds delta reads.
+    pub fn with_history_read_limits(
+        mut self,
+        limits: crate::store::HistoryReadLimits,
+    ) -> Result<Self> {
+        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "cold history read bounds must be positive".into(),
+            ));
+        }
+        self.history_read_limits = Some(limits);
         Ok(self)
     }
 
@@ -668,6 +1051,43 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .map(|_| ())
     }
 
+    /// Shares the existing authoritative reducer between turn admission and
+    /// selected-context verification; refresh never rebuilds its retained prefix.
+    pub(super) async fn conversation_projection(
+        &self,
+        limits: Limits,
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<P>>>
+    where
+        P: StreamProvider,
+    {
+        limits.validate()?;
+        let verifier = self.input_verifier.as_ref().ok_or_else(|| {
+            Error::Unsupported("conversation content verifier is not bound".into())
+        })?;
+        let mut cached = self.conversation_projection.lock().await;
+        if cached.is_none() {
+            *cached = Some(
+                StreamAggregate::open(
+                    &self.stream,
+                    self.verifier.audience().clone(),
+                    self.verifier.clone(),
+                    self.schemas.clone(),
+                )
+                .await?
+                .with_content_verifier(Arc::clone(verifier)),
+            );
+        }
+        let mut aggregate = tokio::sync::MutexGuard::try_map(cached, Option::as_mut)
+            .map_err(|_| Error::Storage("conversation projection is absent".into()))?;
+        aggregate.set_limits(limits)?;
+        let through = aggregate.tail_revision().await?;
+        while !aggregate
+            .refresh_through(through, EXECUTION_REPLAY_PAGE_RECORDS)
+            .await?
+        {}
+        Ok(aggregate)
+    }
+
     async fn replay_verified(
         &self,
         operation_id: OperationId,
@@ -732,10 +1152,28 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
 
     async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
     where
+        P: StreamProvider,
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
         let refs: Vec<&FileRef> = match event {
+            ExecutionEvent::ContextPrepared {
+                projection,
+                accounting,
+                ..
+            } => {
+                let mut references = vec![projection];
+                references.extend(accounting.iter());
+                references
+            }
+            ExecutionEvent::ContextCompacted {
+                projection,
+                compaction,
+                accounting,
+                ..
+            } => {
+                vec![projection, compaction, accounting]
+            }
             ExecutionEvent::ModelStarted { request, .. } => vec![request],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
@@ -761,6 +1199,18 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 .host
                 .read_content(reference, &grant, self.maximum_payload_bytes)
                 .await?;
+            if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
+                let limits = self
+                    .owner
+                    .as_ref()
+                    .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+                let prepared = crate::model::PreparedModelRequest::decode(&bytes, limits)?;
+                if &prepared.manifest().request_digest != request_digest {
+                    return Err(Error::Invalid(
+                        "model start digest differs from its retained request".into(),
+                    ));
+                }
+            }
             if matches!(event, ExecutionEvent::Model { .. }) {
                 if reference.descriptor().media_type() != "application/json" {
                     return Err(Error::Storage("model observation is not JSON".into()));
@@ -825,6 +1275,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn canonical_authority(&self) -> Option<&crate::core::Authority> {
+        Some(self.verifier.audience())
+    }
+
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
@@ -851,33 +1305,9 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         let span = obs_span!("acyclic.harness.journal.append");
         traced(span, async move {
-            if self.owner.is_some() {
-                return self
-                    .append_owned(operation_id, None, &idempotency_key, event)
-                    .await
-                    .map(|_| ());
-            }
-            if idempotency_key.is_empty() {
-                return Err(Error::Invalid(
-                    "execution journal idempotency key is invalid".into(),
-                ));
-            }
-            self.verify_event_refs(&event).await?;
-            let (key, _, bytes) = Observation::encode(operation_id, &idempotency_key, &event)?;
-            match self
-                .path(operation_id)?
-                .append_batch(vec![bytes], None, Some(key))
+            self.append_validated(operation_id, None, &idempotency_key, event)
                 .await
-            {
-                Ok(AppendOutcome::Committed(_)) => Ok(()),
-                Ok(AppendOutcome::TailConflict { .. }) => {
-                    Err(Error::Conflict("execution journal tail changed".into()))
-                }
-                Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
-                    "execution journal retry identity reused".into(),
-                )),
-                Err(error) => Err(Error::Storage(error.to_string())),
-            }
+                .map(|_| ())
         })
     }
 
@@ -893,44 +1323,8 @@ where
             rev = expected_tail
         );
         traced(span, async move {
-            if self.owner.is_some() {
-                return self
-                    .append_owned(operation_id, Some(expected_tail), &claim_id, event)
-                    .await;
-            }
-            if claim_id.is_empty() {
-                return Err(Error::Invalid(
-                    "execution journal compare-and-append is invalid".into(),
-                ));
-            }
-            self.verify_event_refs(&event).await?;
-            let (key, retry_digest, bytes) = Observation::encode(operation_id, &claim_id, &event)?;
-            match self
-                .path(operation_id)?
-                .append_batch(vec![bytes], Some(expected_tail), Some(key))
+            self.append_validated(operation_id, Some(expected_tail), &claim_id, event)
                 .await
-            {
-                Ok(AppendOutcome::Committed(receipt)) if receipt.start == expected_tail => Ok(true),
-                Ok(AppendOutcome::Committed(_)) | Ok(AppendOutcome::TailConflict { .. }) => {
-                    Ok(false)
-                }
-                Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
-                    "execution journal compare-and-append identity was reused".into(),
-                )),
-                Err(_) => {
-                    let records = self
-                        .replay(operation_id, expected_tail, 1)
-                        .await
-                        .map_err(|_| Error::Indeterminate(operation_id))?;
-                    if records.iter().any(|record| {
-                        record.idempotency_key == retry_digest && record.event == event
-                    }) {
-                        Ok(true)
-                    } else {
-                        Err(Error::Indeterminate(operation_id))
-                    }
-                }
-            }
         })
     }
 
@@ -1078,35 +1472,61 @@ where
             let verifier = self.input_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("conversation content verifier is not bound".into())
             })?;
-            let aggregate = StreamAggregate::open(
+            let limits = self
+                .owner
+                .as_ref()
+                .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+            limits.validate()?;
+            if selected.selection.message_ids.len() > limits.context_messages {
+                return Err(Error::Invalid(
+                    "selected history exceeds context message limit".into(),
+                ));
+            }
+            let reader = crate::store::HistoryReader::new(
                 &self.stream,
-                self.verifier.audience().clone(),
+                self.verifier.audience(),
                 self.verifier.clone(),
-                self.schemas.clone(),
-            )
-            .await?;
-            let committed = aggregate
-                .reducer()
-                .context_selection_for_operation(operation_id)
-                .ok_or_else(|| {
-                    Error::Conflict("turn has no committed model-context selection".into())
-                })?;
-            if committed != &selected.selection {
+            )?;
+            let event = reader.operation_event(operation_id).await?.ok_or_else(|| {
+                Error::Conflict("turn has no committed model-context selection".into())
+            })?;
+            let crate::core::EventPayload::ModelContextSelected {
+                selection: committed,
+            } = event.payload
+            else {
+                return Err(Error::Conflict(
+                    "turn operation is not a model-context selection".into(),
+                ));
+            };
+            if committed != selected.selection {
                 return Err(Error::Conflict(
                     "model-context selection does not match the committed turn".into(),
                 ));
             }
-            let historical = aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Invalid("journal authority is not a conversation".into()))?;
-            let length = usize::try_from(committed.conversation_revision)
-                .map_err(|_| Error::Storage("selection revision exceeds platform size".into()))?;
-            if length > historical.messages.len() {
-                return Err(Error::Storage(
-                    "selection revision exceeds conversation history".into(),
-                ));
+            // The exact attested selection event fixes the cutoff. Later parent
+            // appends cannot change these indexed immutable records on retry.
+            let cursor = crate::store::HistoryCursor {
+                authority: self.verifier.audience().clone(),
+                after_revision: 0,
+                through_revision: event.revision,
+            };
+            let lookup_bytes = (acyclic_stream::MAX_RECORD_BYTES as u64)
+                .checked_mul(2)
+                .ok_or_else(|| Error::Invalid("selected history byte bound overflows".into()))?;
+            let mut loaded = Vec::with_capacity(committed.message_ids.len());
+            for id in &committed.message_ids {
+                loaded.push(
+                    reader
+                        .conversation_message(&cursor, *id, lookup_bytes)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::Storage(
+                                "committed selected message is missing at its cutoff".into(),
+                            )
+                        })?,
+                );
             }
+            let historical = crate::conversation::ConversationState::selected_view(loaded)?;
             let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
                 (
                     crate::conversation::MAX_PORTABLE_COUNT,
@@ -1123,7 +1543,7 @@ where
                 },
             );
             let projected = select_model_context_at_revision(
-                historical,
+                &historical,
                 committed.clone(),
                 verifier.as_ref(),
                 messages,
@@ -1225,9 +1645,612 @@ where
     }
 }
 
+fn verify_summary_prefix(
+    request: &crate::model::PreparedModelRequest,
+    source: &crate::context::Context,
+    count: u32,
+) -> Result<()> {
+    let count = count as usize;
+    let expected = count
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("summary prefix count overflows".into()))?;
+    let messages = &request.request().messages;
+    if messages.len() != expected || messages.get(..count) != source.messages.get(..count) {
+        return Err(Error::Conflict(
+            "canonical summary request differs from its source prefix".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn interaction_operation(id: InteractionId, phase: &str) -> OperationId {
     let digest = blake3::hash(format!("interaction:{id}:{phase}").as_bytes());
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+async fn project_canonical_delta(
+    loaded: Vec<crate::conversation::ConversationMessage>,
+    selection: &crate::conversation::ModelContextSelection,
+    verifier: &dyn ContentResidencyVerifier,
+    limits: Limits,
+) -> Result<crate::context::Context> {
+    let ids = loaded
+        .iter()
+        .filter(|message| {
+            matches!(
+                message.kind,
+                crate::conversation::MessageKind::System
+                    | crate::conversation::MessageKind::User
+                    | crate::conversation::MessageKind::Assistant
+                    | crate::conversation::MessageKind::ToolCall
+                    | crate::conversation::MessageKind::ToolResult
+            )
+        })
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    if ids != selection.message_ids {
+        return Err(Error::Conflict(
+            "checkpoint skips uncovered canonical history".into(),
+        ));
+    }
+    let history = crate::conversation::ConversationState::selected_view(loaded)?;
+    let selected = select_model_context_at_revision(
+        &history,
+        selection.clone(),
+        verifier,
+        limits.context_messages,
+        limits.attachments,
+        limits.render_bytes,
+        limits.attachments,
+    )
+    .await?;
+    let input = selected
+        .messages
+        .last()
+        .ok_or_else(|| Error::Invalid("canonical input is missing".into()))?
+        .content
+        .clone();
+    let mut selected_delta = selected;
+    selected_delta.selection.checkpoint = None;
+    crate::context::ContextPipeline::base_context(
+        &crate::context::ContextInput {
+            input,
+            selected_context: Some(selected_delta),
+            step: 0,
+            prior_messages: Vec::new(),
+        },
+        limits,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AgentId,
+        conversation::{FileDescriptor, VolumeOwner},
+        executor::ModelPurpose,
+        resources::ProviderRef,
+    };
+
+    #[test]
+    fn compaction_publication_requires_settled_summary_before_response() -> Result<()> {
+        let operation = OperationId::new();
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "memory", "1")?,
+            "journal",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::new()),
+        )?;
+        let file = FileRef::new(
+            volume,
+            "context.json",
+            "1",
+            FileDescriptor::from_bytes(b"null", "application/json")?,
+            "context.json",
+        )?;
+        let compacted = ExecutionEvent::ContextCompacted {
+            step: 0,
+            projection: file.clone(),
+            compaction: file.clone(),
+            accounting: file.clone(),
+        };
+        let mut state = ExecutionSummary::default();
+        let observations = [
+            ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            ExecutionEvent::ContextPrepared {
+                step: 0,
+                projection: file.clone(),
+                accounting: None,
+            },
+            ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                request_digest: [2; 32],
+                request: file.clone(),
+            },
+            ExecutionEvent::Model {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                event: file.clone(),
+            },
+        ];
+        let completed = ModelEvent::Completed {
+            metadata: serde_json::Value::Null,
+        };
+        for (index, event) in observations.into_iter().enumerate() {
+            assert!(state.require_next(&compacted).is_err());
+            let model = matches!(event, ExecutionEvent::Model { .. }).then_some(&completed);
+            state.accept(
+                &ExecutionRecord {
+                    operation_id: operation,
+                    sequence: state.tail + 1,
+                    idempotency_key: format!("admit:{index}"),
+                    event,
+                },
+                model,
+                Limits::default(),
+            )?;
+        }
+        state.require_next(&compacted)?;
+        state.accept(
+            &ExecutionRecord {
+                operation_id: operation,
+                sequence: state.tail + 1,
+                idempotency_key: "compacted".into(),
+                event: compacted.clone(),
+            },
+            None,
+            Limits::default(),
+        )?;
+        assert!(state.require_next(&compacted).is_err());
+        let wrong_step = ExecutionEvent::ContextCompacted {
+            step: 1,
+            projection: file.clone(),
+            compaction: file.clone(),
+            accounting: file.clone(),
+        };
+        assert!(state.require_next(&wrong_step).is_err());
+        let response = ExecutionEvent::ModelStarted {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            request_digest: [3; 32],
+            request: file,
+        };
+        state.accept(
+            &ExecutionRecord {
+                operation_id: operation,
+                sequence: state.tail + 1,
+                idempotency_key: "response".into(),
+                event: response,
+            },
+            None,
+            Limits::default(),
+        )?;
+        // Even a fresh summary checkpoint identity cannot publish after response dispatch.
+        state.compacted_contexts.clear();
+        assert!(state.require_next(&compacted).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn summary_and_response_share_quiescence_without_aliasing_admissions() -> Result<()> {
+        let operation = OperationId::new();
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test", "filesystem", "1")?,
+                "private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            )?,
+            "request.json",
+            "1",
+            FileDescriptor::from_bytes(b"null", "application/json")?,
+            "request.json",
+        )?;
+        let limits = Limits::default();
+        for first_start in [ModelPurpose::Response, ModelPurpose::Summary] {
+            for first_completion in [ModelPurpose::Response, ModelPurpose::Summary] {
+                let mut state = ExecutionSummary::default();
+                state.accept(
+                    &ExecutionRecord {
+                        operation_id: operation,
+                        sequence: 1,
+                        idempotency_key: "started".into(),
+                        event: ExecutionEvent::Started {
+                            request_digest: [1; 32],
+                        },
+                    },
+                    None,
+                    limits,
+                )?;
+                let prepared = ExecutionEvent::ContextPrepared {
+                    step: 0,
+                    projection: file.clone(),
+                    accounting: None,
+                };
+                state.accept(
+                    &ExecutionRecord {
+                        operation_id: operation,
+                        sequence: state.tail + 1,
+                        idempotency_key: "context-prepared".into(),
+                        event: prepared.clone(),
+                    },
+                    None,
+                    limits,
+                )?;
+                assert!(state.require_next(&prepared).is_err());
+                for purpose in [first_start, other(first_start)] {
+                    let start = ExecutionEvent::ModelStarted {
+                        step: 0,
+                        purpose,
+                        request_digest: [2; 32],
+                        request: file.clone(),
+                    };
+                    state.accept(
+                        &ExecutionRecord {
+                            operation_id: operation,
+                            sequence: state.tail + 1,
+                            idempotency_key: format!("start:{purpose:?}"),
+                            event: start.clone(),
+                        },
+                        None,
+                        limits,
+                    )?;
+                    assert!(state.require_next(&start).is_err());
+                    assert!(!state.quiescent());
+                }
+                for purpose in [first_completion, other(first_completion)] {
+                    state.accept(
+                        &ExecutionRecord {
+                            operation_id: operation,
+                            sequence: state.tail + 1,
+                            idempotency_key: format!("complete:{purpose:?}"),
+                            event: ExecutionEvent::Model {
+                                step: 0,
+                                purpose,
+                                event: file.clone(),
+                            },
+                        },
+                        Some(&ModelEvent::Completed {
+                            metadata: serde_json::json!({}),
+                        }),
+                        limits,
+                    )?;
+                    assert_eq!(state.quiescent(), purpose != first_completion);
+                    assert!(
+                        state
+                            .require_next(&ExecutionEvent::Model {
+                                step: 0,
+                                purpose,
+                                event: file.clone()
+                            })
+                            .is_err()
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            ModelPurpose::Response.attempt_operation(operation),
+            operation
+        );
+        assert_ne!(
+            ModelPurpose::Summary.attempt_operation(operation),
+            operation
+        );
+        assert_ne!(
+            ModelPurpose::Summary.attempt_operation(operation),
+            ModelPurpose::Summary.attempt_operation(OperationId::new())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one real four-record canonical source barrier timeline uses its fixed fixture identities"
+    )]
+    async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_restore()
+    -> Result<()> {
+        use crate::conversation::{
+            ContentPublisher as _, ConversationMessage, MessageKind, ModelContextSelection,
+        };
+        use crate::core::{Action, AggregateKind, Authority, AuthorityIssuer, Command};
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<
+            acyclic_stream::MemoryStream,
+        >::default());
+        let client = StreamClient::new(provider.clone());
+        let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
+        let host = Arc::new(FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            fs_provider.clone(),
+        )?);
+        let agent = AgentId::new();
+        let volume = VolumeRef::new(
+            fs_provider,
+            "cold-source",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        host.create_volume(&volume).await?;
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: crate::ConversationId::new().to_string(),
+        };
+        let issuer = AuthorityIssuer::new("cold-canonical-owner", [72; 32], authority.clone());
+        let scope = issuer.root_for_agent(
+            agent,
+            "owner",
+            crate::Capabilities::new([
+                "conversation:bind".into(),
+                "conversation:append".into(),
+                "conversation:select_context".into(),
+                volume.capability(VolumeOperation::Read)?,
+                volume.capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let content = Arc::new(super::super::FilesystemContentVerifier::new(
+            host.clone(),
+            issuer.verifier(),
+            scope.clone(),
+            4096,
+        )?);
+        let publisher = super::super::FilesystemContentPublisher::new(
+            host.clone(),
+            volume.clone(),
+            &issuer.verifier(),
+            &scope,
+            4096,
+        )?;
+        let mut aggregate = StreamAggregate::open(
+            &client,
+            authority.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?
+        .with_content_verifier(content.clone())
+        .with_resident_event_limit(1)?;
+        aggregate
+            .execute(Command {
+                operation_id: OperationId::new(),
+                idempotency_key: crate::IdempotencyKey::new("cold-bind")?,
+                expected_revision: 0,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            })
+            .await?;
+        let mut ids = Vec::new();
+        let mut references = Vec::new();
+        for (position, kind) in [
+            MessageKind::User,
+            MessageKind::Interaction,
+            MessageKind::Assistant,
+            MessageKind::User,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sequence = position as u64 + 1;
+            let file = publisher
+                .stage(
+                    OperationId::new(),
+                    &format!("messages/{sequence}.txt"),
+                    format!("canonical-{sequence}").as_bytes(),
+                    "text/plain",
+                    "message.txt",
+                )
+                .await?;
+            let id = uuid::Uuid::new_v4();
+            let reply_to = if kind == MessageKind::Assistant {
+                ids.first().copied()
+            } else {
+                None
+            };
+            aggregate
+                .execute(Command {
+                    operation_id: OperationId::new(),
+                    idempotency_key: crate::IdempotencyKey::new(format!(
+                        "cold-message-{sequence}"
+                    ))?,
+                    expected_revision: aggregate.reducer().revision(),
+                    scope: scope.clone(),
+                    causal_parent: None,
+                    action: Action::AppendConversationMessage {
+                        message: Box::new(ConversationMessage {
+                            id,
+                            sequence,
+                            kind,
+                            content: file.clone(),
+                            attachments: Vec::new().into(),
+                            reply_to,
+                            tool_call_id: None,
+                            extensions: Default::default(),
+                        }),
+                    },
+                })
+                .await?;
+            ids.push(id);
+            references.push(file);
+        }
+        let omitted_operation = OperationId::new();
+        let omitted = ModelContextSelection {
+            conversation_revision: 4,
+            message_ids: vec![ids[3]],
+            checkpoint: None,
+        };
+        let complete_operation = OperationId::new();
+        let complete = ModelContextSelection {
+            conversation_revision: 4,
+            message_ids: vec![ids[0], ids[2], ids[3]],
+            checkpoint: None,
+        };
+        for (operation, selection) in [
+            (omitted_operation, omitted.clone()),
+            (complete_operation, complete.clone()),
+        ] {
+            aggregate
+                .execute(Command {
+                    operation_id: operation,
+                    idempotency_key: crate::IdempotencyKey::new(format!(
+                        "cold-selection:{operation}"
+                    ))?,
+                    expected_revision: aggregate.reducer().revision(),
+                    scope: scope.clone(),
+                    causal_parent: None,
+                    action: Action::SelectModelContext { selection },
+                })
+                .await?;
+        }
+        let limits = Limits {
+            context_messages: 3,
+            file_bytes: 4096,
+            render_bytes: 4096,
+            ..Limits::default()
+        };
+        async fn source(
+            history: &crate::conversation::ConversationState,
+            selection: ModelContextSelection,
+            content: &dyn ContentResidencyVerifier,
+            limits: Limits,
+        ) -> Result<crate::context::Context> {
+            let selected = select_model_context_at_revision(
+                history,
+                selection,
+                content,
+                limits.context_messages,
+                limits.attachments,
+                limits.render_bytes,
+                limits.attachments,
+            )
+            .await?;
+            let input = selected
+                .messages
+                .last()
+                .ok_or_else(|| Error::NotFound("cold current input".into()))?
+                .content
+                .clone();
+            crate::context::ContextPipeline::base_context(
+                &crate::context::ContextInput {
+                    input,
+                    selected_context: Some(selected),
+                    step: 0,
+                    prior_messages: Vec::new(),
+                },
+                limits,
+            )
+        }
+        let history = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::NotFound("cold history".into()))?;
+        let omitted_source = source(history, omitted.clone(), content.as_ref(), limits).await?;
+        let complete_source = source(history, complete.clone(), content.as_ref(), limits).await?;
+        let placeholder = references
+            .last()
+            .ok_or_else(|| Error::NotFound("cold placeholder".into()))?
+            .clone();
+        // This tests the actual source barrier, not complete checkpoint publication:
+        // no summary admission or compaction-envelope validity is asserted here.
+        let envelope = |operation_id, selection| crate::context::CanonicalContextCheckpoint {
+            operation_id,
+            selection,
+            source: placeholder.clone(),
+            retained: placeholder.clone(),
+            compaction: placeholder.clone(),
+        };
+        let new_journal = || {
+            FilesystemExecutionJournal::new_with_schemas(
+                client.clone(),
+                host.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                SchemaRegistry::new(),
+                scope.clone(),
+                4096,
+            )
+            .map(|journal| journal.with_input_verifier(content.clone()))
+        };
+        let journal = new_journal()?.with_history_read_limits(crate::store::HistoryReadLimits {
+            maximum_events: 4,
+            maximum_bytes: 16_384,
+        })?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(
+            matches!(journal.verify_canonical_source(&envelope(omitted_operation, omitted), &omitted_source, limits).await,
+            Err(Error::Conflict(message)) if message.contains("skips uncovered canonical history"))
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 10);
+        assert!(journal.conversation_projection.lock().await.is_none());
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        journal
+            .verify_canonical_source(
+                &envelope(complete_operation, complete.clone()),
+                &complete_source,
+                limits,
+            )
+            .await?;
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 10);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        assert!(journal.conversation_projection.lock().await.is_none());
+        let mut altered = complete_source.clone();
+        altered
+            .messages
+            .last_mut()
+            .ok_or_else(|| Error::NotFound("cold source input".into()))?
+            .content = crate::model::ModelContent::Text("altered source".into());
+        assert!(
+            matches!(journal.verify_canonical_source(&envelope(complete_operation, complete.clone()), &altered, limits).await,
+            Err(Error::Conflict(message)) if message.contains("canonical base and delta"))
+        );
+        // Model projection fits three records, while the independent range work
+        // bound must count the intervening Interaction record as well.
+        let bounded = new_journal()?;
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            bounded
+                .verify_canonical_source(
+                    &envelope(complete_operation, complete.clone()),
+                    &complete_source,
+                    limits
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        let byte_bounded =
+            new_journal()?.with_history_read_limits(crate::store::HistoryReadLimits {
+                maximum_events: 4,
+                maximum_bytes: 1,
+            })?;
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            byte_bounded
+                .verify_canonical_source(
+                    &envelope(complete_operation, complete),
+                    &complete_source,
+                    limits
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    fn other(purpose: ModelPurpose) -> ModelPurpose {
+        match purpose {
+            ModelPurpose::Response => ModelPurpose::Summary,
+            ModelPurpose::Summary => ModelPurpose::Response,
+        }
+    }
 }

@@ -222,3 +222,38 @@ test("OpenAI-compatible tool data parts preserve ordered text projections", asyn
   expect(submitted?.messages).toEqual([{ role: "tool", tool_call_id: "ordered",
     content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] }]);
 });
+
+test("OpenAI-compatible accounting requires explicit provider data without dispatch or file reads", () => {
+  let effects = 0;
+  const provider = new OpenAiCompatibleProvider({
+    baseUrl: "https://example.test/v1",
+    fetcher: async () => { effects++; throw new Error("unexpected dispatch"); },
+    resolveFile: async () => { effects++; throw new Error("unexpected file read"); },
+  });
+  const model = { provider: "compatible", name: "selected", revision: "1", options: {} };
+  expect(() => provider.contextCapacity(model)).toThrow("explicit model capacity");
+  expect(() => provider.countTokens({ model, messages: [], tools: [], serializedInput: new Uint8Array() }))
+    .toThrow("explicit token accounting");
+  expect(effects).toBe(0);
+});
+
+test("OpenAI-compatible accounting receives the selected model and exact prepared bytes", () => {
+  const model = { provider: "compatible", name: "selected", revision: "immutable", options: { framing: 7 } };
+  const serializedInput = new Uint8Array([0, 255, 13, 10]);
+  const request = { model, messages: [{ role: "user" as const, content: "current" }], tools: [], serializedInput };
+  const capacity = { contextTokens: 65_536, outputTokens: 4_096 };
+  const count = { requestDigest: new Uint8Array(32), fixedTokens: 7, messageTokens: [23] };
+  const provider = new OpenAiCompatibleProvider({
+    baseUrl: "https://example.test/v1",
+    contextCapacity: selected => { expect(selected).toBe(model); return capacity; },
+    countTokens: prepared => {
+      expect(prepared.model).toBe(model);
+      expect(prepared.serializedInput).toEqual(serializedInput);
+      expect(prepared.messages).toEqual(request.messages);
+      return count;
+    },
+    fetcher: async () => { throw new Error("accounting must not dispatch"); },
+  });
+  expect(provider.contextCapacity(model)).toBe(capacity);
+  expect(provider.countTokens(request)).toBe(count);
+});

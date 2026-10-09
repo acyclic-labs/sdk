@@ -27,7 +27,7 @@ use acyclic_harness::{
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
-        ModelProvider, ModelRequest,
+        ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
@@ -359,12 +359,74 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert_ne!(first_terminal?, second_terminal?);
     assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 3);
     let paged = OperationId::from_bytes([57; 16]);
+    let invalid_request = journal_a
+        .stage(
+            paged,
+            "invalid-request".into(),
+            b"null".to_vec(),
+            "application/json",
+        )
+        .await?;
+    assert!(
+        journal_a
+            .append(
+                paged,
+                "invalid-model-start".into(),
+                ExecutionEvent::ModelStarted {
+                    step: 0,
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
+                    request_digest: *blake3::hash(b"null").as_bytes(),
+                    request: invalid_request,
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    let prepared = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: Model::new("fixture", "paged", "1", Value::Null)?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("paged request".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(1),
+        },
+        Limits::default(),
+    )?;
+    let request_digest = prepared.manifest().request_digest;
     let paged_request = journal_a
         .stage(
             paged,
             "paged-request".into(),
-            b"null".to_vec(),
+            prepared.bytes().to_vec(),
             "application/json",
+        )
+        .await?;
+    assert!(
+        journal_a
+            .append(
+                paged,
+                "model-without-execution".into(),
+                ExecutionEvent::ModelStarted {
+                    step: 0,
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
+                    request_digest,
+                    request: paged_request.clone(),
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    journal_a
+        .append(
+            paged,
+            "paged-execution-start".into(),
+            ExecutionEvent::Started {
+                request_digest: [57; 32],
+            },
         )
         .await?;
     for step in 0..70 {
@@ -374,7 +436,8 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 format!("paged-{step}"),
                 ExecutionEvent::ModelStarted {
                     step,
-                    request_digest: [57; 32],
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
+                    request_digest,
                     request: paged_request.clone(),
                 },
             )
@@ -383,7 +446,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     let first_page = journal_b.replay(paged, 0, 64).await?;
     let second_page = journal_b.replay(paged, 64, 64).await?;
     assert_eq!(first_page.len(), 64);
-    assert_eq!(second_page.len(), 6);
+    assert_eq!(second_page.len(), 7);
     assert_eq!(first_page[63].sequence, 64);
     assert_eq!(second_page[0].sequence, 65);
     assert_eq!(journal_b.replay(paged, 0, 65).await?.len(), 64);
@@ -394,15 +457,16 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             "paged-0".into(),
             ExecutionEvent::ModelStarted {
                 step: 0,
-                request_digest: [57; 32],
+                purpose: acyclic_harness::executor::ModelPurpose::Response,
+                request_digest,
                 request: paged_request.clone(),
             },
         )
         .await?;
-    assert!(journal_b.replay(paged, 70, 64).await?.is_empty());
+    assert!(journal_b.replay(paged, 71, 64).await?.is_empty());
     let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
     while cursor.next_page(&journal_b).await?.is_some() {}
-    assert_eq!(cursor.tail(), 70);
+    assert_eq!(cursor.tail(), 71);
     assert!(
         journal_a
             .append_if_tail(
@@ -411,13 +475,14 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 "paged-cas-70".into(),
                 ExecutionEvent::ModelStarted {
                     step: 70,
-                    request_digest: [57; 32],
+                    purpose: acyclic_harness::executor::ModelPurpose::Response,
+                    request_digest,
                     request: paged_request.clone(),
                 },
             )
             .await?
     );
-    assert_eq!(journal_b.replay(paged, 70, 64).await?.len(), 1);
+    assert_eq!(journal_b.replay(paged, 71, 64).await?.len(), 1);
     Ok(())
 }
 
@@ -711,7 +776,8 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
         model.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    );
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
     let operation_id = OperationId::from_bytes([9; 16]);
     let input = TurnInput {
         operation_id,
@@ -725,7 +791,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(first.text, "private answer");
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
     let records = journal.replay(operation_id, 0, 64).await?;
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 5);
     let stream = stream
         .stream(format!("harness/v2/execution/{operation_id}"))
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
@@ -1157,7 +1223,8 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         model.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    );
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
     let content = ModelContent::Parts(vec![
         ModelContentPart::Text {
             text: "describe".into(),

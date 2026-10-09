@@ -788,7 +788,7 @@ async fn append_receipt<P: StreamProvider>(
         blake3::hash(&bytes).as_bytes(),
     ))?;
     owner
-        .append_conversation(path, tail, &key, Bytes::from(bytes), write)
+        .append(path, tail, &key, Bytes::from(bytes), write)
         .await
 }
 

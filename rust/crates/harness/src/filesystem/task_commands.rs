@@ -97,7 +97,7 @@ pub struct ModelTaskCommand {
     pub selected_context: Option<SelectedModelContext>,
     /// Model/tool step allowance, bounded by retained task limits.
     pub max_steps: u32,
-    /// Caller-selected model output token budget; absent adds no Harness ceiling.
+    /// Caller-selected output ceiling; absent uses the installed compaction policy's ceiling.
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
 }
@@ -118,6 +118,7 @@ struct ModelBinding {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
+    compaction: crate::context::CompactionPolicy,
 }
 
 /// Stock adapters borrowing the existing runtime. Tool dispatch uses its one
@@ -138,7 +139,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         }
     }
 
-    /// Selects the model provider and context pipeline used by stock commands.
+    /// Selects the model provider, context pipeline and compaction policy used by stock commands.
     /// Their contracts remain bound by the existing executor request identity.
     #[must_use]
     pub fn with_model(
@@ -146,11 +147,13 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         model: Model,
         provider: Arc<dyn ModelProvider>,
         context: ContextPipeline,
+        compaction: crate::context::CompactionPolicy,
     ) -> Self {
         self.model = Some(ModelBinding {
             model,
             provider,
             context,
+            compaction,
         });
         self
     }
@@ -481,7 +484,8 @@ where
                 binding.provider.clone(),
                 binding.context.clone(),
             )
-            .await?;
+            .await?
+            .with_compaction_policy(binding.compaction.clone());
         let execution = match input.max_output_tokens {
             Some(maximum) => execution.with_max_output_tokens(maximum)?,
             None => execution,

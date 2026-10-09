@@ -501,7 +501,12 @@ where
                 .verify_model_history(task, operation, &page)
                 .await?;
             for record in page {
-                if let ExecutionEvent::ModelStarted { step, .. } = record.event {
+                if let ExecutionEvent::ModelStarted {
+                    step,
+                    purpose: crate::executor::ModelPurpose::Response,
+                    ..
+                } = record.event
+                {
                     if step >= input.max_steps {
                         return Err(Error::Conflict(
                             "retained model step exceeds command".into(),
@@ -520,12 +525,19 @@ where
             limits.model_events_per_step.saturating_add(1),
             |event| {
                 matches!(event,
-                ExecutionEvent::ModelStarted { step: recorded, .. }
-                | ExecutionEvent::Model { step: recorded, .. } if *recorded == step)
+                ExecutionEvent::ModelStarted { step: recorded, purpose: crate::executor::ModelPurpose::Response, .. }
+                | ExecutionEvent::Model { step: recorded, purpose: crate::executor::ModelPurpose::Response, .. } if *recorded == step)
             },
         )
         .await?;
-        let retained = retained_model_step(&journal, &records, step, limits).await?;
+        let retained = retained_model_step(
+            &journal,
+            &records,
+            step,
+            crate::executor::ModelPurpose::Response,
+            limits,
+        )
+        .await?;
         if !retained.admission.completed() {
             return Err(Error::Indeterminate(operation));
         }
@@ -1204,6 +1216,13 @@ where
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
         self.operation_id
+    }
+
+    /// Replaces or disables compaction while retaining task accounting and fencing.
+    #[must_use]
+    pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
+        self.executor = self.executor.with_compaction_policy(policy);
+        self
     }
 
     /// Sets the output token budget without replacing task ownership or its journal.

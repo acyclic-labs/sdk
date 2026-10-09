@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Harness WASM compaction accounting contracts</title>
+<body>
+<pre id="result" data-status="pending">Loading generated Rust contracts</pre>
+<script type="module">
+import { NativeContracts } from "../dist/native-contracts.js";
+import { HARNESS_LIMITS_DEFAULT } from "../dist/limits-contract.js";
+
+const result = document.querySelector("#result");
+try {
+  const contracts = await NativeContracts.create();
+  let checks = 0;
+  function check(value, label) {
+    checks += 1;
+    if (!value) throw new Error(label);
+  }
+  function rejects(call, label) {
+    let rejected = false;
+    try { call(); } catch { rejected = true; }
+    check(rejected, label);
+  }
+  const file = {
+    volume: { provider: { namespace: "test", family: "memory", version: "1" },
+      id: "private", class: "agent_private", owner: { kind: "agent", id: "07070707-0707-0707-0707-070707070707" } },
+    path: "context.json", version: "1",
+    descriptor: contracts.fileDescriptor(new TextEncoder().encode("null"), "application/json"),
+    display_name: "context.json",
+  };
+  const checkpoint = { kind: "context_compacted", step: 7, projection: file, compaction: file, accounting: file };
+  const checkpointBytes = contracts.encodeCanonicalJson(checkpoint);
+  const decodedCheckpoint = contracts.decodeExecutionEventJson(checkpointBytes);
+  check(decodedCheckpoint.kind === "context_compacted" && decodedCheckpoint.step === 7, "native checkpoint event");
+  check(decodedCheckpoint.accounting.descriptor.byte_length === 4, "exact FileRef descriptor projection");
+  check(Object.isFrozen(decodedCheckpoint.projection.descriptor), "immutable nested checkpoint refs");
+  check(new TextDecoder().decode(contracts.encodeCanonicalJson(decodedCheckpoint)) ===
+    new TextDecoder().decode(checkpointBytes), "native checkpoint canonical correspondence");
+  for (const malformed of [
+    { ...checkpoint, step: -1 }, { ...checkpoint, step: 0.5 }, { ...checkpoint, step: 4_294_967_296 },
+    { ...checkpoint, accounting: null }, { ...checkpoint, projection: { ...file, path: "../private" } },
+    { ...checkpoint, inline_context: "hidden" }, { ...checkpoint, kind: "invented_checkpoint" },
+  ]) rejects(() => contracts.decodeExecutionEventJson(contracts.encodeCanonicalJson(malformed)), "invalid checkpoint wire");
+  rejects(() => contracts.decodeExecutionEventJson(new TextEncoder().encode(JSON.stringify(checkpoint))),
+    "noncanonical checkpoint wire");
+  const policy = contracts.defaultCompactionPolicy();
+  check(policy.kind === "threshold", "stock threshold policy");
+  check(policy.config.response_reserve_tokens === 16_384 && policy.config.recent_tokens === 20_000,
+    "Rust default budgets");
+  check(Object.isFrozen(policy.config), "immutable consumer policy");
+  const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
+  check(contracts.validateThresholdCompaction(policy.config, capacity) === 4_096, "finite selected output");
+  check(contracts.validateThresholdCompaction({ ...policy.config, response_reserve_tokens: 1_024,
+    recent_tokens: 2_048 }, capacity) === 1_024, "replaceable reserve");
+  rejects(() => contracts.validateThresholdCompaction(policy.config,
+    { ...capacity, context_tokens: 32_768 }), "impossible selected capacity");
+  rejects(() => contracts.validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
+  const request = {
+    model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
+    messages: [{ role: "user", content: "Ã©ðŸ¦€" }], tools: [], max_output_tokens: 1_024,
+  };
+  // This host's declared token units are UTF-8 bytes plus fixed framing.
+  const count = { request_digest: Array.from(contracts.digestCanonicalJson(request)),
+    fixed_tokens: 100, message_tokens: [new TextEncoder().encode("Ã©ðŸ¦€").byteLength + 10] };
+  for (const value of ["replacement \ufffd", "paired \ud83d\ude00", "\u0000"]) {
+    const decoded = contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value })));
+    check(decoded.value === value, "native valid Unicode round trip");
+    const roundTrip = JSON.parse(new TextDecoder().decode(contracts.encodeCanonicalJson({ [value]: value })));
+    check(roundTrip[value] === value, "canonical valid Unicode string and key");
+  }
+  for (const invalid of ["\ud800", "\udc00", "\ud800x", "x\udc00"]) {
+    rejects(() => contracts.decodeModelJson(new TextEncoder().encode(JSON.stringify({ value: invalid }))),
+      "native unpaired surrogate rejection");
+    for (const value of [{ value: invalid }, { [invalid]: 1 }, new Map([[invalid, 1]])]) {
+      rejects(() => contracts.encodeCanonicalJson(value), "canonical unpaired surrogate rejection");
+    }
+    const replacement = new TextDecoder().decode(new TextEncoder().encode(invalid));
+    const normalized = { ...request, messages: [{ role: "user", content: replacement }] };
+    const normalizedCount = { ...count, request_digest: Array.from(contracts.digestCanonicalJson(normalized)) };
+    rejects(() => contracts.validateModelTokenCount({ ...request,
+      messages: [{ role: "user", content: invalid }] }, normalizedCount, HARNESS_LIMITS_DEFAULT),
+      "accounting cannot admit a lossy replacement request");
+  }
+  check(contracts.validateModelTokenCount(request, count, HARNESS_LIMITS_DEFAULT) === 116n,
+    "exact prepared request accounting");
+  check(contracts.validateModelTokenCount(request,
+    { ...count, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, HARNESS_LIMITS_DEFAULT)
+    === 8_589_934_590n, "portable exact sum");
+  rejects(() => contracts.validateModelTokenCount({ ...request,
+    messages: [{ role: "user", content: "changed" }] }, count, HARNESS_LIMITS_DEFAULT), "changed request");
+  rejects(() => contracts.validateModelTokenCount(request,
+    { ...count, message_tokens: [] }, HARNESS_LIMITS_DEFAULT), "count dimensions");
+  rejects(() => contracts.validateModelTokenCount(request,
+    { ...count, fixed_tokens: -1 }, HARNESS_LIMITS_DEFAULT), "negative tokens");
+  rejects(() => contracts.validateModelTokenCount(request,
+    { ...count, message_tokens: [0.5] }, HARNESS_LIMITS_DEFAULT), "fractional tokens");
+  rejects(() => contracts.validateModelTokenCount(request,
+    { ...count, unexpected: true }, HARNESS_LIMITS_DEFAULT), "unknown accounting fields");
+  const source = { instructions: [], skills: [] };
+  const standalone = contracts.projectDiscoveredContext(source,
+    { messages: [], metadata: {} }, "prepend", HARNESS_LIMITS_DEFAULT);
+  check(!Object.hasOwn(standalone, "current_input_index"), "absent standalone current input");
+  const current = contracts.projectDiscoveredContext(source,
+    { messages: [{ role: "user", content: "current" }], metadata: {}, current_input_index: 0 },
+    "prepend", HARNESS_LIMITS_DEFAULT);
+  check(current.current_input_index === 0, "retained zero current input index");
+  result.dataset.status = "passed";
+  result.textContent = JSON.stringify({ checks, runtime: "browser", implementation: "Rust WASM" });
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+}
+</script>
+</body>
+</html>

@@ -522,6 +522,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         }
         let inherited = captured.file.clone();
         let seed = ForkSeed {
+            summary: None,
             operation_id: OperationId::from_bytes(identity(level + 80)),
             parent: authority.clone(),
             parent_revision: aggregate.reducer().revision(),
@@ -698,6 +699,33 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     )?)
                     .is_err(),
                 "fork must bind inherited prefix display metadata"
+            );
+            let mut extra_reference = seed.clone();
+            extra_reference
+                .reference_grants
+                .push(acyclic_harness::fork::ReferenceGrant {
+                    file: FileRef::new(
+                        previous_file.volume().clone(),
+                        previous_file.path(),
+                        previous_file.version(),
+                        previous_file.descriptor().clone(),
+                        "unpublished-display-name.txt",
+                    )?,
+                    reader: child_agent,
+                    attachment_manifest: None,
+                });
+            extra_reference.validate()?;
+            assert!(
+                aggregate
+                    .reducer()
+                    .plan(&fork_command(
+                        level + 82,
+                        aggregate.reducer().revision(),
+                        &grant_scope,
+                        extra_reference
+                    )?)
+                    .is_err(),
+                "a retained original grant cannot authorize extra unpublished FileRef metadata"
             );
             let child_reference_scope = child_issuer.root(
                 "child-reference-reader",
@@ -952,6 +980,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert_eq!(aggregate.reducer().revision(), seed.parent_revision);
         }
         let report = ForkReport {
+            summary: None,
             request: ForkRequest {
                 operation_id: seed.operation_id,
                 parent: seed.parent.clone(),
@@ -960,6 +989,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_agent: seed.child_agent,
                 attached_agents: seed.attached_agents.clone(),
                 preparation: ForkPreparation {
+                    summary: None,
                     child_project_volume: match &seed.resources[2].revision {
                         ResourceRevision::Project { volume, .. } => volume.clone(),
                         _ => unreachable!("fork seed includes the child project"),
@@ -1086,6 +1116,169 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             seed
         );
         assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
+        if level == 1 {
+            // The cold reader authenticates the actual published seed; it does
+            // not hydrate a reducer or interpret the prefix descriptor as text.
+            let reader = aggregate.history_reader()?;
+            let page_limits = acyclic_harness::store::HistoryReadLimits {
+                maximum_events: 2, // one publication plus one canonical message
+                maximum_bytes: 64 * 1_024,
+            };
+            let first = reader
+                .inherited_conversation_page(&seed, child_agent, 0, page_limits)
+                .await?;
+            let second = reader
+                .inherited_conversation_page(&seed, child_agent, 1, page_limits)
+                .await?;
+            let parent_messages = aggregate
+                .reducer()
+                .conversation()
+                .ok_or_else(|| {
+                    acyclic_harness::Error::Invalid("fixture parent conversation missing".into())
+                })?
+                .messages();
+            assert_eq!(first.as_slice(), &parent_messages[..1]);
+            assert_eq!(second.as_slice(), &parent_messages[1..2]);
+            assert!(
+                reader
+                    .inherited_conversation_page(&seed, child_agent, 2, page_limits)
+                    .await?
+                    .is_empty()
+            );
+            assert!(
+                reader
+                    .inherited_conversation_page(&seed, child_agent, 3, page_limits)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                reader
+                    .inherited_conversation_page(&seed, root_agent, 0, page_limits)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                reader
+                    .inherited_conversation_page(
+                        &seed,
+                        child_agent,
+                        0,
+                        acyclic_harness::store::HistoryReadLimits {
+                            maximum_events: 1,
+                            ..page_limits
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            let mut changed = seed.clone();
+            changed.inherited_through_sequence = 1;
+            assert!(
+                reader
+                    .inherited_conversation_page(&changed, child_agent, 0, page_limits)
+                    .await
+                    .is_err()
+            );
+            aggregate
+                .execute(command(
+                    4_090,
+                    aggregate.reducer().revision(),
+                    &grant_scope,
+                    Action::AppendConversationMessage {
+                        message: Box::new(ConversationMessage {
+                            id: Uuid::from_bytes([0xE1; 16]),
+                            sequence: 3,
+                            kind: MessageKind::Interaction,
+                            content: previous_file.clone(),
+                            attachments: Vec::new().into(),
+                            reply_to: None,
+                            tool_call_id: None,
+                            extensions: BTreeMap::new(),
+                        }),
+                    },
+                )?)
+                .await?;
+            assert_eq!(
+                reader
+                    .inherited_conversation_page(&seed, child_agent, 0, page_limits)
+                    .await?,
+                first
+            );
+            assert!(
+                reader
+                    .inherited_conversation_page(&seed, child_agent, 2, page_limits)
+                    .await?
+                    .is_empty()
+            );
+            // Assemble the imported source once from verified pages using
+            // the same public projection and ContextSource/SourceStage path.
+            use acyclic_harness::context::{
+                Context, ContextInput, ContextPipeline, ContextPlacement, ContextStage, SourceStage,
+            };
+            let mut loaded = acyclic_harness::conversation::ConversationState::default();
+            loaded.bind(root_agent)?;
+            for message in first.into_iter().chain(second) {
+                loaded.append(message)?;
+            }
+            let selection = ModelContextSelection {
+                conversation_revision: seed.inherited_through_sequence,
+                message_ids: loaded.messages().iter().map(|message| message.id).collect(),
+                checkpoint: None,
+            };
+            let source_scope = child_issuer.root_for_agent(
+                child_agent,
+                "inherited-source",
+                seed.reference_capabilities(child_agent)?,
+            );
+            let source_reader = FilesystemContentVerifier::new(
+                host.clone(),
+                child_issuer.verifier(),
+                source_scope,
+                1_024,
+            )?;
+            let projected =
+                select_model_context(&loaded, selection.clone(), &source_reader, 2, 4, 64 * 1_024)
+                    .await?;
+            let denied_reader = FilesystemContentVerifier::new(
+                host.clone(),
+                child_issuer.verifier(),
+                child_issuer.root_for_agent(child_agent, "denied-source", Capabilities::default()),
+                1_024,
+            )?;
+            assert!(
+                select_model_context(&loaded, selection, &denied_reader, 2, 4, 64 * 1_024)
+                    .await
+                    .is_err()
+            );
+            let source = Context {
+                messages: projected.messages.clone(),
+                metadata: BTreeMap::new(),
+                current_input_index: None,
+            };
+            let pipeline = ContextPipeline::new([Arc::new(SourceStage::new(
+                "inherited-history",
+                seed.operation_id.to_string(),
+                Arc::new(source),
+                ContextPlacement::Prepend,
+            )) as Arc<dyn ContextStage>]);
+            let input = ContextInput {
+                input: ModelContent::Text("child current input".into()),
+                selected_context: None,
+                step: 0,
+                prior_messages: Vec::new(),
+            };
+            let assembled = pipeline.run_bounded(&input, Limits::default()).await?;
+            assert_eq!(&assembled.messages[..2], projected.messages.as_slice());
+            assert_eq!(assembled.current_input_index, Some(2));
+            assert_eq!(assembled.messages[2].content, input.input);
+            assert_eq!(
+                aggregate
+                    .reducer()
+                    .conversation()
+                    .map(|state| state.messages().len()),
+                Some(3)
+            );
+        }
         if level == DEEP_RETRY {
             // Lose both process-local reducers after the parent publication and
             // child bind, then recover the same operation from retained Streams.
@@ -1340,6 +1533,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let selected = select_model_context(
         state,
         ModelContextSelection {
+            checkpoint: None,
             conversation_revision: 2,
             message_ids: vec![Uuid::from_bytes([0xF0; 16])],
         },

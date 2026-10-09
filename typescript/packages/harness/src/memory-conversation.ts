@@ -351,8 +351,7 @@ export class MemoryConversation {
     if (!state.messages.some(message => message.id === userId && message.kind === "user")
       || state.messages.some(message => message.kind === "assistant" && message.reply_to === userId)
       || this.#outputs.has(operationId)
-      || !this.#events().some(event => event.operation_id === operationId
-        && event.payload.kind === "model_context_selected")) {
+      || this.#core.contextSelectionForOperation(operationId) === null) {
       throw new TypeError("only an unresolved dispatched local turn can be abandoned");
     }
     const content = await this.stage(`turns/${operationId}/indeterminate.txt`, encoder.encode(
@@ -409,13 +408,7 @@ export class MemoryConversation {
     const completed = this.#outputs.get(operationId);
     const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
     const completedReady = completed !== undefined && state.messages.some(message => message.id === assistantId);
-    let committedSelection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } | null = null;
-    for (const event of this.#events()) {
-      if (event.operation_id === operationId && event.payload.kind === "model_context_selected") {
-        committedSelection = event.payload.selection;
-        break;
-      }
-    }
+    const committedSelection = this.#core.contextSelectionForOperation(operationId);
     const preparation = this.#core.prepareConversationTurn(
       state, operationId, userContent, list, limits, committedSelection,
       completed !== undefined, runtime.canReconcileSelectedTurn(),
@@ -567,10 +560,10 @@ export class MemoryConversation {
   }
 
   #apply<Action extends { readonly kind: string }>(operation: OperationId, label: string, action: Action): void {
-    const snapshot = this.#core.snapshot();
-    const command: Command<Action> = { authority: snapshot.authority,
+    const [authority, revision] = this.#core.head();
+    const command: Command<Action> = { authority,
       operation_id: operation, idempotency_key: `conversation:${operation}:${label}`,
-      expected_revision: snapshot.revision, scope: this.#scope, causal_parent: null, action };
+      expected_revision: revision, scope: this.#scope, causal_parent: null, action };
     this.#core.apply(command);
   }
 
@@ -589,12 +582,4 @@ export class MemoryConversation {
       && encodedLeft.every((byte, index) => byte === encodedRight[index]);
   }
 
-  #events(): readonly CanonicalConversationEvent[] {
-    return this.#core.snapshot().events as CanonicalConversationEvent[];
-  }
 }
-
-type CanonicalConversationEvent = Pick<Event, "revision"> & { readonly operation_id: string; readonly payload:
-  | { readonly kind: "conversation_bound"; readonly agent: AgentId }
-  | { readonly kind: "conversation_message_appended"; readonly message: ConversationMessage }
-  | { readonly kind: "model_context_selected"; readonly selection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } } };

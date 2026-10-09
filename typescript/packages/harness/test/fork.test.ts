@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ExecutionScope, Harness, MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
+import { DEFAULT_LIMITS, ExecutionScope, Harness, MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
   MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
   NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkRequest, validateForkSeed,
   type AgentId, type ForkReport, type ForkRequest, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
@@ -440,4 +440,31 @@ test("extension fork revisions pin a nonzero implementation digest and numeric v
     source: extension,
     revision: { ...extension, reference: { ...extension.reference, version: 0 } },
   }] })).rejects.toThrow();
+});
+
+test("Summary fork selection preserves bigint work bounds and requires its exact capture", async () => {
+  const prepared = report();
+  const selection = {
+    checkpoint: {
+      volume: parentScratch.kind === "private_volume" ? parentScratch.reference.volume : privateVolume,
+      path: ".system/execution/checkpoint.json", version: "checkpoint-generation",
+      descriptor: { sha256: Array(32).fill(1), byte_length: 2, media_type: "application/json" },
+      display_name: "checkpoint.json",
+    },
+    limits: DEFAULT_LIMITS,
+    history_limits: { maximum_events: 16, maximum_bytes: 2_097_152n },
+  };
+  const request: ForkRequest = { ...prepared.request, preparation: {
+    ...prepared.request.preparation, inherited_through_sequence: 1n, summary: selection,
+  } };
+  await validateForkRequest(request);
+  await expect(validateForkReport({ ...prepared, request, summary: null })).rejects.toThrow();
+  await expect(validateForkRequest({ ...request, preparation: {
+    ...request.preparation, inherited_through_sequence: 0n,
+  } })).rejects.toThrow();
+  await expect(validateForkRequest({ ...request, preparation: {
+    ...request.preparation, summary: { ...selection, history_limits: {
+      ...selection.history_limits, maximum_events: 0,
+    } },
+  } })).rejects.toThrow();
 });

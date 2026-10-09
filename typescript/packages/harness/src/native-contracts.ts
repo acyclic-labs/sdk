@@ -1,6 +1,9 @@
+import type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
+  CompactionPolicy, ThresholdCompaction, ModelContextCapacity, ModelTokenCount, WasmModelRequestWire,
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput, WasmModelContentInventoryWire,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata,
@@ -40,6 +43,8 @@ export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefiniti
   McpBrowserResponseHead } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Pinned composition values generated from the production Rust types. */
 export type { Context, ContextAttribute, ContextSourceValue, ContextSelection,
+  CompactionPolicy, CompactionRetention, ThresholdCompaction,
+  ModelContextCapacity as ModelContextCapacityWire, ModelTokenCount as ModelTokenCountWire,
   ContextRepresentation, ContextExtent, ContextRenderMode, ContextPlacement,
   ContextRoot, InstructionScope, ContextDiscoveryPolicy, ContextDiscoveryLimits,
   ContextDiscovery, ContextReloadPolicy, ContextDiscoveryReader, ContextDirectoryQuery,
@@ -74,6 +79,7 @@ export interface NativeSelectedModelContext {
   readonly selection: Readonly<{
     readonly conversation_revision: bigint;
     readonly message_ids: readonly ConversationMessageId[];
+    readonly checkpoint?: NativeFileRef;
   }>;
   readonly messages: readonly Readonly<{
     role: WasmModelRole;
@@ -139,6 +145,22 @@ export class NativeContracts {
       NativeContracts.#instance = new NativeContracts(native);
     }
     return NativeContracts.#instance;
+  }
+
+  /** The replaceable default comes directly from the production Rust executor's policy. */
+  defaultCompactionPolicy(): CompactionPolicy {
+    return freezeNative(normalizeNativeValue(this.native.defaultCompactionPolicy())) as CompactionPolicy;
+  }
+
+  /** Rust validates selected capacity and returns the finite effective output ceiling. */
+  validateThresholdCompaction(config: ThresholdCompaction, capacity: ModelContextCapacity,
+    outputTokens?: number): number {
+    return this.native.validateThresholdCompaction(config, capacity, outputTokens);
+  }
+
+  /** Rust prepares the canonical request and binds the provider's exact additive counts. */
+  validateModelTokenCount(request: WasmModelRequestWire, count: ModelTokenCount, limits: Limits): bigint {
+    return this.native.validateModelTokenCount(request, count, limits);
   }
 
   /** Admit task dependencies with the same graph and capability rules as Rust. */
@@ -497,6 +519,11 @@ export class NativeContracts {
   /** Untrusted provider JSON may not silently round integers into JS Number. */
   decodeModelJson(bytes: Uint8Array): ToolJsonValue {
     return normalizeNativeValue(this.native.decodeJson(bytes), true) as ToolJsonValue;
+  }
+
+  /** Admits the Rust-generated ref-only executor observation and freezes its exact wire fields. */
+  decodeExecutionEventJson(bytes: Uint8Array): ExecutionEvent {
+    return freezeNative(normalizeNativeValue(this.native.decodeExecutionEventJson(bytes))) as ExecutionEvent;
   }
 
   conversationPage(core: WasmReducer, afterSequence: bigint, limit: number): ConversationPage {

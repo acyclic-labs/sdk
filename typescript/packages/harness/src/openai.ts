@@ -18,6 +18,10 @@ export interface OpenAiCompatibleOptions {
   readonly resolveFile?: (file: FileRef) => Promise<Uint8Array>;
   /** Optional owner check in addition to Rust's mandatory descriptor verification. */
   readonly verifyFile?: (file: FileRef, bytes: Uint8Array) => void | Promise<void>;
+  /** Actual selected-model capacity; absent accounting rejects compaction explicitly. */
+  readonly contextCapacity?: ModelProvider["contextCapacity"];
+  /** Provider-owned upper bounds for the exact prepared request, including media and framing. */
+  readonly countTokens?: ModelProvider["countTokens"];
   readonly maxResolvedBytes?: number;
   readonly maxEventBytes?: number;
 }
@@ -29,6 +33,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   readonly #fetcher: HttpFetcher;
   readonly #resolveFile: ((file: FileRef) => Promise<Uint8Array>) | undefined;
   readonly #verifyFile: OpenAiCompatibleOptions["verifyFile"];
+  readonly #contextCapacity: OpenAiCompatibleOptions["contextCapacity"];
+  readonly #countTokens: OpenAiCompatibleOptions["countTokens"];
   readonly #maxResolvedBytes: number;
   readonly #maxEventBytes: number;
 
@@ -49,12 +55,28 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     this.#fetcher = options.fetcher ?? fetch;
     this.#resolveFile = options.resolveFile;
     this.#verifyFile = options.verifyFile;
+    this.#contextCapacity = options.contextCapacity;
+    this.#countTokens = options.countTokens;
     this.#maxResolvedBytes = options.maxResolvedBytes ?? Number.MAX_SAFE_INTEGER;
     this.#maxEventBytes = options.maxEventBytes ?? Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(this.#maxResolvedBytes) || this.#maxResolvedBytes < 0
       || !Number.isSafeInteger(this.#maxEventBytes) || this.#maxEventBytes <= 0) {
       throw new TypeError("OpenAI-compatible projection and event limits must be safe integers");
     }
+  }
+
+  contextCapacity(model: ModelRequest["model"]): ReturnType<ModelProvider["contextCapacity"]> {
+    if (this.#contextCapacity === undefined) {
+      throw new TypeError("OpenAI-compatible provider requires explicit model capacity accounting");
+    }
+    return this.#contextCapacity(model);
+  }
+
+  countTokens(request: Parameters<ModelProvider["countTokens"]>[0]): ReturnType<ModelProvider["countTokens"]> {
+    if (this.#countTokens === undefined) {
+      throw new TypeError("OpenAI-compatible provider requires explicit token accounting");
+    }
+    return this.#countTokens(request);
   }
 
   async *generate(request: ModelRequest): AsyncIterable<ModelEvent> {

@@ -591,8 +591,33 @@ impl DiscoveredContext {
 }
 
 impl ContextSource for DiscoveredContext {
-    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { self.messages() })
+    fn load<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: crate::conversation::Limits,
+    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move {
+            limits.validate()?;
+            let count = self
+                .instructions
+                .len()
+                .checked_add(usize::from(!self.skills.is_empty()))
+                .ok_or_else(|| Error::Invalid("discovered context count overflows".into()))?;
+            if count > limits.context_messages {
+                return Err(Error::Invalid(
+                    "discovered context exceeds message bound".into(),
+                ));
+            }
+            // Bound skill serialization before building its model text, including
+            // deserialized snapshots which did not pass through capture limits.
+            crate::contract::validate_json_byte_bound(&self.skills, limits.render_bytes)?;
+            for file in &self.instructions {
+                limits.validate_file(file)?;
+            }
+            let messages = self.messages()?;
+            super::validate_source_messages(&messages, limits)?;
+            Ok(messages)
+        })
     }
 }
 

@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
@@ -150,7 +151,7 @@ test("local conversation publishes staged refs and pinned context before model d
   const host = await MemoryConversation.create({ agent });
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       calls += 1;
       expect(host.snapshot().events.some(event => typeof event === "object" && event !== null
         && "payload" in event && typeof event.payload === "object"
@@ -163,8 +164,16 @@ test("local conversation publishes staged refs and pinned context before model d
   }).build();
   const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
   const content = await host.stage("turns/one/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
-  const first = await host.runConversation(runtime, operation, content);
-  const replay = await host.runConversation(runtime, operation, content);
+  const [first, replay] = await (async () => {
+    const snapshots = spyOn(Harness.prototype, "snapshot");
+    try {
+      const first = await host.runConversation(runtime, operation, content);
+      const replay = await host.runConversation(runtime, operation, content);
+      // Only the model fixture's explicit audit above may serialize history.
+      expect(snapshots).toHaveBeenCalledTimes(1);
+      return [first, replay] as const;
+    } finally { snapshots.mockRestore(); }
+  })();
   expect(first.text).toBe("answer");
   expect(replay).toEqual(first);
   expect(calls).toBe(1);
@@ -185,7 +194,7 @@ test("projection read failure leaves the turn retryable before context commit", 
   const host = await MemoryConversation.create({ agent });
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       calls += 1;
       yield { kind: "content" as const, delta: "recovered" };
       yield { kind: "completed" as const, metadata: {} };
@@ -222,7 +231,7 @@ test("projection read failure leaves the turn retryable before context commit", 
 test("large attachment lists are manifest-backed and changed retry inputs are rejected", async () => {
   const host = await MemoryConversation.create({ agent });
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), async *generate() { yield { kind: "completed" as const, metadata: {} }; },
     async reconcile() { return undefined; },
   }).build();
   const operation = "02020202-0202-0202-0202-020202020202" as OperationId;
@@ -245,7 +254,7 @@ test("local conversation retains exact tool call and full result artifact", asyn
     parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
   }, async (_, value) => `value:${value}`);
   const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       if (step++ === 0) {
         yield { kind: "tool_call" as const, callId: "call-1", name: "echo", arguments: 7 };
         yield { kind: "completed" as const, metadata: {} };
@@ -275,7 +284,7 @@ test("partial tool-history publication is idempotent across a transient retry", 
   }, async (_, value) => `value:${value}`);
   let step = 0;
   const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:echo_retry").model(testModel, {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       if (step++ === 0) {
         yield { kind: "tool_call" as const, callId: "retry-call-1", name: "echo_retry", arguments: 1 };
         yield { kind: "tool_call" as const, callId: "retry-call-2", name: "echo_retry", arguments: 2 };
@@ -318,7 +327,7 @@ test("large canonical attachment lists produce a bounded model request", async (
   let projectedParts = 0;
   let omission = "";
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate(request) {
+    ...syntheticAccounting(contracts), async *generate(request) {
       const content = request.messages.at(-1)?.content;
       if (!Array.isArray(content)) throw new Error("expected selected file parts");
       projectedParts = content.length;
@@ -343,7 +352,7 @@ test("concurrent retries serialize before model dispatch", async () => {
   const host = await MemoryConversation.create({ agent });
   let calls = 0;
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       calls += 1;
       await new Promise(resolve => setTimeout(resolve, 1));
       yield { kind: "completed" as const, metadata: {} };
@@ -366,7 +375,7 @@ test("a completed model run resumes publication without dispatching twice", asyn
   const host = await MemoryConversation.create({ agent });
   let dispatches = 0;
   const model = {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       dispatches++;
       yield { kind: "content" as const, delta: "answer" };
       yield { kind: "completed" as const, metadata: { oversized: "x".repeat(256) } };
@@ -390,7 +399,7 @@ test("an unknown model attempt needs explicit owner abandonment before another t
   const host = await MemoryConversation.create({ agent });
   let dispatches = 0;
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() {
+    ...syntheticAccounting(contracts), async *generate() {
       dispatches++;
       if (dispatches === 1) throw new Error("remote acknowledgement lost");
       yield { kind: "content" as const, delta: "next answer" };
@@ -527,7 +536,7 @@ test("different local turns serialize and inherit the prior committed assistant"
   const host = await MemoryConversation.create({ agent });
   const seen: number[] = [];
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate(request) {
+    ...syntheticAccounting(contracts), async *generate(request) {
       seen.push(request.messages.length);
       yield { kind: "content" as const, delta: "ok" };
       yield { kind: "completed" as const, metadata: {} };
@@ -543,7 +552,7 @@ test("different local turns serialize and inherit the prior committed assistant"
 test("oversized attachment manifests never reach canonical admission", async () => {
   const host = await MemoryConversation.create({ agent });
   const runtime = await Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, {
-    async *generate() { throw new Error("model must not dispatch"); },
+    ...syntheticAccounting(contracts), async *generate() { throw new Error("model must not dispatch"); },
     async reconcile() { return undefined; },
   }).build();
   const operation = "05050505-0505-0505-0505-050505050505" as OperationId;
@@ -561,7 +570,7 @@ test("foreign references require their owning provider to grant the reader", asy
   const file = await owner.stage("notes/shared.txt", bytes, "text/plain", "shared.txt");
   const host = await MemoryConversation.create({ agent });
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), async *generate() { yield { kind: "completed" as const, metadata: {} }; },
     async reconcile() { return undefined; },
   }).build();
   const operation = "06060606-0606-0606-0606-060606060606" as OperationId;
@@ -637,7 +646,7 @@ test("a foreign provider cannot admit bytes that disagree with its pinned ref", 
   const host = await MemoryConversation.create({ agent });
   host.attachReadVolume(owner, owner.delegateDirectoryRead(agent, "corrupt-reader", "notes"));
   const runtime = await Harness.builder(contracts).model(testModel, {
-    async *generate() { throw new Error("model must not dispatch"); },
+    ...syntheticAccounting(contracts), async *generate() { throw new Error("model must not dispatch"); },
     async reconcile() { return undefined; },
   }).build();
   const operation = "07070707-0707-0707-0707-070707070707" as OperationId;

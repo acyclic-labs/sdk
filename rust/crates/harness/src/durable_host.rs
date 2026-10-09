@@ -322,16 +322,18 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         match event {
             ExecutionEvent::ModelStarted {
                 step,
+                purpose,
                 request_digest,
                 ..
             } => JournalWrite::Model {
-                attempt_id: operation,
+                attempt_id: purpose.attempt_operation(operation),
                 step: *step,
                 request_digest: *request_digest,
             },
-            ExecutionEvent::Started { .. } | ExecutionEvent::ToolStarted { .. } => {
-                JournalWrite::Fresh
-            }
+            ExecutionEvent::Started { .. }
+            | ExecutionEvent::ContextPrepared { .. }
+            | ExecutionEvent::ContextCompacted { .. }
+            | ExecutionEvent::ToolStarted { .. } => JournalWrite::Fresh,
             ExecutionEvent::Model { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
@@ -375,13 +377,31 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) async fn append_conversation(
         &self,
-        path: acyclic_stream::StreamPath,
-        expected_tail: u64,
+        publication: &crate::store::operations::IndexedPublication,
         key: &StreamKey,
-        bytes: Bytes,
         write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
-        self.append(path, expected_tail, key, bytes, write).await
+        let mut request = self
+            .prepare_append(
+                &publication.path,
+                publication.expected_tail,
+                key,
+                &publication.bytes,
+                write,
+            )
+            .await?;
+        publication.add_index(&mut request);
+        match crate::distributed::commit_keyed(&self.stream, request, publication.operation_id)
+            .await?
+        {
+            acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
+            acyclic_stream::CommitOutcome::Committed(envelope) => {
+                publication
+                    .verify(&envelope)
+                    .map_err(|_| Error::Indeterminate(publication.operation_id))?;
+                Ok(true)
+            }
+        }
     }
 
     pub(crate) async fn append_execution(
@@ -474,7 +494,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         })
     }
 
-    async fn append(
+    pub(crate) async fn append(
         &self,
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
@@ -543,13 +563,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         for record in records {
             if let crate::executor::ExecutionEvent::ModelStarted {
                 step,
+                purpose,
                 request_digest,
                 ..
             } = &record.event
             {
                 coordinator.scheduler().require_model_claim(
                     task_operation,
-                    operation,
+                    purpose.attempt_operation(operation),
                     *step,
                     request_digest,
                 )?;
@@ -3371,6 +3392,24 @@ mod tests {
     async fn model_claim_host<P: StreamProvider>(
         stream: StreamClient<P>,
     ) -> Result<Arc<MemoryPayloads>> {
+        let prepared_request = crate::model::PreparedModelRequest::prepare(
+            crate::model::ModelRequest {
+                model: crate::model::Model::new(
+                    "synthetic",
+                    "journal-test",
+                    "1",
+                    serde_json::json!({}),
+                )?,
+                messages: vec![crate::model::ModelMessage {
+                    role: crate::model::ModelRole::User,
+                    content: crate::model::ModelContent::Text("fixture request".into()),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: Some(32),
+            },
+            Limits::default(),
+        )?;
+        let model_digest = prepared_request.manifest().request_digest;
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,
@@ -3482,7 +3521,7 @@ mod tests {
         };
         host.verify_execution_owner(task_id, fence.clone()).await?;
         let attempt = OperationId::from_bytes([78; 16]);
-        host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
+        host.claim_model_dispatch(task_id, attempt, 0, model_digest, fence.clone())
             .await?;
         #[cfg(feature = "filesystem")]
         let (workflow, filesystem, volume, content_scope, original_owner, original_pending) = {
@@ -3605,12 +3644,12 @@ mod tests {
                 content_scope.clone(),
                 65_536,
             )?;
-            // Request residency fixture: this test qualifies authority, not model preparation.
+            // Use a retained prepared request so owner/claim checks receive valid input.
             let model_request = journal
                 .stage(
                     attempt,
                     "model-request".into(),
-                    b"null".to_vec(),
+                    prepared_request.bytes().to_vec(),
                     "application/json",
                 )
                 .await?;
@@ -3653,6 +3692,7 @@ mod tests {
                         "wrong-claim".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
+                            purpose: crate::executor::ModelPurpose::Response,
                             request_digest: [4; 32],
                             request: model_request.clone(),
                         }
@@ -3667,7 +3707,8 @@ mod tests {
                         "absent-claim".into(),
                         ExecutionEvent::ModelStarted {
                             step: 1,
-                            request_digest: [3; 32],
+                            purpose: crate::executor::ModelPurpose::Response,
+                            request_digest: model_digest,
                             request: model_request.clone(),
                         }
                     )
@@ -3676,7 +3717,8 @@ mod tests {
             );
             let start = ExecutionEvent::ModelStarted {
                 step: 0,
-                request_digest: [3; 32],
+                purpose: crate::executor::ModelPurpose::Response,
+                request_digest: model_digest,
                 request: model_request.clone(),
             };
             assert!(
@@ -3688,6 +3730,24 @@ mod tests {
                 journal
                     .append_if_tail(attempt, 1, "model".into(), start)
                     .await?
+            );
+            assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
+            assert!(
+                journal
+                    .append_if_tail(
+                        attempt,
+                        2,
+                        "uncharged-summary".into(),
+                        ExecutionEvent::ModelStarted {
+                            step: 0,
+                            purpose: crate::executor::ModelPurpose::Summary,
+                            request_digest: model_digest,
+                            request: model_request.clone(),
+                        },
+                    )
+                    .await
+                    .is_err(),
+                "a response claim must not authorize a summary admission"
             );
             assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
             assert!(matches!(
@@ -3750,7 +3810,8 @@ mod tests {
                     "model".into(),
                     ExecutionEvent::ModelStarted {
                         step: 0,
-                        request_digest: [3; 32],
+                        purpose: crate::executor::ModelPurpose::Response,
+                        request_digest: model_digest,
                         request: model_request.clone(),
                     },
                 )
@@ -3770,13 +3831,25 @@ mod tests {
             );
             (journal, pending, model_request)
         };
-        host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
+        host.claim_model_dispatch(task_id, attempt, 0, model_digest, fence.clone())
             .await?;
         assert!(
             host.claim_model_dispatch(task_id, attempt, 1, [4; 32], fence.clone())
                 .await
                 .is_err(),
             "the task ceiling is one despite the larger session ceiling"
+        );
+        assert!(
+            host.claim_model_dispatch(
+                task_id,
+                crate::executor::ModelPurpose::Summary.attempt_operation(attempt),
+                0,
+                [5; 32],
+                fence.clone(),
+            )
+            .await
+            .is_err(),
+            "summary admissions must consume the same exhausted task ceiling"
         );
         assert!(
             host.claim_model_dispatch(task_id, attempt, 0, [4; 32], fence.clone())
@@ -3902,7 +3975,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            host.claim_model_dispatch(task_id, attempt, 0, [3; 32], stale)
+            host.claim_model_dispatch(task_id, attempt, 0, model_digest, stale)
                 .await
                 .is_err()
         );
@@ -4009,7 +4082,7 @@ mod tests {
         };
         // An admitted attempt whose execution-journal claim was not yet written
         // can continue under a new owner without spending another unit.
-        host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
+        host.claim_model_dispatch(task_id, attempt, 0, model_digest, fence.clone())
             .await?;
         assert!(
             host.claim_model_dispatch(task_id, attempt, 1, [4; 32], fence.clone())
@@ -4152,7 +4225,8 @@ mod tests {
                         "model".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
-                            request_digest: [3; 32],
+                            purpose: crate::executor::ModelPurpose::Response,
+                            request_digest: model_digest,
                             request: model_request.clone(),
                         }
                     )
@@ -4191,7 +4265,8 @@ mod tests {
                         "model".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
-                            request_digest: [3; 32],
+                            purpose: crate::executor::ModelPurpose::Response,
+                            request_digest: model_digest,
                             request: model_request.clone(),
                         }
                     )
@@ -4215,6 +4290,7 @@ mod tests {
                 .await?;
             let observation = ExecutionEvent::Model {
                 step: 0,
+                purpose: crate::executor::ModelPurpose::Response,
                 event: reference.clone(),
             };
             assert!(
@@ -4277,6 +4353,7 @@ mod tests {
                         "settlement-69".into(),
                         ExecutionEvent::Model {
                             step: 1,
+                            purpose: crate::executor::ModelPurpose::Response,
                             event: reference,
                         }
                     )
@@ -4305,6 +4382,7 @@ mod tests {
                     "model-completed".into(),
                     ExecutionEvent::Model {
                         step: 0,
+                        purpose: crate::executor::ModelPurpose::Response,
                         event: completed,
                     },
                 )
@@ -4393,7 +4471,7 @@ mod tests {
             );
         }
         assert!(
-            host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence)
+            host.claim_model_dispatch(task_id, attempt, 0, model_digest, fence)
                 .await
                 .is_err()
         );

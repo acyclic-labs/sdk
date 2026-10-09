@@ -799,6 +799,7 @@ mod tests {
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
+                summary: None,
                 child_project_volume: VolumeRef::new(
                     filesystem.clone(),
                     "artifact-child-project",
@@ -877,6 +878,7 @@ mod tests {
             }),
         );
         let seed = ForkSeed {
+            summary: None,
             operation_id: request.operation_id,
             parent: request.parent.clone(),
             parent_revision: request.parent_revision,
