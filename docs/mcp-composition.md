@@ -641,3 +641,35 @@ and whitespace checks pass. Commands ran sequentially with one Cargo job after
 it does not qualify the stock model-loop join, final platforms or installed
 artifacts. PR #299 remains draft and its earlier automatic CI source is tracked
 separately from this consumer change.
+
+### CI discovery repair and remaining gate wiring
+
+PR #299's automatic run `37869842967` at
+`87e9bf483d35f3d21bc3b4883d551c01cecf9b0b` passed plan, policy and TypeScript.
+The saved TypeScript job log identifies Bun 1.4.2/TypeScript 7.0.2, all ten MCP
+controls and 442 passing workspace tests with zero failures. This is source-bound
+CI evidence; only documentation and the native consumer/fault fixture changed
+between that head and the subsequent discovery checkpoint. It is not final
+platform or installed-archive acceptance.
+
+That run's gate failed while nextest created its test list: the custom approved
+native example executed its effect batch for `--list` and printed progress text.
+The custom executable must remain usable as its own stdio peer, so its listing
+branch now reports the one batch before native setup. No test was removed or
+skipped. Local `cargo test --example approved-native-process -- --list` returns
+only `approved_native_process: test`. The exact-test invocation then passes the
+complete batch, including eight disk cases and actual host termination. Strict
+example/all-target Clippy passes. The original failed CI gate remains recorded;
+the repair requires a new exact-head gate run.
+
+The existing full web lane now invokes `test:browser:mcp` after the ordinary
+Filesystem browser suite, using the same Chrome executable and driver. The
+existing installed Harness package suite automatically includes a new consumer
+that imports MCP types, validators, HTTP lifecycle classes and provider through
+the public package entry point. It checks selected/hidden schemas, disabled
+discovery, stdio bounds/identity, shipped WASM initialization/readiness, JSON/SSE
+full-width result bytes and zero reconciliation POSTs. These additions close
+tooling omissions; execution is still required. Shell/package/fixture syntax
+and whitespace checks pass. No Chromium or installed-package result is claimed
+from those syntax checks. A finite private-cache local qualification window is
+requested and pending; shared-host and cross-owner integration holds remain.

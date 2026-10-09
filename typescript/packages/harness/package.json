@@ -19,7 +19,8 @@
     "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
-    "test": "bun run build && bun test test"
+    "test": "bun run build && bun test test",
+    "test:browser:mcp": "node test/mcp-http-fixture.mjs"
   },
   "dependencies": { "@bufbuild/protobuf": "2.15.0" },
   "peerDependencies": { "@acyclic-labs/objects": "0.2.0" },

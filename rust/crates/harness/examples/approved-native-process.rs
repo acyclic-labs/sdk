@@ -1085,6 +1085,12 @@ fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std:
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // This example uses its own main so the same executable can be the stdio
+    // peer. Nextest discovery must list the batch without running its effects.
+    if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
+        println!("approved_native_process: test");
+        return Ok(());
+    }
     #[cfg(all(test, feature = "filesystem-local"))]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
         return faults::host_child().await;
