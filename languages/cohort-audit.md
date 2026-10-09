@@ -94,6 +94,28 @@ in-process RPC evidence for Actors, Workers and Stream. They do not qualify
 network transport, Rust-backed RPC, remaining families/platforms,
 TLS/authentication, cancellation/recovery or the embedded runtime.
 
+### Elixir maintained producer and installed prototype
+
+The maintained Elixir producer executes unchanged protobuf 0.17.1 tooling against
+accepted foundation `5f13157414a5f48425007ffd957ea7d09611e5fe`, with protoc 28.3,
+OTP 29.1.1 and Elixir 1.20.4. Its real CLI invocation verifies the complete
+admitted runtime and emits the same 14 payload files as the native installed
+prototype. The prototype's independently generated packages produce identical
+archive SHA-256
+`99743856f5f0cee06ecac057007b721942869ad6b20dc38713a712c0357195a0`.
+
+The archive-installed prototype passes message, enum and service descriptors,
+all 25 populated RPC message pairs, bytes, unsigned maximum wire values,
+optional zero/clear, both Append outcome branches and three runtime encoding
+rejections. All six compiled dependencies match their locked Hex source
+archives. Changed source, extra source and substituted package metadata faults
+reject without changing the original compiled sources. The executed consumer
+fixture is maintained in the Elixir backend and routine CI uses offline checks.
+
+The reusable installed qualifier and actual RPC calls remain outstanding.
+These controls do not qualify network transport, Rust-backed RPC, remaining
+families/platforms or the embedded runtime. See `tools/sdk-generator/backends/elixir`.
+
 ## Historical input identities
 
 | Input | SHA-256 read during this audit |

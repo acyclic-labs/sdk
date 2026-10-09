@@ -43,4 +43,5 @@ the actually executed control source.
 These are installed message and transport-metadata controls. They do not execute
 native RPC calls or qualify network transport, Rust-backed RPC, remaining
 families/platforms or the embedded runtime. The maintained producer's real CLI
-invocation and the reusable installed qualifier remain to be qualified.
+invocation passes and emits the same 14 payload files as the archive-installed
+native prototype. The reusable installed qualifier remains to be qualified.
