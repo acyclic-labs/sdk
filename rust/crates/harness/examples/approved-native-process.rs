@@ -141,7 +141,7 @@ where
     Ok(runtime)
 }
 
-async fn run(mcp: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn run(mcp: Option<McpStdioMethod>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     run_on(
         mcp,
         StreamClient::new(Arc::new(MemoryStream::default())),
@@ -191,7 +191,7 @@ fn issuer() -> AuthorityIssuer {
 }
 
 async fn run_on<P: StreamProvider>(
-    mcp: bool,
+    mcp: Option<McpStdioMethod>,
     stream: StreamClient<P>,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
@@ -227,7 +227,7 @@ async fn run_on<P: StreamProvider>(
     reason = "self-contained public composition example with explicit capabilities and no private SDK helpers"
 )]
 async fn prepare_on<P, A, O>(
-    mcp: bool,
+    mcp: Option<McpStdioMethod>,
     stream: StreamClient<P>,
     filesystem: Fs<A, O>,
     receipt_fault: Option<(&str, bool)>,
@@ -275,7 +275,7 @@ where
         format!("interaction:respond:{approval}"),
         "conversation:bind".into(),
     ];
-    if mcp {
+    if mcp == Some(McpStdioMethod::CallTool) {
         grants.extend([
             "mcp:call:example".into(),
             "tool:call:mcp.example.echo".into(),
@@ -514,7 +514,7 @@ where
         file.write_all(&serde_json::to_vec(&restart)?)?;
         file.sync_all()?;
     }
-    if mcp && receipt_fault.is_none() && restart_path.is_none() {
+    if mcp == Some(McpStdioMethod::CallTool) && receipt_fault.is_none() && restart_path.is_none() {
         model_tool::run(
             model_tool::Approved {
                 recovery: Recovery {
@@ -596,7 +596,14 @@ where
         .await?;
     verify_recovered_status(&recovered_status, seed.first.as_ref(), receipt_fault)?;
     let mcp = seed.request.mcp_stdio.is_some();
-    if mcp && receipt_fault.is_none() && seed.first.is_some() {
+    if seed
+        .request
+        .mcp_stdio
+        .as_ref()
+        .is_some_and(|request| request.method == McpStdioMethod::CallTool)
+        && receipt_fault.is_none()
+        && seed.first.is_some()
+    {
         let journal = execution_journal(
             stream.clone(),
             files.clone(),
@@ -644,7 +651,7 @@ where
         return Err("receipt recovery repeated native execution".into());
     }
     if mcp {
-        verify_mcp_calls(&seed.request.cwd, seed.applied)?;
+        verify_mcp_calls(&seed.request, seed.applied)?;
     }
     verify_publication(&files, &seed.destination, seed.applied && !lost_response).await?;
     if receipt_fault.is_none() && !lost_response {
@@ -790,7 +797,7 @@ where
 }
 
 fn native_request(
-    mcp: bool,
+    mcp: Option<McpStdioMethod>,
     lost_response: bool,
     view: NativeViewManifest,
 ) -> std::result::Result<NativeProcessRequest, Box<dyn std::error::Error>> {
@@ -799,7 +806,7 @@ fn native_request(
         argv: vec![
             if lost_response {
                 "--mcp-native-lost-response"
-            } else if mcp {
+            } else if mcp.is_some() {
                 "--mcp-native-child"
             } else {
                 "--native-child"
@@ -816,11 +823,16 @@ fn native_request(
         cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
-        mcp_stdio: mcp.then(|| McpStdioRequest {
+        mcp_stdio: mcp.map(|method| McpStdioRequest {
             initialization: OperationId::from_bytes([31; 16]),
             operation: OperationId::from_bytes([32; 16]),
-            method: McpStdioMethod::CallTool,
-            params: json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}}),
+            method,
+            params: match method {
+                McpStdioMethod::CallTool => {
+                    json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}})
+                }
+                McpStdioMethod::ListTools => json!({"cursor":"next"}),
+            },
             maximum_bytes: 4096,
         }),
         view,
@@ -906,13 +918,22 @@ fn verify_recovered_status(
 }
 
 fn verify_mcp_calls(
-    root: &std::path::Path,
+    request: &NativeProcessRequest,
     applied: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let calls = std::fs::read(root.join("destination/calls.txt"));
+    let calls = std::fs::read(request.cwd.join("destination/calls.txt"));
     if applied {
-        if calls? != b"call\n" {
-            return Err("MCP call was not applied exactly once".into());
+        let expected: &[u8] = match request
+            .mcp_stdio
+            .as_ref()
+            .ok_or("missing MCP descriptor")?
+            .method
+        {
+            McpStdioMethod::CallTool => b"call\n",
+            McpStdioMethod::ListTools => b"list\n",
+        };
+        if calls? != expected {
+            return Err("MCP request was not applied exactly once".into());
         }
     } else {
         match calls {
@@ -938,6 +959,23 @@ fn verify_mcp_result(
                 "lost MCP response became authoritative or cleanup was not confirmed".into(),
             );
         }
+    } else if request
+        .mcp_stdio
+        .as_ref()
+        .is_some_and(|request| request.method == McpStdioMethod::ListTools)
+    {
+        let page: acyclic_harness::mcp::McpToolsPage =
+            serde_json::from_value(request.mcp_response(output)?)?;
+        if page.next_cursor.is_some()
+            || page.tools.len() != 1
+            || page.tools.first().is_none_or(|tool| {
+                tool.name != "echo"
+                    || tool.description != "héllo"
+                    || tool.input_schema != json!({"type":"object"})
+            })
+        {
+            return Err("incorrect MCP discovery page".into());
+        }
     } else if request.mcp_response(output)?
         != json!({
             "content":[{"type":"text","text":"héllo"}],
@@ -955,6 +993,28 @@ mod faults;
 
 #[path = "approved-native-process/model_tool.rs"]
 mod model_tool;
+
+fn mcp_peer_result(
+    call: &Value,
+) -> std::result::Result<(Value, &'static [u8]), Box<dyn std::error::Error>> {
+    match call.get("method").and_then(Value::as_str) {
+        Some("tools/list") if call.get("params") == Some(&json!({"cursor":"next"})) => Ok((
+            json!({"tools":[{"name":"echo","description":"héllo","inputSchema":{"type":"object"}}]}),
+            b"list\n",
+        )),
+        Some("tools/call")
+            if call.pointer("/params/name").and_then(Value::as_str) == Some("echo")
+                && call.pointer("/params/arguments")
+                    == Some(&json!({"text":"héllo","sequence":u64::MAX})) =>
+        {
+            Ok((
+                json!({"content":[{"type":"text","text":"héllo"}],"structuredContent":call.pointer("/params/arguments")}),
+                b"call\n",
+            ))
+        }
+        _ => Err("incorrect pinned MCP request".into()),
+    }
+}
 
 fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use bytes::BytesMut;
@@ -1006,26 +1066,16 @@ fn mcp_native_child(lost_response: bool) -> std::result::Result<(), Box<dyn std:
         return Err("tool called before initialized notification".into());
     }
     let call = read()?;
-    if call.get("method").and_then(Value::as_str) != Some("tools/call")
-        || call.pointer("/params/name").and_then(Value::as_str) != Some("echo")
-        || call.pointer("/params/arguments") != Some(&json!({"text":"héllo","sequence":u64::MAX}))
-    {
-        return Err("incorrect pinned tool request".into());
-    }
+    let (result, trace) = mcp_peer_result(&call)?;
     std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("destination/calls.txt")?
-        .write_all(b"call\n")?;
+        .write_all(trace)?;
     let operation = call.get("id").ok_or("missing tool operation")?;
-    let arguments = call
-        .pointer("/params/arguments")
-        .ok_or("missing tool arguments")?;
     if !lost_response {
-        write(json!({"jsonrpc":"2.0","id":operation,"result":{
-            "content":[{"type":"text","text":"héllo"}],
-            "structuredContent":arguments}}))?;
+        write(json!({"jsonrpc":"2.0","id":operation,"result":result}))?;
     }
     // The ordinary owner closes stdin and terminates containment on completion.
     let mut byte = [0];
@@ -1050,12 +1100,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if cfg!(test) {
-        run(false).await?;
-        run(true).await?;
+        run(None).await?;
+        run(Some(McpStdioMethod::CallTool)).await?;
+        run(Some(McpStdioMethod::ListTools)).await?;
         #[cfg(test)]
         faults::run().await?;
         Ok(())
     } else {
-        run(std::env::args().any(|arg| arg == "--mcp-stdio")).await
+        let method = if std::env::args().any(|arg| arg == "--mcp-discovery") {
+            Some(McpStdioMethod::ListTools)
+        } else if std::env::args().any(|arg| arg == "--mcp-stdio") {
+            Some(McpStdioMethod::CallTool)
+        } else {
+            None
+        };
+        run(method).await
     }
 }

@@ -116,7 +116,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         let stream = Arc::new(ReceiptFaultStream::<MemoryStream>::default());
         *stream.fault.lock().await = Some((kind, lost_reply));
         super::run_on(
-            true,
+            Some(McpStdioMethod::CallTool),
             StreamClient::new(stream.clone()),
             Some((kind, lost_reply)),
             false,
@@ -128,7 +128,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         println!("MCP {kind} receipt fault (lost acknowledgement: {lost_reply}) passed");
     }
     super::run_on(
-        true,
+        Some(McpStdioMethod::CallTool),
         StreamClient::new(Arc::new(MemoryStream::default())),
         None,
         true,
@@ -147,13 +147,15 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
 
 #[cfg(feature = "filesystem-local")]
 async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    for (receipt_fault, lost_response) in [
-        (None, false),
-        (Some(("launch", false)), false),
-        (Some(("launch", true)), false),
-        (Some(("observed", false)), false),
-        (Some(("observed", true)), false),
-        (None, true),
+    for (method, receipt_fault, lost_response) in [
+        (McpStdioMethod::CallTool, None, false),
+        (McpStdioMethod::CallTool, Some(("launch", false)), false),
+        (McpStdioMethod::CallTool, Some(("launch", true)), false),
+        (McpStdioMethod::CallTool, Some(("observed", false)), false),
+        (McpStdioMethod::CallTool, Some(("observed", true)), false),
+        (McpStdioMethod::CallTool, None, true),
+        (McpStdioMethod::ListTools, None, false),
+        (McpStdioMethod::ListTools, None, true),
     ] {
         let storage = tempfile::tempdir()?;
         let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
@@ -172,7 +174,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
         });
         let weak_stream = Arc::downgrade(&stream);
         let evidence = super::prepare_on(
-            true,
+            Some(method),
             StreamClient::new(stream.clone()),
             filesystem,
             receipt_fault,
@@ -207,7 +209,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
         println!(
-            "MCP disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
+            "MCP {method:?} disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
         );
     }
     Ok(())
@@ -223,7 +225,7 @@ pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default()).await?,
     );
     let _ = super::prepare_on(
-        true,
+        Some(McpStdioMethod::CallTool),
         StreamClient::new(stream),
         filesystem,
         None,
@@ -256,7 +258,7 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Err("host termination did not produce a reaped failure status".into());
     }
     let mut seed = ready?;
-    super::verify_mcp_calls(&seed.request.cwd, true)?;
+    super::verify_mcp_calls(&seed.request, true)?;
     seed.applied = true;
     super::remove_physical_output(&seed.request.cwd, true)?;
     let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
@@ -278,7 +280,7 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "task cancellation converted the unknown native attempt into an observation".into(),
         );
     }
-    super::verify_mcp_calls(&seed.request.cwd, true)?;
+    super::verify_mcp_calls(&seed.request, true)?;
     println!(
         "MCP actual host termination after application, launch-only disk recovery and no replay passed"
     );

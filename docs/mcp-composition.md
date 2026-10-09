@@ -132,7 +132,7 @@ admission, retained receipts and the PR5 process owner remain authoritative.
 | Explicit schema/discovery policy | Catalog installation and bounded search | Host selects eager or named schema exposure and retained discovery policy | Both exposure modes, malformed selection, reload/in-flight policy pinning | Native/WASM development controls pass; final qualification open |
 | No uncertain HTTP replay | Tool journal + provider reconcile | Server has no receipt API unless explicitly supplied | Faults before/after remote apply and local observation; actual durable restart | Seven disk-reopen fault cases pass; final platform qualification open |
 | Exact HTTP/session/protocol | Rust request/response and SSE decoder | Provider normalizes headers and enforces deadlines | Real local JSON/SSE/session fixture, all stream cuts and malformed controls | Native and portable real HTTP development controls pass; Chromium and final qualification open |
-| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Development consumer, receipt faults, six disk-reopen cases, actual host-death and native tool-journal controls pass; stock model-loop join and final platform gates open |
+| Approved stdio | Existing PR5 process/effect owner | Actual approved provider supports bounded stdin exchange | Real subprocess, cancellation/drain/host crash/reopen | Call/discovery development consumers, receipt faults, eight disk-reopen cases, actual host-death and native tool-journal controls pass; stock model-loop join and final platform gates open |
 | Portable contracts | Same Rust provider platform and decoder | Browser host implements network I/O only | Generated TS, WASM, Chromium reload/workers; installed artifacts | Fresh WASM and ten Node controls pass; Chromium page authored, unrun; pinned package and installed artifacts open |
 | Platform correspondence | Owned final source | Shared-host lease/grants respected | Windows, WSL/Linux, macOS `ssh ivar`, required full CI | Pending |
 
@@ -611,3 +611,33 @@ controls verify the peer's session/protocol/credential/identity guards preserve
 the apply counters. This Node receipt qualifies the shared consumer and peer;
 Chromium tab/worker/reload execution, pinned package/installed artifacts and
 final-source platform/full-CI qualification remain open.
+
+### Approved stdio discovery development checkpoint
+
+The public approved native consumer now selects `Option<McpStdioMethod>` instead
+of a boolean, so both existing descriptor methods use the same task/effect
+admission, process capture and recovery path. `--mcp-discovery` admits an exact
+`tools/list` request with a pinned cursor and returns a typed discovery page.
+Initialization and readiness still precede that one request. A page does not
+publish or replace a complete catalog. The discovery consumer has no MCP or
+ordinary tool-call grant; the separate native process effect requires its exact
+approval and existing native authority.
+
+The test peer validates the admitted parameters and records `list` separately
+from `call`. Both normal discovery and discovery with a lost response exercise
+complete physical LocalStream/Filesystem provider reopening. After removing the
+first run's physical output, retained receipts are decoded without another
+process launch or request; the single independent peer trace remains unchanged.
+The lost-response case retains its timeout/confirmed-cleanup receipt while the
+MCP operation remains indeterminate and SDK output remains unpublished.
+
+Windows development verification passes the native, MCP call and MCP discovery
+positive consumers, four memory receipt cuts plus lost-call response, all eight
+disk cases (six call and two discovery), and the existing actual host-death
+control for a call. Strict example/all-target Clippy passes without a new
+suppression, and the consumer compiles with only `native-execution`. Formatting
+and whitespace checks pass. Commands ran sequentially with one Cargo job after
+21% CPU/46,534 MiB free-memory headroom. This extends stdio discovery evidence;
+it does not qualify the stock model-loop join, final platforms or installed
+artifacts. PR #299 remains draft and its earlier automatic CI source is tracked
+separately from this consumer change.
