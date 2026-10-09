@@ -15,7 +15,7 @@ tools/sdk-generator/
     dart/               Dart producer, pinned package and installed controls
     php/                PHP producer, offline Composer install and client controls
     cpp/                C++ producer and native message controls; installation pending
-    swift/              Swift producer, archive admission and installed message controls
+    swift/              Swift producer, archive admission and installed native RPC controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -46,7 +46,7 @@ README for installed qualification commands.
 `.github/sdk-generator-backends.json` registers executable backends for focused
 CI and qualification input scoping. Routine CI runs only affected offline checks;
 shared-reader changes check its consumers, and archive-reader changes check Go,
-Dart and PHP. Backend README-only changes need no focused test run, while package
+Dart, PHP and Swift. Backend README-only changes need no focused test run, while package
 templates remain checked. Unknown backend directories retain full qualification
 inputs until explicitly registered.
 

@@ -51,7 +51,11 @@ The reusable installed workflow in `src/qualify.mjs` stages only admitted archiv
 bytes, creates isolated local dependency mirrors, builds with one worker, runs
 both consumer fixtures, checks three negative compilations and verifies input
 provenance again. Git HTTP/HTTPS transports are disabled. Its offline command
-controls are covered by CI; a real end-to-end invocation is being qualified.
+controls are covered by CI. A real Linux x86_64 end-to-end invocation passes
+all 25 native in-process RPC methods, populated message and codec controls,
+three intended negative type compilations and the final SDK/source integrity
+checks. Its receipt retains exact archive, toolchain, source, dependency,
+executable and log hashes. Network transport and Rust-backed RPC remain pending.
 
 ```sh
 node tools/sdk-generator/backends/swift/src/qualify.mjs \

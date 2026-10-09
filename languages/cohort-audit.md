@@ -67,6 +67,33 @@ installed transport bindings, with runtime assignment checks and maintained
 message-class method parameters. Remaining families/platforms, Rust-backed RPC,
 TLS/authentication, cancellation/recovery and embedded runtime remain pending.
 
+### Reusable Swift transport tooling
+
+The Swift producer and archive-installed qualifier consume accepted foundation
+`5f13157414a5f48425007ffd957ea7d09611e5fe`. Independent generations produce
+identical archive SHA-256
+`75b12a02ed63f9e7d23154babe06f063f87439e47af13daa19f50af92536bb4b`.
+The real reusable Linux x86_64 qualification completes with Swift 6.4,
+SwiftProtobuf 1.38.1, grpc-swift-2 2.4.3, grpc-swift-protobuf 2.4.1 and
+swift-collections 1.7.2, each dependency at its exact admitted source revision.
+
+The installed consumer passes all 25 generated client/server methods over the
+maintained in-process transport. Rust descriptors supply populated message and
+field expectations, method paths, request/response names and streaming shapes.
+Bytes, unsigned bounds, optional zero, populated oneofs and gRPC codecs pass;
+three invalid assignments fail compilation for their intended type errors.
+Before and after native execution, the qualifier verifies the complete admitted
+SDK inventory, compiled dependency sources and archive-installed payload.
+Its receipt records the exact executable, source, dependency and log hashes.
+The SDK inventory is independently reproducible with maintained tooling and
+matches the checksum-verified official archive. Routine CI uses offline controls
+and does not download or compile this native toolchain.
+
+These results establish archive-installed transport bindings and native
+in-process RPC evidence for Actors, Workers and Stream. They do not qualify
+network transport, Rust-backed RPC, remaining families/platforms,
+TLS/authentication, cancellation/recovery or the embedded runtime.
+
 ## Historical input identities
 
 | Input | SHA-256 read during this audit |
