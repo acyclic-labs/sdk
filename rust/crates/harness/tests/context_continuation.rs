@@ -1313,7 +1313,7 @@ async fn fabricate_checkpoint(
 async fn canonical_publication_rejects_fabricated_source_and_summary_then_recovers() -> Result<()> {
     use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
     for mode in [1, 2] {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+        let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
         let provider = Arc::new(SummaryModel::default());
         let journal = Arc::new(LostCanonicalAck {
             inner: storage.journal(),
@@ -1388,6 +1388,136 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len(),
             3
+        );
+        let previous_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
+            storage.journal().as_ref(),
+            operation,
+            Limits::default(),
+        )
+        .await?
+        .ok_or_else(|| Error::NotFound("previous published checkpoint".into()))?;
+        let (_, previous_retained) = acyclic_harness::executor::load_canonical_checkpoint(
+            storage.journal().as_ref(),
+            &previous_reference,
+            Limits::default(),
+        )
+        .await?;
+        // Canonical metadata between model messages must be read and verified,
+        // but must not become provider-visible instruction or turn content.
+        let metadata = storage
+            .stage(
+                OperationId::new(),
+                "fault/metadata.txt",
+                b"private timeline metadata",
+                "text/plain",
+                "metadata.txt",
+            )
+            .await?;
+        let mut history = acyclic_harness::store::StreamAggregate::open(
+            storage.stream(),
+            storage.conversation().clone(),
+            storage.verifier(),
+            acyclic_harness::core::SchemaRegistry::new(),
+        )
+        .await?
+        .with_content_verifier(Arc::new(StoredContent(storage.clone())));
+        let mut metadata_ids = Vec::new();
+        for kind in [
+            acyclic_harness::conversation::MessageKind::Interaction,
+            acyclic_harness::conversation::MessageKind::Permission,
+        ] {
+            let sequence = history
+                .reducer()
+                .conversation()
+                .ok_or_else(|| Error::NotFound("canonical conversation".into()))?
+                .messages()
+                .len() as u64
+                + 1;
+            let id = uuid::Uuid::new_v4();
+            metadata_ids.push(id);
+            history
+                .execute(acyclic_harness::core::Command {
+                    operation_id: OperationId::new(),
+                    idempotency_key: acyclic_harness::IdempotencyKey::new(format!(
+                        "cold-metadata:{id}"
+                    ))?,
+                    expected_revision: history.reducer().revision(),
+                    scope: storage.owner_scope().clone(),
+                    causal_parent: None,
+                    action: acyclic_harness::core::Action::AppendConversationMessage {
+                        message: Box::new(acyclic_harness::conversation::ConversationMessage {
+                            id,
+                            sequence,
+                            kind,
+                            content: metadata.clone(),
+                            attachments: Vec::new().into(),
+                            reply_to: None,
+                            tool_call_id: None,
+                            extensions: Default::default(),
+                        }),
+                    },
+                })
+                .await?;
+        }
+        let next_operation = OperationId::new();
+        let next_file = storage
+            .stage(
+                next_operation,
+                "fault/next.txt",
+                "q".repeat(60_000).as_bytes(),
+                "text/plain",
+                "next.txt",
+            )
+            .await?;
+        let next_output = storage
+            .run_conversation(&bundle, next_operation, next_file, Vec::new(), 1)
+            .await?;
+        assert_eq!(next_output.text, "retained summary");
+        let next_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
+            storage.journal().as_ref(),
+            next_operation,
+            Limits::default(),
+        )
+        .await?
+        .ok_or_else(|| Error::NotFound("next published checkpoint".into()))?;
+        let (next_envelope, _) = acyclic_harness::executor::load_canonical_checkpoint(
+            storage.journal().as_ref(),
+            &next_reference,
+            Limits::default(),
+        )
+        .await?;
+        assert_eq!(
+            next_envelope.selection.checkpoint.as_ref(),
+            Some(&previous_reference)
+        );
+        assert!(
+            metadata_ids
+                .iter()
+                .all(|id| !next_envelope.selection.message_ids.contains(id))
+        );
+        let source: Context =
+            serde_json::from_slice(&storage.journal().load(&next_envelope.source).await?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            source.messages.get(..previous_retained.messages.len()),
+            Some(previous_retained.messages.as_slice())
+        );
+        assert!(
+            source
+                .messages
+                .iter()
+                .flat_map(|message| message.content.file_refs())
+                .all(|file| file != &metadata)
+        );
+        assert_eq!(
+            storage
+                .journal()
+                .replay(next_operation, 0, 64)
+                .await?
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+                .count(),
+            1
         );
     }
     Ok(())
