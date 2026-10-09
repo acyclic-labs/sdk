@@ -1059,6 +1059,13 @@ impl MemoryHarnessStorage {
         id: Uuid,
         limits: Limits,
     ) -> Result<Option<ConversationMessage>> {
+        let state = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
+        if let Some(message) = state.message(id) {
+            return Ok(Some(message.clone()));
+        }
         let cursor = crate::store::HistoryCursor {
             authority: aggregate.reducer().authority().clone(),
             after_revision: 0,
@@ -1072,6 +1079,16 @@ impl MemoryHarnessStorage {
                 self.journal.context_history_limits(limits)?.maximum_bytes,
             )
             .await
+    }
+
+    fn next_conversation_sequence(aggregate: &StreamAggregate<MemoryStream>) -> Result<u64> {
+        aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?
+            .logical_revision()
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))
     }
 
     async fn append_assistant(
@@ -1133,23 +1150,11 @@ impl MemoryHarnessStorage {
         let mut aggregate = self.open_conversation(limits).await?;
         self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
             .await?;
-        let state = aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
         let mut extensions = BTreeMap::new();
         extensions.insert("acyclic.model.metadata".to_owned(), metadata);
-        let next_sequence = state
-            .logical_revision()
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))?;
-        let existing = match state.message(assistant_id) {
-            Some(existing) => Some(existing.clone()),
-            None => {
-                self.indexed_conversation_message(&aggregate, assistant_id, limits)
-                    .await?
-            }
-        };
+        let existing = self
+            .indexed_conversation_message(&aggregate, assistant_id, limits)
+            .await?;
         if let Some(existing) = existing {
             if existing.content != content
                 || existing.attachments != attachments
@@ -1165,7 +1170,7 @@ impl MemoryHarnessStorage {
         }
         let message = ConversationMessage {
             id: assistant_id,
-            sequence: next_sequence,
+            sequence: Self::next_conversation_sequence(&aggregate)?,
             kind: MessageKind::Assistant,
             content,
             attachments,
@@ -1249,21 +1254,9 @@ impl MemoryHarnessStorage {
                         "duplicate durable tool call identity".into(),
                     ));
                 }
-                let state = aggregate
-                    .reducer()
-                    .conversation()
-                    .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-                let next_sequence = state
-                    .logical_revision()
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))?;
-                let existing = match state.message(id) {
-                    Some(existing) => Some(existing.clone()),
-                    None => {
-                        self.indexed_conversation_message(aggregate, id, limits)
-                            .await?
-                    }
-                };
+                let existing = self
+                    .indexed_conversation_message(aggregate, id, limits)
+                    .await?;
                 if let Some(existing) = existing {
                     if existing.kind != kind
                         || existing.content != content
@@ -1279,7 +1272,7 @@ impl MemoryHarnessStorage {
                 }
                 let message = ConversationMessage {
                     id,
-                    sequence: next_sequence,
+                    sequence: Self::next_conversation_sequence(aggregate)?,
                     kind,
                     content,
                     attachments,
