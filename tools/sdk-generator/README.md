@@ -8,6 +8,7 @@ tools/sdk-generator/
   README.md
   backends/
     go/                 Go producer, module and focused tests
+    java/               Descriptor-based Java producer and installed controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -20,6 +21,7 @@ From the repository root:
 ```sh
 go -C tools/sdk-generator/backends/go test -p=1 -parallel=1 ./...
 go -C tools/sdk-generator/backends/go run . --help
+node --test tools/sdk-generator/backends/java/generate.test.mjs
 ```
 
 The shared Rust/TypeScript generation entrypoints currently remain in `scripts/`
