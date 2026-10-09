@@ -2410,14 +2410,21 @@ export class AgentHarness {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), ...(this.components.modelOutputTokens === undefined ? {} : { maxOutputTokens: this.components.modelOutputTokens }) });
+        const inventories = request.messages.map(message =>
+          this.contracts.modelContentInventory(message.content, this.limits));
+        // The local TS composition has no original extension registry/runtime.
+        // File read grants cannot authenticate a claimed native option binding.
+        if (inventories.some(inventory => inventory.nativeConfigurations.length !== 0)) {
+          throw new Error("original native option admission is unavailable in the local TypeScript runtime");
+        }
         const prefix = this.components.inheritedModelPrefix;
         let bytes: Uint8Array;
         if (prefix === undefined) bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
         else {
           const files = new Map(prefix.files);
           const pending = new Map<string, FileRef>();
-          for (const message of request.messages) {
-            for (const file of this.contracts.modelContentFileRefs(message.content, this.limits)) {
+          for (const inventory of inventories) {
+            for (const file of inventory.files) {
               prefix.core.verifyContentRead(prefix.scope, file);
               const key = new TextDecoder().decode(this.contracts.encodeCanonicalJson(file));
               if (!files.has(key)) pending.set(key, file);
