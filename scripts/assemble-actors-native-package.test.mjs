@@ -9,6 +9,7 @@ import test from "node:test";
 import { assertCommonBindings, assertNativeSet, verifyNativeAssembly } from "./assemble-actors-native-package.mjs";
 import { assertSelectedArtifact, normalizeBuildInputs, buildInputsReceipt } from "./build-actors-native.mjs";
 import { validBuildInputs } from "./fixtures/native-build-inputs.mjs";
+import { writeWasmReceiptFixture } from "./fixtures/wasm-receipt.mjs";
 
 const targets = ["target-a", "target-b", "target-c"];
 const source = "a".repeat(40);
@@ -98,12 +99,7 @@ test("archive verification binds parent, companion, original source and actual a
     const generationBytes = JSON.stringify(generation);
     const meta = { ...generation, schema: "acyclic.actors.native-targets.v1", source_revision: source, artifact: artifacts[2], generation_sha256: `sha256:${hash(generationBytes)}` };
     const entry = { name, version, asset: "actors-native/companion.tgz", selected_target: target, os: ["fixture"], cpu: ["fixture"], artifact: meta.artifact, generation_sha256: meta.generation_sha256 };
-    await mkdir(join(parent, "generated/wasm"), { recursive: true });
-    const wasm = Buffer.from("synthetic module bytes; receipt admission only");
-    await writeFile(join(parent, "generated/wasm/fixture_bg.wasm"), wasm);
-    const wasmReceipt = { schema: "acyclic.wasm-build-receipt.v1", family: "actors", package: "acyclic-actors-wasm", version, source_commit: source, source_sha256: inventory.source_sha256, source_files: inventory.source_files, build: { cargo: { version: "synthetic cargo" }, rustc: { invocation: { source: "rustc-invocation", rustc: "fixture-rustc", target: "wasm32-unknown-unknown" }, identity: { command: "fixture-rustc", output: "synthetic rustc", executable_sha256: `sha256:${"f".repeat(64)}` } }, wasm_bindgen: { version: "synthetic bindgen" }, module_sha256: `sha256:${hash(wasm)}` }, artifacts: [{ path: "generated/wasm/fixture_bg.wasm", bytes: wasm.length, sha256: `sha256:${hash(wasm)}` }] };
-    const wasmReceiptBytes = JSON.stringify(wasmReceipt);
-    await writeFile(join(parent, "generated/wasm/producer-receipt.json"), wasmReceiptBytes);
+    const { wasm, wasmReceipt, wasmReceiptBytes } = await writeWasmReceiptFixture(parent, "actors", source, inventory);
     const index = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: source, source_sha256: inventory.source_sha256, targets: [target], companions: [entry], wasm_receipt_sha256: `sha256:${hash(wasmReceiptBytes)}` };
     const parentReceipt = { name: "@acyclic-labs/actors", version, asset: "acyclic-labs-actors-0.2.0.tgz" };
     await json(join(parent, "package.json"), parentManifest);
