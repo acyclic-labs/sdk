@@ -58,7 +58,7 @@ if (docs.version !== manifest.version || release.version !== manifest.version ||
 if (new Set(receipt.packages.map(row => row.name)).size !== receipt.packages.length) throw new Error('duplicate package receipt identity');
 for (const projection of projections) {
   const scenario = scenarios.find(row => row.id === projection.scenarioId);
-  const catalog = docs.packages.entries.filter(row => row.packageName === scenario.package && row.familySlug === scenario.family);
+  const catalog = docs.packages.entries.filter(row => row.packageName === scenario.package);
   const released = release.scenarios.filter(row => row.id === scenario.id && row.package === scenario.package);
   const installed = receipt.packages.filter(row => row.name === projection.package);
   if (catalog.length !== 1 || released.length !== 1 || installed.length !== 1 || catalog[0].version !== released[0].cargoVersion || installed[0].version !== catalog[0].version) throw new Error(`package version differs from Rust catalog: ${projection.package}`);

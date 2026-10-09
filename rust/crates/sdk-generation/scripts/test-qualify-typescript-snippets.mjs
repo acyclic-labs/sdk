@@ -80,9 +80,9 @@ test('coherently wrong npm receipt version rejects using its own catalog among r
     bound('sdk-docs-scenario-projections.v1.json', { projections: [{ scenarioId: scenario.id, package: '@acyclic-labs/demo', language: 'typescript', path: 'demo.ts', sourceSha256: scenario.sourceSha256, rustOutputSha256: hash('output'), snippetSha256: hash(snippet) }] });
     writeFileSync(join(bundle, 'demo.ts'), snippet); artifacts['demo.ts'] = hash(snippet);
     mkdirSync(join(bundle, 'preview'), { recursive: true });
-    bound('preview/sdk-docs-data.v1.json', { version: 'preview', source: { revision }, packages: { entries: [{ packageName: scenario.package, familySlug: scenario.family, version: '1.0.0' }] } });
+    bound('preview/sdk-docs-data.v1.json', { version: 'preview', source: { revision }, packages: { entries: [{ packageName: scenario.package, familySlug: scenario.package, version: '1.0.0' }] } });
     mkdirSync(join(bundle, 'releases/older'), { recursive: true });
-    bound('releases/older/sdk-docs-data.v1.json', { version: 'older', source: { revision: 'b'.repeat(40) }, packages: { entries: [{ packageName: scenario.package, familySlug: scenario.family, version: '2.0.0' }] } });
+    bound('releases/older/sdk-docs-data.v1.json', { version: 'older', source: { revision: 'b'.repeat(40) }, packages: { entries: [{ packageName: scenario.package, familySlug: scenario.package, version: '2.0.0' }] } });
     bound('preview/release.json', { version: 'preview', revision, sourceSha256, scenarios: [{ id: scenario.id, package: scenario.package, cargoVersion: '1.0.0' }] });
     const manifest = JSON.stringify({ version: 'preview', sourceState: 'captured-snapshot', revision, sourceSha256, artifacts, releaseManifest: 'preview/release.json' });
     writeFileSync(join(bundle, 'generation-manifest.v1.json'), manifest);
@@ -92,5 +92,38 @@ test('coherently wrong npm receipt version rejects using its own catalog among r
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /package version differs from Rust catalog/);
     assert.equal(existsSync(work), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('matching Rust package catalog admits its display family through the install boundary', () => {
+  const root = mkdtempSync(join(tmpdir(), 'docs-snippet-owner-'));
+  try {
+    const bundle = join(root, 'bundle'), packages = join(root, 'packages'), work = join(root, 'consumer');
+    mkdirSync(bundle); mkdirSync(packages);
+    const revision = 'a'.repeat(40), sourceSha256 = hash('closure'), snippet = 'console.log("fixture");\n', artifacts = {};
+    const bound = (name, data) => {
+      const bytes = JSON.stringify(data); writeFileSync(join(bundle, name), bytes); artifacts[name] = hash(bytes);
+    };
+    const scenario = { id: 'actors/typescript-consumer', package: 'acyclic-actors', family: 'actors', sourceSha256: hash('source'), typescriptProjection: true };
+    bound('sdk-docs-scenarios.v1.json', { scenarios: [scenario] });
+    bound('sdk-docs-scenario-executions.v1.json', [{ id: scenario.id, sourceSha256: scenario.sourceSha256, stdoutSha256: hash('output'), status: 'passed' }]);
+    bound('sdk-docs-scenario-projections.v1.json', { projections: [{ scenarioId: scenario.id, package: '@acyclic-labs/actors', language: 'typescript', path: 'actors.ts', sourceSha256: scenario.sourceSha256, rustOutputSha256: hash('output'), snippetSha256: hash(snippet) }] });
+    writeFileSync(join(bundle, 'actors.ts'), snippet); artifacts['actors.ts'] = hash(snippet);
+    mkdirSync(join(bundle, 'releases/current'), { recursive: true });
+    bound('releases/current/sdk-docs-data.v1.json', { version: '0.2.0', source: { revision }, packages: { entries: [{ packageName: scenario.package, familySlug: scenario.package, version: '0.2.0' }] } });
+    bound('releases/current/release.json', { version: '0.2.0', revision, sourceSha256, scenarios: [{ id: scenario.id, package: scenario.package, cargoVersion: '0.2.0' }] });
+    const manifest = JSON.stringify({ version: '0.2.0', sourceState: 'captured-snapshot', revision, sourceSha256, artifacts, releaseManifest: 'releases/current/release.json' });
+    writeFileSync(join(bundle, 'generation-manifest.v1.json'), manifest);
+    writeFileSync(join(bundle, 'generation-manifest.v1.sha256'), hash(manifest));
+    const archive = 'acyclic-labs-actors-0.2.0.tgz', bytes = Buffer.from('qualified package fixture');
+    writeFileSync(join(packages, archive), bytes);
+    packageReceipt(packages, revision, [{ name: '@acyclic-labs/actors', version: '0.2.0', asset: archive, sha256: hash(bytes).slice(7), size: bytes.length }]);
+    const installer = join(root, 'install-boundary.mjs');
+    writeFileSync(installer, 'console.error("qualified owner reached install"); process.exit(23);');
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./qualify-typescript-snippets.mjs', import.meta.url)), bundle, packages, work, installer], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /install failed: qualified owner reached install/);
+    assert.equal(existsSync(join(work, 'install.stderr.log')), true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
