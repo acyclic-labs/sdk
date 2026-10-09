@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { loadAuthority, sha256, within } from "../../shared/authority.mjs";
+import { loadAuthority, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const pinned = { ...JSON.parse(readFileSync(join(directory, "toolchain.json"), "utf8")),
-  ...JSON.parse(readFileSync(join(directory, "../../shared/protoc.json"), "utf8")) };
+const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
+  ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
 
 function inventory(root, prefix = "") {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
@@ -30,7 +30,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
   try { lstatSync(output); throw new Error("output must be absent"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [source, authority, protoc, plugin, directory]) {
+  for (const input of [source, authority, protoc, plugin, dirname(directory)]) {
     if (within(input, output) || within(output, input)) throw new Error("output overlaps protected input");
   }
   const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
@@ -40,7 +40,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   }
   const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
   const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
-  for (const name of ["Acyclic.Sdk.Transport.csproj", "packages.lock.json", "global.json", "README.md"]) metadata[name] = readFileSync(join(directory, "package", name));
+  for (const name of ["Acyclic.Sdk.Transport.csproj", "packages.lock.json", "global.json", "README.md"]) metadata[name] = readFileSync(join(directory, "../templates/package", name));
   const host = `${process.platform}-${process.arch}`;
   const pluginPin = toolchain.grpc_csharp[host];
   const pluginHash = sha256(readFileSync(plugin));
@@ -95,7 +95,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       grpc_csharp_version: toolchain.grpc_csharp_version, grpc_csharp_coordinate: pluginPin.url,
       tool_sha256: { protoc: compilerHash, grpc_csharp: pluginHash },
       generator_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
-      authority_reader_sha256: sha256(readFileSync(join(directory, "../../shared/authority.mjs"))),
+      authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
       toolchain_sha256: sha256(JSON.stringify(toolchain)), node_version: process.version,
       outputs, output_sha256: Object.fromEntries(outputs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     };

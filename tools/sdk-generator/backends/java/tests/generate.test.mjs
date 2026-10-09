@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
-import { generate } from "./generate.mjs";
+import { generate } from "../src/generate.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), "dotnet-generator-test-"));
+  const root = mkdtempSync(join(tmpdir(), "java-generator-test-"));
   t.after(() => rmSync(root, { recursive: true }));
   const source = join(root, "source");
   const authority = join(root, "authority");
@@ -28,9 +28,9 @@ function fixture(t) {
   writeFileSync(protoc, "compiler fixture");
   writeFileSync(plugin, "plugin fixture");
   const toolchain = { protoc_version: "libprotoc 28.3",
-    protoc: { [`${process.platform}-${process.arch}`]: { sha256: hash("compiler fixture") } }, grpc_csharp_version: "fixture",
-    grpc_csharp: { [`${process.platform}-${process.arch}`]: { sha256: hash("plugin fixture"), url: "fixture" } } };
-  const args = { "source-root": source, authority, protoc, "grpc-csharp": plugin, output: join(root, "new-package") };
+    protoc: { [`${process.platform}-${process.arch}`]: { sha256: hash("compiler fixture") } }, grpc_java_version: "fixture",
+    grpc_java: { [`${process.platform}-${process.arch}`]: { sha256: hash("plugin fixture"), url: "fixture" } } };
+  const args = { "source-root": source, authority, protoc, "grpc-java": plugin, output: join(root, "new-package") };
   const calls = [];
   let snapshot;
   const command = (executable, argv, options) => {
@@ -42,8 +42,8 @@ function fixture(t) {
     assert.equal(descriptors.length, 1);
     assert.equal(readFileSync(descriptors[0], "utf8"), "attested descriptors");
     assert.equal(readdirSync(snapshot).filter(name => name.endsWith(".proto")).length, 0);
-    const output = argv.find(arg => arg.startsWith("--csharp_out=")).slice("--csharp_out=".length);
-    writeFileSync(join(output, `${argv.at(-1)}.cs`), `generated ${argv.at(-1)}`);
+    const output = argv.find(arg => arg.startsWith("--java_out=")).slice("--java_out=".length);
+    writeFileSync(join(output, `${argv.at(-1)}.java`), `generated ${argv.at(-1)}`);
     return { status: 0, stdout: "", stderr: "" };
   };
   return { root, args, manifest, save, toolchain, command, calls, snapshot: () => snapshot };
@@ -57,8 +57,8 @@ test("each family uses only verified descriptor snapshots and has inventoried ou
   assert.equal(receipt.source_revision, f.manifest.source_revision);
   assert.equal(receipt.authority_manifest_sha256, hash(readFileSync(join(f.args.authority, "rust-authority.json"))));
   for (const name of receipt.outputs) assert.equal(receipt.output_sha256[name], hash(readFileSync(join(f.args.output, name))));
-  assert.ok(receipt.outputs.includes("Acyclic.Sdk.Transport.csproj"));
-  assert.ok(receipt.outputs.includes("LICENSE"));
+  assert.ok(receipt.outputs.includes("pom.xml"));
+  assert.ok(receipt.outputs.includes("src/main/resources/META-INF/LICENSE"));
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "generation-receipt.json"))), receipt);
 });
 
@@ -94,10 +94,10 @@ test("existing and overlapping output paths are preserved", t => {
 
 test("plugin drift and compiler version mismatch cannot create output", t => {
   const f = fixture(t);
-  writeFileSync(f.args["grpc-csharp"], "different plugin");
-  assert.throws(() => generate(f.args, { command: f.command, toolchain: f.toolchain }), /published package host pin/);
+  writeFileSync(f.args["grpc-java"], "different plugin");
+  assert.throws(() => generate(f.args, { command: f.command, toolchain: f.toolchain }), /published host pin/);
   assert.equal(existsSync(f.args.output), false);
-  writeFileSync(f.args["grpc-csharp"], "plugin fixture");
+  writeFileSync(f.args["grpc-java"], "plugin fixture");
   writeFileSync(f.args.protoc, "compiler drift with same version");
   assert.throws(() => generate(f.args, { command: f.command, toolchain: f.toolchain }), /compiler executable differs/);
   assert.equal(f.calls.length, 0);
@@ -122,12 +122,12 @@ test("missing family bindings and output collisions cannot produce success", t =
     const command = (exe, argv, options) => {
       if (argv[0] === "--version") return f.command(exe, argv, options);
       if (collision) {
-        const output = argv.find(arg => arg.startsWith("--csharp_out=")).slice("--csharp_out=".length);
-        writeFileSync(join(output, "Same.cs"), "same class name");
+        const output = argv.find(arg => arg.startsWith("--java_out=")).slice("--java_out=".length);
+        writeFileSync(join(output, "Same.java"), "same class name");
       }
       return { status: 0, stdout: "", stderr: "" };
     };
-    assert.throws(() => generate(f.args, { command, toolchain: f.toolchain }), collision ? /collide/ : /no C# bindings/);
+    assert.throws(() => generate(f.args, { command, toolchain: f.toolchain }), collision ? /collide/ : /no Java bindings/);
     assert.equal(existsSync(join(f.args.output, "generation-receipt.json")), false);
   }
 });

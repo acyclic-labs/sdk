@@ -6,19 +6,17 @@ shared with Java in `../../shared/authority.mjs`.
 
 ```text
 dotnet/
-  generate.mjs          verified descriptor snapshots and C# generation
-  generate.test.mjs     offline admission and staging controls
-  qualify.mjs           opt-in offline package and installed-consumer runner
-  qualify.test.mjs      fresh-install, admission and failure controls
-  toolchain.json        compiler, plugin, packer and dependency archive pins
-  package/              project, SDK pin, dependency lock and package README
-  testdata/consumer/    installed descriptor, wire, RPC-shape and type controls
+  src/                  generation and installed qualification runners
+  tests/                offline admission and runner controls
+    fixtures/consumer/  installed descriptor, wire and type controls
+  templates/package/    project, SDK pin, dependency lock and package README
+  toolchains/           compiler, plugin, packer and dependency archive pins
 ```
 
 From the repository root:
 
 ```sh
-node tools/sdk-generator/backends/dotnet/generate.mjs \
+node tools/sdk-generator/backends/dotnet/src/generate.mjs \
   --source-root /immutable-source --authority /rust-export \
   --protoc /tools/protoc --grpc-csharp /tools/grpc_csharp_plugin \
   --output /new-package
@@ -48,7 +46,7 @@ entering generated assembly metadata.
 Run lightweight controls without a .NET SDK or downloads:
 
 ```sh
-node --test --test-concurrency=1 tools/sdk-generator/backends/dotnet/generate.test.mjs tools/sdk-generator/backends/dotnet/qualify.test.mjs
+node --test --test-concurrency=1 tools/sdk-generator/backends/dotnet/tests/generate.test.mjs tools/sdk-generator/backends/dotnet/tests/qualify.test.mjs
 ```
 
 Actual installed qualification currently runs on Windows with .NET SDK 8.0.425
@@ -58,7 +56,7 @@ cache once with a normal online locked restore:
 ```sh
 dotnet restore /new-package/Acyclic.Sdk.Transport.csproj \
   --locked-mode --disable-parallel --packages /prepared-cache
-node tools/sdk-generator/backends/dotnet/qualify.mjs \
+node tools/sdk-generator/backends/dotnet/src/qualify.mjs \
   --package /new-package --authority /rust-export \
   --dotnet /sdk-8.0.425/dotnet.exe --nuget /nuget-7.9.0/NuGet.exe \
   --cache /prepared-cache --output /new-qualification

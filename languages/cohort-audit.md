@@ -184,3 +184,25 @@ both are checked through pinned archive admission and locked restore.
 This evidence covers Actors, Workers and Stream installed transport bindings.
 Remaining families and platforms, Rust-backed RPC, TLS/authentication,
 cancellation/recovery and embedded runtime qualification remain outstanding.
+
+### Installed Kotlin and Scala interoperability
+
+Kotlin 2.4.20 and Scala 3.10.0 consumers pass against the accepted-foundation
+Java JAR `e0c5aeba5042764c2aa73de65456f538c25e2723506eb3628044cf739557ba26`
+on JDK 17.0.14. The reusable Java backend's `src/qualify-jvm.mjs` admits a
+matching Java installation receipt and Rust authority, verifies all compiler
+and dependency JAR hashes, and compiles against fresh snapshots. Its maintained
+compiler manifests record official Maven coordinates and published checksums.
+Eleven offline runner tests cover both languages, drift, destination admission,
+unexpected compiler versions and prevention of success after failed controls.
+
+Each actual consumer executes the shared Java controls for all three API
+descriptors, bytes, unsigned bounds, optional-zero presence, both oneof branches
+and exact gRPC method shapes. Language-specific builder and serialization calls
+also pass. Three independently compiled invalid byte/integer assignments fail
+for their intended type errors in each language. Installed-JAR provenance is
+checked at runtime. Receipts retain source, compiler/tool, dependency, control
+and log hashes; compiler work is bounded to one CPU and 512 MiB.
+These results establish Java-binding interoperability. Dedicated Kotlin/Scala
+API generation, remaining families, Rust-backed RPC, TLS/authentication,
+cancellation/recovery and embedded qualification remain outstanding.

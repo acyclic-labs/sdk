@@ -424,16 +424,20 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     async fn traced_call(
         address: std::net::SocketAddr,
-        rpc: &str,
+        rpc: &'static str,
     ) -> Result<tonic::codegen::http::Response<tonic::body::Body>, Box<dyn std::error::Error>> {
         use tonic::codegen::Service as _;
-        let mut channel = grpc::TracedChannel(
+        let mut channel = grpc::TracedChannel::new(
             tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
         );
         std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
         let request = tonic::codegen::http::Request::builder()
             .uri(format!(
                 "http://{address}/acyclic.workers.v1.WorkersService/{rpc}"
+            ))
+            .extension(tonic::GrpcMethod::new(
+                "acyclic.workers.v1.WorkersService",
+                rpc,
             ))
             .body(tonic::body::Body::empty())?;
         Ok(channel.call(request).await?)
@@ -517,7 +521,7 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .iter()
-                .filter(|(s, f, _)| (*s, *f) == ("acyclic.workers.grpc.call", "closed"))
+                .filter(|(s, f, _)| (*s, *f) == ("acyclic.workers.grpc.transport", "closed"))
                 .count()
         };
         assert_eq!(grpc_closed(), 1);
@@ -534,10 +538,10 @@ mod tests {
             ),
             ("acyclic.workers.http.call", "http.status", "503"),
             ("acyclic.workers.http.call", "error.kind", "service"),
-            ("acyclic.workers.grpc.call", "rpc", "SubmitJob"),
-            ("acyclic.workers.grpc.call", "error.kind", "transport"),
-            ("acyclic.workers.grpc.call", "rpc.code", "14"),
-            ("acyclic.workers.grpc.call", "error.kind", "status"),
+            ("acyclic.workers.grpc.transport", "rpc", "SubmitJob"),
+            ("acyclic.workers.grpc.transport", "error.kind", "transport"),
+            ("acyclic.workers.grpc.transport", "rpc.code", "14"),
+            ("acyclic.workers.grpc.transport", "error.kind", "status"),
         ] {
             assert!(
                 seen.iter()

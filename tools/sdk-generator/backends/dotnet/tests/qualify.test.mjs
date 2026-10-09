@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { sha256 } from "../../shared/authority.mjs";
-import { qualify } from "./qualify.mjs";
+import { sha256 } from "../../../shared/authority.mjs";
+import { qualify } from "../src/qualify.mjs";
 
 function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "dotnet-installed-test-"));
@@ -24,7 +24,7 @@ function fixture(t, failure = "") {
   const packageRoot = join(root, "package");
   const payload = { "rust-authority.json": manifest, "generated/Bindings.cs": "fixture generated source" };
   for (const name of ["Acyclic.Sdk.Transport.csproj", "packages.lock.json", "global.json", "README.md"]) {
-    payload[name] = readFileSync(new URL(`./package/${name}`, import.meta.url));
+    payload[name] = readFileSync(new URL(`../templates/package/${name}`, import.meta.url));
   }
   for (const [name, bytes] of Object.entries(payload)) put(join(packageRoot, name), bytes);
   const receipt = { schema: "acyclic.sdk.dotnet-producer-receipt.v1", target: "dotnet", authority: "rust", source_revision: "a".repeat(40),
