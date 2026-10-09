@@ -4211,7 +4211,7 @@ dependencies = [
  "pin-project-lite",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -4828,7 +4828,7 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "simdutf8",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
