@@ -7,6 +7,8 @@ import {
   prepareModelRequest, encodeModelPrefix, WasmReducer, validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
+import { publicModelContent } from "../src/projection.js";
+import type { NativeModelContent } from "../src/native-contracts.js";
 import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
@@ -395,6 +397,17 @@ test("Rust inventory includes nested tool media and options while preserving ori
   expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
   expect(Object.isFrozen(inventory.nativeConfigurations[0])).toBe(true);
   expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
+});
+
+test("public model content converts only typed portable quantities and preserves original option revisions", async () => {
+  const part = await nativeOptionPart();
+  contracts.modelContentInventory(part, DEFAULT_LIMITS);
+  const raw = contracts.decodeModelJson(contracts.encodeCanonicalJson(part)) as NativeModelContent;
+  expect(publicModelContent(raw)).toEqual(part);
+  const result = { kind: "tool_result", call_id: "call", name: "inspect",
+    content: { kind: "parts", parts: [part] } };
+  expect(publicModelContent(contracts.decodeModelJson(contracts.encodeCanonicalJson(result)) as NativeModelContent))
+    .toEqual({ kind: "tool_result", callId: "call", name: "inspect", content: { kind: "parts", parts: [part] } });
 });
 
 test("local model dispatch rejects claimed native options before invoking a custom provider", async () => {

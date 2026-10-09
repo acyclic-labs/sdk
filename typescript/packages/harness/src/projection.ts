@@ -232,6 +232,20 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
   const publicFile = (file: Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef => ({
     ...file, descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
   } as FileRef);
+  const publicFilePart = (part: Extract<NativeModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
+    const file = publicFile(part.file);
+    if (typeof part.policy === "string") return { ...part, file, policy: part.policy };
+    const native = part.policy.native;
+    const intent = "maximum_duration_ms" in native.intent
+      ? { ...native.intent, maximum_duration_ms: normalizeModelInteger(native.intent.maximum_duration_ms) }
+      : native.intent;
+    const configuration = native.configuration === null ? null : { ...native.configuration,
+      configuration: { ...native.configuration.configuration,
+        content: publicFile(native.configuration.configuration.content) } };
+    return { ...part, file, policy: { native: { ...native, intent, configuration,
+      maximum_bytes: normalizeModelInteger(native.maximum_bytes),
+      maximum_work: normalizeModelInteger(native.maximum_work) } } };
+  };
   const mapContentPart = (part: NativeModelContentPart): ModelContentPart => {
     if (part.kind === "tool_call") {
       return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
@@ -240,11 +254,11 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
       const content = part.content.kind === "json"
         ? { kind: "json" as const, value: normalizeModelJson(part.content.value) }
         : { kind: "parts" as const, parts: part.content.parts.map(data => data.kind === "file"
-          ? { ...data, file: publicFile(data.file) } : data) as readonly ModelDataPart[] };
+          ? publicFilePart(data) : data) as readonly ModelDataPart[] };
       return { kind: part.kind, callId: part.call_id, name: part.name, content };
     }
     if (part.kind === "file") {
-      return { ...part, file: publicFile(part.file) };
+      return publicFilePart(part);
     }
     return part;
   };

@@ -49,6 +49,8 @@ import { HARNESS_CHILD_PAGE_DEFAULT } from "../src/child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
+const imagePolicy = { native: { intent: { kind: "image", detail: "auto" },
+  maximum_bytes: 64, maximum_work: 8, configuration: null } } as const;
 const jsonProjection = await jsonToolProjection({});
 
 test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
@@ -1864,7 +1866,7 @@ describe("typed agent runtime", () => {
     }).build();
     const output = await runtime.run("go");
     expect(output.text).toBe("done");
-    expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: 12 }, { kind: "model-completed", metadata: { tokens: 1 } }]);
+    expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
     expect(sender).toBe(output.taskId);
     expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
@@ -1880,8 +1882,8 @@ describe("typed agent runtime", () => {
       async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
-    await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: "native" }] });
-    expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: "native" }]);
+    await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: imagePolicy }] });
+    expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: imagePolicy }]);
   });
 
   test("content-only turns dispatch exactly the content admitted by Rust validation", async () => {
@@ -1894,8 +1896,8 @@ describe("typed agent runtime", () => {
       async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
-    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: "native" }] });
-    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: "native" }]);
+    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: imagePolicy }] });
+    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: imagePolicy }]);
   });
 
   test("direct input is snapshotted before validation and model dispatch", async () => {
@@ -1905,7 +1907,7 @@ describe("typed agent runtime", () => {
       volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
       path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
     };
-    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: "native" }];
+    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: imagePolicy }];
     const input = {
       prompt: "",
       get content(): readonly UserContentPart[] {
@@ -2170,13 +2172,13 @@ test("file batches check every scope and bound before the first owner read", asy
   const denied = { ...first, path: "denied" };
   let reads = 0;
   const content = { validate: () => {}, verify: () => {},
-    read: async () => { reads++; return Uint8Array.of(1); },
+    read: async () => { reads++; return Uint8Array.of(0); },
     fileReadCapability: (file: FileRef) => `read:${file.path}`,
     volumeReadCapability: () => "read:volume", directoryReadCapability: () => "read:directory" };
   const runtime = await Harness.builder(contracts).content(content).grant(content.fileReadCapability(first)).build();
   const context = new TaskContext(runtime, new AbortController().signal);
   await expect(context.readFiles([first, denied])).rejects.toThrow("task scope cannot read this file");
   expect(reads).toBe(0);
-  expect(await context.readFiles([first])).toEqual([Uint8Array.of(1)]);
+  expect(await context.readFiles([first])).toEqual([Uint8Array.of(0)]);
   expect(reads).toBe(1);
 });
