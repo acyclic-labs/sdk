@@ -328,23 +328,29 @@ mod worker_context_tests {
 
     #[test]
     fn final_operation_and_filtered_context_drop_use_originating_dispatch() {
-        for filtered in [false, true] {
+        for (filtered, disabled) in [(false, false), (true, false), (true, true)] {
             for unwind in [false, true] {
                 let origin_seen = Arc::new(Mutex::new(Evidence::default()));
                 let foreign_seen = Arc::new(Mutex::new(Evidence::default()));
                 let (closed, _) = mpsc::channel();
                 let origin = tracing::Dispatch::new(
-                    tracing_subscriber::registry().with(
-                        Capture {
-                            evidence: Arc::clone(&origin_seen),
-                            closed: closed.clone(),
-                        }
-                        .with_filter(
-                            tracing_subscriber::filter::filter_fn(move |metadata| {
-                                !filtered || metadata.name() != "drop_operation"
-                            }),
-                        ),
-                    ),
+                    tracing_subscriber::registry()
+                        .with(
+                            Capture {
+                                evidence: Arc::clone(&origin_seen),
+                                closed: closed.clone(),
+                            }
+                            .with_filter(
+                                tracing_subscriber::filter::filter_fn(move |metadata| {
+                                    !filtered || metadata.name() != "drop_operation"
+                                }),
+                            ),
+                        )
+                        .with(if disabled {
+                            tracing_subscriber::filter::LevelFilter::INFO
+                        } else {
+                            tracing_subscriber::filter::LevelFilter::TRACE
+                        }),
                 );
                 let foreign =
                     tracing::Dispatch::new(tracing_subscriber::registry().with(Capture {
@@ -354,7 +360,7 @@ mod worker_context_tests {
                 let operation = tracing::dispatcher::with_default(&origin, || {
                     let root = tracing::info_span!("drop_root");
                     let caller = tracing::info_span!(parent: &root, "drop_caller");
-                    caller.in_scope(|| super::span!(INFO, "drop_operation"))
+                    caller.in_scope(|| super::span!(TRACE, "drop_operation"))
                     // Original root/caller handles die here. The operation's
                     // ancestry owns their last references until foreign drop.
                 });
@@ -387,11 +393,13 @@ mod worker_context_tests {
                         .iter()
                         .map(|(parent, _)| parent.as_deref())
                         .collect::<Vec<_>>(),
-                    [Some(if filtered {
-                        "drop_caller"
+                    [if disabled {
+                        Some("drop_caller")
+                    } else if filtered {
+                        None
                     } else {
-                        "drop_operation"
-                    })],
+                        Some("drop_operation")
+                    }],
                     "nested events lost their retained caller context"
                 );
                 for name in ["drop_root", "drop_caller"] {
