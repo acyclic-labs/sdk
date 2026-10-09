@@ -358,7 +358,7 @@ export interface McpCatalog {
      * Host-selected schema for complete model-facing result envelopes.
      * Pinned independently of remote canonical outputs with this catalog revision.
      */
-    projection_schema: Value;
+    projection_schema: WasmToolJsonSchema;
     /**
      * Complete bounded catalog, not a partially fetched `tools/list` page.
      */
@@ -644,7 +644,7 @@ export interface SummaryForkSelection {
     /**
      * Finite model projection and content bounds, narrowed by receiving scope.
      */
-    limits: Limits;
+    limits: WasmNativeLimitsWire;
     /**
      * Shared event/encoded-byte allowance for checkpoint proof and canonical tail.
      */
@@ -718,6 +718,19 @@ export interface ForkPreparation {
      * Optional immutable Summary projection selected before fork admission.
      */
     summary: SummaryForkSelection | undefined;
+}
+
+/**
+ * JavaScript-facing tool definition shape. The public TypeScript facade uses
+ * camelCase names while the native definition remains `snake_case`.
+ */
+export interface WasmToolDefinitionInput {
+    name: string;
+    revision: string;
+    description: string;
+    inputSchema: WasmToolJsonSchema;
+    outputSchema: WasmToolJsonSchema;
+    projectionSchema: WasmToolJsonSchema;
 }
 
 /**

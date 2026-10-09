@@ -15,12 +15,19 @@ import type {
   CompactionPolicy as RustCompactionPolicy, CompactionRetention as RustCompactionRetention,
   ThresholdCompaction as RustThresholdCompaction, ModelContextCapacity as RustModelContextCapacity,
   ModelTokenCount as RustModelTokenCount,
+  SummaryForkSelection as RustSummaryForkSelection, WasmNativeLimitsWire,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Assert<Condition extends true> = Condition;
 type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false;
 type AssertNever<Value extends never> = Value;
+
+type _SummaryLimitsUseExistingNativeWire = Assert<Equal<RustSummaryForkSelection["limits"], WasmNativeLimitsWire>>;
+type _SummaryLimitsPreserveEveryBigint = Assert<Equal<
+  RustSummaryForkSelection["limits"][keyof RustSummaryForkSelection["limits"]], bigint
+>>;
+
 type _BrowserAggregateBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["execute"]>[0], Omit<Command, "authority">>>;
 type _BrowserReconciliationBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["reconcile"]>[0], Omit<Command, "authority">>>;
 type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, WasmModelContentPart>>;
