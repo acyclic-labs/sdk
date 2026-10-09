@@ -166,7 +166,7 @@ impl DurableContextProvider {
             validate_compaction(reference, &source.context, &context)?;
         }
         let record = ContextRevision {
-            format_version: 3,
+            format_version: 4,
             revision,
             source: self.source.clone(),
             source_revision: self.source_revision.clone(),
@@ -293,7 +293,7 @@ impl DurableContextProvider {
         let revision: ContextRevision = crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&revision)? != bytes
-            || revision.format_version != 3
+            || revision.format_version != 4
             || revision.revision != next_revision(sequence)?
             || revision.source != self.source
             || revision.source_revision != self.source_revision
@@ -357,6 +357,7 @@ impl DurableContextProvider {
         retention: CompactionRetention,
     ) -> Result<(Context, CompactionReference)> {
         retention.validate()?;
+        context.validate_current_input()?;
         if max_messages == 0 {
             return Err(crate::Error::Invalid(
                 "compaction max_messages must be positive".into(),
@@ -374,6 +375,9 @@ impl DurableContextProvider {
             let summarized = Context {
                 messages: covered.to_vec(),
                 metadata: context.metadata.clone(),
+                current_input_index: context
+                    .current_input_index
+                    .filter(|index| *index < summary.source_messages),
             };
             if summary.source_messages == 0
                 || summary.source_digest != crate::contract::canonical_json_digest(&summarized)?
@@ -424,7 +428,8 @@ fn compact_projection(
         .enumerate()
         .filter_map(|(position, message)| {
             let parts = message.content.parts();
-            (position + 1 == context.messages.len()
+            (context.current_input_index.map(|index| index as usize) == Some(position)
+                || position + 1 == context.messages.len()
                 || position >= summary.source_messages as usize
                 || retention.roles.contains(&message.role)
                 || (retention.native_media
@@ -454,12 +459,13 @@ fn compact_projection(
     }
     let mut calls = std::collections::BTreeSet::new();
     let mut retained = vec![ModelMessage {
-        role: ModelRole::System,
+        role: ModelRole::Assistant,
         content: ModelContent::Part(ModelContentPart::File {
             file: summary.output.clone(),
             policy: crate::model::FileProjectionPolicy::BoundedFull,
         }),
     }];
+    let mut current_input_index = None;
     for position in selected {
         let message = context
             .messages
@@ -479,6 +485,11 @@ fn compact_projection(
                 _ => {}
             }
         }
+        if context.current_input_index.map(|index| index as usize) == Some(position) {
+            current_input_index = Some(u32::try_from(retained.len()).map_err(|_| {
+                crate::Error::Invalid("current input index exceeds portable count".into())
+            })?);
+        }
         retained.push(message.clone());
     }
     if !calls.is_empty() {
@@ -489,6 +500,7 @@ fn compact_projection(
     Ok(Context {
         messages: retained,
         metadata: context.metadata.clone(),
+        current_input_index,
     })
 }
 
@@ -518,6 +530,7 @@ async fn validate_context_refs(
     context: &Context,
     verifier: &dyn ContentResidencyVerifier,
 ) -> Result<()> {
+    context.validate_current_input()?;
     for message in &context.messages {
         let parts = match &message.content {
             ModelContent::Part(part) => std::slice::from_ref(part),
@@ -634,7 +647,7 @@ impl ContextStage for SourceStage {
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
             let loaded = self.source.load(input).await?;
-            Ok(selection::place_messages(context, loaded, self.placement))
+            selection::place_messages(context, loaded, self.placement)
         })
     }
 }
@@ -667,7 +680,7 @@ impl ContextStage for CompactionStage {
     fn contract(&self) -> Value {
         serde_json::json!({
             "name": self.name(),
-            "revision": "2",
+            "revision": "3",
             "max_messages": self.max_messages,
             "summary": self.summary,
             "retention": self.retention,
@@ -703,6 +716,23 @@ pub struct Context {
     /// Stage-owned, namespaced version-pinned metadata files.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmFileRefWire>"))]
     pub metadata: BTreeMap<String, FileRef>,
+    /// Position of the active turn input. Absent for standalone source projections.
+    /// Transformations must preserve this marker when they reorder or replace messages.
+    pub current_input_index: Option<u32>,
+}
+
+impl Context {
+    fn validate_current_input(&self) -> Result<()> {
+        if self
+            .current_input_index
+            .is_some_and(|index| index as usize >= self.messages.len())
+        {
+            return Err(crate::Error::Invalid(
+                "current input index is outside context".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Inputs visible to every context stage.
@@ -815,17 +845,27 @@ impl ContextPipeline {
             },
             |selected| selected.messages.clone(),
         );
+        let current_input_index = u32::try_from(base.len().checked_sub(1).ok_or_else(|| {
+            crate::Error::Invalid("current input is missing from context".into())
+        })?)
+        .map_err(|_| crate::Error::Invalid("current input index exceeds portable count".into()))?;
         let mut context = Context {
             messages: base
                 .into_iter()
                 .chain(input.prior_messages.iter().cloned())
                 .collect(),
             metadata: BTreeMap::new(),
+            current_input_index: Some(current_input_index),
         };
         validate_projected_context(&context, limits)?;
         for stage in &self.0 {
             context = stage.apply(input, context).await?;
             validate_projected_context(&context, limits)?;
+            if context.current_input_index.is_none() {
+                return Err(crate::Error::Invalid(
+                    "context stage removed the current input marker".into(),
+                ));
+            }
         }
         Ok(context)
     }
@@ -893,6 +933,7 @@ mod tests {
                 },
             ],
             metadata: BTreeMap::new(),
+            current_input_index: None,
         };
         let summary = ContextSummary {
             operation_id: crate::OperationId::new(),
@@ -910,6 +951,7 @@ mod tests {
         let prefix = Context {
             messages: source.messages[..3].to_vec(),
             metadata: source.metadata.clone(),
+            current_input_index: None,
         };
         let prefix_summary = ContextSummary {
             source_messages: 3,
@@ -993,6 +1035,7 @@ mod tests {
                 source.messages[5].clone(),
             ],
             metadata: BTreeMap::new(),
+            current_input_index: None,
         };
         let configured_summary = ContextSummary {
             source_digest: crate::contract::canonical_json_digest(&configurable)?,
@@ -1044,6 +1087,219 @@ mod tests {
 
     struct RefVerifier;
 
+    struct RemoveInputMarker;
+
+    impl ContextStage for RemoveInputMarker {
+        fn name(&self) -> &str {
+            "remove-input-marker"
+        }
+
+        fn contract(&self) -> Value {
+            serde_json::json!({"name": self.name(), "revision": "1"})
+        }
+
+        fn apply<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            mut context: Context,
+        ) -> BoxFuture<'a, Result<Context>> {
+            context.current_input_index = None;
+            Box::pin(async move { Ok(context) })
+        }
+    }
+
+    #[test]
+    fn repeated_compaction_replaces_summaries_and_retains_instructions() -> Result<()> {
+        let source = Context {
+            messages: vec![
+                message(ModelRole::System, "instructions")?,
+                message(ModelRole::User, "old")?,
+                message(ModelRole::Assistant, "old-answer")?,
+                message(ModelRole::User, "current")?,
+            ],
+            metadata: BTreeMap::new(),
+            current_input_index: Some(3),
+        };
+        let make_summary = |source: &Context, label: &str| -> Result<ContextSummary> {
+            let output = message(ModelRole::Assistant, label)?;
+            Ok(ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: u32::try_from(source.messages.len())
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                source_digest: crate::contract::canonical_json_digest(source)?,
+                output: output.content.file_refs()[0].clone(),
+            })
+        };
+        let first_summary = make_summary(&source, "first-summary")?;
+        let (mut next, reference) = DurableContextProvider::compact(
+            &source,
+            3,
+            Some(first_summary.clone()),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &source, &next)?;
+        assert_eq!(next.messages[0].role, ModelRole::Assistant);
+        next.messages.extend([
+            message(ModelRole::Assistant, "later-answer")?,
+            message(ModelRole::User, "latest")?,
+        ]);
+        next.current_input_index = Some(4);
+        let (compacted, reference) = DurableContextProvider::compact(
+            &next,
+            3,
+            Some(make_summary(&next, "second-summary")?),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &next, &compacted)?;
+        assert_eq!(compacted.messages.len(), 3);
+        assert!(compacted.messages.contains(&source.messages[0]));
+        assert_eq!(compacted.messages.last(), next.messages.last());
+        assert_eq!(compacted.current_input_index, Some(2));
+        assert!(
+            compacted
+                .messages
+                .iter()
+                .all(|message| { !message.content.file_refs().contains(&&first_summary.output) })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_retains_current_user_before_trailing_tool_results() -> Result<()> {
+        let source = Context {
+            messages: vec![
+                message(ModelRole::System, "instructions")?,
+                message(ModelRole::User, "old")?,
+                message(ModelRole::Assistant, "old-answer")?,
+                message(ModelRole::User, "current")?,
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall {
+                        call_id: "current-call".into(),
+                        name: "tool".into(),
+                        arguments: Value::Null,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "current-call".into(),
+                        name: "tool".into(),
+                        value: Value::Null,
+                    }),
+                },
+            ],
+            metadata: BTreeMap::new(),
+            current_input_index: Some(3),
+        };
+        let summary = ContextSummary {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            source_messages: 6,
+            source_digest: crate::contract::canonical_json_digest(&source)?,
+            output: message(ModelRole::Assistant, "summary")?
+                .content
+                .file_refs()[0]
+                .clone(),
+        };
+        assert!(
+            DurableContextProvider::compact(
+                &source,
+                4,
+                Some(summary.clone()),
+                CompactionRetention::default(),
+            )
+            .is_err()
+        );
+        let (compacted, reference) = DurableContextProvider::compact(
+            &source,
+            5,
+            Some(summary),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &source, &compacted)?;
+        assert!(compacted.messages.contains(&source.messages[3]));
+        assert_eq!(compacted.messages.last(), source.messages.last());
+        assert!(compacted.messages.contains(&source.messages[4]));
+        assert!(compacted.messages.contains(&source.messages[5]));
+        assert_eq!(compacted.current_input_index, Some(2));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_stages_preserve_explicit_input_position() -> Result<()> {
+        let input = ContextInput {
+            input: ModelContent::Text("active input".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: vec![ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("prior answer".into()),
+            }],
+        };
+        let source = Arc::new(Context {
+            messages: vec![message(ModelRole::User, "additional-facts")?],
+            ..Context::default()
+        });
+        let pipeline = ContextPipeline::new([
+            Arc::new(SourceStage::new(
+                "prepend",
+                "1",
+                source.clone(),
+                ContextPlacement::Prepend,
+            )) as Arc<dyn ContextStage>,
+            Arc::new(SourceStage::new(
+                "append",
+                "1",
+                source,
+                ContextPlacement::Append,
+            )),
+        ]);
+        let projected = pipeline.run(&input).await?;
+        assert_eq!(projected.current_input_index, Some(1));
+        assert_eq!(projected.messages[1].content, input.input);
+        let summary = ContextSummary {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            source_messages: 4,
+            source_digest: crate::contract::canonical_json_digest(&projected)?,
+            output: message(ModelRole::Assistant, "summary")?
+                .content
+                .file_refs()[0]
+                .clone(),
+        };
+        let (compacted, reference) = DurableContextProvider::compact(
+            &projected,
+            3,
+            Some(summary),
+            CompactionRetention::default(),
+        )?;
+        validate_compaction(&reference, &projected, &compacted)?;
+        assert_eq!(compacted.current_input_index, Some(1));
+        assert_eq!(compacted.messages[1].content, input.input);
+        assert_eq!(compacted.messages.last(), projected.messages.last());
+        assert!(
+            ContextPipeline::new([Arc::new(RemoveInputMarker) as Arc<dyn ContextStage>])
+                .run(&input)
+                .await
+                .is_err()
+        );
+
+        let invalid = Context {
+            current_input_index: Some(4),
+            ..projected
+        };
+        assert!(
+            validate_projected_context(&invalid, crate::conversation::Limits::default()).is_err()
+        );
+        assert!(
+            DurableContextProvider::compact(&invalid, 4, None, CompactionRetention::default())
+                .is_err()
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Result<()> {
         let context = Context {
@@ -1052,9 +1308,10 @@ mod tests {
                 content: ModelContent::Text("pinned".into()),
             }],
             metadata: BTreeMap::new(),
+            current_input_index: None,
         };
         let record = ContextRevision {
-            format_version: 3,
+            format_version: 4,
             revision: 1,
             source: "instructions".into(),
             source_revision: "1".into(),
@@ -1145,6 +1402,7 @@ mod tests {
             let context = Context {
                 messages: vec![message(ModelRole::System, "pinned")?],
                 metadata: BTreeMap::new(),
+                current_input_index: None,
             };
             for revision in 0..retained {
                 provider
@@ -1425,6 +1683,7 @@ mod tests {
                             content: ModelContent::Text("secret".into())
                         }],
                         metadata: BTreeMap::new(),
+                        current_input_index: None,
                     },
                     None,
                     Bytes::from_static(b"inline-rejected")
@@ -1439,6 +1698,7 @@ mod tests {
                 message(ModelRole::User, "three")?,
             ],
             metadata: BTreeMap::new(),
+            current_input_index: None,
         };
         provider
             .append(0, original.clone(), None, Bytes::from_static(b"context-1"))

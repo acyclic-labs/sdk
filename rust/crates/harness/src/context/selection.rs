@@ -267,7 +267,7 @@ pub fn apply_context_projection(
     } else {
         placement
     };
-    let context = place_messages(context, messages, placement);
+    let context = place_messages(context, messages, placement)?;
     validate_projected_context(&context, limits)?;
     Ok(context)
 }
@@ -276,20 +276,32 @@ pub(super) fn place_messages(
     mut context: Context,
     mut messages: Vec<ModelMessage>,
     placement: ContextPlacement,
-) -> Context {
+) -> Result<Context> {
+    context.validate_current_input()?;
     match placement {
         ContextPlacement::Prepend => {
+            if let Some(index) = context.current_input_index {
+                context.current_input_index = Some(
+                    u32::try_from(messages.len())
+                        .ok()
+                        .and_then(|count| index.checked_add(count))
+                        .ok_or_else(|| {
+                            Error::Invalid("current input index exceeds portable count".into())
+                        })?,
+                );
+            }
             messages.append(&mut context.messages);
             context.messages = messages;
         }
         ContextPlacement::Append => context.messages.append(&mut messages),
     }
-    context
+    Ok(context)
 }
 
 /// Validates finite projected context bounds, never silently omitting mandatory data.
 pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<()> {
     limits.validate()?;
+    context.validate_current_input()?;
     if context.messages.len() > limits.context_messages
         || context.metadata.len() > limits.attachments
         || crate::contract::canonical_json_bytes(context)?.len() as u64 > limits.render_bytes

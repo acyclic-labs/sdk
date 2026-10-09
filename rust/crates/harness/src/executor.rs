@@ -2685,6 +2685,7 @@ mod tests {
                 content: ModelContent::Text("preserve é\\0🦀 and uncertainty".into()),
             }],
             metadata: Default::default(),
+            current_input_index: None,
         };
         let instruction = ModelContent::Text("Summarize the preceding projection.".into());
         assert!(
@@ -2750,6 +2751,7 @@ mod tests {
                 content: ModelContent::Text("history to summarize".into()),
             }],
             metadata: Default::default(),
+            current_input_index: None,
         };
         let instruction = ModelContent::Text("summarize history".into());
         assert!(
@@ -4254,6 +4256,7 @@ mod tests {
                             content: ModelContent::Text("retained source".into()),
                         }],
                         metadata: Default::default(),
+                        current_input_index: None,
                     },
                     ModelContent::Text("summarize".into()),
                 )

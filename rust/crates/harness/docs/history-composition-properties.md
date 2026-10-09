@@ -126,3 +126,22 @@ raw summary provider path); add fork/fresh/summary policies over pinned logical
 history; expose Rust-owned contracts to generated/WASM/current consumers.
 Coordinate I's browser/provider-binding seam through the coordinator, keeping
 its runtime timer/spawn regions untouched. No gated owners may be awakened.
+
+Active input retention now uses `Context.current_input_index`, initialized from
+the validated selected turn before prior model/tool observations are appended.
+Shared source/selection placement shifts the marker on prepend and preserves it
+on append. Compaction keeps the marked input and reindexes it in the output;
+stages that remove it and projections with out-of-range markers fail explicitly.
+Standalone imported sources carry no active-input marker. This avoids deriving
+turn identity from whichever message most recently has the User role.
+Generated summaries now have the Assistant role, allowing a subsequent admitted
+summary to replace them while the default policy retains original System
+instructions. These semantics use context record format 4 and compaction stage
+contract revision 3. Earlier format-3/revision-2 receipts above remain prior-source.
+`target-b-clippy-input-marker-final.log` passes strict native all-target lint;
+source hashes are in `target/b-input-marker-source-hashes.json`.
+`target-b-native-input-marker.log` passes all 244 native unit and recovery tests,
+with no failures or ignored tests. Production transformations cover repeated
+compaction, trailing tool results, prepended/appended User-role facts and marker
+removal/range negatives. Generated/WASM consumers and remaining composition
+mechanisms are still unqualified.
