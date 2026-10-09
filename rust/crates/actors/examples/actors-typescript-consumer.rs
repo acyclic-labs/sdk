@@ -4,7 +4,7 @@ use acyclic_actors::{validate_create, wire};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = wire::CreateActorRequest {
-        code_sha256: vec![0x11; 32].into(),
+        code_sha256: vec![0x11; 32],
         home_region: "eu".into(),
         bindings: vec![wire::Binding {
             name: "database".into(),
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({
             "validated": true,
             "request": {
-                "code_sha256": request.code_sha256.as_ref(),
+                "code_sha256": request.code_sha256.as_slice(),
                 "home_region": request.home_region,
                 "bindings": request.bindings.iter().map(|binding| serde_json::json!({
                     "name": binding.name,
