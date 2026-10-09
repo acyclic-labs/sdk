@@ -3663,8 +3663,8 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Emits the slip seen in production — `parameters` where the pinned schema says `arguments`
-    /// — then a well-formed call once it has been told what was wrong.
+    /// Emits the slip seen in production â€” `parameters` where the pinned schema says `arguments`
+    /// â€” then a well-formed call once it has been told what was wrong.
     struct SlippingModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
@@ -4040,7 +4040,7 @@ mod tests {
         let source = crate::context::Context {
             messages: vec![ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("preserve é\\0🦀 and uncertainty".into()),
+                content: ModelContent::Text("preserve Ã©\\0ðŸ¦€ and uncertainty".into()),
             }],
             metadata: Default::default(),
             current_input_index: None,
@@ -4569,7 +4569,7 @@ mod tests {
         let journal = Journal::default();
         let input = TurnInput {
             operation_id: OperationId::new(),
-            input: ModelContent::Text("exact é\0\r\n".into()),
+            input: ModelContent::Text("exact Ã©\0\r\n".into()),
             selected_context: None,
             max_steps: 1,
         };
@@ -4624,7 +4624,7 @@ mod tests {
                 model: model.clone(),
                 messages: vec![ModelMessage {
                     role: ModelRole::User,
-                    content: ModelContent::Text("parent é\0🦀".into()),
+                    content: ModelContent::Text("parent Ã©\0ðŸ¦€".into()),
                 }],
                 tools: Vec::new(),
                 max_output_tokens: Some(4096),

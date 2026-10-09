@@ -743,29 +743,51 @@ pub(super) fn mandatory_positions(
     covered: usize,
     retention: &CompactionRetention,
 ) -> std::collections::BTreeSet<usize> {
-    context
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut selected = context
         .messages
         .iter()
         .enumerate()
         .filter_map(|(position, message)| {
-            let parts = message.content.parts();
             (context.current_input_index.map(|index| index as usize) == Some(position)
                 || position + 1 == context.messages.len()
                 || position >= covered
                 || retention.roles.contains(&message.role)
-                || (retention.native_media
-                    && parts.iter().any(|part| {
-                        matches!(
-                            part,
-                            ModelContentPart::File {
-                                policy: crate::model::FileProjectionPolicy::Native,
-                                ..
-                            }
-                        )
-                    })))
+                || (retention.native_media && message.content.contains_native_media()))
             .then_some(position)
         })
-        .collect()
+        .collect::<BTreeSet<_>>();
+    // A message can contain several calls/results. Close over the exchange graph
+    // so every mandatory message carries its complete paired messages as well.
+    let mut pending = BTreeMap::new();
+    let mut paired: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (position, message) in context.messages.iter().enumerate() {
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    pending.insert(call_id, position);
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    if let Some(call) = pending.remove(call_id) {
+                        paired.entry(call).or_default().push(position);
+                        paired.entry(position).or_default().push(call);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut visit = selected.iter().copied().collect::<Vec<_>>();
+    while let Some(position) = visit.pop() {
+        if let Some(neighbors) = paired.get(&position) {
+            for neighbor in neighbors {
+                if selected.insert(*neighbor) {
+                    visit.push(*neighbor);
+                }
+            }
+        }
+    }
+    selected
 }
 
 fn retain_compacted_messages(
@@ -1255,6 +1277,132 @@ mod tests {
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 
+    fn native_retention_policy() -> crate::model::NativeMediaPolicy {
+        crate::model::NativeMediaPolicy {
+            intent: crate::model::NativeMediaIntent::Image {
+                detail: crate::model::ImageDetail::Auto,
+            },
+            maximum_bytes: 64,
+            maximum_work: 64,
+            configuration: None,
+        }
+    }
+
+    #[test]
+    fn native_result_retention_closes_tool_pair_before_compaction_budget() -> Result<()> {
+        let file: FileRef = message(ModelRole::Assistant, "media reference")?
+            .content
+            .file_refs()
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::Invalid("media reference missing".into()))?
+            .clone();
+        // A shared call message makes every result part of the same retained
+        // exchange component, even when only its first result contains media.
+        for results in 1..=3 {
+            let calls = (0..results)
+                .map(|index| ModelContentPart::ToolCall {
+                    call_id: format!("native-{index}"),
+                    name: "native.tool".into(),
+                    arguments: Value::Null,
+                })
+                .collect();
+            let mut messages = vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("old".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Parts(calls),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("gap".into()),
+                },
+            ];
+            for index in 0..results {
+                let content = if index == 0 {
+                    crate::model::ToolResultContent::Parts {
+                        parts: vec![crate::model::ModelDataPart::File {
+                            file: file.clone(),
+                            policy: crate::model::FileProjectionPolicy::Native(
+                                native_retention_policy(),
+                            ),
+                        }],
+                    }
+                } else {
+                    crate::model::ToolResultContent::Json { value: Value::Null }
+                };
+                messages.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: format!("native-{index}"),
+                        name: "native.tool".into(),
+                        content,
+                    }),
+                });
+            }
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("current".into()),
+            });
+            let source = Context {
+                current_input_index: Some(
+                    u32::try_from(messages.len() - 1)
+                        .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?,
+                ),
+                messages,
+                metadata: BTreeMap::new(),
+            };
+            let summary = ContextSummary {
+                operation_id: crate::OperationId::new(),
+                step: 0,
+                source_messages: u32::try_from(source.messages.len())
+                    .map_err(|_| crate::Error::Invalid("fixture count exceeds u32".into()))?,
+                source_digest: crate::contract::canonical_json_digest(&source)?,
+                output: file.clone(),
+            };
+            let (compacted, reference) = DurableContextProvider::compact(
+                &source,
+                results + 3,
+                Some(summary.clone()),
+                CompactionRetention::default(),
+            )?;
+            let mut expected = vec![source.messages[1].clone()];
+            expected.extend_from_slice(&source.messages[3..]);
+            assert_eq!(compacted.messages.get(1..), Some(expected.as_slice()));
+            assert_eq!(
+                compacted.current_input_index,
+                Some(
+                    u32::try_from(results + 2)
+                        .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?
+                )
+            );
+            validate_compaction(&reference, &source, &compacted)?;
+            assert!(
+                DurableContextProvider::compact(
+                    &source,
+                    results + 2,
+                    Some(summary.clone()),
+                    CompactionRetention::default()
+                )
+                .is_err()
+            );
+            let retention = CompactionRetention {
+                native_media: false,
+                ..CompactionRetention::default()
+            };
+            let (without_media, _) =
+                DurableContextProvider::compact(&source, 2, Some(summary), retention)?;
+            assert_eq!(
+                without_media.messages.get(1..),
+                source.messages.get(source.messages.len() - 1..)
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn compaction_keeps_mandatory_messages_and_never_splits_tool_pairs() -> Result<()> {
         let source = Context {
@@ -1284,7 +1432,7 @@ mod tests {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "call".into(),
                         name: "example.tool".into(),
-                        value: Value::Null,
+                        content: crate::model::ToolResultContent::Json { value: Value::Null },
                     }),
                 },
                 ModelMessage {
@@ -1389,7 +1537,9 @@ mod tests {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::File {
                         file: summary.output.clone(),
-                        policy: crate::model::FileProjectionPolicy::Native,
+                        policy: crate::model::FileProjectionPolicy::Native(
+                            native_retention_policy(),
+                        ),
                     }),
                 },
                 source.messages[5].clone(),
@@ -1640,7 +1790,7 @@ mod tests {
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "current-call".into(),
                         name: "tool".into(),
-                        value: Value::Null,
+                        content: crate::model::ToolResultContent::Json { value: Value::Null },
                     }),
                 },
             ],
