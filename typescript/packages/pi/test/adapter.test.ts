@@ -104,3 +104,37 @@ test("Pi projects canonical JSON and ordered tool data envelopes", async () => {
   expect(projected.messages[1]?.content[0]).toEqual({ type: "tool_result", callId: "parts", name: "inspect",
     value: [{ type: "text", text: "before" }, { type: "text", text: "input" }] });
 });
+
+
+test("Pi accounting forwards the exact model and prepared request without dispatch", () => {
+  const prepared = { ...request, serializedInput: Uint8Array.of(1, 2, 3) };
+  const capacity = { contextTokens: 100_000, outputTokens: 16_384 };
+  const count = { requestDigest: new Uint8Array(32), fixedTokens: 3, messageTokens: [5] };
+  let projected = 0;
+  let dispatched = 0;
+  const bridge = {
+    contextCapacity(model: ModelRequest["model"]) { expect(model).toBe(request.model); return capacity; },
+    countTokens(value: typeof prepared) { expect(value).toBe(prepared); return count; },
+    project(value: ModelRequest) { projected++; return value; },
+    async *run() { dispatched++; yield { type: "complete" as const, metadata: null }; },
+    async reconcile() { return undefined; },
+  };
+  for (const provider of [piProvider(bridge), piDefaultProvider(bridge)]) {
+    expect(provider.contextCapacity(request.model)).toBe(capacity);
+    expect(provider.countTokens(prepared)).toBe(count);
+  }
+  expect(projected).toBe(0);
+  expect(dispatched).toBe(0);
+});
+
+test("Pi accounting rejects absent capacity and counts without guessing", () => {
+  const bridge = {
+    project(value: ModelRequest) { return value; },
+    async *run() { yield { type: "complete" as const, metadata: null }; },
+    async reconcile() { return undefined; },
+  };
+  for (const provider of [piProvider(bridge), piDefaultProvider(bridge)]) {
+    expect(() => provider.contextCapacity(request.model)).toThrow("explicit model capacity accounting");
+    expect(() => provider.countTokens({ ...request, serializedInput: new Uint8Array() })).toThrow("explicit token accounting");
+  }
+});
