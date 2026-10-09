@@ -293,7 +293,8 @@ impl HttpObjects {
     async fn call<I: Message, O: Message + Default>(
         &self,
         route: &'static str,
-        value: &I,
+        value: I,
+        validate: impl FnOnce(I, O) -> Result<O, Error>,
     ) -> Result<O, Error> {
         obs::traced(
             obs::span!(
@@ -307,12 +308,12 @@ impl HttpObjects {
                     .iter()
                     .find(|(path, _, _)| *path == route)
                     .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-                let bytes = json::encode(input, value)?;
+                let bytes = json::encode(input, &value)?;
                 if bytes.len() > REQUEST_BYTES {
                     return Err(wire::ErrorCode::QuotaExceeded.into());
                 }
                 let response = self.post(route, "application/json", bytes.into()).await?;
-                self.decode(output, response).await
+                validate(value, self.decode(output, response).await?)
             },
         )
         .await
@@ -464,28 +465,33 @@ fn frame_error(code: i32) -> Error {
 impl ObjectsProvider for HttpObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         request::create_bucket_digest(&query)?;
-        let result = self.call("buckets/create", &query).await?;
-        response::bucket(&result, &wire::BucketRef { name: query.name })?;
-        Ok(result)
+        self.call("buckets/create", query, |query, result| {
+            response::bucket(&result, &wire::BucketRef { name: query.name })?;
+            Ok(result)
+        })
+        .await
     }
     async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
         request::bucket(&query.bucket)?;
-        let result = self.call("buckets/head", &query).await?;
-        response::bucket(
-            &result,
-            query
-                .bucket
-                .as_ref()
-                .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?,
-        )?;
-        Ok(result)
+        self.call("buckets/head", query, |query, result| {
+            response::bucket(
+                &result,
+                query
+                    .bucket
+                    .as_ref()
+                    .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?,
+            )?;
+            Ok(result)
+        })
+        .await
     }
     async fn delete_bucket(
         &self,
         query: wire::DeleteBucketRequest,
     ) -> Result<wire::DeleteBucketResponse, Error> {
         request::delete_bucket_digest(&query)?;
-        self.call("buckets/delete", &query).await
+        self.call("buckets/delete", query, |_, result| Ok(result))
+            .await
     }
     async fn put(
         &self,
@@ -513,16 +519,23 @@ impl ObjectsProvider for HttpObjects {
         request::bucket(&query.bucket)?;
         request::key(&query.object_key)?;
         request::read_filters(&query.if_match, &query.if_none_match)?;
-        let result: wire::HeadObjectResponse = self.call("objects/head", &query).await?;
-        response::object_info(result.object.as_ref().ok_or_else(response::invalid)?)?;
-        Ok(result)
+        self.call(
+            "objects/head",
+            query,
+            |_, result: wire::HeadObjectResponse| {
+                response::object_info(result.object.as_ref().ok_or_else(response::invalid)?)?;
+                Ok(result)
+            },
+        )
+        .await
     }
     async fn delete(
         &self,
         query: wire::DeleteObjectRequest,
     ) -> Result<wire::DeleteObjectResponse, Error> {
         request::delete_digest(&query)?;
-        self.call("objects/delete", &query).await
+        self.call("objects/delete", query, |_, result| Ok(result))
+            .await
     }
     async fn list(
         &self,
@@ -531,18 +544,26 @@ impl ObjectsProvider for HttpObjects {
         request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
         request::bucket(&query.bucket)?;
         request::page_size(query.page_size)?;
-        let result = self.call("objects/list", &query).await?;
-        response::listing(&query, &result)?;
-        Ok(result)
+        self.call("objects/list", query, |query, result| {
+            response::listing(&query, &result)?;
+            Ok(result)
+        })
+        .await
     }
     async fn create_multipart(
         &self,
         query: wire::CreateMultipartRequest,
     ) -> Result<wire::MultipartUpload, Error> {
         request::create_multipart_digest(&query)?;
-        let result: wire::MultipartUpload = self.call("multipart/create", &query).await?;
-        request::upload_id(&result.upload_id).map_err(|_| response::invalid())?;
-        Ok(result)
+        self.call(
+            "multipart/create",
+            query,
+            |_, result: wire::MultipartUpload| {
+                request::upload_id(&result.upload_id).map_err(|_| response::invalid())?;
+                Ok(result)
+            },
+        )
+        .await
     }
     async fn upload_part(
         &self,
@@ -564,24 +585,29 @@ impl ObjectsProvider for HttpObjects {
         if query.after_part_number > 10_000 {
             return Err(wire::ErrorCode::InvalidArgument.into());
         }
-        let result = self.call("multipart/list-parts", &query).await?;
-        response::parts(&query, &result)?;
-        Ok(result)
+        self.call("multipart/list-parts", query, |query, result| {
+            response::parts(&query, &result)?;
+            Ok(result)
+        })
+        .await
     }
     async fn complete_multipart(
         &self,
         query: wire::CompleteMultipartRequest,
     ) -> Result<wire::ObjectInfo, Error> {
         request::complete_multipart_digest(&query)?;
-        let result = self.call("multipart/complete", &query).await?;
-        response::object_info(&result)?;
-        Ok(result)
+        self.call("multipart/complete", query, |_, result| {
+            response::object_info(&result)?;
+            Ok(result)
+        })
+        .await
     }
     async fn abort_multipart(
         &self,
         query: wire::AbortMultipartRequest,
     ) -> Result<wire::AbortMultipartResponse, Error> {
         request::abort_multipart_digest(&query)?;
-        self.call("multipart/abort", &query).await
+        self.call("multipart/abort", query, |_, result| Ok(result))
+            .await
     }
 }

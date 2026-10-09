@@ -1023,3 +1023,71 @@ async fn http_rejects_the_obsolete_namespace_for_an_existing_bucket()
     server.task.await??;
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_unary_trace_records_semantic_response_failure()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::body::tests::Capture;
+    use tracing_subscriber::prelude::*;
+
+    let bucket = wire::Bucket {
+        bucket: Some(wire::BucketRef {
+            name: "different.bucket".into(),
+        }),
+        created_at: Some(prost_types::Timestamp {
+            seconds: 0,
+            nanos: 0,
+        }),
+    };
+    super::response::bucket(
+        &bucket,
+        &wire::BucketRef {
+            name: "different.bucket".into(),
+        },
+    )?;
+    let body = json::encode("Bucket", &bucket)?;
+    let app = Router::new().route(
+        "/v1/objects/buckets/head",
+        post(move || {
+            let body = body.clone();
+            async move { ([("content-type", "application/json")], body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let client = HttpObjects::new(
+        &format!("http://{}", listener.local_addr()?),
+        "exact-token",
+        1024,
+    )?;
+    let (shutdown, receive) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = receive.await;
+            })
+            .await
+    });
+    let capture = Capture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(capture.clone()));
+    let result = client
+        .head_bucket(wire::HeadBucketRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+        })
+        .await;
+    let _ = shutdown.send(());
+    server.await??;
+    let error = result.err().ok_or("accepted a different bucket")?;
+    let spans = capture.spans("acyclic.objects.http.call");
+    assert_eq!(spans.len(), 1);
+    let fields = &spans.first().ok_or("missing completed span")?.fields;
+    assert_eq!(fields.get("rpc.code").map(String::as_str), Some("200"));
+    assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
+    assert_eq!(
+        fields.get("error.kind").map(String::as_str),
+        Some(error.code.as_str_name())
+    );
+    Ok(())
+}
