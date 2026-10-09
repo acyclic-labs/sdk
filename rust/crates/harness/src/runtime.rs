@@ -3935,25 +3935,57 @@ impl TaskContext {
     }
 
     async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
+        let limits = self.scope.limits();
+        let mut files = Vec::new();
+        let mut configurations = Vec::new();
+        // Finish structural limits and authority checks for the entire request
+        // before resolving even its first body.
         for message in messages {
-            let parts = match &message.content {
-                ModelContent::Text(_) => continue,
-                ModelContent::Part(part) => std::slice::from_ref(part),
-                ModelContent::Parts(parts) => parts.as_slice(),
-            };
-            for part in parts {
-                if let ModelContentPart::File { file, .. } = part {
-                    if !read_granted(self.scope.grants(), file)? {
-                        return Err(Error::Unauthorized(
-                            "task scope cannot project this file".into(),
-                        ));
-                    }
-                    let content =
-                        self.harness.content.as_ref().ok_or_else(|| {
-                            Error::Unsupported("content reader is not bound".into())
-                        })?;
-                    content.reader.verify(file).await?;
+            message.content.validate_limits(limits)?;
+            for file in message.content.file_refs() {
+                limits.validate_file(file)?;
+                if !read_granted(self.scope.grants(), file)? {
+                    return Err(Error::Unauthorized(
+                        "task scope cannot project this file".into(),
+                    ));
                 }
+                files.push(file);
+            }
+            configurations.extend(message.content.native_configurations());
+        }
+        let proofs = configurations
+            .iter()
+            .map(|binding| {
+                binding.verify_original(
+                    self.scope.extensions.as_ref(),
+                    self.scope.extension_schemas.as_ref(),
+                    self.scope.extension_runtime.as_deref(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if files.is_empty() {
+            return Ok(());
+        }
+        let content = self
+            .harness
+            .content
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
+        for (binding, (schemas, expected)) in configurations.iter().zip(proofs) {
+            let bytes = content.reader.read(&binding.configuration.content).await?;
+            schemas.verify_configuration_binding(
+                &binding.configuration,
+                expected,
+                &bytes,
+                limits,
+            )?;
+        }
+        for file in files {
+            if !configurations
+                .iter()
+                .any(|binding| &binding.configuration.content == file)
+            {
+                content.reader.verify(file).await?;
             }
         }
         Ok(())
@@ -4008,7 +4040,6 @@ impl TaskContext {
                 "model output token bound must be positive".into(),
             ));
         }
-        self.verify_model_files(&messages).await?;
         let tools = self
             .harness
             .tools
@@ -4027,12 +4058,6 @@ impl TaskContext {
             .map_or(self.scope.limits().model_steps, |bound| {
                 bound.min(self.scope.limits().model_steps)
             });
-        let step = self
-            .model_steps
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                (used < step_bound).then_some(used + 1)
-            })
-            .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
         let request = ModelRequest {
             model: binding.model.clone(),
             messages,
@@ -4040,6 +4065,40 @@ impl TaskContext {
             max_output_tokens,
         };
         let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
+        self.verify_model_files(&request.request().messages).await?;
+        let capacity = binding.provider.context_capacity(&binding.model)?;
+        capacity.validate()?;
+        let output_tokens = max_output_tokens.unwrap_or(capacity.output_tokens);
+        if output_tokens > capacity.output_tokens {
+            return Err(Error::Invalid(
+                "model output budget exceeds selected capacity".into(),
+            ));
+        }
+        let request = if max_output_tokens.is_none() {
+            let mut bounded = request.request().clone();
+            bounded.max_output_tokens = Some(output_tokens);
+            crate::model::PreparedModelRequest::prepare(bounded, self.scope.limits())?
+        } else {
+            request
+        };
+        let input_tokens = binding
+            .provider
+            .count_tokens(&request)?
+            .validate(&request)?;
+        if input_tokens
+            .checked_add(u64::from(output_tokens))
+            .is_none_or(|total| total > u64::from(capacity.context_tokens))
+        {
+            return Err(Error::Invalid(
+                "model request exceeds selected token capacity".into(),
+            ));
+        }
+        let step = self
+            .model_steps
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < step_bound).then_some(used + 1)
+            })
+            .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
@@ -6706,6 +6765,28 @@ mod tests {
     }
 
     impl ModelProvider for CompletedModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            // This fixture defines one token as one canonical request byte.
+            // The complete request is charged as fixed framing; it is not a
+            // tokenizer estimate for any real provider or native media.
+            Ok(crate::context::ModelTokenCount {
+                request_digest: request.manifest().request_digest,
+                fixed_tokens: u32::try_from(request.bytes().len())
+                    .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
+                message_tokens: vec![0; request.request().messages.len()],
+            })
+        }
+
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
