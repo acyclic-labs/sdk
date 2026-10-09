@@ -507,7 +507,8 @@ test("model event admission preserves full-width BigInts in provider JSON", () =
 
 test("public projection validator enforces complete JSON and Parts envelope byte bounds", () => {
   const definition = { name: "inspect", revision: "1", description: "Inspect", inputSchema: {},
-    outputSchema: {}, projectionSchema: { type: "object" } };
+    outputSchema: {}, projection: { schema: { type: "object" },
+      project: () => ({ kind: "json" as const, value: null }) } };
   for (const projection of [
     { kind: "json", value: "é\0🦀" },
     { kind: "parts", parts: [{ kind: "text", text: "é\0🦀" }] },
