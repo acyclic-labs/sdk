@@ -128,6 +128,21 @@ Keep in-process dispatch, Rust-backed remote semantics, and TLS evidence as
 separate gates. Reusing its scenario count as complete semantic coverage would
 exceed the consumer's actual scope.
 
+The new `tools/sdk-generator/backends/java` producer consumes verified descriptor
+snapshots through protoc 28.3 and grpc-java 1.75.0. The plugin executable matches
+Maven Central's published host digest. Eleven offline generator/runner controls pass, and
+real Actors/Workers/Stream generation from foundation source
+`51f3fe070c7b48ff5c7413671638634086aabe75` produces an installable Java 17 JAR.
+Two clean builds and a third through the reusable producer are byte-identical,
+SHA-256 `86101bcb8ab71fdc95fa7472e2a4f8e684afb7b42fe816e7abd57c4cda96115b`.
+A consumer compiled against the installed artifact matches the Rust API
+descriptors, exercises bytes, unsigned bounds, optional-zero presence and oneof,
+and checks each generated gRPC method shape against its canonical descriptor.
+All three invalid byte/integer assignments fail compilation as expected.
+This evidence qualifies those installed transport bindings. It does not qualify
+Rust-backed RPC, the remaining families, the final foundation revision, or the
+pending embedded runtime boundary.
+
 Supply executable snippets and scoped results to the docs owner with exact Rust
 source, package version, package hash, snippet source hash, runtime/compiler and
 observed output. Preserve the docs owner's TypeScript receipt interface without
