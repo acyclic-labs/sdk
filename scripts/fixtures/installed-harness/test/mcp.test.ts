@@ -19,6 +19,18 @@ test("installed MCP exports preserve explicit schema exposure, search and stdio 
     .toEqual(["mcp.installed.echo", "mcp.installed.hidden"]);
   expect(() => contracts.searchMcpCatalog({ ...catalog, discovery: "disabled" }, "", undefined, 2, 2, 8192)).toThrow();
   expect(() => contracts.validateMcpCatalog(catalog, 1, 8192)).toThrow();
+  for (const bound of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity]) {
+    expect(() => contracts.validateMcpCatalog(catalog, bound, 8192)).toThrow();
+    expect(() => contracts.validateMcpCatalog(catalog, 2, bound)).toThrow();
+    expect(() => contracts.mcpModelDefinitions(catalog, bound, 8192)).toThrow();
+    expect(() => contracts.mcpModelDefinitions(catalog, 2, bound)).toThrow();
+    expect(() => contracts.searchMcpCatalog(catalog, "", undefined, bound, 2, 8192)).toThrow();
+    expect(() => contracts.searchMcpCatalog(catalog, "", undefined, 2, bound, 8192)).toThrow();
+    expect(() => contracts.searchMcpCatalog(catalog, "", undefined, 2, 2, bound)).toThrow();
+    const provider = () => { throw new Error("invalid bounds must not invoke the provider"); };
+    expect(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, bound, 1000)).toThrow();
+    expect(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, bound)).toThrow();
+  }
   contracts.validateMcpStdioRequest({ initialization, operation, method: "tools/list", params: { cursor: "next" }, maximum_bytes: 4096 });
   expect(() => contracts.validateMcpStdioRequest({ initialization, operation,
     method: "tools/list", params: {}, maximum_bytes: 0 })).toThrow();

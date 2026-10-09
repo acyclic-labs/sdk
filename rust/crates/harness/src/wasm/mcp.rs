@@ -19,11 +19,11 @@ pub fn validate_mcp_stdio_request(
 #[wasm_bindgen(js_name=validateMcpCatalog)]
 pub fn validate_mcp_catalog(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
-    maximum_tools: u32,
-    maximum_bytes: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<McpCatalog>(catalog)?
-        .validate(maximum_tools, maximum_bytes)
+        .validate(from_js(maximum_tools)?, from_js(maximum_bytes)?)
         .map_err(js_error)
 }
 
@@ -33,13 +33,13 @@ mod browser;
 #[wasm_bindgen(js_name = mcpModelDefinitions, unchecked_return_type = "WasmModelToolDefinitionWire[]")]
 pub fn mcp_model_definitions(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
-    maximum_tools: u32,
-    maximum_bytes: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
 ) -> Result<JsValue, JsValue> {
     let catalog: McpCatalog = from_js(catalog)?;
     definitions_to_js(
         catalog
-            .model_definitions(maximum_tools, maximum_bytes)
+            .model_definitions(from_js(maximum_tools)?, from_js(maximum_bytes)?)
             .map_err(js_error)?,
     )
 }
@@ -50,18 +50,18 @@ pub fn search_mcp_catalog(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
     query: String,
     after: Option<String>,
-    maximum_results: u32,
-    maximum_tools: u32,
-    maximum_bytes: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_results: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
 ) -> Result<JsValue, JsValue> {
     let catalog: McpCatalog = from_js(catalog)?;
     let definitions = catalog
         .search(
             &query,
             after.as_deref(),
-            maximum_results,
-            maximum_tools,
-            maximum_bytes,
+            from_js(maximum_results)?,
+            from_js(maximum_tools)?,
+            from_js(maximum_bytes)?,
         )
         .map_err(js_error)?;
     definitions_to_js(definitions)

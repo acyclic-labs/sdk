@@ -8,6 +8,23 @@ await init({ module_or_path: readFileSync(new URL("../generated/wasm/acyclic_har
 const operation = "00000000-0000-0000-0000-000000000007";
 const message = `{"jsonrpc":"2.0","id":"${operation}","result":{"content":[{"type":"text","text":"hello 🦀"}],"structuredContent":{"value":18446744073709551615},"isError":false}}`;
 
+test("browser transport rejects lossy byte and deadline bounds before I/O", () => {
+  let calls = 0;
+  const provider = () => { calls++; throw new Error("unexpected I/O"); };
+  for (const invalid of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "4096", undefined, null, true]) {
+    assert.throws(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, invalid, 1000));
+    assert.throws(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, invalid));
+  }
+  const maximum = 2 ** 32 - 1;
+  const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, maximum, maximum);
+  try {
+    const request = transport.initializationRequest(operation, "client", "1");
+    assert.equal(request.maximum_response_bytes, maximum);
+    assert.equal(request.timeout_ms, maximum);
+  } finally { transport.free(); }
+  assert.equal(calls, 0);
+});
+
 test("browser I/O feeds the Rust JSON/SSE decoder at every chunk width", async () => {
   for (const sse of [false, true]) {
     const bytes = new TextEncoder().encode(sse ? `data: ${message}\r\n\r\n` : message);

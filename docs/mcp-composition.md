@@ -673,3 +673,31 @@ tooling omissions; execution is still required. Shell/package/fixture syntax
 and whitespace checks pass. No Chromium or installed-package result is claimed
 from those syntax checks. A finite private-cache local qualification window is
 requested and pending; shared-host and cross-owner integration holds remain.
+
+### Exact unsigned WASM admission checkpoint
+
+A development probe found that raw `u32` WASM parameters admitted negative,
+fractional and overflowing JavaScript numbers after wasm-bindgen narrowed them.
+For example, `-1`, `1.5` and `2^32 + 1` were accepted in each of HTTP byte bounds,
+catalog counts and search counts. The new regression controls fail against that
+old artifact, establishing a negative control before the repair.
+
+The nine MCP allowance parameters now cross the ABI as JavaScript values and
+use the existing Rust `from_js` decoder to require an exact `u32` before native
+validation. Public TypeScript parameters remain `number`; generated low-level
+ABI declarations are refreshed. There is no additional JavaScript validation
+engine. Controls cover all nine parameter positions with negative, fractional,
+overflowing, non-finite and incorrectly typed inputs, retain acceptance of the
+maximum valid unsigned value, and verify that rejection performs no provider I/O.
+The installed public-package consumer includes the numeric negative cases;
+execution of that installed suite remains pending.
+
+Actual WASM-target strict Clippy passes without a suppression. A fresh one-job
+development WASM release build passes in 47.65 seconds after headroom of 25% CPU
+and 50,227 MiB free memory. All twelve MCP Node/WASM controls pass with zero
+failures or skips, and the original nine-value probe now rejects every case.
+The initial sandboxed test attempt passed eleven controls but its owned HTTP
+fixture received loopback `EACCES`; rerunning the same suite with loopback access
+passes all twelve. Fixture syntax and whitespace checks pass. These receipts
+qualify this ABI repair, not the still-open installed, Chromium, stock-loop,
+final-platform, formal/fault or full-CI requirements.

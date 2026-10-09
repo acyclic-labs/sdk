@@ -60,3 +60,21 @@ test("MCP WASM search is ordered and retains the canonical remote output contrac
   assert.equal(searchMcpCatalog(catalog, "find", "a", 1, 3, 8192)[0].name, "mcp.fixture.b");
   assert.throws(() => searchMcpCatalog(catalog, "", undefined, 0, 3, 8192));
 });
+
+test("MCP WASM rejects lossy unsigned catalog and search allowances", () => {
+  for (const invalid of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "3", undefined, null, true]) {
+    for (const run of [
+      () => validateMcpCatalog(catalog, invalid, 8192),
+      () => validateMcpCatalog(catalog, 3, invalid),
+      () => mcpModelDefinitions(catalog, invalid, 8192),
+      () => mcpModelDefinitions(catalog, 3, invalid),
+      () => searchMcpCatalog(catalog, "", undefined, invalid, 3, 8192),
+      () => searchMcpCatalog(catalog, "", undefined, 3, invalid, 8192),
+      () => searchMcpCatalog(catalog, "", undefined, 3, 3, invalid),
+    ]) assert.throws(run, `accepted ${String(invalid)}`);
+  }
+  const maximum = 2 ** 32 - 1;
+  validateMcpCatalog(catalog, maximum, maximum);
+  assert.equal(mcpModelDefinitions(catalog, maximum, maximum).length, 3);
+  assert.equal(searchMcpCatalog(catalog, "", undefined, maximum, maximum, maximum).length, 3);
+});

@@ -1543,13 +1543,13 @@ export interface InitOutput {
     readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
-    readonly mcpModelDefinitions: (a: any, b: number, c: number) => [number, number, number];
+    readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
     readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
     readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
     readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
-    readonly searchMcpCatalog: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+    readonly searchMcpCatalog: (a: any, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
@@ -1560,7 +1560,7 @@ export interface InitOutput {
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly validateMcpCatalog: (a: any, b: number, c: number) => [number, number];
+    readonly validateMcpCatalog: (a: any, b: any, c: any) => [number, number];
     readonly validateMcpStdioRequest: (a: any) => [number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
@@ -1599,7 +1599,7 @@ export interface InitOutput {
     readonly wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
     readonly wasmmcphttptransport_initializationRequest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly wasmmcphttptransport_listToolsJson: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: any, g: any) => [number, number, number];
     readonly wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
