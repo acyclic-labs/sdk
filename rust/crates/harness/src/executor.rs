@@ -421,6 +421,7 @@ pub struct StockExecutor {
         FileRef,
         Arc<dyn crate::conversation::ContentResidencyVerifier>,
     )>,
+    task_context: Option<(crate::runtime::TaskContext, OperationId)>,
 }
 
 impl StockExecutor {
@@ -444,6 +445,7 @@ impl StockExecutor {
             policy_identity: None,
             task: None,
             inherited_prefix: None,
+            task_context: None,
         }
     }
 
@@ -505,13 +507,21 @@ impl StockExecutor {
         step: u32,
         call_id: &str,
     ) -> Result<crate::model::PreparedModelRequest> {
+        self.verify_task_context_binding(input.operation_id)?;
         let records = self
             .prefix_records(journal, input.operation_id, step)
             .await?;
-        let identity = self.request_digest(input)?;
-        if !matches!(records.first(), Some(record) if record.sequence == 1 &&
-            matches!(&record.event, ExecutionEvent::Started { request_digest } if request_digest == &identity))
-        {
+        let Some(ExecutionRecord {
+            sequence: 1,
+            event: ExecutionEvent::Started { request_digest },
+            ..
+        }) = records.first()
+        else {
+            return Err(Error::Conflict(
+                "tool prefix has another execution identity".into(),
+            ));
+        };
+        if !self.matches_request_digest(input, request_digest).await? {
             return Err(Error::Conflict(
                 "tool prefix has another execution identity".into(),
             ));
@@ -590,6 +600,51 @@ impl StockExecutor {
         Ok(self)
     }
 
+    /// Carries the original admitted context into one bound stock execution.
+    /// Context does not replace the durable host's current fence verification.
+    pub fn with_task_context(
+        mut self,
+        context: &crate::runtime::TaskContext,
+        execution_operation: OperationId,
+    ) -> Result<Self> {
+        let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
+        self.task_context = Some((context, execution_operation));
+        self.verify_task_context_binding(execution_operation)?;
+        Ok(self)
+    }
+
+    fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
+        if let Some((context, expected_operation)) = &self.task_context
+            && (*expected_operation != operation
+                || context.durable_task_id() != self.task.as_ref().map(|(_, task, _)| *task)
+                || context.scope().grants() != self.tool_scope.grants()
+                || context.scope().limits() != self.limits
+                || context.scope().run_limits() != self.tool_scope.run_limits()
+                || context.scope().extensions() != self.tool_scope.extensions())
+        {
+            return Err(Error::Unauthorized(
+                "stock task context differs from execution binding".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn invocation_context(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<crate::runtime::ToolContext>> {
+        self.task_context
+            .as_ref()
+            .map(|(context, _)| {
+                crate::runtime::ToolContext::new(
+                    context.clone(),
+                    invocation.operation_id,
+                    invocation.call_id.clone(),
+                )
+            })
+            .transpose()
+    }
+
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         let mut request = json!({
             "executor": "acyclic.stock.v4",
@@ -609,7 +664,49 @@ impl StockExecutor {
                 .ok_or_else(|| Error::Invalid("executor request is not an object".into()))?
                 .insert("task_id".into(), json!(task_id));
         }
+        if let Some((context, execution_operation)) = &self.task_context {
+            request
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("executor request is not an object".into()))?
+                .insert(
+                    "task_context".into(),
+                    json!({
+                        "admission_operation": context.id(),
+                        "execution_operation": execution_operation,
+                        "task_id": context.durable_task_id(),
+                        "run_limits": context.scope().run_limits(),
+                        "extensions": context.scope().extensions(),
+                    }),
+                );
+        }
         crate::contract::canonical_json_digest(&request)
+    }
+
+    async fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
+        if existing == &self.request_digest(input)? {
+            return Ok(true);
+        }
+        let (Some((context, _)), Some((host, task, fence))) = (&self.task_context, &self.task)
+        else {
+            return Ok(false);
+        };
+        if context.id().into_bytes() != task.into_bytes() {
+            return Ok(false);
+        }
+        // Older stock turns bound task identity, input and tool scope, but did
+        // not carry TaskContext in Started. Only the original durable host may
+        // authenticate the omitted scope fields; process-local replay cannot.
+        let mut previous = self.clone();
+        previous.task_context = None;
+        if existing != &previous.request_digest(input)? {
+            return Ok(false);
+        }
+        host.verify_execution_owner(*task, fence.clone()).await?;
+        let admitted = host.resume_scope(*task, context.id()).await?;
+        Ok(admitted.grants() == context.scope().grants()
+            && admitted.limits() == context.scope().limits()
+            && admitted.run_limits() == context.scope().run_limits()
+            && admitted.extensions() == context.scope().extensions())
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -619,6 +716,7 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
     ) -> Result<()> {
+        self.verify_task_context_binding(input.operation_id)?;
         let (tail, records) = replay_execution(journal, input.operation_id, 1, |event| {
             matches!(event, ExecutionEvent::Started { .. })
         })
@@ -632,7 +730,7 @@ impl StockExecutor {
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
-            }) if existing == &request_digest => {}
+            }) if self.matches_request_digest(input, existing).await? => {}
             Some(_) => {
                 return Err(Error::Conflict(
                     "execution identity is bound to another request or configuration".into(),
@@ -661,6 +759,7 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
+        self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
         if step >= input.max_steps {
             return Err(Error::Invalid(
@@ -1023,6 +1122,7 @@ impl StockExecutor {
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<ToolCallProgress> {
+        self.verify_task_context_binding(operation_id)?;
         let (_, records) =
             Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
         invocation.validate()?;
@@ -1195,8 +1295,16 @@ impl StockExecutor {
                     Err(error) => return Err(error),
                 }
             };
+            let tool_context = self.invocation_context(&invocation)?;
             let result = if claimed {
-                match tool.executor.execute(invocation.clone()).await {
+                let execution = if let Some(context) = tool_context {
+                    tool.executor
+                        .execute_with_context(context, invocation.clone())
+                        .await
+                } else {
+                    tool.executor.execute(invocation.clone()).await
+                };
+                match execution {
                     Ok(result) => result,
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -1216,7 +1324,14 @@ impl StockExecutor {
                     }
                 }
             } else {
-                match tool.executor.reconcile(invocation.clone()).await {
+                let reconciliation = if let Some(context) = tool_context {
+                    tool.executor
+                        .reconcile_with_context(context, invocation.clone())
+                        .await
+                } else {
+                    tool.executor.reconcile(invocation.clone()).await
+                };
+                match reconciliation {
                     Ok(Some(result)) => result,
                     Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -1429,6 +1544,7 @@ impl StockExecutor {
     ) -> BoxFuture<'a, Result<StockTurnProgress>> {
         let span = obs_span!(INFO, "acyclic.harness.executor.execute");
         traced(span, async move {
+            self.verify_task_context_binding(input.operation_id)?;
             if let Some((host, task_id, fence)) = &self.task {
                 host.verify_execution_owner(*task_id, fence.clone()).await?;
             }
@@ -1830,6 +1946,7 @@ mod tests {
         AgentId, Capabilities, Outcome,
         conversation::{FileDescriptor, VolumeOwner, VolumeRef},
         resources::ProviderRef,
+        tool::{Tool, ToolDefinition, ToolExecutor},
     };
     use futures::{FutureExt as _, stream};
     use std::collections::HashMap;
@@ -1900,6 +2017,184 @@ mod tests {
     struct FakeModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
+        let captured = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+        let mut tasks = crate::runtime::TaskRegistry::default();
+        tasks.register(crate::runtime::TaskDefinition::live(
+            "context-probe",
+            "1",
+            move |context, _: ()| {
+                let sink = sink.clone();
+                async move {
+                    *sink.lock().unwrap() = Some(context);
+                    Ok(())
+                }
+            },
+        )?)?;
+        let harness =
+            crate::runtime::AgentHarness::new(tasks, ToolRegistry::new(), scope, 1, None)?;
+        let definition = harness.task::<(), ()>("context-probe@1")?;
+        assert!(matches!(
+            harness.spawn(&definition, ()).await?.result().await?,
+            Outcome::Succeeded(())
+        ));
+        captured
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| Error::NotFound("admitted context".into()))
+    }
+
+    struct ContextOnlyTool {
+        admission: OperationId,
+        calls: AtomicUsize,
+        reconciles: AtomicUsize,
+    }
+
+    impl ToolExecutor for ContextOnlyTool {
+        fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+            async { Err(Error::Unsupported("original context required".into())) }.boxed()
+        }
+
+        fn execute_with_context<'a>(
+            &'a self,
+            context: crate::runtime::ToolContext,
+            invocation: ToolInvocation,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            async move {
+                assert_eq!(context.task().id(), self.admission);
+                assert_eq!(context.operation_id(), invocation.operation_id);
+                assert_eq!(context.call_id(), invocation.call_id);
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(Error::Storage("response lost after effect".into()))
+            }
+            .boxed()
+        }
+
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            async { Err(Error::Unsupported("original context required".into())) }.boxed()
+        }
+
+        fn reconcile_with_context<'a>(
+            &'a self,
+            context: crate::runtime::ToolContext,
+            invocation: ToolInvocation,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            async move {
+                assert_eq!(context.task().id(), self.admission);
+                assert_eq!(context.operation_id(), invocation.operation_id);
+                assert_eq!(context.call_id(), invocation.call_id);
+                self.reconciles.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(ToolResult {
+                    value: json!({"value":"hello"}),
+                }))
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn original_context_survives_tool_response_loss_and_rejects_retargeted_replay()
+    -> Result<()> {
+        let scope = RuntimeScope::new(
+            crate::Capabilities::new([
+                "task:spawn:context-probe@1",
+                "model:generate",
+                "tool:call:example.echo",
+            ]),
+            Limits::default(),
+        )?;
+        let original = capture_admitted_context(scope.clone()).await?;
+        let replacement = capture_admitted_context(scope.clone()).await?;
+        assert_ne!(original.id(), replacement.id());
+        let tool = Arc::new(ContextOnlyTool {
+            admission: original.id(),
+            calls: AtomicUsize::new(0),
+            reconciles: AtomicUsize::new(0),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(Tool {
+            definition: ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+            },
+            executor: tool.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let base = StockExecutor::new(
+            Model::new("fixture", "exact", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(scope.clone(), None)?;
+        let operation = OperationId::new();
+        let executor = base.clone().with_task_context(&original, operation)?;
+        let input = TurnInput {
+            operation_id: operation,
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        let journal = Journal::default();
+        let previous = Journal::default();
+        base.ensure_started(&previous, &input).await?;
+        assert!(matches!(
+            executor.ensure_started(&previous, &input).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            executor.execute(input.clone(), &journal).await,
+            Err(Error::Indeterminate(_))
+        ));
+        let retained = journal.0.lock().unwrap().len();
+        let retargeted = base.clone().with_task_context(&replacement, operation)?;
+        assert!(matches!(
+            retargeted.execute(input.clone(), &journal).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(journal.0.lock().unwrap().len(), retained);
+        let narrowed = scope.with_run_limits(crate::runtime::TaskRunLimits {
+            max_steps: Some(1),
+            ..Default::default()
+        })?;
+        let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
+        let reads = journal.3.load(Ordering::SeqCst);
+        assert!(matches!(
+            retargeted.execute(input.clone(), &journal).await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            retargeted
+                .completed_tool_prefix(&journal, &input, 0, "call-1")
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(journal.0.lock().unwrap().len(), retained);
+        assert_eq!(journal.3.load(Ordering::SeqCst), reads);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let result = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(result.text, "done");
+        let reads = journal.3.load(Ordering::SeqCst);
+        executor
+            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .await?;
+        assert!(journal.3.load(Ordering::SeqCst) > reads);
+        assert_eq!(executor.execute(input, &journal).await?, result);
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(tool.reconciles.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        Ok(())
     }
 
     impl ModelProvider for FakeModel {
@@ -2047,6 +2342,7 @@ mod tests {
         Mutex<Vec<ExecutionRecord>>,
         Mutex<HashMap<String, (FileRef, Vec<u8>)>>,
         Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
+        AtomicUsize,
     );
 
     #[tokio::test]
@@ -2074,6 +2370,7 @@ mod tests {
             maximum: u32,
         ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
             async move {
+                self.3.fetch_add(1, Ordering::SeqCst);
                 validate_execution_page(after, maximum)?;
                 self.0
                     .lock()
@@ -2764,6 +3061,7 @@ mod tests {
                     .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
+            AtomicUsize::new(0),
         );
         assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
         let incomplete = Journal(
@@ -2793,6 +3091,7 @@ mod tests {
                     .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
+            AtomicUsize::new(0),
         );
         assert!(matches!(
             executor
@@ -2825,6 +3124,7 @@ mod tests {
                     .map_err(|_| Error::Storage("interaction lock".into()))?
                     .clone(),
             ),
+            AtomicUsize::new(0),
         );
         assert!(matches!(
             executor

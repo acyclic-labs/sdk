@@ -569,6 +569,32 @@ impl Scheduler {
         self.ready_operations(capacity, labels, owner).next()
     }
 
+    pub(crate) fn operation_ready_for(
+        &self,
+        operation_id: OperationId,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+        owner: Option<&Authority>,
+    ) -> bool {
+        self.operations
+            .get(&operation_id)
+            .is_some_and(|operation| self.ready_operation(operation, capacity, labels, owner))
+    }
+
+    fn ready_operation(
+        &self,
+        operation: &OperationState,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+        owner: Option<&Authority>,
+    ) -> bool {
+        owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
+            && self.resources_ready(operation, capacity, labels)
+            && self
+                .require_session_capacity(operation.spec.operation_id)
+                .is_ok()
+    }
+
     fn ready_operations<'a>(
         &'a self,
         capacity: &'a ResourceSnapshot,
@@ -577,13 +603,7 @@ impl Scheduler {
     ) -> impl Iterator<Item = OperationId> + 'a {
         self.operations
             .values()
-            .filter(move |operation| {
-                owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
-                    && self.resources_ready(operation, capacity, labels)
-                    && self
-                        .require_session_capacity(operation.spec.operation_id)
-                        .is_ok()
-            })
+            .filter(move |operation| self.ready_operation(operation, capacity, labels, owner))
             .map(|operation| operation.spec.operation_id)
     }
 
@@ -1396,25 +1416,37 @@ impl Scheduler {
         self.blocked_operations(owner).next()
     }
 
+    pub(crate) fn operation_blocked_by_dependencies(
+        &self,
+        operation_id: OperationId,
+        owner: Option<&Authority>,
+    ) -> bool {
+        self.operations
+            .get(&operation_id)
+            .is_some_and(|operation| self.dependency_blocked(operation, owner))
+    }
+
+    fn dependency_blocked(&self, operation: &OperationState, owner: Option<&Authority>) -> bool {
+        owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
+            && matches!(
+                operation.phase,
+                OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
+            )
+            && operation.spec.dependencies.iter().any(|dependency| {
+                self.operations.get(dependency).is_some_and(|state| {
+                    state.phase == OperationPhase::Terminal
+                        && !matches!(state.outcome, Some(Outcome::Succeeded(_)))
+                })
+            })
+    }
+
     fn blocked_operations<'a>(
         &'a self,
         owner: Option<&'a Authority>,
     ) -> impl Iterator<Item = OperationId> + 'a {
         self.operations
             .values()
-            .filter(move |operation| {
-                owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
-                    && matches!(
-                        operation.phase,
-                        OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-                    )
-                    && operation.spec.dependencies.iter().any(|dependency| {
-                        self.operations.get(dependency).is_some_and(|state| {
-                            state.phase == OperationPhase::Terminal
-                                && !matches!(state.outcome, Some(Outcome::Succeeded(_)))
-                        })
-                    })
-            })
+            .filter(move |operation| self.dependency_blocked(operation, owner))
             .map(|operation| operation.spec.operation_id)
     }
 
