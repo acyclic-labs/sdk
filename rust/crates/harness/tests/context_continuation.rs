@@ -1564,8 +1564,17 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             _ => None,
         })
         .ok_or_else(|| Error::NotFound("actual admitted snapshot projection".into()))?;
-    let prepared: Context = serde_json::from_slice(&journal.load(projection).await?)
+    let projection_bytes = journal.load(projection).await?;
+    projection.descriptor().verify(&projection_bytes)?;
+    let projection_wire: serde_json::Value = serde_json::from_slice(&projection_bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
+    let prepared: Context = serde_json::from_value(
+        projection_wire
+            .get("context")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("prepared projection has no context".into()))?,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(prepared, composed);
     {
         let requests = model
