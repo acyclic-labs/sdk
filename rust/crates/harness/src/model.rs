@@ -665,6 +665,18 @@ pub enum ModelEvent {
     },
 }
 
+/// Executor-owned identity supplied separately from canonical model-visible bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelDispatch {
+    /// Admitted execution operation identity.
+    pub operation_id: OperationId,
+    /// Zero-based logical executor step.
+    pub step: u32,
+    /// Digest of the exact canonical request supplied with this dispatch.
+    pub request_digest: [u8; 32],
+}
+
 /// Durable identity and observed prefix of one interrupted model attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelAttempt {
@@ -678,10 +690,26 @@ pub struct ModelAttempt {
     pub observed: Vec<ModelEvent>,
 }
 
+impl ModelAttempt {
+    /// Returns the same identity supplied when the attempt was first dispatched.
+    #[must_use]
+    pub const fn dispatch(&self) -> ModelDispatch {
+        ModelDispatch {
+            operation_id: self.operation_id,
+            step: self.step,
+            request_digest: self.request_digest,
+        }
+    }
+}
+
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Starts one request and yields ordered model events.
-    fn generate<'a>(&'a self, request: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
+    fn generate<'a>(
+        &'a self,
+        request: PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> BoxStream<'a, Result<ModelEvent>>;
 
     /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(

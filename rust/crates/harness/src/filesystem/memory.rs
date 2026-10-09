@@ -1388,6 +1388,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
+            _dispatch: crate::model::ModelDispatch,
         ) -> BoxStream<'a, Result<ModelEvent>> {
             self.0
                 .lock()
@@ -1681,6 +1682,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
+            _dispatch: crate::model::ModelDispatch,
         ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = request.request();
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {

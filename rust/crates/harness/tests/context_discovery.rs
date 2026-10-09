@@ -71,6 +71,7 @@ impl acyclic_harness::model::ModelProvider for CapturingModel {
     fn generate<'a>(
         &'a self,
         request: acyclic_harness::model::PreparedModelRequest,
+        _dispatch: acyclic_harness::model::ModelDispatch,
     ) -> futures::stream::BoxStream<'a, Result<acyclic_harness::model::ModelEvent>> {
         self.0
             .lock()
