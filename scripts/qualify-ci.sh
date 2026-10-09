@@ -430,6 +430,9 @@ case "$lane" in
       bun run --filter '@acyclic-labs/harness' test:browser:mcp
     ;;
   typescript)
+    # Family admission resolves the locked Cargo graph offline before WASM
+    # compilation, so a cold runner needs the dependency index and crates first.
+    cargo fetch --locked
     # Pull requests and main pushes only; full runs cover this in the linux
     # lane. As there, check:generated runs after `bun run test` has built the
     # uncommitted packages, against the restored committed filesystem and
