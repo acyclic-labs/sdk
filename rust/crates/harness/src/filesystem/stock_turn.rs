@@ -23,7 +23,7 @@ pub struct StockTurnMachine {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 enum State {
-    Ready { command: WorkflowCommand },
+    Ready { command: Box<WorkflowCommand> },
     Waiting { operation_id: OperationId },
     Settled,
 }
@@ -128,8 +128,10 @@ impl ResumableMachine for StockTurnMachine {
         let command: WorkflowCommand = serde_json::from_value(input.clone())
             .map_err(|error| Error::Invalid(format!("invalid stock turn command: {error}")))?;
         validate_command(&command)?;
-        serde_json::to_value(State::Ready { command })
-            .map_err(|error| Error::Invalid(error.to_string()))
+        serde_json::to_value(State::Ready {
+            command: Box::new(command),
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
@@ -147,7 +149,7 @@ impl ResumableMachine for StockTurnMachine {
                     State::Waiting {
                         operation_id: command.operation_id,
                     },
-                    vec![command],
+                    vec![*command],
                     MachineStatus::Suspended,
                 )
             }
