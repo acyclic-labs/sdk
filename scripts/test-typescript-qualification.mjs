@@ -178,7 +178,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
         ["install", "--frozen-lockfile"], ["x", "tsc", "--version"],
         ["x", "tsc", "-b", "--force", "--listEmittedFiles", "--pretty", "false"],
         ["x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json", "--pretty", "false"],
-        ["test", "typescript/packages/sdk/test/public-consumer.test.ts"],
+        ["test", "./typescript/packages/sdk/test/public-consumer.test.ts"],
       ];
       const executions = commands.map((args, index) => ({ command: "fixture-bun", arguments: args, stdout: index === 1 ? "Version 5.9.3\n" : index === 2 ? outputs.map(file => `TSFILE: ${file.path}\n`).join("") : "", stderr: "" }));
       const build = { schema: "acyclic.typescript-build-receipt.v1", scope: "typescript-compiler", source_commit: sourceCommit, source_sha256: sourceDigest, source_files: source, outputs, rust_producers_qualified: false, runtime: process.version, executions };

@@ -196,7 +196,7 @@ function consumerCommands() {
     ["x", "tsc", "--version"],
     ["x", "tsc", "-b", "--force", "--listEmittedFiles", "--pretty", "false"],
     ["x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json", "--pretty", "false"],
-    ["test", "typescript/packages/sdk/test/public-consumer.test.ts"],
+    ["test", "./typescript/packages/sdk/test/public-consumer.test.ts"],
   ];
 }
 
