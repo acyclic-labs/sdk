@@ -399,14 +399,17 @@ test("Rust inventory includes nested tool media and options while preserving ori
   expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
 });
 
-test("public model content converts only typed portable quantities and preserves original option revisions", async () => {
+test("public model content preserves original option revisions across Rust context projection", async () => {
   const part = await nativeOptionPart();
-  contracts.modelContentInventory(part, DEFAULT_LIMITS);
-  const raw = contracts.decodeModelJson(contracts.encodeCanonicalJson(part)) as NativeModelContent;
-  expect(publicModelContent(raw)).toEqual(part);
-  const result = { kind: "tool_result", call_id: "call", name: "inspect",
-    content: { kind: "parts", parts: [part] } };
-  expect(publicModelContent(contracts.decodeModelJson(contracts.encodeCanonicalJson(result)) as NativeModelContent))
+  const projected = contracts.applyContextProjection({ messages: [], metadata: {} },
+    [{ role: "user", content: part }], "prompt", "append", DEFAULT_LIMITS);
+  expect(publicModelContent(projected.messages[0]!.content as NativeModelContent)).toEqual(part);
+  const result = contracts.applyContextProjection({ messages: [], metadata: {} }, [
+    { role: "assistant", content: { kind: "tool_call", callId: "call", name: "inspect", arguments: {} } },
+    { role: "tool", content: { kind: "tool_result", callId: "call", name: "inspect",
+      content: { kind: "parts", parts: [part] } } },
+  ], "prompt", "append", DEFAULT_LIMITS);
+  expect(publicModelContent(result.messages[1]!.content as NativeModelContent))
     .toEqual({ kind: "tool_result", callId: "call", name: "inspect", content: { kind: "parts", parts: [part] } });
 });
 
