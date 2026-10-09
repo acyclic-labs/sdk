@@ -788,6 +788,7 @@ impl StockExecutor {
         input: &TurnInput,
         step: u32,
     ) -> Result<()> {
+<<<<<<< HEAD
         if let Some(capacity) = self.model_capacity()? {
             let (_, records) = self
                 .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
@@ -807,6 +808,37 @@ impl StockExecutor {
                     "summary input exceeds selected model capacity".into(),
                 ));
             }
+=======
+        let (_, records) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
+            .await?;
+        if records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
+        {
+            return Ok(());
+        }
+        // Disabling automatic compaction does not disable the selected model's
+        // admission bounds for an explicit summary operation.
+        let capacity = self.provider.context_capacity(&self.model)?;
+        capacity.validate()?;
+        let output = executor.max_output_tokens.ok_or_else(|| {
+            Error::Invalid("summary requires a caller-selected output token budget".into())
+        })?;
+        if output == 0 || output > capacity.output_tokens {
+            return Err(Error::Invalid(
+                "summary output exceeds selected model capacity".into(),
+            ));
+        }
+        let prepared = executor.prepare_request(input, step, &[]).await?;
+        self.verify_model_request_content(journal, &prepared)
+            .await?;
+        let count = self.provider.count_tokens(&prepared)?.validate(&prepared)?;
+        if count + u64::from(output) > u64::from(capacity.context_tokens) {
+            return Err(Error::Invalid(
+                "summary input exceeds selected model capacity".into(),
+            ));
+>>>>>>> a57730c452 (Enforce explicit summary capacity with original native preflight)
         }
         Ok(())
     }
@@ -3964,6 +3996,27 @@ mod tests {
     }
 
     impl ModelProvider for RecoverableModel {
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(crate::context::ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4_096,
+            })
+        }
+
+        fn count_tokens(
+            &self,
+            request: &crate::model::PreparedModelRequest,
+        ) -> Result<crate::context::ModelTokenCount> {
+            // This recovery fixture's accounting unit is a canonical request
+            // byte. It does not model a production provider's tokenizer.
+            Ok(crate::context::ModelTokenCount {
+                request_digest: request.manifest().request_digest,
+                fixed_tokens: u32::try_from(request.bytes().len())
+                    .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
+                message_tokens: vec![0; request.request().messages.len()],
+            })
+        }
+
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
@@ -4021,6 +4074,98 @@ mod tests {
     }
 
     struct FakeTool(AtomicUsize);
+
+    #[tokio::test]
+    async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
+        for (capacity, output, source_length, fault, counts, expected) in [
+            (100, 1_024, 1, None, 0, "selected model capacity is invalid"),
+            (131_072, 8_192, 1, None, 0, "summary output exceeds"),
+            (4_096, 1_024, 5_000, None, 1, "summary input exceeds"),
+            (
+                131_072,
+                1_024,
+                1,
+                Some(AccountingFault::Digest),
+                1,
+                "token count does not bind",
+            ),
+        ] {
+            let provider = Arc::new(CountedModel {
+                capacity,
+                accounting_fault: fault,
+                ..Default::default()
+            });
+            let executor = uncompacted_executor(
+                Model::new("test", "explicit-summary", "1", Value::Null)?,
+                provider.clone(),
+                ContextPipeline::default(),
+                ToolRegistry::new(),
+            )
+            .with_max_output_tokens(output)?;
+            let journal = Journal::default();
+            let source = crate::context::Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("x".repeat(source_length)),
+                }],
+                ..Default::default()
+            };
+            let error = executor
+                .summarize(
+                    &journal,
+                    OperationId::new(),
+                    source,
+                    ModelContent::Text("Summarize the preceding context".into()),
+                )
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("invalid summary was admitted".into()))?;
+            assert!(matches!(error, Error::Invalid(ref message) if message.contains(expected)));
+            assert_eq!(provider.accounting_calls.load(Ordering::SeqCst), counts);
+            assert!(provider.requests.lock().unwrap().is_empty());
+            assert!(journal.0.lock().unwrap().is_empty());
+            assert!(journal.1.lock().unwrap().is_empty());
+        }
+        let provider = Arc::new(CountedModel {
+            capacity: 131_072,
+            ..Default::default()
+        });
+        let executor = uncompacted_executor(
+            Model::new("test", "explicit-summary", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_max_output_tokens(1_024)?;
+        let journal = Journal::default();
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("bounded source".into()),
+            }],
+            ..Default::default()
+        };
+        let operation = OperationId::new();
+        let instruction = ModelContent::Text("Summarize the preceding context".into());
+        let summary = executor
+            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .await?;
+        assert_eq!(journal.load(&summary.output).await?, b"summary");
+        let count_calls = provider.accounting_calls.load(Ordering::SeqCst);
+        assert_eq!(count_calls, 1);
+        assert_eq!(
+            executor
+                .summarize(&journal, operation, source, instruction)
+                .await?,
+            summary
+        );
+        assert_eq!(
+            provider.accounting_calls.load(Ordering::SeqCst),
+            count_calls
+        );
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
