@@ -182,7 +182,9 @@ both type-contract suites, and all 269 source tests pass. Production snapshot
 `454479f33` passes all 13 named portable/native/replay integration tests. The
 focused tool/schema suite passed 23 tests on production-equivalent `2e3d3d3b6`;
 the following change only consumes an owned definition in the fixture example.
-Strict full-D lint is still finishing; these are qualified subsets, not a pass
+Strict full-D library/test/example lint passed on frozen `e7abd6346`. A fresh
+installed package also passed all 51 tests, native consumer types and package
+metadata/export checks. These are qualified subsets, not a pass
 for the default LocalHarness context path or the complete goal.
 
 PR319 head `0cd892ed834acbefdeac5834e46478d5814bc553` independently passed
