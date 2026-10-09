@@ -1,0 +1,42 @@
+{
+  "protoc_version": "libprotoc 28.3",
+  "grpc_java_version": "1.75.0",
+  "grpc_java": {
+    "linux-arm64": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-linux-aarch_64.exe",
+      "sha256": "7e45a31f9aeafab9a2ae8af1f9282381a6d8c3c0d929b515b79a36a68c5f0068"
+    },
+    "linux-ppc64": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-linux-ppcle_64.exe",
+      "sha256": "142d0d81e319ba3d4a7d2ca2a9f7d9c8aebf773be6ad92e8239bf3e2af087651"
+    },
+    "linux-s390x": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-linux-s390_64.exe",
+      "sha256": "fa85e44bb07da34ee4d64f89dff7e4c15acc8638b847c94b75471d4ad3fa3cad"
+    },
+    "linux-ia32": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-linux-x86_32.exe",
+      "sha256": "822be34c8762fef26d2e08ad9145bd2316d2e636fbaa1e367e1152f5daee768d"
+    },
+    "linux-x64": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-linux-x86_64.exe",
+      "sha256": "59366fb58a19efd4e3674c1568e94ef167816151acfaad02fa4ef04bbcab293d"
+    },
+    "darwin-arm64": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-osx-aarch_64.exe",
+      "sha256": "9337efccdad01dd8f4b4ef27fa670c1ca6794158006979097faaac0c0bc2b896"
+    },
+    "darwin-x64": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-osx-x86_64.exe",
+      "sha256": "9337efccdad01dd8f4b4ef27fa670c1ca6794158006979097faaac0c0bc2b896"
+    },
+    "win32-ia32": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-windows-x86_32.exe",
+      "sha256": "7ce6b67ee3beabf0d38343a6efd986954377f4386bfc8bf333c8f8dbf0c6eca2"
+    },
+    "win32-x64": {
+      "url": "https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/1.75.0/protoc-gen-grpc-java-1.75.0-windows-x86_64.exe",
+      "sha256": "c9a88cd082d741f3190415fd230b691243baaaacfb87b2aeac7e7a98a4fe35b0"
+    }
+  }
+}

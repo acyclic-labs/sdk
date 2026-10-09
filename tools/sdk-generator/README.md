@@ -6,8 +6,11 @@ packages and the repository's CI and release scripts.
 ```text
 tools/sdk-generator/
   README.md
+  shared/               Rust manifest admission and maintained compiler pins
   backends/
     go/                 Go producer, module and focused tests
+    java/               Descriptor-based Java producer and installed controls
+    dotnet/             C# producer, pinned package and installed controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.
@@ -20,6 +23,7 @@ From the repository root:
 ```sh
 go -C tools/sdk-generator/backends/go test -p=1 -parallel=1 ./...
 go -C tools/sdk-generator/backends/go run . --help
+node --test tools/sdk-generator/backends/java/generate.test.mjs
 ```
 
 The shared Rust/TypeScript generation entrypoints currently remain in `scripts/`

@@ -32,6 +32,10 @@ const tree = [
   blob(".github/workflows/publish-npm.yml"),
   blob(".github/workflows/qualification.yml"),
   blob("tools/sdk-generator/backends/go/generate.go"),
+  blob("tools/sdk-generator/backends/java/generate.mjs"),
+  blob("tools/sdk-generator/backends/dotnet/generate.mjs"),
+  blob("tools/sdk-generator/shared/authority.mjs"),
+  blob("tools/sdk-generator/backends/future/generate.mjs"),
 ];
 const changed = (path, object = "b".repeat(40)) =>
   tree.map(entry => (entry.endsWith(`\t${path}`) ? blob(path, object) : entry));
@@ -93,8 +97,16 @@ test("unrelated workflows reach only policy and repository lanes", () => {
 
 test("isolated language generator changes reuse Rust and TypeScript builds", () => {
   const before = laneKeys(lanes, tree);
-  const after = laneKeys(lanes, changed("tools/sdk-generator/backends/go/generate.go"));
-  assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
+  for (const path of ["tools/sdk-generator/backends/go/generate.go", "tools/sdk-generator/backends/java/generate.mjs", "tools/sdk-generator/backends/dotnet/generate.mjs", "tools/sdk-generator/shared/authority.mjs"]) {
+    const after = laneKeys(lanes, changed(path));
+    assert.deepEqual(differing(before, after), ["linux", "macos", "policy"]);
+  }
+});
+
+test("unregistered generators retain full qualification inputs", () => {
+  const before = laneKeys(lanes, tree);
+  const after = laneKeys(lanes, changed("tools/sdk-generator/backends/future/generate.mjs"));
+  assert.deepEqual(differing(before, after), lanes.map(lane => lane.lane).sort());
 });
 
 test("the qualification workflow reaches every lane", () => {

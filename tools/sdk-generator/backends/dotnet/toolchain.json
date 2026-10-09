@@ -1,0 +1,65 @@
+{
+  "protoc_version": "libprotoc 28.3",
+  "grpc_csharp_version": "2.71.0",
+  "grpc_tools_package_sha512": "CiQUYwnZ0uG7jjYu7OsLdyWT9ifaM+v8E8kmJpC/zP2D7uBlNjkys56GlBRyvVDPN5tnMOjhNBfgZ3M6npiQ8g==",
+  "grpc_csharp": {
+    "win32-x64": {
+      "sha256": "6152ad99442025dd2fcc7accae5bb2ddd39823bd6e84ae1acf6e47fab49dc7ea",
+      "package_path": "tools/windows_x64/grpc_csharp_plugin.exe",
+      "url": "https://api.nuget.org/v3-flatcontainer/grpc.tools/2.71.0/grpc.tools.2.71.0.nupkg"
+    },
+    "win32-ia32": {
+      "sha256": "c0c4d6ddbc1f7bdf277bcdd7dcf44fde5abb864bef7c5441dabb8bafd4c39e4d",
+      "package_path": "tools/windows_x86/grpc_csharp_plugin.exe",
+      "url": "https://api.nuget.org/v3-flatcontainer/grpc.tools/2.71.0/grpc.tools.2.71.0.nupkg"
+    },
+    "linux-x64": {
+      "sha256": "986ed8d83e5abf359a2710ea445049dfc451716ff3eadaaf9c6c795518663643",
+      "package_path": "tools/linux_x64/grpc_csharp_plugin",
+      "url": "https://api.nuget.org/v3-flatcontainer/grpc.tools/2.71.0/grpc.tools.2.71.0.nupkg"
+    },
+    "linux-ia32": {
+      "sha256": "713b4ebb30f154022464910963ef4a050bfe9574f80fc52752e0d463fce79e42",
+      "package_path": "tools/linux_x86/grpc_csharp_plugin",
+      "url": "https://api.nuget.org/v3-flatcontainer/grpc.tools/2.71.0/grpc.tools.2.71.0.nupkg"
+    },
+    "linux-arm64": {
+      "sha256": "cf9d77f2376e28787c78ffd9b641d50d9fa8ef2f6fb1bd6ffa742aa45e2b9d0d",
+      "package_path": "tools/linux_arm64/grpc_csharp_plugin",
+      "url": "https://api.nuget.org/v3-flatcontainer/grpc.tools/2.71.0/grpc.tools.2.71.0.nupkg"
+    },
+    "darwin-x64": {
+      "sha256": "e5a957f9bbe02ac3984642294938b8cc983a62595f274f0e00f667ead6156da7",
+      "package_path": "tools/macosx_x64/grpc_csharp_plugin",
+      "url": "https://api.nuget.org/v3-flatcontainer/grpc.tools/2.71.0/grpc.tools.2.71.0.nupkg"
+    }
+  },
+  "qualification": {
+    "dotnet_sdk": "8.0.425",
+    "nuget_version": "7.9.0",
+    "nuget_exe_sha256": "992d70cac5b06c38efec91806caba64cdcc07e6d963a0959dbbbaf264d33b800",
+    "deterministic_timestamp": "2026-01-01T00:00:00Z",
+    "dependency_archives": {
+      "google.protobuf.3.31.1.nupkg": {
+        "catalog_url": "https://api.nuget.org/v3/catalog0/data/2025.05.28.19.27.03/google.protobuf.3.31.1.json",
+        "sha512": "9Hk6TtRt1Gp7TMULdsM8Cbkrtlv1A6OIaGruwDuEVNyALi9rKlWWuOSV90vPUKVBvOcCEnxw8ku5D4/eGk06Gw=="
+      },
+      "grpc.core.api.2.71.0.nupkg": {
+        "catalog_url": "https://api.nuget.org/v3/catalog0/data/2025.04.25.04.22.35/grpc.core.api.2.71.0.json",
+        "sha512": "T/fwu31w+1NdcfVJL6V2477Vd/7u164sQYH6Ytm2bym/vMuU772fTJVEANIcFZPJWbzxJCTWIOpkIc2YaYm0Dw=="
+      },
+      "microsoft.extensions.logging.abstractions.6.0.0.nupkg": {
+        "catalog_url": "https://api.nuget.org/v3/catalog0/data/2021.11.08.06.31.41/microsoft.extensions.logging.abstractions.6.0.0.json",
+        "sha512": "v7G0uYJCEEgD0aZaGgUdC45IH7yYf6L0tYphCrRZtNJOh1PFFcMqN23SxoBNHOLTliS5cqgcaOkkgZWOGoox3w=="
+      },
+      "grpc.net.client.2.71.0.nupkg": {
+        "catalog_url": "https://api.nuget.org/v3/catalog0/data/2025.04.25.04.23.12/grpc.net.client.2.71.0.json",
+        "sha512": "AJghiQ7tfeaoqLIBsJfCOakW5mZ5frklOjUlV9BxEJvBiub8FjTSNVctAsxH19w4v60KnS6YgIsRbG3NJc+Kug=="
+      },
+      "grpc.net.common.2.71.0.nupkg": {
+        "catalog_url": "https://api.nuget.org/v3/catalog0/data/2025.04.25.04.22.35/grpc.net.common.2.71.0.json",
+        "sha512": "H7TWe8ddDxOPCkdfDLJqR1qme4dwxdx7Wkf7xz1uW/uMRZ/vTGKaR2zozxZ0bPsocnJRE6JD7GB2QpWkSdVfeQ=="
+      }
+    }
+  }
+}
