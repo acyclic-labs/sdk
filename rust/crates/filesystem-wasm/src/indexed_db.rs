@@ -2630,7 +2630,7 @@ mod tests {
             .await
             .map_err(js_error)?;
         let old = Database::open(NAME)
-            .with_version(4)
+            .with_version(4_u32)
             .await
             .map_err(js_error)?;
         old.close();
@@ -2638,7 +2638,7 @@ mod tests {
         // Opening the exact prior version still succeeds: v1 admission did not
         // delete or replace the rejected database.
         let retained = Database::open(NAME)
-            .with_version(4)
+            .with_version(4_u32)
             .with_on_upgrade_needed(|_, _| {
                 Err(indexed_db_futures::error::Error::from(js_sys::Error::new(
                     "rejected database must not be recreated",
