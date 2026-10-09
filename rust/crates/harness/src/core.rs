@@ -567,6 +567,15 @@ pub struct EffectState {
     pub attempts: Vec<EffectAttemptId>,
 }
 
+pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
+    match payload {
+        EventPayload::EffectPlanned { effect_id, .. }
+        | EventPayload::EffectDispatched { effect_id, .. } => Some(*effect_id),
+        EventPayload::EffectResolved { observation } => Some(observation.effect_id),
+        _ => None,
+    }
+}
+
 /// Schema-validated event payload retained in canonical history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2104,7 +2113,46 @@ impl Reducer {
             .collect())
     }
 
-    /// Returns the current effect status.
+    /// Reconstructs one read-only effect using the same authorization and
+    /// payload reducer as canonical replay. Callers have already bound every
+    /// sparse revision to its original atomic effect locator and canonical event.
+    pub(crate) fn project_effect(
+        authority: Authority,
+        verifier: AuthorityVerifier,
+        effect_id: EffectId,
+        events: &[Event],
+    ) -> Result<EffectState> {
+        let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
+        let mut previous = 0;
+        for event in events {
+            if event.revision <= previous || event_effect_id(&event.payload) != Some(effect_id) {
+                return Err(Error::Storage(
+                    "effect projection has invalid identity or order".into(),
+                ));
+            }
+            projection.authority_verifier.verify_event(event)?;
+            projection.authorize(
+                |capability| require_recorded_capability(&event.scope, capability),
+                event.scope.agent(),
+                event.operation_id,
+                event.payload.kind(),
+            )?;
+            validate_causal_parent(
+                &projection.authority,
+                event.revision - 1,
+                event.causal_parent.as_ref(),
+            )?;
+            projection.apply_payload(&event.payload, event.revision)?;
+            previous = event.revision;
+        }
+        projection
+            .effects
+            .remove(&effect_id)
+            .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))
+    }
+
+    /// Returns the current resident effect status. Archived effects require the
+    /// owner-bound `HistoryReader` rather than guessing absence from this cache.
     #[must_use]
     pub fn effect(&self, effect_id: EffectId) -> Option<&EffectState> {
         self.effects.get(&effect_id)

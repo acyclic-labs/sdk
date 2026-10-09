@@ -163,6 +163,7 @@ pub(super) async fn publication<P: StreamProvider>(
         event,
         encode_event(reducer.authority(), event)?,
     )?;
+    super::effects::add_publication_index(client, reducer, event, &mut publication).await?;
     if !event
         .revision
         .is_multiple_of(u64::from(DEFAULT_PROJECTION_EVENTS))
@@ -205,7 +206,7 @@ pub(super) async fn publication<P: StreamProvider>(
         )
         .await?;
     }
-    publication.add_projection_index(
+    publication.add_derived_index(
         head_path(reducer.authority())?,
         event.revision / u64::from(DEFAULT_PROJECTION_EVENTS) - 1,
         Bytes::from(location_bytes),

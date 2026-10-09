@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OperationLocation {
-    authority: Authority,
-    operation_id: OperationId,
-    revision: u64,
-    intent_digest: [u8; 32],
+pub(super) struct OperationLocation {
+    pub(super) authority: Authority,
+    pub(super) operation_id: OperationId,
+    pub(super) revision: u64,
+    pub(super) intent_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,7 +167,7 @@ impl IndexedPublication {
         })
     }
 
-    pub(super) fn add_projection_index(&mut self, path: StreamPath, tail: u64, bytes: Bytes) {
+    pub(super) fn add_derived_index(&mut self, path: StreamPath, tail: u64, bytes: Bytes) {
         self.indexes.push((path, tail, bytes));
     }
 
@@ -345,6 +345,36 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
             "operation location identity is invalid".into(),
         ));
     }
+    verify_operation_locator(
+        client,
+        authority,
+        verifier,
+        &index,
+        &location,
+        maximum_bytes,
+    )
+    .await
+    .map(|(event, bytes)| (Some(event), bytes))
+}
+
+pub(super) async fn verify_operation_locator<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    index: &Record,
+    location: &OperationLocation,
+    maximum_bytes: u64,
+) -> Result<(Event, u64)> {
+    verifier.verify_audience(authority)?;
+    let index_bytes = index.value.len() as u64;
+    if index_bytes >= maximum_bytes {
+        return Err(Error::Invalid("operation lookup exceeds byte bound".into()));
+    }
+    if &location.authority != authority || location.revision == 0 {
+        return Err(Error::Storage(
+            "operation location identity is invalid".into(),
+        ));
+    }
     let canonical = StreamPath::new(authority.stream_path()?)?;
     let sequence = location.revision - 1;
     let record = one_record(client, &canonical, sequence)
@@ -355,7 +385,7 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
         .filter(|bytes| *bytes <= maximum_bytes)
         .ok_or_else(|| Error::Invalid("operation lookup exceeds byte bound".into()))?;
     let event = super::history::verify_history_record(verifier, authority, sequence, &record)?;
-    if event.operation_id != operation
+    if event.operation_id != location.operation_id
         || event.intent_digest != location.intent_digest
         || record.commit_id != index.commit_id
     {
@@ -363,7 +393,7 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
             "operation location differs from its atomic canonical event".into(),
         ));
     }
-    Ok((Some(event), consumed_bytes))
+    Ok((event, consumed_bytes))
 }
 
 /// Loads one exact archived message without reconstructing a conversation projection.
@@ -505,24 +535,15 @@ async fn verify_message_locator<P: StreamProvider>(
             "message location identity is invalid".into(),
         ));
     }
-    let canonical = StreamPath::new(authority.stream_path()?)?;
-    let sequence = location.location.revision - 1;
-    let record = one_record(client, &canonical, sequence)
-        .await?
-        .ok_or_else(|| Error::Storage("indexed canonical message is missing".into()))?;
-    let consumed_bytes = (index.value.len() as u64)
-        .checked_add(record.value.len() as u64)
-        .filter(|bytes| *bytes <= maximum_bytes)
-        .ok_or_else(|| Error::Invalid("message lookup exceeds byte bound".into()))?;
-    let event = super::history::verify_history_record(verifier, authority, sequence, &record)?;
-    if event.operation_id != location.location.operation_id
-        || event.intent_digest != location.location.intent_digest
-        || record.commit_id != index.commit_id
-    {
-        return Err(Error::Storage(
-            "message location differs from its atomic canonical event".into(),
-        ));
-    }
+    let (event, consumed_bytes) = verify_operation_locator(
+        client,
+        authority,
+        verifier,
+        &index,
+        &location.location,
+        maximum_bytes,
+    )
+    .await?;
     if location.sequence == 0 {
         return if location.message_id.is_nil()
             && matches!(
