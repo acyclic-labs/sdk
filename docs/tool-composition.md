@@ -125,7 +125,8 @@ combined source. No build slot or coordination permission approval is outstandin
 
 The full D branch now combines its portable file tools, bounded text variants,
 canonical/projection split, original native option admission, and current
-TypeScript consumers with actual main `f80ad5d25c`. Earlier development receipts
+TypeScript consumers with actual main `d6500586d9a5`, including PR314's
+producer merge `4bba8f3b0dc5`. Earlier development receipts
 above describe their named source snapshots; they do not qualify this combined
 source. PR304's dispatch fix landed independently at `98c272e8d2`.
 
@@ -150,15 +151,28 @@ or custom-provider generation. Plain native inputs remain subject to the
 selected provider's explicit capability checks; production native adapters are
 deferred.
 
-A frozen Linux `--lib --features filesystem --no-run` compile of source
-`36f33fea4012bf8b1525ee39002d133dd3b7858a` eliminated the earlier duplicate fixture
-and import errors, but failed on prerequisites absent from actual main:
-`contract::validate_json_byte_bound`, borrowed `ModelContent::parts`, and
-`ModelProvider::{context_capacity,count_tokens}` with their context result types.
-Related borrowed-content type diagnostics remain unresolved until that producer
-lands. The full browser qualification also needs the runtime owner's browser
-feature. This is compiler diagnostic evidence, not executed semantic tests or a
-platform pass. The schema generator's resolved dependencies are now locked.
+PR314 released the bounded JSON writer, borrowed model parts and provider context
+capacity/token-count contracts. Frozen full-D source `725597de5bfe` compiled on
+Linux: 288 library tests passed and three failed. Two failures were stale
+canonical fixture/assertion expectations, now corrected in the owned native
+producer. The third exposed a production default execution gap: `LocalHarness`
+runs the stock executor without the admitted original `TaskContext` required by
+the portable tools. I owns the shared authenticated context/admission producer;
+D will adapt this consumer after that qualified core lands. The existing default
+path and its test remain required. A fabricated context or a new operation per
+retry would violate the original admission and is not a remedy.
+
+All seven frozen-725597 portable/native integration tests passed separately,
+including disk reopen, actual admitted tasks, native body capture, corrupt/missing
+media and lost-response reconciliation. A fresh Windows WASM build of that source
+also passed. These results apply to their named snapshot; later source and
+nullable/readonly declaration fixes still require fresh qualification. The local
+TypeScript affected suite reached 114 passes with one stale positive prefix-schema
+mismatch, which has since been corrected. This is not a final package pass.
+
+The browser runtime feature remains dependent on I's qualified main landing.
+B's full cold-open, compaction and Summary integration also remains open. The
+schema generator's resolved dependencies are locked.
 
 Fresh generated WASM/declarations, combined native/browser/adversarial tests,
 installed-artifact checks, the final simplification review, required exact-head
