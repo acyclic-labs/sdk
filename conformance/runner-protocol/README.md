@@ -20,7 +20,7 @@ invalid.
 Validate a report and emit a deterministic receipt with:
 
 ```sh
-cargo run --locked -p acyclic-conformance --bin harness-conformance -- report.json
+cargo run --locked -p acyclic-harness-conformance --bin harness-conformance -- report.json
 ```
 
 The command reads standard input when no path is supplied. It prints a receipt

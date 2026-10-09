@@ -36,6 +36,7 @@ s3s = { workspace = true, optional = true }
 
 [[bin]]
 name = "qualify"
+test = false
 path = "src/bin/qualify.rs"
 required-features = ["local-runner"]
 
@@ -46,18 +47,41 @@ required-features = ["local-runner"]
 
 [[bin]]
 name = "bench-fs"
+test = false
 path = "src/bin/bench_fs.rs"
 required-features = ["local-runner"]
 
 [[bin]]
 name = "bench-objects"
+test = false
 path = "src/bin/bench_objects.rs"
 required-features = ["local-runner"]
 
 [[bin]]
 name = "s3-fixture"
+test = false
 path = "src/bin/s3_fixture.rs"
 required-features = ["s3-fixture"]
+
+[[bin]]
+name = "dependency_vectors"
+test = false
+
+[[bin]]
+name = "targeted_interaction_corpus"
+test = false
+
+[[bin]]
+name = "workload_corpus"
+test = false
+
+[[bin]]
+name = "workload_manifest"
+test = false
+
+[[bin]]
+name = "workload_select"
+test = false
 
 [lints]
 workspace = true

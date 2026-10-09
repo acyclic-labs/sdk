@@ -1322,9 +1322,13 @@ mod tests {
                 "one.txt",
             )
             .await?;
+        let expected_projection = json!({"kind":"json","value":"pinned text"});
+        let render_bytes = serde_json::to_vec(&expected_projection)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .len() as u64;
         let limits = Limits {
             file_bytes: 4_096,
-            render_bytes: 128,
+            render_bytes,
             ..Limits::default()
         };
         let tool = owner
@@ -1343,6 +1347,7 @@ mod tests {
         run_admitted_file_case(&owner, limits, move |task| {
             let tool = own_tool.clone();
             let invocation = own_invocation.clone();
+            let expected_projection = expected_projection.clone();
             async move {
                 let context = crate::runtime::ToolContext::new(
                     task.clone(),
@@ -1354,10 +1359,17 @@ mod tests {
                     .execute_with_context(context.clone(), invocation.clone())
                     .await?;
                 assert_eq!(result.value, json!("pinned text"));
-                assert_eq!(
-                    tool.projection.project(&invocation, &result)?,
-                    json!({"kind":"json","value":"pinned text"})
-                );
+                let projection = tool.projection.project(&invocation, &result)?;
+                assert_eq!(projection, expected_projection);
+                let content = tool.definition.validate_projection(&projection)?;
+                content.validate_limits(limits)?;
+                assert!(matches!(
+                    content.validate_limits(Limits {
+                        render_bytes: render_bytes - 1,
+                        ..limits
+                    }),
+                    Err(Error::Invalid(_))
+                ));
                 assert_eq!(
                     tool.executor
                         .reconcile_with_context(context, invocation.clone())

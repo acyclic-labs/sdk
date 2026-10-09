@@ -1,0 +1,11 @@
+name: sdk_dart_consumer
+publish_to: none
+environment:
+  sdk: ">=3.13.5 <4.0.0"
+dependencies:
+  acyclic_sdk_transport:
+    path: ../sdk
+  fixnum: 1.1.1
+  protobuf: 6.1.0
+  grpc: 5.1.0
+  protoc_plugin: 25.1.0

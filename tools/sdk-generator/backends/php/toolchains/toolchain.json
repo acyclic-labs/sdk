@@ -1,0 +1,27 @@
+{
+  "php_plugin_version": "1.82.0",
+  "php_plugin": {
+    "win32-x64": {
+      "sha256": "a518b1dc9da6327e804813ea4b4235924e5e46f0bc41144f5136ce8865994ae9",
+      "url": "https://api.github.com/repos/grpc/grpc/tarball/742600a76f5717044cde93ba424500c680e2002a",
+      "sources": {
+        "grpc": {
+          "commit": "742600a76f5717044cde93ba424500c680e2002a",
+          "archive": "grpc-source.tar.gz",
+          "archive_sha256": "6efc839e73cbbddd13c31f1b87171bd220061ea92babcd3045733e22fdfe7b7e"
+        },
+        "protobuf": {
+          "version": "28.3",
+          "archive": "protobuf-28.3.tar.gz",
+          "archive_sha256": "7c3ebd7aaedd86fa5dc479a0fda803f602caaf78d8aff7ce83b89e1b8ae7442a"
+        },
+        "abseil": {
+          "commit": "4a2c63365eff8823a5221db86ef490e828306f9d",
+          "archive": "abseil.tar.gz",
+          "archive_sha256": "c9ce636ffd20fe5a7f8e448e0c84bbc7f0eb9d0408611944bfc8d18b1ed9b0dd"
+        }
+      },
+      "build_manifest_sha256": "f02566e52ebb1c44a17b5295f79befc7a78e85e76788b5b97a70266da36be9ec"
+    }
+  }
+}
