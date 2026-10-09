@@ -1,5 +1,7 @@
 # Java producer tooling
 
+Rust manifest admission is shared in `../../shared/authority.mjs`.
+
 This backend generates protobuf messages and gRPC stubs directly from the
 canonical Rust descriptor sets. It adds no service model, validation, transport
 policy, retry or embedded runtime implementation. The generated package is a
@@ -9,7 +11,6 @@ boundary and its applicable conformance checks.
 ```text
 java/
   generate.mjs          authority validation, descriptor snapshots and generation
-  authority.mjs         shared path, digest and Rust manifest admission
   generate.test.mjs     offline admission and staging controls
   qualify.mjs           opt-in offline build and installed-consumer runner
   qualify.test.mjs      runner success, admission and failure controls

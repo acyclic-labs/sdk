@@ -6,9 +6,11 @@ packages and the repository's CI and release scripts.
 ```text
 tools/sdk-generator/
   README.md
+  shared/               Rust manifest, path and digest admission
   backends/
     go/                 Go producer, module and focused tests
     java/               Descriptor-based Java producer and installed controls
+    dotnet/             C# producer, pinned package and installed controls
 ```
 
 Each backend consumes the canonical Rust exports through maintained generators.

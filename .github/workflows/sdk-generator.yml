@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   go:
-    name: Go producer staging
+    name: Generator staging
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     env:
@@ -29,11 +29,28 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 2
+      - name: Select affected generator checks
+        id: scope
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          const changed = process.env.GITHUB_EVENT_NAME === 'pull_request'
+            ? execFileSync('git', ['diff', '--name-only', '-z', 'HEAD^', 'HEAD'], { encoding: 'utf8' }).split('\0')
+            : ['.github/workflows/sdk-generator.yml'];
+          const go = changed.some(path => path.startsWith('tools/sdk-generator/backends/go/')
+            || path === 'scripts/archive-utils.mjs' || path === '.github/workflows/sdk-generator.yml');
+          appendFileSync(process.env.GITHUB_OUTPUT, `go=${go}\n`);
+          JS
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: steps.scope.outputs.go == 'true'
         with:
           go-version: '1.27.2'
           cache: false
-      - name: Check formatting and staging
+      - name: Check Go formatting and staging
+        if: steps.scope.outputs.go == 'true'
         working-directory: tools/sdk-generator/backends/go
         shell: bash
         run: |
@@ -41,4 +58,5 @@ jobs:
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
           node --test qualify.test.mjs
-          node --test --test-concurrency=1 ../java/generate.test.mjs ../java/qualify.test.mjs
+      - name: Check shared Java and .NET staging
+        run: node --test --test-concurrency=1 tools/sdk-generator/backends/java/generate.test.mjs tools/sdk-generator/backends/java/qualify.test.mjs tools/sdk-generator/backends/dotnet/generate.test.mjs tools/sdk-generator/backends/dotnet/qualify.test.mjs

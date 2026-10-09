@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { sha256 } from "./authority.mjs";
+import { sha256 } from "../../shared/authority.mjs";
 import { qualify } from "./qualify.mjs";
 
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
