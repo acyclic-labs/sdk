@@ -654,6 +654,14 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer.set_resident_event_limit(maximum)
     }
 
+    /// Retires only closed, checkpoint-covered conversation records from memory.
+    /// Canonical Stream events and atomic identity indexes remain unchanged.
+    /// Old selections and replies must be resolved through the history reader;
+    /// this cache operation admits no events and grants no authority.
+    pub fn compact_conversation_projection(&mut self) -> Result<()> {
+        self.reducer.compact_conversation_projection()
+    }
+
     /// Installs the provider boundary that verifies every message file before admission.
     #[must_use]
     pub fn with_content_verifier(mut self, verifier: Arc<dyn ContentResidencyVerifier>) -> Self {
@@ -2097,6 +2105,36 @@ mod tests {
             maximum_bytes: 65_536,
         };
         provider.observation_reads.store(0, Ordering::SeqCst);
+        let selected = reader
+            .selected_conversation(&pinned, &selection, range_limits)
+            .await?;
+        assert_eq!(
+            selected
+                .messages()
+                .iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>(),
+            selection.message_ids
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 6);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+        assert!(selected.agent.is_none());
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .selected_conversation(
+                    &pinned,
+                    &selection,
+                    HistoryReadLimits {
+                        maximum_events: 2,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
+        provider.observation_reads.store(0, Ordering::SeqCst);
         assert_eq!(
             reader
                 .conversation_range(&pinned, 9_997, 10_000, range_limits)
@@ -2166,6 +2204,29 @@ mod tests {
                     &pinned,
                     9_997,
                     10_000,
+                    HistoryReadLimits {
+                        maximum_bytes: two_record_bytes,
+                        ..range_limits
+                    }
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 4);
+        let last_selection = crate::conversation::ModelContextSelection {
+            conversation_revision: 10_000,
+            message_ids: [9_998, 9_999, 10_000]
+                .into_iter()
+                .map(|sequence| message(sequence).id)
+                .collect(),
+            checkpoint: None,
+        };
+        provider.observation_reads.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            reader
+                .selected_conversation(
+                    &pinned,
+                    &last_selection,
                     HistoryReadLimits {
                         maximum_bytes: two_record_bytes,
                         ..range_limits

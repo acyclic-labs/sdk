@@ -59,24 +59,7 @@ impl Reducer {
     /// Closed checkpoint-covered conversation prefixes are represented by their
     /// authenticated logical cut and digest. Terminal projections still need cold retention.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let checkpoint_selection =
-            self.events
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    super::EventPayload::ModelContextSelected { selection }
-                        if selection.checkpoint.as_ref()
-                            == self.latest_context_checkpoint.as_ref()
-                            && selection.checkpoint.is_some() =>
-                    {
-                        Some(selection)
-                    }
-                    _ => None,
-                });
-        let conversation = match checkpoint_selection {
-            Some(selection) => self.conversation.checkpointed_suffix(selection)?,
-            None => self.conversation.clone(),
-        };
+        let conversation = self.checkpointed_conversation()?;
         let projection = Projection {
             lifecycle: self.lifecycle,
             active_extensions: self.active_extensions.clone(),
@@ -104,6 +87,43 @@ impl Reducer {
         snapshot.state_digest = snapshot.digest()?;
         snapshot.attestation = self.authority_verifier.attest_snapshot(&snapshot)?;
         Ok(snapshot)
+    }
+
+    fn resident_checkpoint_selection(&self) -> Option<&crate::conversation::ModelContextSelection> {
+        self.events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                super::EventPayload::ModelContextSelected { selection }
+                    if selection.checkpoint.as_ref() == self.latest_context_checkpoint.as_ref()
+                        && selection.checkpoint.is_some() =>
+                {
+                    Some(selection)
+                }
+                _ => None,
+            })
+    }
+
+    fn checkpointed_conversation(&self) -> Result<ConversationState> {
+        let checkpoint_selection = self.resident_checkpoint_selection();
+        match checkpoint_selection {
+            Some(selection) => self.conversation.checkpointed_suffix(selection),
+            None => Ok(self.conversation.clone()),
+        }
+    }
+
+    pub(crate) fn compact_conversation_projection(&mut self) -> Result<()> {
+        let selection = self.resident_checkpoint_selection();
+        let Some(selection) = selection else {
+            return Ok(());
+        };
+        if selection.conversation_revision <= self.conversation.resident_after_sequence()
+            || self.conversation.unresolved_user().is_some()
+        {
+            return Ok(());
+        }
+        self.conversation = self.conversation.checkpointed_suffix(selection)?;
+        Ok(())
     }
 
     /// Restores authenticated state without invoking any historical transition.
