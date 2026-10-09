@@ -712,9 +712,8 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         OversizedArtifact::Result,
         OversizedArtifact::Projection,
     ] {
-        let limits = Limits::default();
         let maximum = match target {
-            OversizedArtifact::Projection => limits.file_bytes.min(limits.render_bytes),
+            OversizedArtifact::Projection => limits.render_bytes,
             _ => limits.file_bytes,
         };
         let spy = Arc::new(CompletedDescriptorSpy {
@@ -726,7 +725,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             completed_reads: AtomicUsize::new(0),
             invocation_reads: AtomicUsize::new(0),
         });
-        let guarded = DurableToolRunner::new(registry.clone(), spy.clone());
+        let guarded = DurableToolRunner::new(registry.clone(), spy.clone()).with_limits(limits)?;
         assert!(matches!(guarded.run_with_context(
             first_task, operation, definition.clone(), json!({}),
             ToolContext::new(first_context.clone(), operation, operation.to_string())?,
@@ -754,13 +753,13 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert!(matches!(bounded.run_with_context(
         first_task, fresh_operation, definition.clone(), json!({"data":"x".repeat(1_024)}),
         ToolContext::new(first_context.clone(), fresh_operation, fresh_operation.to_string())?,
-    ).await, Err(Error::Invalid(message)) if message.contains("invocation exceeds")));
+    ).await, Err(Error::Invalid(message)) if message.contains("JSON exceeds declared byte bound")));
     assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     registry.remove_from_model("example.noop")?;
     assert!(registry.get("example.noop").is_none());
-    let rebuilt = DurableToolRunner::new(registry, racing_journal.clone());
+    let rebuilt = DurableToolRunner::new(registry, racing_journal.clone()).with_limits(limits)?;
     assert!(matches!(
         rebuilt
             .run_with_context(
