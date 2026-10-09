@@ -12,10 +12,11 @@ use acyclic_harness::{
         Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, Limits,
         MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
     fork::{
-        Capture, CapturedResource, CompositeForkVerifier, ForkCaptureProvider, ForkPreparation,
-        ForkRequest, ForkSeedVerifier, ForkSelection, ResourceRevision, StreamHistoryForkVerifier,
+        Capture, CapturedResource, CompositeForkVerifier, ForkCaptureProvider, ForkHistoryPolicy,
+        ForkPreparation, ForkRequest, ForkSeedVerifier, ForkSelection, ResourceRevision,
+        StreamHistoryForkVerifier,
     },
     resources::{ArtifactRef, ProviderRef, StreamRef},
     store::StreamAggregate,
@@ -139,6 +140,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         SchemaRegistry::new(),
     )
     .await?
+    .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
     .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -227,9 +229,16 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             },
         })
         .await?;
+    assert_eq!(aggregate.reducer().events().len(), 1);
+    let restored_parent = Reducer::restore(
+        aggregate.reducer().snapshot()?,
+        issuer.verifier(),
+        SchemaRegistry::new(),
+    )?;
+    assert_eq!(restored_parent.events().len(), 1);
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
-        aggregate.reducer().clone(),
+        restored_parent.clone(),
         issuer.verifier(),
         scope.clone(),
         project.clone(),
@@ -246,7 +255,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         preparation: ForkPreparation {
             child_project_volume: child_project.clone(),
             child_private_volume: child_private.clone(),
-            inherited_through_sequence: 1,
+            inherited_through_sequence: 0,
             maximum_inherited_messages: 64,
             maximum_inherited_bytes: 64 * 1_024,
             maximum_inherited_references: 64,
@@ -284,6 +293,48 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         ],
         boundary: None,
     };
+    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default())?;
+    assert_eq!(request.preparation.inherited_through_sequence, 1);
+    let mut stale = request.clone();
+    stale.parent_revision = 0;
+    assert!(matches!(
+        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+        Err(Error::Conflict(_))
+    ));
+    let mut too_small = request.clone();
+    too_small.preparation.maximum_inherited_messages = 0;
+    assert!(
+        too_small
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .is_err()
+    );
+    let mut fresh_request = request.clone();
+    fresh_request.operation_id = OperationId::from_bytes([51; 16]);
+    fresh_request.child.id = "fresh-child".into();
+    fresh_request.preparation.child_project_volume = VolumeRef::new(
+        provider.clone(),
+        "fresh-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+    )?;
+    fresh_request.preparation.child_private_volume = VolumeRef::new(
+        provider.clone(),
+        "fresh-private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(child_agent),
+    )?;
+    let fresh_request =
+        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh)?;
+    let fresh_report = aggregate
+        .prepare_fork(&preparer, fresh_request.clone())
+        .await?;
+    assert_eq!(fresh_report.inherited_through_sequence, 0);
+    assert!(fresh_report.inherited_context.is_empty());
+    assert!(fresh_report.reference_grants.is_empty());
+    assert_eq!(
+        aggregate.reconcile_fork(&preparer, fresh_request).await?,
+        Some(fresh_report),
+    );
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
     assert_eq!(report.inherited_context.len(), 1);
     assert!(
@@ -467,6 +518,50 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     aggregate
         .publish_fork_report(report.clone(), scope.clone())
         .await?;
+    let mut later_message = aggregate
+        .reducer()
+        .conversation()
+        .and_then(|state| state.messages().first())
+        .ok_or_else(|| Error::Invalid("parent message missing".into()))?
+        .clone();
+    later_message.id = Uuid::from_bytes([52; 16]);
+    later_message.sequence = 2;
+    aggregate
+        .execute(Command {
+            operation_id: OperationId::from_bytes([53; 16]),
+            idempotency_key: IdempotencyKey::new("later-parent-message")?,
+            expected_revision: aggregate.reducer().revision(),
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::AppendConversationMessage {
+                message: Box::new(later_message),
+            },
+        })
+        .await?;
+    assert_eq!(report.inherited_through_sequence, 1);
+    assert!(matches!(
+        request
+            .clone()
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+        Err(Error::Conflict(_))
+    ));
+    let mut bounded_later = request.clone();
+    bounded_later.parent_revision = aggregate.reducer().revision();
+    for selection in &mut bounded_later.selections {
+        if matches!(selection.revision, ResourceRevision::History(_)) {
+            selection.revision = ResourceRevision::History(StreamRef::new(
+                stream_provider.clone(),
+                parent.stream_path()?.into_bytes(),
+                Some(aggregate.reducer().revision().to_string()),
+            )?);
+        }
+    }
+    bounded_later.preparation.maximum_inherited_messages = 1;
+    assert!(
+        bounded_later
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .is_err()
+    );
     let restarted = FilesystemForkPreparer::new(
         host,
         aggregate.reducer().clone(),

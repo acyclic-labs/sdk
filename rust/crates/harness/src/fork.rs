@@ -809,6 +809,18 @@ pub struct ForkRequest {
     pub boundary: Option<AttestedBoundary>,
 }
 
+/// Selection of authoritative logical history before a fork is admitted.
+/// Model representation and compaction remain separate context policies.
+/// Selecting a mode supplies no providers, grants, child volumes or budgets.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ForkHistoryPolicy {
+    /// Pins the direct parent's entire logical history at the requested revision.
+    #[default]
+    Fork,
+    /// Explicitly starts without inherited conversation messages.
+    Fresh,
+}
+
 /// Immutable provider allocation and context bounds for one fork operation.
 /// Retrying the request must never choose different child volumes or a wider
 /// inherited prefix under the same operation identity.
@@ -893,6 +905,35 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
 }
 
 impl ForkRequest {
+    /// Resolves the context policy against the exact parent before preparation.
+    /// The returned request is the immutable retry/admission input. This method
+    /// never reads providers or rewrites a previously admitted request.
+    pub fn with_history_policy(
+        mut self,
+        parent: &crate::core::Reducer,
+        policy: ForkHistoryPolicy,
+    ) -> Result<Self> {
+        if &self.parent != parent.authority() || self.parent_revision != parent.revision() {
+            return Err(Error::Conflict(
+                "fork context policy requires the exact requested parent revision".into(),
+            ));
+        }
+        let conversation = parent.conversation().ok_or_else(|| {
+            Error::Invalid("fork context policy requires a parent conversation".into())
+        })?;
+        if conversation.agent.is_none() {
+            return Err(Error::Invalid(
+                "fork context policy requires a bound parent agent".into(),
+            ));
+        }
+        self.preparation.inherited_through_sequence = match policy {
+            ForkHistoryPolicy::Fork => conversation.messages().last().map_or(0, |m| m.sequence),
+            ForkHistoryPolicy::Fresh => 0,
+        };
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Checks identities, resource selections and optional attestation metadata.
     pub fn validate(&self) -> Result<()> {
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
