@@ -67,7 +67,7 @@ test("generated compaction policy validates actual capacity and finite output in
 test("generated provider accounting binds canonical requests, dimensions and portable sums", () => {
   const request: WasmModelRequestWire = {
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
-    messages: [{ role: "user", content: "Ã©ðŸ¦€" }],
+    messages: [{ role: "user", content: "é🦀" }],
     tools: [],
     max_output_tokens: 1_024,
   };
@@ -75,7 +75,7 @@ test("generated provider accounting binds canonical requests, dimensions and por
   const count: ModelTokenCountWire = {
     request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
     fixed_tokens: 100,
-    message_tokens: [new TextEncoder().encode("Ã©ðŸ¦€").byteLength + 10],
+    message_tokens: [new TextEncoder().encode("é🦀").byteLength + 10],
   };
   expect(contracts.validateModelTokenCount(request, count, DEFAULT_LIMITS)).toBe(116n);
   expect(contracts.validateModelTokenCount(request,

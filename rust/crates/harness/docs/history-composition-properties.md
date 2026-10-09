@@ -48,6 +48,12 @@ compiler, successful source review or unchanged fixture is not a passing test.
 
 ## Remaining composition work
 
+The TypeScript local stock loop does not yet invoke provider accounting or
+automatic compaction. Its passing dispatch, wire and accounting-contract tests
+do not establish that default. Browser default compaction must use admitted
+summary operations and a portable owner journal, with reload and uncertainty
+verification; a facade-only truncation or unjournaled summarizer is insufficient.
+
 The broader slice still requires bounded lifetime conversation/reducer metadata
 and bounded default cold hydration. The event cache and independent archival
 reader do not establish either property. No unrestricted memory, throughput or

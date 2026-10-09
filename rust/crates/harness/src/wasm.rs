@@ -2301,7 +2301,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = prepareForkRequest, unchecked_return_type = "ForkRequest")]
     pub fn prepare_fork_request(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "ForkRequest")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "unknown")] request: JsValue,
         #[wasm_bindgen(unchecked_param_type = "ForkHistoryPolicy | null")] policy: JsValue,
     ) -> Result<JsValue, JsValue> {
         let request: ForkRequest = from_js(request)?;

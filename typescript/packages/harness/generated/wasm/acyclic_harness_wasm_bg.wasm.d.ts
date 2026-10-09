@@ -107,6 +107,7 @@ export const wasmmcphttptransport_reconcileJson: (a: number, b: number, c: numbe
 export const wasmreducer_apply: (a: number, b: any) => [number, number, number];
 export const wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
 export const wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];
+export const wasmreducer_contextSelectionForOperation: (a: number, b: any) => [number, number, number];
 export const wasmreducer_conversationJson: (a: number) => [number, number, number, number];
 export const wasmreducer_conversationPage: (a: number, b: bigint, c: number) => [number, number, number];
 export const wasmreducer_conversationPageJson: (a: number, b: bigint, c: number) => [number, number, number, number];
@@ -122,6 +123,7 @@ export const wasmreducer_issueScopeForAgent: (a: number, b: number, c: number, d
 export const wasmreducer_issueScopeWithPolicies: (a: number, b: number, c: number, d: any) => [number, number, number];
 export const wasmreducer_issueScopeWithPoliciesForAgent: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
 export const wasmreducer_new: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
+export const wasmreducer_prepareForkRequest: (a: number, b: any, c: any) => [number, number, number];
 export const wasmreducer_prepareInheritedModelRequest: (a: number, b: any, c: any, d: any, e: any, f: any) => any;
 export const wasmreducer_protocolIdentity: (a: number) => [number, number, number];
 export const wasmreducer_restore: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
