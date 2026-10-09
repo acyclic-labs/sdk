@@ -1321,6 +1321,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn canonical_authority(&self) -> Option<&crate::core::Authority> {
+        Some(self.verifier.audience())
+    }
+
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,

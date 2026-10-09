@@ -255,6 +255,14 @@ impl ToolFailureKind {
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Authenticated canonical aggregate whose selections this journal publishes.
+    /// A provider must return its original bound authority, never an identity
+    /// supplied by the importer. `None` leaves owner-bound checkpoint import
+    /// unavailable; standalone execution and scoped loading remain independent.
+    fn canonical_authority(&self) -> Option<&crate::core::Authority> {
+        None
+    }
+
     /// Implementations must scope sequences and retry keys by `operation_id`.
     /// Reads at most `maximum` records after the exclusive one-based sequence
     /// `after`. Zero starts at the first record. A provider may return a shorter
@@ -2946,6 +2954,75 @@ pub async fn load_canonical_checkpoint_for_scope(
     crate::context::Context,
 )> {
     load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope)).await
+}
+
+/// Imports a published checkpoint whose canonical selection is attested within
+/// the supplied owner's event interval. The history reader authenticates the
+/// exact selection through its operation index; no reducer or history replay is
+/// needed. The byte allowance includes the selection's locator and event, while
+/// checkpoint artifacts use the receiving scope's effective file/render limits.
+/// Tail metadata is not charged as encoded event bytes.
+///
+/// This does not add the history after the checkpoint's coverage watermark.
+/// A fork importer must separately preserve that delta up to its pinned cut and
+/// establish receiving read authority; this function supplies neither grants
+/// nor child task admission.
+pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    scope: &RuntimeScope,
+    history: &crate::store::HistoryReader<P>,
+    cursor: &crate::store::HistoryCursor,
+    maximum_history_bytes: u64,
+) -> Result<(
+    crate::context::CanonicalContextCheckpoint,
+    crate::context::Context,
+)> {
+    let limits = crate::context::restrict_context_limits(limits, scope.limits())?;
+    validate_checkpoint_json_reference(reference, limits)?;
+    if maximum_history_bytes == 0 || cursor.after_revision > cursor.through_revision {
+        return Err(Error::Invalid(
+            "checkpoint history bounds are invalid".into(),
+        ));
+    }
+    let owner = journal.canonical_authority().ok_or_else(|| {
+        Error::Unsupported("checkpoint journal has no bound canonical owner".into())
+    })?;
+    if owner != &cursor.authority {
+        return Err(Error::Unauthorized(
+            "checkpoint journal belongs to another owner".into(),
+        ));
+    }
+    let committed = history.pin(0).await?;
+    if cursor.authority != committed.authority {
+        return Err(Error::Unauthorized(
+            "checkpoint history belongs to another owner".into(),
+        ));
+    }
+    if cursor.through_revision > committed.through_revision {
+        return Err(Error::Invalid(
+            "checkpoint history cut is not committed".into(),
+        ));
+    }
+    let (envelope, retained) =
+        load_canonical_checkpoint_for_scope(journal, reference, limits, scope).await?;
+    let (selection, _) = history
+        .operation_event_bounded(envelope.operation_id, maximum_history_bytes)
+        .await?;
+    let selection = selection
+        .ok_or_else(|| Error::Conflict("checkpoint has no owning canonical selection".into()))?;
+    if selection.revision <= cursor.after_revision
+        || selection.revision > cursor.through_revision
+        || !matches!(&selection.payload,
+            crate::core::EventPayload::ModelContextSelected { selection }
+                if selection == &envelope.selection)
+    {
+        return Err(Error::Conflict(
+            "checkpoint selection differs from its history cut".into(),
+        ));
+    }
+    Ok((envelope, retained))
 }
 
 async fn load_canonical_checkpoint_scoped(

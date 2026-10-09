@@ -788,6 +788,102 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
     );
     assert!(checkpoint.selection.checkpoint.is_some());
     assert_scoped_checkpoint_source(journal.as_ref(), &reference, limits, &retained).await?;
+    assert_checkpoint_history_cut(&storage, journal.as_ref(), &reference, limits, &retained)
+        .await?;
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one actual checkpoint admission with owner, cursor and encoded-byte negative controls"
+)]
+async fn assert_checkpoint_history_cut(
+    storage: &MemoryHarnessStorage,
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    reference: &FileRef,
+    limits: Limits,
+    expected: &Context,
+) -> Result<()> {
+    use acyclic_harness::store::HistoryReader;
+    use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
+
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
+    let cursor = history.pin(0).await?;
+    let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
+    let bytes = MAX_RECORD_BYTES as u64 * 2;
+    let (checkpoint, retained) =
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, bytes)
+            .await?;
+    assert_eq!(&retained, expected);
+    let foreign = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+    assert!(matches!(
+        load_canonical_checkpoint_at(
+            foreign.journal().as_ref(),
+            reference,
+            limits,
+            &scope,
+            &history,
+            &cursor,
+            bytes
+        )
+        .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let unbound = LostCanonicalAck {
+        inner: storage.journal(),
+        fail: std::sync::atomic::AtomicBool::new(false),
+        deny_reads: std::sync::atomic::AtomicBool::new(false),
+        tamper: std::sync::atomic::AtomicUsize::new(0),
+    };
+    assert!(matches!(
+        load_canonical_checkpoint_at(
+            &unbound, reference, limits, &scope, &history, &cursor, bytes
+        )
+        .await,
+        Err(Error::Unsupported(_))
+    ));
+    let (selection, _) = history
+        .operation_event_bounded(checkpoint.operation_id, bytes)
+        .await?;
+    let selection = selection.ok_or_else(|| Error::Invalid("missing actual selection".into()))?;
+    let mut cut = cursor.clone();
+    cut.through_revision = selection.revision - 1;
+    assert!(matches!(
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    cut = cursor.clone();
+    cut.after_revision = selection.revision;
+    assert!(matches!(
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    cut = cursor.clone();
+    cut.authority.id = "foreign-checkpoint-owner".into();
+    assert!(matches!(
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    cut = cursor.clone();
+    cut.through_revision += 1;
+    assert!(matches!(
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 0)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 1)
+            .await,
+        Err(Error::Invalid(_))
+    ));
     Ok(())
 }
 
