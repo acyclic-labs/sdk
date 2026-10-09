@@ -5,6 +5,7 @@
   "acyclic-objects",
   "acyclic-protify-proc-macro",
   "acyclic-tonic-web-wasm-client",
+  "acyclic-grpc-observability",
   "acyclic-actors",
   "acyclic-workers",
   "acyclic-stream",

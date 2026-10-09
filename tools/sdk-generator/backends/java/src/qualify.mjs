@@ -3,7 +3,7 @@ import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpath
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { canonical, loadAuthority, readInput, sha256, within } from "./authority.mjs";
+import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v2/stream.proto"];
@@ -29,7 +29,7 @@ export function qualify(args, command = spawnSync) {
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
   try { lstatSync(output); throw new Error("qualification output must be absent"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authority, javaHome, mavenHome, cache, directory]) {
+  for (const input of [packageRoot, authority, javaHome, mavenHome, cache, dirname(directory)]) {
     if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
   }
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
@@ -115,7 +115,7 @@ export function qualify(args, command = spawnSync) {
   const classpath = [jar, ...dependencies].join(delimiter);
   const consumer = join(output, "consumer");
   mkdirSync(consumer);
-  const controls = join(directory, "testdata", "consumer");
+  const controls = join(directory, "../tests/fixtures", "consumer");
   const controlNames = ["InstalledConsumer.java", ...Object.keys(negatives)];
   for (const name of controlNames) copyFileSync(join(controls, name), join(consumer, name));
   const descriptors = targets.map(name => {
@@ -151,7 +151,7 @@ export function qualify(args, command = spawnSync) {
       java_modules: sha256(readFileSync(join(javaHome, "lib", "modules"))), java_release: sha256(readFileSync(join(javaHome, "release"))),
       ...Object.fromEntries(files(mavenHome).filter(name => /\.(jar|conf)$/.test(name)).map(name => [`maven/${name}`, sha256(readFileSync(join(mavenHome, name)))])) },
     build_cache_sha256: cacheHashes, dependency_sha256: Object.fromEntries(dependencies.map(path => [path, sha256(readFileSync(path))])),
-    qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "authority.mjs"))),
+    qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     positive_controls_passed: true, negative_type_controls_rejected: 3,

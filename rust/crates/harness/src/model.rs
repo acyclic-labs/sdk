@@ -104,6 +104,16 @@ pub enum ModelContent {
 }
 
 impl ModelContent {
+    /// Ordered structured parts; plain text has no structured parts.
+    #[must_use]
+    pub fn parts(&self) -> &[ModelContentPart] {
+        match self {
+            Self::Text(_) => &[],
+            Self::Part(part) => std::slice::from_ref(part),
+            Self::Parts(parts) => parts,
+        }
+    }
+
     /// Applies the same byte and part ceilings to direct inputs and selected
     /// history before either can reach a provider or durable request journal.
     pub fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
@@ -136,26 +146,18 @@ impl ModelContent {
                     name, arguments, ..
                 } => {
                     crate::registry::validate_component_label(name, "tool name")?;
-                    if crate::contract::canonical_json_bytes(arguments)?.len() as u64
-                        > limits.render_bytes
-                    {
-                        return Err(Error::Invalid(
-                            "model tool projection exceeds render limit".into(),
-                        ));
-                    }
+                    crate::contract::validate_json_byte_bound(arguments, limits.render_bytes)
+                        .map_err(|_| {
+                            Error::Invalid("model tool projection exceeds render limit".into())
+                        })?;
                 }
                 ModelContentPart::ToolResult { name, content, .. } => {
                     crate::registry::validate_component_label(name, "tool name")?;
                     content.validate_limits(limits)?;
-                    let envelope = serde_json::to_value(content)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    if crate::contract::canonical_json_bytes(&envelope)?.len() as u64
-                        > limits.render_bytes
-                    {
-                        return Err(Error::Invalid(
-                            "model tool projection exceeds render limit".into(),
-                        ));
-                    }
+                    crate::contract::validate_json_byte_bound(content, limits.render_bytes)
+                        .map_err(|_| {
+                            Error::Invalid("model tool projection exceeds render limit".into())
+                        })?;
                 }
                 ModelContentPart::Text { .. } => {}
             }
@@ -662,11 +664,7 @@ impl ModelRequest {
         let mut pending = BTreeMap::new();
         for message in &self.messages {
             message.content.validate_limits(limits)?;
-            let parts = match &message.content {
-                ModelContent::Text(_) => &[][..],
-                ModelContent::Part(part) => std::slice::from_ref(part),
-                ModelContent::Parts(parts) => parts.as_slice(),
-            };
+            let parts = message.content.parts();
             for part in parts {
                 match part {
                     ModelContentPart::ToolCall {
@@ -1043,6 +1041,24 @@ impl ModelAttempt {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Advertises actual capacities of the exact immutable selection without effects.
+    fn context_capacity(&self, _model: &Model) -> Result<crate::context::ModelContextCapacity> {
+        Err(Error::Unsupported(
+            "selected model context capacity is unavailable".into(),
+        ))
+    }
+
+    /// Returns deterministic additive token upper bounds for this exact request.
+    /// Unsupported media/counting must fail explicitly; the SDK never guesses tokens.
+    fn count_tokens(
+        &self,
+        _request: &PreparedModelRequest,
+    ) -> Result<crate::context::ModelTokenCount> {
+        Err(Error::Unsupported(
+            "selected model token counting is unavailable".into(),
+        ))
+    }
+
     /// Starts one request and yields ordered model events.
     fn generate<'a>(
         &'a self,
