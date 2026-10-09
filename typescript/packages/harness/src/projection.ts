@@ -1,7 +1,7 @@
 /** Explicit, ref-only selection from canonical conversation history into model context. */
 import { DEFAULT_LIMITS, verifyFileBytes,
   type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
-import type { ModelContent, ModelContentPart, ModelMessage } from "./model.js";
+import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
 import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeSelectedModelContext } from "./native-contracts.js";
 import type { ContentBindings } from "./runtime.js";
 import {
@@ -77,8 +77,7 @@ export function verifiedContentResolver(
 
 export type ProjectedFile =
   | Readonly<{ kind: "reference"; text: string }>
-  | Readonly<{ kind: "text"; text: string }>
-  | Readonly<{ kind: "image"; mediaType: string; bytes: Uint8Array }>;
+  | Readonly<{ kind: "text"; text: string }>;
 
 /** Shared fail-closed file boundary for default model adapters. */
 export async function projectModelFile(
@@ -89,13 +88,11 @@ export async function projectModelFile(
     const hash = file.descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join("");
     return { kind: "reference", text: `[file: ${file.display_name}; ${file.descriptor.media_type}; sha256=${hash}; bytes=${file.descriptor.byte_length}]` };
   }
-  if (part.policy !== "native" && part.policy !== "bounded_full") {
+  if (part.policy !== "bounded_full") {
     throw new TypeError("unsupported file projection policy");
   }
-  const nativeImage = part.policy === "native"
-    && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.descriptor.media_type);
   const boundedText = part.policy === "bounded_full" && file.descriptor.media_type.startsWith("text/");
-  if (!nativeImage && !boundedText) {
+  if (!boundedText) {
     throw new TypeError("unsupported file content for selected projection policy");
   }
   const limit = options.maxResolvedBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES;
@@ -108,9 +105,6 @@ export async function projectModelFile(
   }
   await options.verifyFile?.(file, bytes);
   await verifyFileBytes(file, bytes);
-  if (nativeImage) {
-    return { kind: "image", mediaType: file.descriptor.media_type, bytes: Uint8Array.from(bytes) };
-  }
   if (boundedText) {
     return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
   }
@@ -239,18 +233,22 @@ function projectNativeContext(value: NativeSelectedModelContext): SelectedModelC
     if (Array.isArray(content)) return content.map(part => mapContentPart(part as NativeModelContentPart));
     return mapContentPart(content as NativeModelContentPart);
   };
+  const publicFile = (file: Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef => ({
+    ...file, descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
+  } as FileRef);
   const mapContentPart = (part: NativeModelContentPart): ModelContentPart => {
     if (part.kind === "tool_call") {
       return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
     }
     if (part.kind === "tool_result") {
-      return { kind: part.kind, callId: part.call_id, name: part.name, value: normalizeModelJson(part.value) };
+      const content = part.content.kind === "json"
+        ? { kind: "json" as const, value: normalizeModelJson(part.content.value) }
+        : { kind: "parts" as const, parts: part.content.parts.map(data => data.kind === "file"
+          ? { ...data, file: publicFile(data.file) } : data) as readonly ModelDataPart[] };
+      return { kind: part.kind, callId: part.call_id, name: part.name, content };
     }
     if (part.kind === "file") {
-      const file = { ...part.file,
-        descriptor: { ...part.file.descriptor, byte_length: normalizeModelInteger(part.file.descriptor.byte_length) },
-      } as FileRef;
-      return { ...part, file };
+      return { ...part, file: publicFile(part.file) };
     }
     return part;
   };

@@ -4,6 +4,8 @@ import type { SelectedModelContext } from "./projection.js";
 import type { MachineIdentityWire } from "./native-contracts.js";
 import type {
   WasmModelContentPart,
+  WasmModelDataPart,
+  WasmToolResultContent,
   WasmModelEvent,
   WasmModelJsonSchema,
   WasmModelJsonValue,
@@ -15,17 +17,36 @@ import type {
   WasmToolJsonSchema,
   WasmToolJsonValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
+import { NativeContracts } from "./native-contracts.js";
 import { validateComponentLabel as validateComponentLabelRust } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary while allowing provider-specific typing. */
 export type Model<Options = unknown> = Readonly<Omit<WasmModelWire, "options"> & { options: Options }>;
 export type ModelRole = WasmModelRole;
 
+type PublicModelDataPart<Part extends WasmModelDataPart> =
+  Part extends Readonly<{ kind: "file" }>
+    ? Readonly<Omit<Part, "file"> & { file: FileRef }>
+    : Readonly<Part>;
+export type ModelDataPart = PublicModelDataPart<WasmModelDataPart>;
+type PublicToolResultContent<Content extends WasmToolResultContent, Value> =
+  Content extends Readonly<{ kind: "json" }>
+    ? Readonly<Omit<Content, "value"> & { value: Value }>
+    : Readonly<Omit<Content, "parts"> & { parts: readonly ModelDataPart[] }>;
+/** Complete, nonrecursive result envelope derived from the Rust content contract. */
+export type ToolResultContent<Value = unknown> = PublicToolResultContent<WasmToolResultContent, Value>;
+/** Explicit identity projection using the Rust-owned JSON envelope schema. */
+export async function jsonToolProjection<Output>(schema: ToolJsonSchema): Promise<ToolProjection<unknown, Output, Output>> {
+  const contracts = await NativeContracts.create();
+  return Object.freeze({ schema: contracts.jsonToolProjectionSchema(schema),
+    project: (_invocation: ToolInvocation, result: ToolResult<Output>): ToolResultContent<Output> => ({ kind: "json", value: result.value }) });
+}
+
 type PublicModelContentPart<Part extends WasmModelContentPart, Arguments, Result> =
   Part extends Readonly<{ kind: "tool_call" }>
     ? Readonly<Omit<Part, "call_id" | "arguments"> & { callId: string; arguments: Arguments }>
     : Part extends Readonly<{ kind: "tool_result" }>
-      ? Readonly<Omit<Part, "call_id" | "value"> & { callId: string; value: Result }>
+      ? Readonly<Omit<Part, "call_id" | "content"> & { callId: string; content: ToolResultContent<Result> }>
       : Part extends Readonly<{ kind: "file" }>
         ? Readonly<Omit<Part, "file"> & { file: FileRef }>
         : Readonly<Part>;
@@ -50,6 +71,7 @@ export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema e
   readonly description: string;
   readonly inputSchema: InputSchema;
   readonly outputSchema: OutputSchema;
+  readonly projection: ToolProjection<Input, Output>;
   /** Converts only schema-admitted JSON into the handler's input type. */
   readonly parseInput: (value: unknown) => Input;
   /** Verifies the executor's schema-admitted output before typed publication. */
@@ -58,9 +80,10 @@ export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema e
 }
 /** Only the declarative schema crosses the model boundary; executors stay private. */
 export type ModelToolDefinition<InputSchema extends ToolJsonSchema = ToolJsonSchema, OutputSchema extends ToolJsonSchema = ToolJsonSchema> =
-  Readonly<Omit<WasmModelToolDefinitionWire, "input_schema" | "output_schema"> & {
+  Readonly<Omit<WasmModelToolDefinitionWire, "input_schema" | "output_schema" | "projection_schema"> & {
     inputSchema: InputSchema;
     outputSchema: OutputSchema;
+    projectionSchema: ToolJsonSchema;
   }>;
 export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
   Readonly<Omit<WasmModelRequestWire, "model" | "messages" | "tools" | "max_output_tokens"> & {
@@ -95,8 +118,16 @@ export interface ToolInvocation<Input = unknown> {
 }
 export interface ToolResult<Output = unknown> { readonly value: Output }
 export interface ToolExecutor<Input = unknown, Output = unknown> { execute(invocation: ToolInvocation<Input>): Promise<ToolResult<Output>>; reconcile(invocation: ToolInvocation<Input>): Promise<ToolResult<Output> | undefined> }
-export interface ToolProjection<Input = unknown, Output = unknown, Projected = unknown> { project(invocation: ToolInvocation<Input>, result: ToolResult<Output>): Projected }
-export interface Tool<Input = unknown, Output = unknown, Projected = unknown> { readonly definition: ToolDefinition<Input, Output>; readonly executor: ToolExecutor<Input, Output>; readonly projection: ToolProjection<Input, Output, Projected> }
+/** Pure model-facing projection with its independently pinned envelope schema. */
+export interface ToolProjection<Input = unknown, Output = unknown, Projected = unknown> {
+  readonly schema: ToolJsonSchema;
+  project(invocation: ToolInvocation<Input>, result: ToolResult<Output>): ToolResultContent<Projected>;
+}
+/** A registered definition carries its projector; the executor remains independently replaceable. */
+export interface Tool<Input = unknown, Output = unknown> {
+  readonly definition: ToolDefinition<Input, Output>;
+  readonly executor: ToolExecutor<Input, Output>;
+}
 declare const toolRefBrand: unique symbol;
 /** Opaque registered handle: implementation and executor never enter task code. */
 export interface ToolRef<Input, Output> {
@@ -117,6 +148,9 @@ export async function defineTool<Input, Output>(definition: Omit<ToolDefinition<
   await validateComponentLabel(definition.revision, "tool revision");
   if (typeof definition.parseInput !== "function" || typeof definition.parseOutput !== "function") {
     throw new TypeError("typed tools require input and output parsers");
+  }
+  if (typeof definition.projection?.project !== "function") {
+    throw new TypeError("typed tools require an explicit result projection");
   }
   return Object.freeze({ ...definition, handler });
 }
