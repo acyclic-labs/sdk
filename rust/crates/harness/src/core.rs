@@ -24,6 +24,7 @@ pub use snapshot::Snapshot;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AggregateKind {
     /// Durable agent definition and configuration.
     Agent,
@@ -46,6 +47,7 @@ pub const AUTHORITY_ID_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 /// Stable identity of one independently ordered history.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Authority {
     /// Aggregate kind.
     pub kind: AggregateKind,

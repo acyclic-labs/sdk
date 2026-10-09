@@ -1,3 +1,4 @@
+import { exerciseForkPolicy } from "./fork-policy-consumer.mjs";
 import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 
 /** Shared installed-WASM consumer exercised by Bun and actual Chromium. */
@@ -42,4 +43,5 @@ export async function exerciseCheckpoint(Harness, harness, options, contracts) {
   try { (await Harness.restore(forged, options)).free(); }
   catch (error) { rejected = error.code === ErrorCode.UNAUTHORIZED && error.message.includes("snapshot admission attestation"); }
   if (!rejected) throw new Error("forged projection with recomputed public digest accepted");
+  await exerciseForkPolicy(Harness, options, contracts);
 }

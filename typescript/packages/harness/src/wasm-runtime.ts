@@ -48,7 +48,10 @@ export function assertHarnessWasmExports(value: unknown): void {
   const prefix = typeof exports.WasmReducer === "function"
     ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareInheritedModelRequest === "function"
     : typeof exports.wasmreducer_prepareInheritedModelRequest === "function";
-  if (!contentStore || !prefix || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  const forkPolicy = typeof exports.WasmReducer === "function"
+    ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareForkRequest === "function"
+    : typeof exports.wasmreducer_prepareForkRequest === "function";
+  if (!contentStore || !prefix || !forkPolicy || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

@@ -2296,6 +2296,27 @@ impl WasmReducer {
         decode_attachment_manifest_bytes(manifest, bytes, item_count)
     }
 
+    /// Selects logical fork history against this reducer before provider preparation.
+    /// No provider, grant or model representation is chosen by this operation.
+    #[wasm_bindgen(js_name = prepareForkRequest, unchecked_return_type = "ForkRequest")]
+    pub fn prepare_fork_request(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "ForkRequest")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ForkHistoryPolicy | null")] policy: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let request: ForkRequest = from_js(request)?;
+        let policy: crate::fork::ForkHistoryPolicy = if policy.is_null() || policy.is_undefined() {
+            crate::fork::ForkHistoryPolicy::default()
+        } else {
+            from_js(policy)?
+        };
+        to_js_admitted(
+            &request
+                .with_history_policy(&self.reducer, policy)
+                .map_err(js_error)?,
+        )
+    }
+
     /// Returns the authoritative conversation projection, never a parallel JS reducer.
     #[wasm_bindgen(js_name = conversationJson)]
     pub fn conversation_json(&self) -> Result<String, JsValue> {

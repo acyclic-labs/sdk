@@ -17,7 +17,7 @@ import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.j
 import type { Attachment, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, ReferencedAttachments, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
-import type { ResourceRef } from "./fork.js";
+import type { ForkHistoryPolicy, ForkRequest, ResourceRef } from "./fork.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
 import { NativeContracts } from "./native-contracts.js";
 import { aggregateKindToWire, decodeAggregateKind } from "./enums.js";
@@ -313,6 +313,13 @@ export class Harness {
     volume: VolumeRef<Class, Family>,
   ): VolumeRef<Class, Family> {
     return this.#contracts.validate("volume_ref", volume);
+  }
+
+  /** Selects the exact logical parent boundary before any fork preparation.
+   * The default inherits logical history; fresh history is explicitly selected.
+   * Providers, child volumes, grants and finite bounds remain caller supplied. */
+  prepareForkRequest(request: ForkRequest, policy: ForkHistoryPolicy | null = null): ForkRequest {
+    return this.#core.prepareForkRequest(request, policy) as ForkRequest;
   }
 
   /** Returns a detached provider-owned resource address admitted by Rust. */

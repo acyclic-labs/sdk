@@ -631,34 +631,40 @@ impl ForkSeedVerifier for StreamHistoryForkVerifier {
 /// One exact retained resource revision selected for a child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "reference", rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ResourceRevision {
     /// Immutable Stream history prefix.
-    History(StreamRef),
+    History(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] StreamRef),
     /// Immutable project workspace generation.
     Project {
         /// Project volume selected for the child.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
         volume: VolumeRef,
         /// Exact immutable generation in that volume.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
         generation: GenerationRef,
     },
     /// Direct parent's pinned scratch. Empty paths select an empty initial view;
     /// every selected path includes its namespace subtree, preserving lineage.
     PrivateVolume {
         /// Parent or captured child scratch identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
         volume: VolumeRef,
         /// Immutable source or child generation.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
         generation: GenerationRef,
         /// Explicit scratch paths, excluding reserved runtime state.
+        #[cfg_attr(feature = "wasm", tsify(type = "readonly string[]"))]
         paths: Vec<String>,
     },
     /// Selected model context revision.
-    Context(ContextRef),
+    Context(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] ContextRef),
     /// Qualified process checkpoint.
-    Process(CheckpointRef),
+    Process(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] CheckpointRef),
     /// Immutable retained artifact.
-    Artifact(ArtifactRef),
+    Artifact(#[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))] ArtifactRef),
     /// Session-shared volume reference.
-    SharedVolume(VolumeRef),
+    SharedVolume(#[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))] VolumeRef),
     /// Namespaced extension state with pinned implementation version.
     Extension {
         /// Namespaced state identity.
@@ -666,8 +672,10 @@ pub enum ResourceRevision {
         /// Immutable extension implementation version.
         version: u32,
         /// Digest of the exact extension implementation selected by the parent.
+        #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
         implementation_digest: [u8; 32],
         /// Provider-owned retained state reference.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmResourceRefWire"))]
         reference: ResourceRef,
     },
 }
@@ -757,6 +765,7 @@ impl ResourceRevision {
 /// Required or optional exact resource selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkSelection {
     /// Required selections must capture successfully before publication.
     pub required: bool,
@@ -767,10 +776,13 @@ pub struct ForkSelection {
 /// Provider evidence of a consistent boundary across selected resources.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct AttestedBoundary {
     /// Provider qualified to attest this boundary.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmProviderRefWire"))]
     pub provider: ProviderRef,
     /// Opaque bounded proof, interpreted only by that provider.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub evidence: Vec<u8>,
 }
 
@@ -788,22 +800,28 @@ impl AttestedBoundary {
 /// Idempotent request to capture selected resources for a new child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkRequest {
     /// Stable identity used for preparation and publication reconciliation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Publishing parent aggregate.
     pub parent: Authority,
     /// Exact parent revision before publication.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub parent_revision: u64,
     /// Fresh child aggregate.
     pub child: Authority,
     /// Fresh child agent identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub child_agent: AgentId,
     /// Additional agents allowed to attach to the child environment as readers.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly string[]"))]
     pub attached_agents: Vec<AgentId>,
     /// Exact child allocation and bounded inherited prefix chosen before preparation.
     pub preparation: ForkPreparation,
     /// Ordered required and optional resource selections.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly ForkSelection[]"))]
     pub selections: Vec<ForkSelection>,
     /// Present only when one provider attests a common capture boundary.
     pub boundary: Option<AttestedBoundary>,
@@ -812,7 +830,9 @@ pub struct ForkRequest {
 /// Selection of authoritative logical history before a fork is admitted.
 /// Model representation and compaction remain separate context policies.
 /// Selecting a mode supplies no providers, grants, child volumes or budgets.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ForkHistoryPolicy {
     /// Pins the direct parent's entire logical history at the requested revision.
     #[default]
@@ -826,16 +846,22 @@ pub enum ForkHistoryPolicy {
 /// inherited prefix under the same operation identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkPreparation {
     /// Fresh project workspace derived from the selected project generation.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub child_project_volume: VolumeRef,
     /// Fresh private workspace owned by the child agent.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub child_private_volume: VolumeRef,
     /// Inclusive final parent conversation sequence; zero selects none.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub inherited_through_sequence: u64,
     /// Deployment limit, no greater than the protocol ceiling.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub maximum_inherited_messages: u64,
     /// Maximum bytes in the child-owned inherited-context file.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub maximum_inherited_bytes: u64,
     /// Maximum retained references in the inherited prefix.
     pub maximum_inherited_references: u32,

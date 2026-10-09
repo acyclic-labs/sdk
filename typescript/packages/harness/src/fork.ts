@@ -1,4 +1,5 @@
 /** Parent-controlled, provider-neutral fork values. Rust owns durable admission. */
+export type { ForkHistoryPolicy } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { FileRef, ProviderRef, VolumeRef } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
