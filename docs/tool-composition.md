@@ -1,278 +1,80 @@
 # Tool composition: slice D
 
-This working record starts from main `6aaed7e3a49a609c8a62790356ce94588d2e44f5`.
-It records implemented primitives and remaining acceptance obligations separately.
-It is not a final qualification receipt.
+This record describes the current D source and its qualification obligations.
+Source implementation, executed evidence, and verified main landing are distinct.
 
-`ToolRegistry::remove_from_model` removes a logical tool from future catalogs
-while retaining immutable revisions. Explicit version lookup still works for
-admitted requests. Registering another revision does not restore a removed tool;
-the consumer explicitly selects a revision to restore it. Duplicate registrations
-and ambiguous visible revisions retain their existing rejection behavior.
+## Independent tools and retained definitions
 
-`tool::edit::exact_replace` is a portable pure transformation. It rejects empty,
-missing and ambiguous needles, including overlapping occurrences; preserves exact
-UTF-8 and line endings outside the replacement; and checks input and output byte
-bounds before allocating its output. It supplies no authority and performs no
-publication. The owning adapter must read a pinned generation and commit through
-the existing Filesystem transaction at that generation.
+Consumers assemble `Tool { definition, executor, projection }` through
+`ToolRegistry::register` and `HarnessBuilder::tool`. There is no universal
+`CodingToolHost` factory. Selecting a read tool does not require execution,
+PTY, LSP, or browser adapters.
 
-`FilesystemHost::edit_text` now does that publication through
-`FilesystemHost::put_content_at`. Both generation-checked editing and ordinary
-uploads share the existing atomic content/metadata/retry publication path. The
-receipt records the expected generation alongside the complete file descriptor;
-metadata remains the file descriptor used by pinned discovery. No old receipt
-format is accepted as an alternative. Exact retries return the retained result
-without modifying a later user edit. The public edit rejects internal storage
-and checks the separate source read and destination write grants.
-Transformation and generation-checked publication reject zero or `u64::MAX`
-allowances; editing validates that bound before reading source bytes.
+`ToolRegistry::remove_from_model` hides a logical tool from future catalogs while
+retaining its immutable revisions for admitted replay. Registering a new revision
+does not restore a hidden tool. Restoration requires explicit version selection;
+ambiguous visible revisions and conflicting registrations are rejected.
 
-## Integration cuts still required
+`ToolDefinition::output_schema` validates the canonical `ToolResult::value`.
+Mandatory `projection_schema` validates the complete `ToolResultContent`
+envelope independently. Both schemas are compiled and included in the admitted
+definition digest. Dispatch, reconciliation, durable execution, completed-prefix
+reconstruction, and retained replay enforce their respective contracts. Canonical
+results and model projections retain separate artifacts and the same call identity.
+Changing the projector or its schema requires new admission; no implicit schema
+alias or old-data migration is installed.
 
-`ToolDefinition::output_schema` describes the canonical executor value.
-Mandatory `projection_schema` now independently pins the projected JSON value.
-Stock execution, completed tool-prefix reconstruction, durable tool execution
-and the paired model-request validator use their respective schemas. Both
-schemas are compiled and included in the exact definition digest. Canonical
-results remain in the existing result artifact; projection changes require a
-new admission. Added source tests exercise differing shapes, required field,
-schema compilation and changed digest; independent output/projection failures
-on dispatch and terminal replay; and wrong-schema retained prefix payloads with
-valid canonical encoding and digests. These tests have not been executed on
-the recovered source. Generated bindings and installed consumers remain open.
+## Portable file operations
 
-Tools now assemble independently through `Tool { definition, executor, projection }`,
-`ToolRegistry::register` and `HarnessBuilder::tool`. The all-vocabulary
-`CodingToolHost`/`coding_tools` host and its object-only schema restriction are
-removed. Selecting a read tool does not require a shell, PTY, LSP or browser
-implementation. Definitions retain their exact names, revisions and compiled
-input, canonical output and projection schemas. The updated builder fixture
-uses one explicit string-valued tool and preserves original binding checks.
+`tool::files::{read_file,write_file,edit_file}` individually assemble owner-bound
+adapters at revision `portable-5`. They require the original `ToolContext`, exact
+call/operation identity, effective task bounds, public paths, and appropriate
+read/publication authority before effects or replay. Plain context-free execution
+returns an explicit unsupported outcome. Capability strings and copied references
+cannot manufacture the original publisher's authority.
 
-Portable defaults select the owner-bound read/write/exact-edit adapters.
-Bounded search, read options and patch editing remain open. Optional execution
-consumes the landed PR5 provider and its existing approval, selected multi-volume
-view, publication and recovery path; no second execution journal is justified.
+The reader returns exact bounded UTF-8. The writer uses `TaskContext::stage_file_once`.
+Exact editing reads an immutable source, calls `tool::edit::exact_replace`, and
+publishes through `TaskContext::stage_file_at`. The matcher rejects empty, missing,
+and ambiguous needles, including overlapping occurrences, and checks input/output
+bounds before output allocation. Unchanged UTF-8 and line endings remain exact.
 
-## Generated native file-tool contracts
+`FilesystemHost::edit_text` reuses that matcher and `FilesystemHost::put_content_at`.
+The existing atomic publication receipt pins the expected generation and complete
+output identity. Exact retries return retained results without overwriting a later
+user edit. Changed retry bytes/preconditions and stale fresh operations conflict.
+Unsupported generation-aware publishers reject before ordinary staging. There is
+no separate receipt ledger or merge engine.
 
-`ReadFileInput`, `WriteFileInput`, `EditFileInput`, `PatchFileInput` and
-`FileResult` now declare the portable argument and canonical result types.
-File executors decode those types; publication serializes `FileResult`; the
-selected JSON projector serializes a typed full envelope from the same result.
-Read's canonical successful result is `String`. Neither producer changes the
-retained canonical result into its model projection.
+`tool::files::patch_file(work,hunks)` selects optional revision `portable-patch-4`.
+Its pure `tool::patch::apply_update` accepts bounded V4A update-file fragments:
+ordered `@@` hunks, exact context/add/delete lines, optional exact anchors and EOF.
+It rejects missing/ambiguous context, unknown syntax and out-of-order changes.
+Source/diff/output bytes, comparisons and hunk count are finite. Unchanged bytes
+retain their line endings; additions use the first source style, otherwise LF.
+This single-file variant uses the same generation-aware publication path and does
+not implement fuzzy matching, live-head rebasing or a complete multi-file protocol.
 
-`tool::schema::{input, output, json_projection}` generates complete root schemas
-with explicit draft-2020-12 deserialize/serialize settings. The projection
-schema comes from the complete actual typed JSON envelope serializer so its
-nested `$defs` and `$ref` values resolve from the right root. Public validated
-file/volume/provider types supply generated nested structure; existing custom
-Deserialize validators and signed read/write grants remain authoritative.
-Only the Agent owner field uses its existing UUID string serialization shape;
-no core identity trait propagation or authority change is introduced.
+## Bounded text and replaceable projections
 
-The proposed Harness dependency pins Schemars exactly at 1.2.2 because generated
-schemas participate in immutable admission digests. Read/write/exact-edit become
-`portable-3` and the optional patch variant becomes `portable-patch-2`; no old
-schema alias is silently selected. The original runtime validators still reject
-invalid public paths, malformed references and unauthorized effects.
+`tool::text_files::read_file_range(ReadOptions,maximum_result_bytes,ProjectionMode)`
+selects an exact UTF-8 interval from one pinned source.
+`search_file(SearchOptions,maximum_result_bytes,ProjectionMode)` performs bounded
+case-sensitive literal search, including overlaps. Consumers compose multiple
+sources using existing task primitives. The revision is `portable-text-1`.
 
-Source fixtures compile generated roots with the production schema validator,
-exercise actual file values and complete projection envelopes, and reject nested
-wrong types, missing/extra fields, invalid digest lengths/bytes and imprecise
-file byte lengths. They are parsed/formatted only and have not been compiled or
-executed. Lock resolution, dependency closure, generated WASM/TS consumers,
-bounded read/search adapters and full/reference projections remain open.
+Preflight checks the original read grant, public path, source/result ceilings,
+range/query limits and retained-position storage. The authenticated reader verifies
+bytes; pure helpers enforce UTF-8 boundaries and actual comparison work. Exhaustion
+is an error. Canonical results retain source identity and explicit omission counts;
+result bounds reject rather than silently change requested semantics. Configuration,
+result ceiling and projection mode participate in the definition schema digest.
 
-## Explicit patch editing
-
-`tool::patch::apply_update` transforms a bounded immutable UTF-8 source using
-V4A update-file diff fragments (`@@` hunks, exact context/add/delete lines,
-optional exact anchors and an EOF marker). It rejects missing/ambiguous context,
-unknown syntax and out-of-order changes, with finite source/diff/output byte,
-comparison-work and hunk ceilings. Unchanged bytes retain their original line
-endings; additions use the first source line-ending style, otherwise LF.
-
-The format follows the update operation described in the
-[official OpenAI patch guide](https://developers.openai.com/api/docs/guides/tools-apply-patch).
-The selected contract requires exact context rather than fuzzy whitespace or
-first-match acceptance. `tool::files::patch_file(work, hunks)` explicitly selects
-this optional single-file variant; it does not change the portable exact-edit
-default or provide the provider's complete create/delete/multi-file operation
-protocol. Work/hunk configuration is pinned in the definition schema digest.
-It checks the original task file limit before reading, then publishes once
-through the same `TaskContext::stage_file_at` generation-checked receipt path as
-exact editing. There is no live-head rebase, Git process or separate journal.
-
-Source fixtures cover mixed line endings/UTF-8, ordered hunks, anchors/EOF,
-ambiguous/missing/context-free insertion rejection, byte/work/hunk ceilings,
-retained-result retry after later edits, changed-output conflicts and stale
-publication. The content fixture uses authenticated Filesystem providers with a
-scope stub; it does not prove actual durable task admission or cancellation.
-These fixtures are parsed/formatted only, not compiled or executed. Generated
-compile-time schemas, bounded read/search options and full/reference projections
-remain open.
-
-## Approved native multimodal scope
-
-The coordinator confirmed this implementation scope on 2026-10-08. The shape
-below still requires concrete consumer review and qualification; approval is
-not a readiness claim.
-
-Extend the existing ordered `ModelContent::Parts` and verified immutable
-`FileRef` path. Keep stored MIME/encoding separate from requested modality intent
-and provider options. Typed common intents and versioned schema-validated custom
-options must be pinned before admission; unsupported capabilities/options return
-an explicit outcome unless the consumer installed an explicit fallback. Do not
-substitute OCR, transcription, captions or silently dropped media.
-
-Tool projections select canonical result artifacts into ordered native parts
-while retaining the existing tool call identity and pairing. Bytes/digests,
-selection, option schema/revision, adapter revision and finite byte/duration/frame
-and work limits must be validated. A native representation does not authorize
-reading its reference. Preparation/uploads use existing admitted effects and
-receipts. Live URLs and streams need immutable capture before admission.
-
-Qualify captured native/WASM mock adapter inputs, including byte bodies and exact
-option ordering/values at the actual adapter boundary. SDK reference-envelope
-equality alone is insufficient wire evidence. Production model adapters remain
-deferred; mock captures establish only the exercised typed adapter contract.
-Context retention and compaction integration belong to B; runtime/browser
-consumption belongs to I. Their seams require coordination before shared edits.
-
-## Verification ledger
-
-| Invariant | Production mechanism | Assumption | Verification obligation |
-|---|---|---|---|
-| Exact edit is unambiguous and bounded | Pure UTF-8 exact matcher, checked output size | Finite caller bound; generation-CAS publication remains separate | Overlap/Unicode/line-ending controls and exhaustive binary strings through six characters |
-| Exact edit preserves concurrent user edits and retry identity | Shared atomic content publication with expected generation in receipt | Existing Filesystem provider commit and retention guarantees | `portable_text_tools`: memory consumer checks wrong-volume writer, stale precondition, changed retry output/precondition and pinned readback; persistent consumer drops all provider/host handles and reopens the disk store, checks unchanged user head, retained result and invalid-bound rejection |
-| Removing a tool retains replay contracts | Existing version map; explicit optional catalog selection | Admitted runtime pins exact definitions | Removal/restoration/new-hidden-version unit scenario; durable journal source scenario rebuilds after catalog removal and requires retained replay with unchanged provider counters; recovered-source tests unexecuted |
-| Canonical result differs from projection | Existing result/projection artifacts and independently pinned schemas | Exact definition admitted before effects; generated consumer join still open | Dispatch, terminal replay and retained-prefix source tests added but unexecuted; no qualification claim |
-| Native media retains semantic identity | Existing ordered parts and content verification | Validated options/capability adapter still needed | Native/WASM actual mock captures unresolved |
-
-Windows focused tests, platform checks, real Filesystem effects/faults, fresh
-generated/installed artifact checks, final simplification audit, owned PR merge
-and actual-main verification remain required. The finite matcher enumeration is
-a bounded production-function check, not unrestricted proof or a Filesystem
-stale-write/recovery test.
-
-Historical Windows worktree checkpoint: `cargo test -p acyclic-harness --features
-filesystem-local --test portable_text_tools --lib --locked` passed 241 library
-tests and both portable-edit consumers, with zero failures or ignored tests.
-Formatting, diff whitespace and current filesystem-local strict lint passed
-(`cargo clippy -p acyclic-harness --features filesystem-local --lib --test
-portable_text_tools --locked -- -D warnings`). These results cover
-memory and a real disk-store reopen, not persistent-provider fault injection,
-WASM/browser, fresh-installed-artifact, final-source or landing receipts.
-
-Runtime integration still requires I coordination. The existing `TaskContext`
-content writer binds host-authenticated authority separately from narrowed
-`RuntimeScope` capability strings. The portable edit executor must use that
-owner-authenticated route and its pinned generation rather than treat the
-presence of a copied capability string as a new signed write grant.
-
-After I's exact reader review and the coordinator's source-only grant,
-`ContentPublisher::stage_at`, the Filesystem implementation and
-`TaskContext::stage_file_at` are wired through the shared publication helper.
-The generic publisher rejects unsupported generation checks without calling
-ordinary staging. The memory wrapper delegates and retains the exact result.
-`tool::files` exposes independently assembled read, write and exact-edit tools
-using owner-bound task context, exact call identity and pinned-source retry.
-Missing context is explicit `Unsupported`. The former memory/default adapters
-and stock loop still need their agreed context-consumer replacement; the new
-module alone is not a qualified portable-default path. A source regression
-counts ordinary writes and requires zero on unsupported generation checks.
-These changes are formatted but have not been compiled or tested.
-
-The scoped portable-tool consumer source test now exercises the public edit
-executor through real signed Filesystem publisher/reader bindings, preserved
-source/result reads, identical retained retry after a user edit, fresh stale
-operation rejection, missing read/write/writer authority, a foreign writer with
-zero ordinary writes, changed retry bytes and missing context. Its task-state
-fixture supplies only the scope-resume boundary; it does not qualify original
-task admission, stock default dispatch or persistent provider fault handling.
-The existing durable journal test also reconstructs the runner after catalog
-removal and requires replay of the exact admitted revision without provider work.
-Both added scenarios remain unexecuted until an owned build slot is granted.
-
-Direct user approval on 2026-10-08 resolved the coordination permission gate.
-The original checkout was empty and absent from Git's worktree registrations.
-Snapshot `235f8c46389a42359b9c72709b4c0175dfc16493`, parent
-`6aaed7e3a49a609c8a62790356ce94588d2e44f5`, preserved exactly the six source
-files in this checkpoint. Recovery restored the original checkout and applied
-the snapshot to the original branch without committing or discarding it. The
-snapshot reference remains intact. App attachment failed because the original
-path was no longer recognized as managed. Ignored build artifacts were not
-recovered. The test counts above are historical, not current-source receipts.
-
-Concrete independent projection contract proposed to I, B and the coordinator:
-mandatory `ToolDefinition::projection_schema`, compiled alongside input and
-canonical output schemas and included in the existing exact definition digest.
-`output_schema` validates only `ToolResult::value`; `projection_schema` validates
-the projected JSON value. Existing identity projections declare the same schema
-explicitly. There is no default, alias or old-data migration. Keep the existing
-`ToolCompleted` canonical-result and projection references and call identity.
-Validate both contracts at stock dispatch, reconciliation and retained replay;
-durable tool execution must also validate the projection before publication
-and on retained replay. Shared runtime readers and generated bindings require
-the agreed source join. No PR, completed feature, full platform qualification or
-merge is claimed.
-
-### Explicit bounded text variants
-
-`tool::text_files::read_file_range(ReadOptions, maximum_result_bytes, ProjectionMode)`
-selects an exact UTF-8 byte interval from one authorized immutable `FileRef`.
-`search_file(SearchOptions, maximum_result_bytes, ProjectionMode)` performs a
-case-sensitive literal search over one such source, including overlaps. Consumers
-compose multiple sources using the existing task primitives. These factories do
-not change the default reader, install shell tools or infer a provider policy.
-
-Both adapters require the original admitted tool context and authenticated task
-reader. Before source I/O, they validate source descriptors, input/result byte
-ceilings, range/query limits, public paths and the original read grant. Search
-also bounds retained-position storage before scanning. Actual source bytes are
-verified by the existing reader; UTF-8 boundaries and actual comparison work are
-checked by the pure text helpers. Work exhaustion is an error, never a partial
-search reported as complete. The typed canonical result retains the complete
-source reference, exact selection or query, and explicit omission accounting.
-Canonical JSON is counted against the smaller configured/original-task file
-ceiling before allocating the JSON value. Result bounds can reject an otherwise
-valid read/search rather than silently changing its requested semantics.
-
-`ProjectionMode::Full` emits the existing JSON envelope with the complete typed
-result. `Reference` emits the existing parts envelope with a summary and the
-original file reference under reference policy. The summary explicitly identifies
-text/query/positions omitted from that model projection and distinguishes these
-from source bytes or positions omitted from the canonical result. It grants no
-additional authority to dereference the file. `ReadProjection` and
-`SearchProjection` are independently replaceable implementations with complete
-generated schemas. Both modes leave the canonical result unchanged. Full results
-still have to fit the stock executor's original model-render allowance.
-
-All options, the result ceiling and the selected projection mode are recorded in
-the input schema annotation, hence the admitted definition digest. Changing them
-requires a new admitted definition. Native types produce the argument, canonical
-result and complete projection schemas; reference-mode source fixtures decode the
-actual output through `ToolResultContent` and `ModelDataPart`. Compilation,
-execution, generated consumers and actual browser/WASM qualification remain open
-until these source fixtures and public tools run through the shared validation
-lane. The preflight unit fixture is not proof of real task admission or recovery.
-
-### Replacing existing file-result projections
-
-`tool::schema::ProjectionMode` is shared by the file and bounded-text projectors.
-`FileResultProjection` works with the original canonical `FileResult` from write,
-exact edit and patch tools. `ReadFileProjection` works with the original exact
-reader's canonical string and retains its original invocation `FileRef`. Their
-Full mode uses the unchanged JSON serializer; Reference mode uses one shared typed
-parts serializer and an explicit omission summary. Reference selection changes
-neither executor admission nor publication, receipts, canonical results or read
-allowances. Full/reference schemas are generated at the complete envelope root.
-
-A consumer replaces a projector and its schema together through the existing
-public tool components, then admits the resulting definition digest:
+`ProjectionMode::Full` emits a typed JSON envelope. `Reference` emits a summary and
+original immutable file reference, identifying details omitted from the projection
+and distinguishing them from omissions in the canonical result. It grants no read
+authority. `ReadProjection`, `SearchProjection`, `ReadFileProjection`, and
+`FileResultProjection` are replaceable through the ordinary tool components:
 
 ```rust,ignore
 use acyclic_harness::tool::{files, schema::ProjectionMode};
@@ -284,29 +86,40 @@ tool.projection = Arc::new(projection);
 tool.definition.validate()?;
 ```
 
-This reuses the admitted registry's existing definition/executor/projection seam;
-there is no second result ledger, attachment mechanism or provider policy.
+Native argument/result types generate complete draft-2020-12 root schemas through
+`tool::schema::{input,output,json_projection}`. Nested definitions resolve from the
+complete envelope root. Schemars is pinned and locked at 1.2.2 because schemas enter
+immutable admission digests. Tsify supplies TypeScript file-tool shapes from Rust;
+custom deserializers, task limits and authenticated grants remain authoritative.
 
-### Original source authority before durable replay
+## Native multimodal contract
 
-The portable file executors now implement the existing `ToolExecutor::authorize`
-gate, which the current durable runner invokes before reading replay records.
-Read, exact edit and patch check the original source reference's public path,
-original task bounds and read grant there. Exact whole-file reads also enforce
-their original rendering ceiling. Scoped invocation JSON is counted before
-cloning the source reference. Execution calls the same gate, including direct
-contextual executor calls; this preserves the source check when no runner is
-involved. The default file definition revision is `portable-4`, and patch is
-`portable-patch-3`; no old-definition alias is installed.
+Ordered model/tool-result parts retain immutable `FileRef` identity and explicit
+projection policy. Stored MIME is separate from common image/audio/video/document
+intent. Finite byte/work/duration/frame/page ceilings are explicit. Optional native
+configuration claims pin the original admission event, extension schema/version,
+immutable JSON content and linked implementation digest. Claims alone grant no
+authority. The complete request is checked before any media/options are read.
 
-Write preflight checks the scoped destination path and input ceiling. The
-original `TaskContext` publisher remains responsible for its exact destination
-volume, write capability, stale generation and retained publication receipt.
-This change introduces no storage binding, freshness check, cancellation check
-or second receipt path. Authored pre-replay gate fixtures are not evidence of an
-executed durable replay; that regression and actual default-path recovery remain
-part of shared runtime qualification.
+Unsupported adapters/options fail explicitly. Production native model adapters are
+deferred; the fixture codec must capture actual bodies, intent, option ordering and
+values at the adapter boundary. Reference-envelope equality is insufficient.
+Preparation/replay uses existing admitted effects and receipts. Context retention
+and compaction integrate through B; browser/runtime consumption integrates through I.
 
+## Verification obligations
+
+| Invariant | Authored coverage | Evidence still required |
+|---|---|---|
+| Exact matching is bounded and unambiguous | Unicode/line-ending/overlap controls and bounded exhaustive matcher enumeration | Final-source execution; bounded enumeration is not unrestricted proof |
+| Publication preserves generations and retry identity | `portable_text_tools`, `portable_file_replay`: wrong authority, stale writes, changed retries, disk reopen and retained recovery | Combined durable admission, cancellation/fault and platform runs |
+| Bounded variants preserve canonical/projection separation | `portable_text_variants`, generated schema fixtures, independent schema rejection and catalog replay fixtures | Fresh producer, consumer and installed-artifact runs |
+| Native media/options retain original authority and semantic identity | `native_media_boundary`: actual fixture captures, finite-work checks, corrupt/missing media, lost response, retained receipt and reopen scenarios | Final native/WASM/browser execution with actual dependencies |
+| TypeScript cannot authorize claims through file reads | Inventory ordering/revision preservation and rejection before a custom provider runs | Fresh WASM/declarations and complete package tests |
+
+Historical experiments and earlier platform passes are preserved in their source
+snapshots and ignored qualification receipts. They do not qualify the current
+combined source. No build slot or coordination permission approval is outstanding.
 
 ## Current source checkpoint (2026-10-09)
 
