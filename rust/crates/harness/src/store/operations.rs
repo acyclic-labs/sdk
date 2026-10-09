@@ -94,7 +94,14 @@ impl IndexedPublication {
             operation_path(authority, event.operation_id)?,
             Bytes::from(crate::contract::canonical_json_bytes(&location)?),
         )];
-        if let crate::core::EventPayload::ConversationMessageAppended { message } = &event.payload {
+        let message = match &event.payload {
+            crate::core::EventPayload::ConversationMessageAppended { message } => {
+                Some(message.as_ref())
+            }
+            crate::core::EventPayload::ProjectMergePublished { receipt } => Some(&receipt.notice),
+            _ => None,
+        };
+        if let Some(message) = message {
             let message_location =
                 Bytes::from(crate::contract::canonical_json_bytes(&MessageLocation {
                     location,
@@ -416,10 +423,14 @@ async fn find_message_at_locator<P: StreamProvider>(
             "message location differs from its atomic canonical event".into(),
         ));
     }
-    let crate::core::EventPayload::ConversationMessageAppended { message } = event.payload else {
-        return Err(Error::Storage(
-            "message location points to another event kind".into(),
-        ));
+    let message = match event.payload {
+        crate::core::EventPayload::ConversationMessageAppended { message } => *message,
+        crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
+        _ => {
+            return Err(Error::Storage(
+                "message location points to another event kind".into(),
+            ));
+        }
     };
     if message.id != location.message_id || message.sequence != location.sequence {
         return Err(Error::Storage(
@@ -427,7 +438,7 @@ async fn find_message_at_locator<P: StreamProvider>(
         ));
     }
     Ok((
-        (event.revision <= through_revision).then_some(*message),
+        (event.revision <= through_revision).then_some(message),
         consumed_bytes,
     ))
 }
