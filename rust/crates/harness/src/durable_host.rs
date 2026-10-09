@@ -494,7 +494,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         })
     }
 
-    async fn append(
+    pub(crate) async fn append(
         &self,
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
