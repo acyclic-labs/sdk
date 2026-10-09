@@ -55,9 +55,9 @@ have identical SHA256
 `src/package.mjs` admits that archive against an external digest, the generation
 receipt, complete payload inventory, maintained producer/tool/template pins and
 accepted Rust authority. Admission rejects links, traversal, missing/extra files
-and payload or receipt drift. A reusable installed qualifier remains pending,
-as do Rust-backed RPC, TLS/authentication, cancellation/recovery, remaining families/platforms and
-embedded runtime qualification. Historical protoc 28.3 source-only evidence is
+and payload or receipt drift. Rust-backed RPC, TLS/authentication,
+cancellation/recovery, remaining families/platforms and embedded runtime
+qualification remain outstanding. Historical protoc 28.3 source-only evidence is
 retained separately from the matched native runtime evidence.
 
 Archive admission command:
@@ -66,4 +66,36 @@ Archive admission command:
 node tools/sdk-generator/backends/cpp/src/package.mjs \
   --package /package.tar.gz --sha256 <external-sha256> \
   --receipt /generation-receipt.json --authority /accepted-export
+```
+
+The maintained installed qualifier `src/qualify.mjs` passes a fresh archive
+installation with all native controls. It admits external inventories for 7,377
+MSVC/Windows SDK and build-tool files and 1,618 matched runtime files. The host
+inventory covers the recorded compiler binaries, include and library search
+directories; system OS files are outside this inventory. The qualifier invokes
+pinned tools directly, uses one worker, copies the runtime into its private
+output, disables CMake package registries and rejects inherited compiler flags.
+It verifies exact compiled source sets and installed dependency prefixes, then
+checks every source/runtime/compiler input again before emitting its receipt.
+The currently qualified host uses MSVC 19.44.35228 and Windows SDK 10.0.26100.0.
+
+```sh
+node tools/sdk-generator/backends/cpp/src/qualify.mjs \
+  --package /package.tar.gz --sha256 <external-sha256> \
+  --receipt /generation-receipt.json --authority /accepted-export \
+  --runtime-root /matched-runtime --runtime-inventory /runtime-inventory.json \
+  --host-inventory /host-inventory.json --output /new-qualification
+```
+
+`src/inventory.mjs` reproduces the admitted host and runtime inventory bytes.
+Recording a new inventory does not admit it; qualification requires its checksum
+to match `toolchains/qualification.json`. The host environment JSON records
+`include`, `lib` and `libpath` arrays, SDK/root/version values, and a `tools`
+map for cl, link, lib, rc, mt, cmake and ninja executable paths.
+
+```sh
+node tools/sdk-generator/backends/cpp/src/inventory.mjs \
+  --kind host --environment /host-environment.json --output /new-host-index.json
+node tools/sdk-generator/backends/cpp/src/inventory.mjs \
+  --kind runtime --root /matched-runtime --output /new-runtime-index.json
 ```
