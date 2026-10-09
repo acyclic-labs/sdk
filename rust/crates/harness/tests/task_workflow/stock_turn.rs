@@ -13,6 +13,10 @@ async fn cancelled_stock_turn_cannot_dispatch_after_provider_reopen() -> Result<
     stock_turn_recovery(true).await
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one original/reopened scenario keeps provider identity, authority and uncertain reservation assertions together"
+)]
 async fn stock_turn_recovery(cancel: bool) -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let options = LocalOptions::new(directory.path().join("filesystem"));
@@ -190,68 +194,68 @@ async fn stock_turn_recovery(cancel: bool) -> Result<()> {
                 runtime.task_host().cancel(task).await?;
             }
             original_lease = Some(lease);
+            continue;
+        }
+        let lease = original_lease
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("original lease".into()))?;
+        let recovered = runtime.task_host().recover_work(task).await?;
+        if cancel {
+            assert!(
+                matches!(recovered, WorkPull::Unresolved { lease: retained, .. } if retained.reservation == lease.reservation)
+            );
+            assert!(matches!(
+                runtime.resume_task(lease.clone(), &commands, 2).await,
+                TaskWorkerAttempt::Unresolved { .. }
+            ));
+            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+            assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                runtime.task_host().outcome(task).await?,
+                Some(Outcome::Indeterminate {
+                    operation_id: operation
+                }),
+            );
         } else {
-            let lease = original_lease
-                .as_ref()
-                .ok_or_else(|| Error::NotFound("original lease".into()))?;
-            let recovered = runtime.task_host().recover_work(task).await?;
-            if cancel {
-                assert!(
-                    matches!(recovered, WorkPull::Unresolved { lease: retained, .. } if retained.reservation == lease.reservation)
-                );
-                assert!(matches!(
-                    runtime.resume_task(lease.clone(), &commands, 2).await,
-                    TaskWorkerAttempt::Unresolved { .. }
+            let WorkPull::Claimed(recovered) = recovered else {
+                return Err(Error::Invalid(
+                    "original stock lease was not recoverable".into(),
                 ));
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
-                assert_eq!(
-                    runtime.task_host().outcome(task).await?,
-                    Some(Outcome::Indeterminate {
-                        operation_id: operation
-                    }),
-                );
-            } else {
-                let WorkPull::Claimed(recovered) = recovered else {
-                    return Err(Error::Invalid(
-                        "original stock lease was not recoverable".into(),
-                    ));
-                };
-                assert_eq!(recovered.reservation, lease.reservation);
-                assert!(
-                    runtime
-                        .run_operation(&worker, task, &commands, 2)
-                        .await?
-                        .is_none()
-                );
-                assert!(matches!(runtime.resume_task(recovered, &commands, 2).await,
-                    TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task));
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
-                assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
-                let Admission::Accepted(result) = runtime
-                    .harness()
-                    .admit(operation, &definition, command.clone(), None)
+            };
+            assert_eq!(recovered.reservation, lease.reservation);
+            assert!(
+                runtime
+                    .run_operation(&worker, task, &commands, 2)
                     .await?
-                else {
-                    return Err(Error::Invalid(
-                        "completed stock admission was not retained".into(),
-                    ));
-                };
-                let Outcome::Succeeded(output) = result.result().await? else {
-                    return Err(Error::Invalid("stock output was not successful".into()));
-                };
-                assert_eq!(output.text, "partial-restored");
-                assert_eq!(output.steps, 1);
-                assert!(
-                    runtime
-                        .run_operation(&worker, task, &commands, 2)
-                        .await?
-                        .is_none()
-                );
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
-            }
+                    .is_none()
+            );
+            assert!(matches!(runtime.resume_task(recovered, &commands, 2).await,
+                TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task));
+            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+            let Admission::Accepted(result) = runtime
+                .harness()
+                .admit(operation, &definition, command.clone(), None)
+                .await?
+            else {
+                return Err(Error::Invalid(
+                    "completed stock admission was not retained".into(),
+                ));
+            };
+            let Outcome::Succeeded(output) = result.result().await? else {
+                return Err(Error::Invalid("stock output was not successful".into()));
+            };
+            assert_eq!(output.text, "partial-restored");
+            assert_eq!(output.steps, 1);
+            assert!(
+                runtime
+                    .run_operation(&worker, task, &commands, 2)
+                    .await?
+                    .is_none()
+            );
+            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
         }
     }
     Ok(())
