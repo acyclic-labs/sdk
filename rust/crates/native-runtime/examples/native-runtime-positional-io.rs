@@ -24,6 +24,6 @@ fn main() -> io::Result<()> {
             "native positional I/O round trip changed bytes",
         ));
     }
-    println!("{{\"bytes\":{},\"round_trip\":true}}", read);
+    println!("{{\"bytes\":{read},\"round_trip\":true}}");
     Ok(())
 }
