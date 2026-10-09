@@ -9,6 +9,7 @@ await init({ module_or_path: readFileSync(new URL("../generated/wasm/acyclic_har
 const tool = name => ({ name, description: `Find ${name}`, inputSchema: { type: "object" },
   outputSchema: { type: "object", minProperties: 1, required: ["value"], properties: { value: { type: "integer" } } } });
 const catalog = { server: "fixture", revision: "1", schema_exposure: { kind: "eager" },
+  projection_schema: { type: "object", properties: { kind: { const: "json" }, value: {} }, required: ["kind", "value"], additionalProperties: false },
   discovery: "search", tools: [tool("c"), tool("a"), tool("b")] };
 
 test("MCP WASM validates exact native stdio descriptors without selecting a process", () => {
@@ -56,9 +57,23 @@ test("MCP WASM search is ordered and retains the canonical remote output contrac
   assert.equal(page.length, 1);
   assert.equal(page[0].name, "mcp.fixture.a");
   assert.equal(page[0].revision, "1");
+  assert.deepEqual(page[0].projection_schema, catalog.projection_schema);
   assert.deepEqual(page[0].output_schema.then.properties.structuredContent, tool("a").outputSchema);
   assert.equal(searchMcpCatalog(catalog, "find", "a", 1, 3, 8192)[0].name, "mcp.fixture.b");
   assert.throws(() => searchMcpCatalog(catalog, "", undefined, 0, 3, 8192));
+});
+
+test("MCP WASM pins an explicit projection contract independently of remote results", () => {
+  const projection_schema = { type: "object", properties: { kind: { const: "parts" }, parts: { type: "array" } },
+    required: ["kind", "parts"], additionalProperties: false };
+  const selected = { ...catalog, projection_schema };
+  validateMcpCatalog(selected, 3, 8192);
+  const [definition] = mcpModelDefinitions(selected, 3, 8192);
+  assert.deepEqual(definition.projection_schema, projection_schema);
+  assert.deepEqual(definition.output_schema.then.properties.structuredContent, tool("a").outputSchema);
+  const { projection_schema: omitted, ...missing } = catalog;
+  assert.throws(() => validateMcpCatalog(missing, 3, 8192));
+  assert.throws(() => validateMcpCatalog({ ...catalog, tools: [], projection_schema: { type: "invalid" } }, 3, 8192));
 });
 
 test("MCP WASM rejects lossy unsigned catalog and search allowances", () => {

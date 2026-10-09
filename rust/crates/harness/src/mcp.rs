@@ -198,6 +198,9 @@ pub struct McpCatalog {
     pub schema_exposure: McpSchemaExposure,
     /// Explicit local discovery selection; notifications cannot change it.
     pub discovery: McpDiscoveryPolicy,
+    /// Host-selected schema for complete model-facing result envelopes.
+    /// Pinned independently of remote canonical outputs with this catalog revision.
+    pub projection_schema: Value,
     /// Complete bounded catalog, not a partially fetched `tools/list` page.
     pub tools: Vec<McpToolDefinition>,
 }
@@ -307,6 +310,7 @@ impl McpCatalog {
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
+        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection")?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if !names.insert(&tool.name) {
@@ -397,7 +401,7 @@ impl McpCatalog {
             description: remote.description.clone(),
             input_schema: remote.input_schema.clone(),
             output_schema: Value::Object(output_schema),
-            projection_schema: crate::tool::json_projection_schema(json!({})),
+            projection_schema: self.projection_schema.clone(),
         })
     }
 
@@ -667,9 +671,41 @@ mod tests {
     }
     fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
         McpCatalog { server:"fixture".into(), revision:revision.into(), schema_exposure:McpSchemaExposure::Eager,
-            discovery:McpDiscoveryPolicy::Search, tools:names.iter().map(|name| McpToolDefinition {
+            discovery:McpDiscoveryPolicy::Search, projection_schema:crate::tool::json_projection_schema(json!({})), tools:names.iter().map(|name| McpToolDefinition {
             name:(*name).into(), title:None, description:format!("Find {name}"), input_schema:json!({"type":"object"}),
             output_schema:Some(json!({"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}})) }).collect() }
+    }
+
+    #[test]
+    fn catalog_pins_replaceable_projection_independently_of_remote_output() -> Result<()> {
+        let mut selected = catalog("native", &["a"]);
+        selected.projection_schema = json!({"type":"object","properties":{
+            "kind":{"const":"parts"},"parts":{"type":"array","items":{"type":"object"}}},
+            "required":["kind","parts"],"additionalProperties":false});
+        let definition = selected.model_definitions(8, 8192)?.remove(0);
+        assert_eq!(definition.projection_schema, selected.projection_schema);
+        definition.validate_projection(
+            &json!({"kind":"parts","parts":[{"kind":"text","text":"bounded view"}]}),
+        )?;
+        assert!(
+            definition
+                .validate_projection(&json!({"kind":"json","value":{}}))
+                .is_err()
+        );
+        assert!(
+            definition
+                .validate_projection(&json!({"kind":"parts","parts":[
+                    {"kind":"tool_call","name":"nested","call_id":"nested","arguments":{}}
+                ]}))
+                .is_err()
+        );
+        let digest = selected.installation_digest(None, 8, 8192)?;
+        selected.projection_schema = crate::tool::json_projection_schema(json!({}));
+        assert_ne!(digest, selected.installation_digest(None, 8, 8192)?);
+        selected.tools.clear();
+        selected.projection_schema = json!({"type":"invalid-type"});
+        assert!(selected.validate(8, 8192).is_err());
+        Ok(())
     }
 
     struct CatalogApproval {
@@ -724,7 +760,7 @@ mod tests {
         let bound: Arc<dyn McpToolTransport> = transport.clone();
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
         let mut registry = ToolRegistry::new();
-        for control in 0..12 {
+        for control in 0..13 {
             let mut input = original.clone();
             let mut installation = McpCatalogInstallation {
                 operation: approval.operation,
@@ -746,6 +782,10 @@ mod tests {
                 7 => input.schema_exposure = McpSchemaExposure::Selected { names: vec![] },
                 8 => input.discovery = McpDiscoveryPolicy::Disabled,
                 9 => input.tools.pop().map(|_| ()).unwrap_or_default(),
+                12 => {
+                    input.projection_schema =
+                        crate::tool::json_projection_schema(json!({"type":"string"}))
+                }
                 10 => input
                     .tools
                     .first_mut()
