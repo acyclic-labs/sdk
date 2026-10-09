@@ -2,6 +2,17 @@
 
 use super::*;
 
+const GIT_OPERATION_LEASE_MILLIS: u64 = 15 * 60 * 1_000;
+
+// Renewal replaces the prior publication token even when both clock samples
+// fall in the same millisecond. Reusing its expiry is not a renewal.
+pub(crate) fn git_lease_renewal_expiry(now: u64, previous_expiry: u64) -> Result<u64, String> {
+    now.checked_add(GIT_OPERATION_LEASE_MILLIS)
+        .zip(previous_expiry.checked_add(1))
+        .map(|(deadline, successor)| deadline.max(successor))
+        .ok_or_else(|| "Git compatibility lease expiry overflowed".to_owned())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RootBinding {
     pub(crate) root_id: [u8; 16],
@@ -1632,7 +1643,7 @@ impl ControlPlane {
                 parent.head().await.map_err(display)?.id(),
                 format!("{agent_id}:git"),
                 now,
-                now.saturating_add(15 * 60 * 1_000),
+                now.saturating_add(GIT_OPERATION_LEASE_MILLIS),
             )
             .await
             .map_err(display)?;
@@ -1659,18 +1670,19 @@ impl ControlPlane {
             }
         };
         let renewal_now = now_millis();
-        let lease = match operations
-            .renew(
-                &lease,
-                renewal_now,
-                renewal_now.saturating_add(15 * 60 * 1_000),
-            )
-            .await
+        let lease = match async {
+            let expiry = git_lease_renewal_expiry(renewal_now, lease.expires_at_millis)?;
+            operations
+                .renew(&lease, renewal_now, expiry)
+                .await
+                .map_err(display)
+        }
+        .await
         {
             Ok(renewed) => renewed,
             Err(error) => {
                 let _ = operations.finish(&lease, renewal_now).await;
-                return Err(display(error));
+                return Err(error);
             }
         };
         let executor = PluginGitExecutor {
