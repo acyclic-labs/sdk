@@ -2,6 +2,8 @@
 
 use crate::{Admission, OperationId, Outcome};
 use acyclic_stream::BoxProviderStream as BoxStream;
+#[cfg(target_arch = "wasm32")]
+use futures::future::{AbortHandle, Abortable};
 use futures::{StreamExt, stream};
 use std::{
     collections::BTreeMap,
@@ -11,8 +13,6 @@ use std::{
 use tokio::sync::{Semaphore, oneshot};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::task::{AbortHandle, JoinHandle};
-#[cfg(target_arch = "wasm32")]
-use futures::future::{AbortHandle, Abortable};
 
 #[cfg(not(target_arch = "wasm32"))]
 type TaskJoin<T> = JoinHandle<Outcome<T>>;

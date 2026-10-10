@@ -105,8 +105,10 @@ and concurrency permit, and reports `Outcome::Cancelled`. Dropping an ordinary
 handle detaches observation; dropping `result_owned()` instead cancels the task,
 even before the wait is polled. This does not make a live closure resumable:
 retained recovery remains the explicitly bound durable provider's responsibility.
-The Chrome `native_media_boundary` scenario uses the filesystem memory provider;
-it is not an IndexedDB/OPFS persistence qualification.
+The Stream-backed coordinator uses the platform wall clock, including JavaScript
+time in the browser, for its monotonic retained commit timestamps. The Chrome
+`native_media_boundary` scenario uses the filesystem memory provider; it is not
+an IndexedDB/OPFS persistence qualification.
 
 Task and tool registries can retain several revisions under one logical name. Use `name@version` for exact task lookup; unqualified task lookup works only when unique. `ToolRegistry::select_model_version` explicitly chooses the one revision advertised to a model when several are retained; durable tool calls still resolve their own pinned revision. Ambiguity fails before stock model dispatch rather than silently choosing the newest registration.
 
