@@ -3860,6 +3860,12 @@ pub struct TaskContext {
     model_steps: Arc<AtomicUsize>,
 }
 
+enum ContentPublication<'a> {
+    PathBound,
+    OperationBound,
+    Replacement(&'a FileRef),
+}
+
 impl TaskContext {
     #[cfg(feature = "filesystem")]
     pub(crate) fn with_owned_interactions(
@@ -4388,6 +4394,29 @@ impl TaskContext {
             bytes,
             media_type,
             display_name,
+            ContentPublication::PathBound,
+        )
+        .await
+    }
+
+    /// Publishes one exact file contract per operation through its original writer.
+    /// A changed path, body or metadata cannot reuse an existing operation receipt.
+    pub async fn stage_file_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+    ) -> Result<FileRef> {
+        self.stage_bound_file(
+            self.harness.content.as_ref(),
+            operation_id,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            ContentPublication::OperationBound,
         )
         .await
     }
@@ -4409,24 +4438,40 @@ impl TaskContext {
             bytes,
             media_type,
             display_name,
+            ContentPublication::PathBound,
         )
         .await
     }
 
-    async fn stage_bound_file(
+    /// Replaces a pinned source through the existing owner-bound publisher.
+    /// The operation must retain the same source generation and replacement bytes.
+    pub async fn stage_file_at(
         &self,
-        binding: Option<&ContentBindings>,
         operation_id: OperationId,
-        path: &str,
+        source: &FileRef,
         bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
     ) -> Result<FileRef> {
-        if bytes.len() as u64 > self.scope.limits.file_bytes
-            || path.len() > self.scope.limits.path_bytes
-        {
-            return Err(Error::Invalid("file exceeds task content limits".into()));
+        self.scope.limits.validate_file(source)?;
+        if !read_granted(&self.scope.grants, source)? {
+            return Err(Error::Unauthorized(
+                "task scope cannot read this source".into(),
+            ));
         }
+        self.stage_bound_file(
+            self.harness.content.as_ref(),
+            operation_id,
+            source.path(),
+            bytes,
+            source.descriptor().media_type(),
+            source.display_name(),
+            ContentPublication::Replacement(source),
+        )
+        .await
+    }
+    fn bound_content_writer<'a>(
+        &self,
+        binding: Option<&'a ContentBindings>,
+    ) -> Result<&'a Arc<dyn ContentPublisher>> {
         let content =
             binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
         let writer = content
@@ -4442,9 +4487,63 @@ impl TaskContext {
                 "task scope cannot write this volume".into(),
             ));
         }
-        let file = writer
-            .stage(operation_id, path, bytes, media_type, display_name)
-            .await?;
+        Ok(writer)
+    }
+
+    /// Checks the original content destination without reading or publishing bytes.
+    pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
+        let writer = self.bound_content_writer(self.harness.content.as_ref())?;
+        if source.is_some_and(|source| source.volume() != writer.volume()) {
+            return Err(Error::Unauthorized(
+                "source differs from the owner-bound destination".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one owner-bound publication path retains its binding, identity, bytes, metadata and receipt mode"
+    )]
+    async fn stage_bound_file(
+        &self,
+        binding: Option<&ContentBindings>,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        publication: ContentPublication<'_>,
+    ) -> Result<FileRef> {
+        if bytes.len() as u64 > self.scope.limits.file_bytes
+            || path.len() > self.scope.limits.path_bytes
+        {
+            return Err(Error::Invalid("file exceeds task content limits".into()));
+        }
+        let content =
+            binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+        let writer = self.bound_content_writer(Some(content))?;
+        let file = match publication {
+            ContentPublication::Replacement(source) => {
+                if source.volume() != writer.volume() || source.path() != path {
+                    return Err(Error::Unauthorized(
+                        "source differs from the owner-bound destination".into(),
+                    ));
+                }
+                content.reader.verify(source).await?;
+                writer.stage_at(operation_id, source, bytes).await?
+            }
+            ContentPublication::OperationBound => {
+                writer
+                    .stage_once(operation_id, path, bytes, media_type, display_name)
+                    .await?
+            }
+            ContentPublication::PathBound => {
+                writer
+                    .stage(operation_id, path, bytes, media_type, display_name)
+                    .await?
+            }
+        };
         self.scope.limits.validate_file(&file)?;
         if file.volume() != writer.volume()
             || file.path() != path
@@ -4496,13 +4595,15 @@ impl TaskContext {
             name: tool.definition.name.clone(),
             arguments,
         };
-        binding.executor.authorize(Some(&self.scope), &invocation)?;
-        self.authorize_tool(&tool.definition, &invocation).await?;
         let context = ToolContext::new(
             self.clone(),
             invocation.operation_id,
             invocation.call_id.clone(),
         )?;
+        binding
+            .executor
+            .authorize_with_context(&context, &invocation)?;
+        self.authorize_tool(&tool.definition, &invocation).await?;
         let result = binding
             .executor
             .execute_with_context(context, invocation)

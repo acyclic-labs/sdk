@@ -177,6 +177,112 @@ impl ExecutionJournal for TerminalCasLoser {
     }
 }
 
+#[derive(Clone, Copy)]
+enum OversizedArtifact {
+    Invocation,
+    Result,
+    Projection,
+}
+
+/// Injects one oversized custody descriptor without changing the request digest,
+/// journal order, invocation values or original completed-body identities.
+struct CompletedDescriptorSpy {
+    inner: Arc<dyn ExecutionJournal>,
+    completed: Vec<FileRef>,
+    invocation: FileRef,
+    target: OversizedArtifact,
+    oversized_bytes: u64,
+    completed_reads: AtomicUsize,
+    invocation_reads: AtomicUsize,
+}
+
+impl ExecutionJournal for CompletedDescriptorSpy {
+    fn replay<'a>(
+        &'a self,
+        operation: OperationId,
+        after: u64,
+        maximum: u32,
+    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+        Box::pin(async move {
+            let mut records = self.inner.replay(operation, after, maximum).await?;
+            for record in &mut records {
+                let reference = match (&mut record.event, self.target) {
+                    (
+                        ExecutionEvent::ToolStarted { invocation, .. },
+                        OversizedArtifact::Invocation,
+                    ) => invocation,
+                    (ExecutionEvent::ToolCompleted { result, .. }, OversizedArtifact::Result) => {
+                        result
+                    }
+                    (
+                        ExecutionEvent::ToolCompleted { projection, .. },
+                        OversizedArtifact::Projection,
+                    ) => projection,
+                    _ => continue,
+                };
+                *reference = FileRef::new(
+                    reference.volume().clone(),
+                    reference.path(),
+                    reference.version(),
+                    FileDescriptor::new(
+                        *reference.descriptor().sha256(),
+                        self.oversized_bytes,
+                        reference.descriptor().media_type(),
+                    )?,
+                    reference.display_name(),
+                )?;
+            }
+            Ok(records)
+        })
+    }
+    fn append<'a>(
+        &'a self,
+        operation: OperationId,
+        key: String,
+        event: ExecutionEvent,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.inner.append(operation, key, event)
+    }
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        key: String,
+        bytes: Vec<u8>,
+        media: &'static str,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        self.inner.stage(operation, key, bytes, media)
+    }
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        if self.completed.iter().any(|original| {
+            original.volume() == reference.volume()
+                && original.path() == reference.path()
+                && original.version() == reference.version()
+        }) {
+            self.completed_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        if self.invocation.volume() == reference.volume()
+            && self.invocation.path() == reference.path()
+            && self.invocation.version() == reference.version()
+        {
+            self.invocation_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.load(reference)
+    }
+    fn open_interaction<'a>(
+        &'a self,
+        id: InteractionId,
+        interaction: Interaction,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.inner.open_interaction(id, interaction)
+    }
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: InteractionId,
+    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
+        self.inner.interaction_outcome(id)
+    }
+}
+
 struct TestTaskState(RuntimeScope);
 impl TaskStateProvider for TestTaskState {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
@@ -593,7 +699,8 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         inner: journal.clone(),
         losses: AtomicUsize::new(0),
     });
-    let runner = DurableToolRunner::new(registry, racing_journal.clone()).with_limits(limits)?;
+    let runner =
+        DurableToolRunner::new(registry.clone(), racing_journal.clone()).with_limits(limits)?;
     let operation = OperationId::from_bytes([59; 16]);
     let first_task = TaskId::from_bytes([60; 16]);
     let other_task = TaskId::from_bytes([61; 16]);
@@ -601,6 +708,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         Capabilities::new([
             "tool:call:example.noop",
             "tool:call:example.invalid-output",
+            "tool:call:example.invalid-projection",
             "tool:call:example.large-projection",
         ]),
         limits,
@@ -640,6 +748,97 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             .await?,
         Outcome::Succeeded(Value::Null)
     ));
+    let records = journal.replay(operation, 0, 64).await?;
+    let invocation = records
+        .iter()
+        .find_map(|record| {
+            if let ExecutionEvent::ToolStarted { invocation, .. } = &record.event {
+                Some(invocation.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| Error::NotFound("tool invocation artifact".into()))?;
+    let completed = records
+        .iter()
+        .find_map(|record| {
+            if let ExecutionEvent::ToolCompleted {
+                result, projection, ..
+            } = &record.event
+            {
+                Some(vec![result.clone(), projection.clone()])
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| Error::NotFound("completed tool artifacts".into()))?;
+    for target in [
+        OversizedArtifact::Invocation,
+        OversizedArtifact::Result,
+        OversizedArtifact::Projection,
+    ] {
+        let maximum = match target {
+            OversizedArtifact::Projection => limits.render_bytes,
+            _ => limits.file_bytes,
+        };
+        let spy = Arc::new(CompletedDescriptorSpy {
+            inner: journal.clone(),
+            completed: completed.clone(),
+            invocation: invocation.clone(),
+            target,
+            oversized_bytes: maximum + 1,
+            completed_reads: AtomicUsize::new(0),
+            invocation_reads: AtomicUsize::new(0),
+        });
+        let guarded = DurableToolRunner::new(registry.clone(), spy.clone()).with_limits(limits)?;
+        assert!(matches!(guarded.run_with_context(
+            first_task, operation, definition.clone(), json!({}),
+            ToolContext::new(first_context.clone(), operation, operation.to_string())?,
+        ).await, Err(Error::Conflict(message)) if message.contains("descriptor limit")));
+        assert_eq!(spy.completed_reads.load(Ordering::SeqCst), 0);
+        let expected_invocation_reads = if matches!(target, OversizedArtifact::Invocation) {
+            0
+        } else {
+            1
+        };
+        assert_eq!(
+            spy.invocation_reads.load(Ordering::SeqCst),
+            expected_invocation_reads
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    }
+    let fresh_operation = OperationId::new();
+    let bounded =
+        DurableToolRunner::new(registry.clone(), journal.clone()).with_limits(Limits {
+            file_bytes: 1_024,
+            render_bytes: 1_024,
+            ..Limits::default()
+        })?;
+    assert!(matches!(bounded.run_with_context(
+        first_task, fresh_operation, definition.clone(), json!({"data":"x".repeat(1_024)}),
+        ToolContext::new(first_context.clone(), fresh_operation, fresh_operation.to_string())?,
+    ).await, Err(Error::Invalid(message)) if message.contains("JSON exceeds declared byte bound")));
+    assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    registry.remove_from_model("example.noop")?;
+    assert!(registry.get("example.noop").is_none());
+    let rebuilt = DurableToolRunner::new(registry, racing_journal.clone()).with_limits(limits)?;
+    assert!(matches!(
+        rebuilt
+            .run_with_context(
+                first_task,
+                operation,
+                definition.clone(),
+                json!({}),
+                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
+            )
+            .await?,
+        Outcome::Succeeded(Value::Null)
+    ));
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(
         runner
             .run_with_context(
@@ -676,7 +875,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 invalid_output,
                 json!({}),
                 ToolContext::new(
-                    first_context,
+                    first_context.clone(),
                     failure_operation,
                     failure_operation.to_string()
                 )?
@@ -692,28 +891,75 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             .await?
             .last()
             .map(|record| &record.event),
-        Some(ExecutionEvent::ToolFailed { .. })
+        Some(ExecutionEvent::ToolFailed {
+            reason: ToolFailureKind::InvalidOutput,
+            ..
+        })
     ));
     let projection_operation = OperationId::from_bytes([65; 16]);
+    let projection_failure = runner
+        .run_with_context(
+            first_task,
+            projection_operation,
+            invalid_projection.clone(),
+            json!({}),
+            ToolContext::new(
+                first_context.clone(),
+                projection_operation,
+                projection_operation.to_string(),
+            )?,
+        )
+        .await?;
+    assert!(matches!(&projection_failure, Outcome::Failed { .. }));
+    assert_eq!(
+        projection_failure,
+        runner
+            .run_with_context(
+                first_task,
+                projection_operation,
+                invalid_projection,
+                json!({}),
+                ToolContext::new(
+                    first_context,
+                    projection_operation,
+                    projection_operation.to_string()
+                )?
+            )
+            .await?
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 3);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        journal
+            .replay(projection_operation, 0, 64)
+            .await?
+            .last()
+            .map(|record| &record.event),
+        Some(ExecutionEvent::ToolFailed {
+            reason: ToolFailureKind::ProjectionRejected,
+            ..
+        })
+    ));
+    let large_operation = OperationId::from_bytes([66; 16]);
     for _ in 0..2 {
         assert!(matches!(
             runner
                 .run_with_context(
                     first_task,
-                    projection_operation,
+                    large_operation,
                     large_definition.clone(),
                     json!({}),
                     ToolContext::new(
                         projection_context.clone(),
-                        projection_operation,
-                        projection_operation.to_string()
+                        large_operation,
+                        large_operation.to_string()
                     )?
                 )
                 .await?,
             Outcome::Succeeded(Value::Null)
         ));
     }
-    let records = journal.replay(projection_operation, 0, 64).await?;
+    let records = journal.replay(large_operation, 0, 64).await?;
     let Some(ExecutionEvent::ToolCompleted {
         result, projection, ..
     }) = records.last().map(|record| &record.event)

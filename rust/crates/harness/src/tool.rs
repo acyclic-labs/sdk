@@ -10,6 +10,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
+pub mod edit;
+pub mod files;
+pub mod patch;
+pub mod schema;
+pub mod text;
+pub mod text_files;
+
+// Decode the admitted JSON by reference: typed outputs own only their actual
+// fields, without first cloning the complete arguments or canonical result tree.
+fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T> {
+    T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
+}
+
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

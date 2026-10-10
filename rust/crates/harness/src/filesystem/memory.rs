@@ -119,7 +119,8 @@ impl LocalHarness {
             tools,
             [
                 "tool:call:acyclic.read_file".into(),
-                "tool:call:acyclic.stage_file".into(),
+                "tool:call:acyclic.write_file".into(),
+                "tool:call:acyclic.edit_file".into(),
                 "tool:call:acyclic.list_files".into(),
             ],
             compaction,
@@ -201,31 +202,6 @@ impl LocalHarness {
     pub fn bundle(&self) -> &crate::bundle::HarnessBundle {
         &self.bundle
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReadFileInput {
-    file: FileRef,
-}
-
-struct LocalReadFileTool {
-    verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    maximum_bytes: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StageFileInput {
-    path: String,
-    text: String,
-    media_type: String,
-    display_name: String,
-}
-
-struct LocalStageFileTool {
-    publisher: Arc<MemoryContentPublisher>,
-    maximum_bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -369,110 +345,6 @@ impl ToolProjection for LocalListFilesTool {
     }
 }
 
-impl ToolExecutor for LocalStageFileTool {
-    fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
-        require_volume_grant(scope, self.publisher.volume(), VolumeOperation::Write)
-    }
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            let input: StageFileInput = serde_json::from_value(invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("stage_file input is invalid: {error}")))?;
-            if input.text.len() as u64 > self.maximum_bytes {
-                return Err(Error::Invalid("staged file exceeds harness limits".into()));
-            }
-            let retry =
-                IdempotencyKey::new(format!("local-tool-stage:{}", invocation.operation_id))?;
-            let file = self
-                .publisher
-                .files
-                .stage_with_retry(
-                    &input.path,
-                    input.text.as_bytes(),
-                    &input.media_type,
-                    &input.display_name,
-                    &retry,
-                )
-                .await?;
-            let file = self.publisher.retain(file, input.text.as_bytes())?;
-            Ok(ToolResult {
-                value: json!({"file": file}),
-            })
-        })
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        // put_content checks the atomic operation receipt before attempting a
-        // write. Re-entering it with the same ID recovers the pinned result or
-        // conflicts if the proposed bytes or metadata changed.
-        Box::pin(async move { self.execute(invocation).await.map(Some) })
-    }
-}
-
-impl ToolProjection for LocalStageFileTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
-    }
-}
-
-impl ToolExecutor for LocalReadFileTool {
-    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
-        let input: ReadFileInput = serde_json::from_value(invocation.arguments.clone())
-            .map_err(|error| Error::Invalid(format!("read_file input is invalid: {error}")))?;
-        require_volume_grant(scope, input.file.volume(), VolumeOperation::Read)
-    }
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            let input: ReadFileInput = serde_json::from_value(invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("read_file input is invalid: {error}")))?;
-            if input.file.descriptor().byte_length() > self.maximum_bytes {
-                return Err(Error::Invalid(
-                    "file exceeds the tool rendering limit".into(),
-                ));
-            }
-            let bytes = self.verifier.read(&input.file).await?;
-            let text = String::from_utf8(bytes)
-                .map_err(|_| Error::Unsupported("read_file requires UTF-8 content".into()))?;
-            Ok(ToolResult {
-                value: Value::String(text),
-            })
-        })
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        // The exact FileRef pins immutable bytes; repeating this read cannot
-        // redispatch a write or observe a newer path version.
-        Box::pin(async move { self.execute(invocation).await.map(Some) })
-    }
-}
-
-impl ToolProjection for LocalReadFileTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let text = result
-            .value
-            .as_str()
-            .ok_or_else(|| Error::Invalid("read_file result has no text".into()))?;
-        let projection = json!({"kind":"json","value":text});
-        if serde_json::to_vec(&projection)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .len() as u64
-            > self.maximum_bytes
-        {
-            return Err(Error::Invalid(
-                "read_file projection exceeds render limit".into(),
-            ));
-        }
-        Ok(projection)
-    }
-}
-
 struct MemoryContentPublisher {
     files: FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -481,6 +353,35 @@ struct MemoryContentPublisher {
 impl ContentPublisher for MemoryContentPublisher {
     fn volume(&self) -> &VolumeRef {
         self.files.volume()
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        operation_id: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            let persisted = self
+                .files
+                .stage_once(operation_id, path, bytes, media_type, display_name)
+                .await?;
+            self.retain(persisted, bytes)
+        })
+    }
+
+    fn stage_at<'a>(
+        &'a self,
+        operation_id: OperationId,
+        source: &'a FileRef,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            let persisted = self.files.stage_at(operation_id, source, bytes).await?;
+            self.retain(persisted, bytes)
+        })
     }
 
     fn stage<'a>(
@@ -514,7 +415,7 @@ impl MemoryContentPublisher {
 }
 
 impl MemoryHarnessStorage {
-    /// Builds the local ref-only file tools against this exact owner volume.
+    /// Assembles portable read/write/edit tools and this volume's directory tool.
     /// Callers composing a custom builder can use this registry unchanged.
     pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {
         limits.validate()?;
@@ -524,8 +425,9 @@ impl MemoryHarnessStorage {
             ));
         }
         let mut tools = ToolRegistry::new();
-        tools.register(self.read_file_tool(limits))?;
-        tools.register(self.stage_file_tool(limits))?;
+        tools.register(crate::tool::files::read_file()?)?;
+        tools.register(crate::tool::files::write_file()?)?;
+        tools.register(crate::tool::files::edit_file()?)?;
         tools.register(self.list_files_tool(limits))?;
         Ok(tools)
     }
@@ -576,69 +478,6 @@ impl MemoryHarnessStorage {
                     "required": ["generation", "entries", "has_more", "next_after"],
                     "additionalProperties": false
                 })),
-            },
-            executor: implementation.clone(),
-            projection: implementation,
-        }
-    }
-
-    fn stage_file_tool(&self, limits: Limits) -> Tool {
-        let implementation = Arc::new(LocalStageFileTool {
-            publisher: self.publisher.clone(),
-            maximum_bytes: limits.file_bytes,
-        });
-        Tool {
-            definition: ToolDefinition {
-                name: "acyclic.stage_file".into(),
-                revision: "2".into(),
-                description: "Stage a bounded UTF-8 file in the agent-private volume and return its immutable FileRef".into(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "text": {"type": "string"},
-                        "media_type": {"type": "string"},
-                        "display_name": {"type": "string"}
-                    },
-                    "required": ["path", "text", "media_type", "display_name"],
-                    "additionalProperties": false
-                }),
-                output_schema: json!({
-                    "type": "object",
-                    "properties": {"file": {"type": "object"}},
-                    "required": ["file"],
-                    "additionalProperties": false
-                }),
-                projection_schema: crate::tool::json_projection_schema(json!({
-                    "type": "object",
-                    "properties": {"file": {"type": "object"}},
-                    "required": ["file"],
-                    "additionalProperties": false
-                })),
-            },
-            executor: implementation.clone(),
-            projection: implementation,
-        }
-    }
-
-    fn read_file_tool(&self, limits: Limits) -> Tool {
-        let implementation = Arc::new(LocalReadFileTool {
-            verifier: self.content_verifier.clone(),
-            maximum_bytes: limits.render_bytes,
-        });
-        Tool {
-            definition: ToolDefinition {
-                name: "acyclic.read_file".into(),
-                revision: "2".into(),
-                description: "Read bounded UTF-8 bytes from an authorized immutable FileRef".into(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {"file": {"type": "object"}},
-                    "required": ["file"],
-                    "additionalProperties": false
-                }),
-                output_schema: json!({"type": "string"}),
-                projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -1543,6 +1382,47 @@ mod tests {
         }
     }
 
+    async fn run_admitted_file_case<F, Fut>(
+        storage: &MemoryHarnessStorage,
+        limits: Limits,
+        handler: F,
+    ) -> Result<()>
+    where
+        F: Fn(crate::runtime::TaskContext) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        use crate::runtime::{Bindings, ContentBindings};
+        let mut bindings = Bindings::local();
+        bindings.scope = RuntimeScope::new(
+            Capabilities::new([
+                storage.read_capability.clone(),
+                storage.write_capability.clone(),
+                "task:spawn:file_tool_case@1".into(),
+                "tool:call:acyclic.read_file".into(),
+                "tool:call:acyclic.write_file".into(),
+                "tool:call:acyclic.edit_file".into(),
+                "tool:call:acyclic.list_files".into(),
+            ]),
+            limits,
+        )?;
+        bindings.content = Some(ContentBindings {
+            reader: storage.content_verifier.clone(),
+            writer: Some(storage.publisher.clone()),
+        });
+        bindings.tasks.register(TaskDefinition::live(
+            "file_tool_case",
+            "1",
+            move |context, (): ()| handler(context),
+        )?)?;
+        let runtime = bindings.build()?;
+        let task = runtime.task::<(), ()>("file_tool_case")?;
+        assert_eq!(
+            runtime.spawn(&task, ()).await?.result().await?,
+            Outcome::Succeeded(())
+        );
+        Ok(())
+    }
+
     struct ModelWithoutAccounting(TextModel);
 
     impl ModelProvider for ModelWithoutAccounting {
@@ -1617,7 +1497,7 @@ mod tests {
         let render_bytes = serde_json::to_vec(&expected_projection)
             .map_err(|error| Error::Invalid(error.to_string()))?
             .len() as u64;
-        let mut limits = Limits {
+        let limits = Limits {
             file_bytes: 4_096,
             render_bytes,
             ..Limits::default()
@@ -1625,103 +1505,134 @@ mod tests {
         let tool = owner
             .default_tools(limits)?
             .get("acyclic.read_file")
-            .ok_or_else(|| Error::NotFound("default read tool".into()))?
+            .ok_or_else(|| Error::NotFound("read tool".into()))?
             .clone();
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),
             call_id: "read-1".into(),
             name: "acyclic.read_file".into(),
-            arguments: json!({"file": file}),
+            arguments: json!({"file":file}),
         };
-        let result = tool.executor.execute(invocation.clone()).await?;
-        assert_eq!(result.value, json!("pinned text"));
-        assert_eq!(
-            tool.projection.project(&invocation, &result)?,
-            expected_projection
-        );
-        let bounded_tool = owner.default_tools(Limits {
-            render_bytes: render_bytes - 1,
-            ..limits
-        })?;
-        assert!(matches!(
-            bounded_tool
-                .get("acyclic.read_file")
-                .ok_or_else(|| Error::NotFound("bounded projection tool".into()))?
-                .projection
-                .project(&invocation, &result),
-            Err(Error::Invalid(_))
-        ));
-        assert_eq!(
-            tool.executor.reconcile(invocation.clone()).await?,
-            Some(result)
-        );
-        assert!(matches!(
-            other
-                .default_tools(limits)?
-                .get("acyclic.read_file")
-                .ok_or_else(|| Error::NotFound("other read tool".into()))?
-                .executor
-                .execute(invocation.clone())
-                .await,
-            Err(Error::Unauthorized(_)) | Err(Error::NotFound(_))
-        ));
-        limits.render_bytes = 4;
-        assert!(matches!(
-            owner
-                .default_tools(limits)?
-                .get("acyclic.read_file")
-                .ok_or_else(|| Error::NotFound("bounded read tool".into()))?
-                .executor
-                .execute(invocation)
-                .await,
-            Err(Error::Invalid(_))
-        ));
-        Ok(())
+        let own_tool = tool.clone();
+        let own_invocation = invocation.clone();
+        run_admitted_file_case(&owner, limits, move |task| {
+            let tool = own_tool.clone();
+            let invocation = own_invocation.clone();
+            let expected_projection = expected_projection.clone();
+            async move {
+                let context = crate::runtime::ToolContext::new(
+                    task.clone(),
+                    invocation.operation_id,
+                    &invocation.call_id,
+                )?;
+                let result = tool
+                    .executor
+                    .execute_with_context(context.clone(), invocation.clone())
+                    .await?;
+                assert_eq!(result.value, json!("pinned text"));
+                let projection = tool.projection.project(&invocation, &result)?;
+                assert_eq!(projection, expected_projection);
+                let content = tool.definition.validate_projection(&projection)?;
+                content.validate_limits(limits)?;
+                assert!(matches!(
+                    content.validate_limits(Limits {
+                        render_bytes: render_bytes - 1,
+                        ..limits
+                    }),
+                    Err(Error::Invalid(_))
+                ));
+                assert_eq!(
+                    tool.executor
+                        .reconcile_with_context(context, invocation.clone())
+                        .await?,
+                    Some(result)
+                );
+                let narrowed = task.scoped(
+                    task.scope().grants().clone(),
+                    Limits {
+                        render_bytes: 4,
+                        ..limits
+                    },
+                )?;
+                assert!(matches!(
+                    tool.executor
+                        .execute_with_context(
+                            crate::runtime::ToolContext::new(
+                                narrowed,
+                                invocation.operation_id,
+                                &invocation.call_id
+                            )?,
+                            invocation
+                        )
+                        .await,
+                    Err(Error::Invalid(_))
+                ));
+                Ok(())
+            }
+        })
+        .await?;
+        run_admitted_file_case(&other, limits, move |task| {
+            let tool = tool.clone();
+            let invocation = invocation.clone();
+            async move {
+                assert!(matches!(
+                    tool.executor
+                        .execute_with_context(
+                            crate::runtime::ToolContext::new(
+                                task,
+                                invocation.operation_id,
+                                &invocation.call_id
+                            )?,
+                            invocation
+                        )
+                        .await,
+                    Err(Error::Unauthorized(_)) | Err(Error::NotFound(_))
+                ));
+                Ok(())
+            }
+        })
+        .await
     }
 
     #[tokio::test]
-    async fn default_stage_file_reconciles_by_operation_and_rejects_changed_retry() -> Result<()> {
+    async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -> Result<()> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
         let limits = Limits {
             file_bytes: 4_096,
-            render_bytes: 1_024,
+            render_bytes: 4_096,
             ..Limits::default()
         };
         let tool = storage
             .default_tools(limits)?
-            .get("acyclic.stage_file")
-            .ok_or_else(|| Error::NotFound("default stage tool".into()))?
+            .get("acyclic.write_file")
+            .ok_or_else(|| Error::NotFound("write tool".into()))?
             .clone();
-        let invocation = ToolInvocation {
-            operation_id: OperationId::new(),
-            call_id: "write-1".into(),
-            name: "acyclic.stage_file".into(),
-            arguments: json!({
-                "path": "notes/one.txt", "text": "saved text",
-                "media_type": "text/plain", "display_name": "one.txt"
-            }),
-        };
-        let first = tool.executor.execute(invocation.clone()).await?;
-        assert_eq!(
-            tool.executor.reconcile(invocation.clone()).await?,
-            Some(first.clone())
-        );
-        let file: FileRef = serde_json::from_value(first.value["file"].clone())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(storage.read(&file).await?, b"saved text");
-        let mut changed = invocation.clone();
-        changed.arguments["text"] = json!("different text");
-        assert!(matches!(
-            tool.executor.reconcile(changed).await,
-            Err(Error::Conflict(_))
-        ));
-        let mut changed_path = invocation;
-        changed_path.arguments["path"] = json!("notes/another.txt");
-        assert!(matches!(
-            tool.executor.reconcile(changed_path).await,
-            Err(Error::Conflict(_))
-        ));
-        Ok(())
+        run_admitted_file_case(&storage, limits, move |task| {
+            let tool = tool.clone();
+            async move {
+                let invocation = ToolInvocation {
+                    operation_id: OperationId::new(), call_id: "write-1".into(), name: "acyclic.write_file".into(),
+                    arguments: json!({"path":"notes/one.txt","text":"saved text","media_type":"text/plain","display_name":"one.txt"}),
+                };
+                let context = crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+                let first = tool.executor.execute_with_context(context.clone(), invocation.clone()).await?;
+                let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
+                let user = task.stage_file(OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
+                assert_eq!(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?, Some(first));
+                assert_eq!(task.read_file(&file).await?, b"saved text");
+                assert_eq!(task.read_file(&user).await?, b"later user edit");
+                for (field, value) in [("text", "different text"), ("path", "notes/another.txt"), ("media_type", "text/markdown"), ("display_name", "other.txt")] {
+                    let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
+                    assert!(matches!(tool.executor.reconcile_with_context(context.clone(), changed).await, Err(Error::Conflict(_))));
+                }
+                // General task staging retains its existing multi-path operation contract.
+                let ordinary = OperationId::new();
+                for path in ["multi/a.txt", "multi/b.txt"] {
+                    task.stage_file(ordinary, path, b"ordinary", "text/plain", "ordinary.txt").await?;
+                }
+                Ok(())
+            }
+        }).await
     }
 
     #[tokio::test]
@@ -1831,14 +1742,6 @@ mod tests {
             ..Limits::default()
         };
         let tools = storage.default_tools(limits)?;
-        let only_calls = RuntimeScope::new(
-            Capabilities::new([
-                "tool:call:acyclic.read_file",
-                "tool:call:acyclic.list_files",
-                "tool:call:acyclic.stage_file",
-            ]),
-            limits,
-        )?;
         let file = storage
             .stage(
                 OperationId::new(),
@@ -1848,33 +1751,26 @@ mod tests {
                 "one.txt",
             )
             .await?;
-        for (name, arguments) in [
-            ("acyclic.read_file", json!({"file": file})),
-            (
-                "acyclic.list_files",
-                json!({"path": "", "maximum_entries": 8}),
-            ),
-            (
-                "acyclic.stage_file",
-                json!({"path": "notes/two.txt", "text": "two",
-                "media_type": "text/plain", "display_name": "two.txt"}),
-            ),
-        ] {
-            let invocation = ToolInvocation {
-                operation_id: OperationId::new(),
-                call_id: name.into(),
-                name: name.into(),
-                arguments,
-            };
-            let tool = tools
-                .get(name)
-                .ok_or_else(|| Error::NotFound(name.into()))?;
-            assert!(matches!(
-                tool.executor.authorize(Some(&only_calls), &invocation),
-                Err(Error::Unauthorized(_))
-            ));
-        }
-        Ok(())
+        run_admitted_file_case(&storage, limits, move |task| {
+            let tools = tools.clone(); let file = file.clone();
+            async move {
+                let task = task.scoped(Capabilities::new([
+                    "tool:call:acyclic.read_file", "tool:call:acyclic.write_file", "tool:call:acyclic.edit_file", "tool:call:acyclic.list_files",
+                ]), limits)?;
+                for (name, arguments) in [
+                    ("acyclic.read_file", json!({"file":file})),
+                    ("acyclic.write_file", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
+                    ("acyclic.edit_file", json!({"file":file,"old_text":"one","new_text":"two"})),
+                ] {
+                    let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
+                    let tool = tools.get(name).ok_or_else(|| Error::NotFound(name.into()))?;
+                    assert!(matches!(tool.executor.execute_with_context(crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?, invocation).await, Err(Error::Unauthorized(_))));
+                }
+                let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
+                assert!(matches!(tools.get("acyclic.list_files").ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
+                Ok(())
+            }
+        }).await
     }
 
     struct ReadFileModel {

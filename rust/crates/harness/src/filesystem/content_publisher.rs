@@ -49,6 +49,54 @@ where
         &self.volume
     }
 
+    fn stage_once<'a>(
+        &'a self,
+        operation_id: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            let retry = IdempotencyKey::new(format!("filesystem-single-file:{operation_id}"))?;
+            self.stage_with_retry(path, bytes, media_type, display_name, &retry)
+                .await
+        })
+    }
+
+    fn stage_at<'a>(
+        &'a self,
+        operation_id: OperationId,
+        source: &'a FileRef,
+        bytes: &'a [u8],
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            source.validate()?;
+            if source.volume() != &self.volume {
+                return Err(Error::Unauthorized(
+                    "source belongs to another writer volume".into(),
+                ));
+            }
+            let generation = self.host.file_generation(source)?;
+            let retry = IdempotencyKey::new(format!(
+                "filesystem-replacement:{operation_id}:{}",
+                blake3::hash(source.path().as_bytes()).to_hex()
+            ))?;
+            self.host
+                .put_content_at(
+                    &self.volume,
+                    &self.grant,
+                    source.path(),
+                    bytes,
+                    source.descriptor().media_type(),
+                    source.display_name(),
+                    self.maximum_bytes,
+                    &retry,
+                    &generation,
+                )
+                .await
+        })
+    }
     fn stage<'a>(
         &'a self,
         operation_id: OperationId,

@@ -6734,6 +6734,151 @@ mod tests {
         assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
+    async fn admitted_binding_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
+        let captured = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+        let mut tasks = crate::runtime::TaskRegistry::default();
+        tasks.register(crate::runtime::TaskDefinition::live(
+            "context-probe",
+            "1",
+            move |context, _: ()| {
+                let sink = sink.clone();
+                async move {
+                    *sink.lock().unwrap() = Some(context);
+                    Ok(())
+                }
+            },
+        )?)?;
+        let harness =
+            crate::runtime::AgentHarness::new(tasks, ToolRegistry::new(), scope, 1, None)?;
+        let definition = harness.task::<(), ()>("context-probe@1")?;
+        harness.spawn(&definition, ()).await?.result().await?;
+        let context = captured
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| Error::Invalid("admitted context missing".into()))?;
+        Ok(context)
+    }
+
+    #[tokio::test]
+    async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
+        let wide = RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "bounded".into(),
+            name: "example.echo".into(),
+            arguments: json!({"text":"x".repeat(256)}),
+        };
+        let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
+        // This generic adapter accepts the original scope without a TaskContext.
+        // The SDK's effective byte bound must independently stop journal access.
+        crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
+        crate::contract::validate_json_byte_bound(&invocation, wide.limits().file_bytes)?;
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
+            },
+            executor: adapter.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let narrow = Limits {
+            file_bytes: 128,
+            ..wide.limits()
+        };
+        let executor = StockExecutor::new(
+            Model::new("test", "scoped", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(wide, None)?
+        .with_limits(narrow);
+        assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
+        let journal = ModelReadSpy::default();
+        let mut messages = Vec::new();
+        assert!(matches!(
+            executor
+                .settle_tool_call(&journal, OperationId::new(), 0, invocation, &mut messages)
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        assert!(journal.journal.0.lock().unwrap().is_empty());
+        assert!(journal.journal.1.lock().unwrap().is_empty());
+        assert!(messages.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
+        let scope = RuntimeScope::new(
+            crate::Capabilities::new([
+                "task:spawn:context-probe@1",
+                "model:generate",
+                "tool:call:acyclic.write_file",
+            ]),
+            Limits::default(),
+        )?;
+        let context = admitted_binding_context(scope.clone()).await?;
+        let tool = crate::tool::files::write_file()?;
+        let mut tools = ToolRegistry::new();
+        tools.register(tool)?;
+        let operation = OperationId::new();
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "publication".into(),
+            name: "acyclic.write_file".into(),
+            arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
+        };
+        let base = StockExecutor::new(
+            Model::new("test", "scoped", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
+            tools,
+        )
+        .with_tool_authority(scope, None)?;
+        let journal = ModelReadSpy::default();
+        let mut messages = Vec::new();
+        assert!(matches!(
+            base.settle_tool_call(&journal, operation, 0, invocation.clone(), &mut messages)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        // A real admitted context without a content binding cannot acquire a writer
+        // from the stock loop's generic tool grants.
+        let contextual = base.with_task_context(&context, operation)?;
+        assert!(matches!(
+            contextual
+                .settle_tool_call(&journal, operation, 0, invocation, &mut messages)
+                .await,
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+        assert!(journal.journal.0.lock().unwrap().is_empty());
+        assert!(journal.journal.1.lock().unwrap().is_empty());
+        assert!(messages.is_empty());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()> {
         #[derive(Default)]
@@ -6935,69 +7080,6 @@ mod tests {
         verify_model_content_scoped(&journal, &references, Limits::default(), Some(&allowed))
             .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
-        let wide = RuntimeScope::new(
-            Capabilities::new(["tool:call:example.echo"]),
-            Limits::default(),
-        )?;
-        let invocation = ToolInvocation {
-            operation_id: OperationId::new(),
-            call_id: "bounded".into(),
-            name: "example.echo".into(),
-            arguments: json!({"text":"x".repeat(256)}),
-        };
-        let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
-        // This generic adapter accepts the original scope without a TaskContext.
-        // The SDK's effective byte bound must independently stop journal access.
-        crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
-        crate::contract::validate_json_byte_bound(&invocation, wide.limits().file_bytes)?;
-        let mut tools = ToolRegistry::new();
-        tools.register(crate::tool::Tool {
-            definition: crate::tool::ToolDefinition {
-                name: "example.echo".into(),
-                revision: "1".into(),
-                description: "Echo".into(),
-                input_schema: json!({"type":"object"}),
-                output_schema: json!({"type":"object"}),
-                projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
-            },
-            executor: adapter.clone(),
-            projection: Arc::new(Projection),
-        })?;
-        let narrow = Limits {
-            file_bytes: 128,
-            ..wide.limits()
-        };
-        let executor = StockExecutor::new(
-            Model::new("test", "scoped", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
-            ContextPipeline::default(),
-            tools,
-        )
-        .with_tool_authority(wide, None)?
-        .with_limits(narrow);
-        assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
-        let journal = ModelReadSpy::default();
-        let mut messages = Vec::new();
-        assert!(matches!(
-            executor
-                .settle_tool_call(&journal, OperationId::new(), 0, invocation, &mut messages)
-                .await,
-            Err(Error::Invalid(_))
-        ));
-        assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
-        assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
-        assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
-        assert!(journal.journal.0.lock().unwrap().is_empty());
-        assert!(journal.journal.1.lock().unwrap().is_empty());
-        assert!(messages.is_empty());
         Ok(())
     }
 
