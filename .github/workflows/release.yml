@@ -1,0 +1,139 @@
+name: SDK Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already committed in every publishable SDK manifest
+        type: string
+        required: true
+      publish:
+        description: Publish all channels after qualification; false validates without publication
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: sdk-release
+  cancel-in-progress: false
+jobs:
+  source:
+    name: Freeze coordinated release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+      run: ${{ steps.source.outputs.run }}
+      attempt: ${{ steps.source.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-toolchain
+      - id: source
+        name: Validate coordinated release version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          node scripts/release-source.mjs
+  generator:
+    needs: source
+    uses: ./.github/workflows/sdk-generator.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+  qualify:
+    needs: source
+    uses: ./.github/workflows/release-acyclic.yml
+    secrets: inherit
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      attestations: write
+      id-token: write
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.source.outputs.version }}
+  npm:
+    needs:
+      - source
+      - generator
+      - qualify
+    if: inputs.publish
+    uses: ./.github/workflows/publish-npm.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.source.outputs.version }}
+      qualification_run_id: ${{ needs.source.outputs.run }}
+      qualification_run_attempt: ${{ needs.qualify.outputs.attempt }}
+      qualification_artifacts: ${{ needs.qualify.outputs.artifacts }}
+  cargo:
+    needs:
+      - source
+      - generator
+      - qualify
+    if: inputs.publish
+    uses: ./.github/workflows/publish-crate.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.source.outputs.version }}
+      qualification_run_id: ${{ needs.source.outputs.run }}
+      qualification_run_attempt: ${{ needs.qualify.outputs.attempt }}
+  publish:
+    name: Publish qualified plugin release
+    needs:
+      - source
+      - qualify
+      - npm
+      - cargo
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: acyclic-universal-${{ needs.source.outputs.run }}-${{ needs.qualify.outputs.attempt }}
+          path: ${{ runner.temp }}/qualified-plugin-release
+      - name: Publish exact plugin assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          VERSION: ${{ needs.source.outputs.version }}
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/qualified-plugin-release
+        run: node scripts/publish-release-assets.mjs
+  report:
+    name: Release result
+    needs:
+      - source
+      - generator
+      - qualify
+      - npm
+      - cargo
+      - publish
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          SOURCE: ${{ needs.source.outputs.sha }}
+          VERSION: ${{ needs.source.outputs.version }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf "Release %s from %s\n\n%s\n" "$VERSION" "$SOURCE" "$RESULTS" >> "$GITHUB_STEP_SUMMARY"
+          printf '\nIf any publisher failed or was cancelled, publication may be partial. Rerun failed jobs in this run to resume its retained qualified artifacts. Do not dispatch another version or rebuild for recovery.\n' >> "$GITHUB_STEP_SUMMARY"
+          node -e 'const n=JSON.parse(process.env.RESULTS);if(Object.values(n).some(x=>!["success","skipped"].includes(x.result)))process.exit(1)'

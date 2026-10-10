@@ -1,9 +1,20 @@
 name: Publish Cargo release
 
 on:
-  push:
-    tags:
-      - "cargo-v*"
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      qualification_run_id:
+        type: string
+        required: true
+      qualification_run_attempt:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -31,49 +42,45 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+          ref: ${{ inputs.source_sha }}
       - name: Install exact Rust toolchain
         id: rust
         uses: ./.github/actions/rust-toolchain
-      - name: Verify release tag and merged source
+      - name: Use exact coordinated release source
         id: release
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^cargo-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
-          version=${BASH_REMATCH[1]}
-          # checkout may replace an annotated tag with its peeled commit.
-          git fetch --no-tags --force origin \
-            "$GITHUB_REF:refs/release-tags/$GITHUB_REF_NAME"
-          tag_oid=$(git rev-parse "refs/release-tags/$GITHUB_REF_NAME")
-          test "$(git cat-file -t "$tag_oid")" = tag
-          source_sha=$(git rev-parse "$tag_oid^{commit}")
-          test "$(git rev-parse HEAD)" = "$source_sha"
-          git fetch --no-tags --force origin \
-            refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
-          node scripts/publish-cargo-crates.mjs check "$source_sha" "$version"
-          printf 'version=%s\nsource_sha=%s\n' "$version" "$source_sha" >> "$GITHUB_OUTPUT"
-      - name: Require exact successful SDK qualification
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf 'version=%s\nsource_sha=%s\n' "$VERSION" "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+      - name: Qualification is a completed release dependency
+        env:
+          RUN: ${{ inputs.qualification_run_id }}
+          ATTEMPT: ${{ inputs.qualification_run_attempt }}
         shell: bash
-        run: |
-          set -euo pipefail
-          count=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/qualification.yml/runs" \
-            -f head_sha="$SOURCE_SHA" -f status=success -F per_page=100 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success" and (.event == "workflow_dispatch" or .event == "release"))] | length')
-          test "$count" -gt 0
+        run: |-
+          test -n "$RUN" && test -n "$ATTEMPT"
       - name: Bundle exact publication source
         shell: bash
-        run: git bundle create "$RUNNER_TEMP/cargo-publication.bundle" "$GITHUB_REF"
+        run: git bundle create "$RUNNER_TEMP/cargo-publication.bundle" HEAD
       - name: Retain exact publication input
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: cargo-publication-${{ steps.release.outputs.source_sha }}
           path: ${{ runner.temp }}/cargo-publication.bundle
           if-no-files-found: error
+      - name: Admit this coordinated qualification graph
+        env:
+          RUN: ${{ inputs.qualification_run_id }}
+          ATTEMPT: ${{ inputs.qualification_run_attempt }}
+        run: |-
+          test "$RUN" = "$GITHUB_RUN_ID"
+          [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$ATTEMPT" -le "$GITHUB_RUN_ATTEMPT"
+        shell: bash
 
   publish:
     name: Publish qualified Cargo crates
@@ -110,13 +117,11 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: >-
-          node scripts/publish-cargo-crates.mjs publish
-          "${{ needs.prepare.outputs.source_sha }}"
-          "${{ needs.prepare.outputs.version }}"
+          node scripts/publish-cargo-crates.mjs publish "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.version }}"
 
   verify-install:
     name: Verify crates.io CLI installation
-    needs: [prepare, publish]
+    needs: [ prepare, publish ]
     # Installing compiles the whole dependency graph from the registry.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:

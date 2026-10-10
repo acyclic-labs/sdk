@@ -1,27 +1,24 @@
 name: SDK Generator
 
 on:
-  pull_request:
-    paths:
-      - 'tools/sdk-generator/**'
-      - '.github/workflows/sdk-generator.yml'
-      - '.github/sdk-generator-backends.json'
-      - 'scripts/plan-qualification.mjs'
-      - 'scripts/test-plan-qualification.mjs'
-      - 'scripts/archive-utils.mjs'
   workflow_dispatch:
 
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
 permissions:
   contents: read
 
 concurrency:
-  group: sdk-generator-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: sdk-generator-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   go:
     name: Generator staging
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       GOMAXPROCS: '1'
@@ -33,6 +30,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
+          ref: ${{ inputs.source_sha || github.sha }}
       - name: Select affected generator checks
         id: scope
         shell: bash
