@@ -25,7 +25,8 @@ pub mod services;
 mod rpc;
 pub mod stdio;
 
-/// Protocol revision implemented by this client, without legacy fallback.
+/// Initialized-session revision, corresponding to rmcp's `LATEST_WITH_INITIALIZE`;
+/// the dependency's `LATEST` is bootstrap-neutral and is not this wire contract.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Negotiated server initialization, retained with the admitted session.
@@ -113,8 +114,9 @@ pub struct McpToolResult {
     /// Protocol content blocks. Validation occurs at the protocol boundary.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue[]"))]
     pub content: Vec<Value>,
-    /// Structured value checked against the remote output contract.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Structured value checked against the remote output contract. An explicit
+    /// JSON null is present output, distinct from an omitted structured value.
+    #[serde(default, deserialize_with = "deserialize_present_json", skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
     pub structured_content: Option<Value>,
     /// A tool failure is a recorded result, rather than a transport failure.
@@ -124,6 +126,13 @@ pub struct McpToolResult {
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
     pub meta: Option<Value>,
+}
+
+fn deserialize_present_json<'de, D>(deserializer: D) -> std::result::Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// Pinned host transport for one server revision. Dispatch is invoked only by

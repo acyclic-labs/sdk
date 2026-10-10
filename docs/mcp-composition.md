@@ -839,3 +839,62 @@ must enable `mcp-http,mcp-oauth`; default features do not execute these optional
 endpoint/OAuth controls. Required platform, installed-artifact, browser,
 formal/fault and final-main CI gates remain distinct evidence obligations;
 historical skipped or syntax-only runs do not satisfy them.
+
+## Maintained protocol library 3.5.1 cutover
+
+The required root dependency is exact `rmcp = "=3.5.1"`, replacing 3.3.0 without
+a retained dependency alias or fallback. The audited published crate hashes to
+SHA-256 `ab5023804cbe0304cbe06197ac16e645a0a0d0ffa2953bf735c15c2fa0213350`.
+Upstream [release notes](https://docs.rs/crate/rmcp/3.5.1/source/CHANGELOG.md),
+[model contracts](https://docs.rs/crate/rmcp/3.5.1/source/src/model.rs) and
+[OAuth contracts](https://docs.rs/crate/rmcp/3.5.1/source/src/transport/auth.rs)
+define the consumer changes below.
+
+Library version and admitted wire/session version are different pins.
+`ProtocolVersion::LATEST` now denotes bootstrap-neutral `2026-07-28`, while
+`LATEST_WITH_INITIALIZE` is `2025-11-25`. This initialized-session composition
+deliberately retains its explicit `2025-11-25` wire contract, matching the latter;
+it does not use the dependency's default/latest version to silently change an
+admitted session. The maintained codec/model/OAuth APIs are upgraded; no
+deprecated `ServerInfo` or `ClientInfo` aliases are used. Its autonomous
+discovery/session workers are not introduced into the existing admitted owner.
+
+Upstream `CallToolResult` distinguishes present `"structuredContent": null`
+from an omitted field. The Harness result envelope now preserves that same
+distinction through HTTP, stdio decoding, output-schema validation, serialization
+and durable replay: present null is `Some(Value::Null)`; omission remains `None`.
+A nullable output contract can therefore accept explicit null, while missing
+required structured output still fails. Public result types and their complete
+runtime schema validation remain unchanged.
+
+OAuth 3.5.1 adds definitive `TokenRefreshRejected` for `invalid_grant`.
+`get_access_token` classifies that as `AuthorizationRequired`; Harness maps
+both to a sanitized unauthorized result, not uncertain completion or an automatic
+authorization/refresh retry. Transport/token-exchange/unknown refresh failures
+still preserve the enclosing operation as indeterminate. The supplied host
+`CredentialStore::on_refresh_token_rejected` receives the attempted credentials
+under the existing refresh guard. A host that clears or quarantines rejected
+credentials must compare that attempt with its current private credentials and
+must not reacquire the held guard or delete a concurrent replacement. The
+maintained default hook leaves credentials unchanged; hosts requiring explicit
+reauthorization must implement their own selected private-store policy. No SDK
+credential owner, callback journal, retry loop or default environment is added.
+
+The library also fixes float decoding through `serde_json::Number`. Sampling
+continues to validate against the maintained request contracts before ordinary
+model admission, preserving the complete request pin rather than converting
+unknown JSON into fake compile-time declarations. HTTP/resource/prompt APIs,
+bounded stdio codec and supplied OAuth HTTP-client capability remain compatible.
+The existing native reqwest 0.12 provider and the maintained auth client's 0.13
+dependency remain separate; this source cutover does not alter their resolver,
+Serde versions, shared manifests or lockfiles.
+
+No build, test, linter or formatter was run for this migration. Parent-owned
+qualification must use the commands above with the exact 3.5.1 lockfile and fresh
+WASM. Required migration controls are real endpoint/disk-reopen preservation of
+explicit null versus omission under nullable and nonnullable output schemas,
+definitive OAuth `invalid_grant` notification under the held guard without
+clearing newer credentials, lost/5xx refresh remaining uncertain without a
+second POST, fractional sampling temperature decoding, and unchanged initialized
+session negotiation against `LATEST_WITH_INITIALIZE`. Historical receipts do
+not qualify this dependency/source revision.

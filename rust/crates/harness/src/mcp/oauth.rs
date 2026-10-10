@@ -20,7 +20,9 @@ pub struct McpOAuthAuthorization<S, T> {
     pub endpoint: String,
     /// Existing host network admission capability.
     pub http: Arc<dyn OAuthHttpClient>,
-    /// Host persistent credential owner, including refresh coordination.
+    /// Host persistent credential owner, including refresh coordination. Handle
+    /// definitive refresh rejection under the existing guard without clearing
+    /// credentials that have since been replaced or reacquiring that guard.
     pub credentials: S,
     /// Host persistent PKCE/CSRF state owner.
     pub states: T,
@@ -123,6 +125,7 @@ fn auth_error(error: AuthError) -> Error {
 
 fn token_error(operation: OperationId, error: AuthError) -> Error {
     match error {
+        AuthError::AuthorizationRequired | AuthError::TokenRefreshRejected(_) => Error::Unauthorized("MCP OAuth authorization is required".into()),
         AuthError::TokenExchangeFailed(_) | AuthError::TokenRefreshFailed(_) | AuthError::CredentialStoreError(_) | AuthError::HttpError(_) => Error::Indeterminate(operation),
         _ => auth_error(error),
     }
