@@ -213,8 +213,28 @@ impl WorkflowRecord {
 
     /// Checks all provider-independent transition invariants before storage or replay.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_io(None)
+    }
+
+    pub(crate) fn validate_with_io(
+        &self, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let _key_hold;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let key_work = acyclic_fs::WorkCounters {
+                bytes_copied: self.idempotency_key.0.len() as u64,
+                items_examined: self.idempotency_key.0.len() as u64 + 1,
+                ..Default::default()
+            };
+            io.preflight(key_work)?;
+            _key_hold = io.reserve_decode(self.idempotency_key.0.len() as u64)?;
+            io.allocation_attempt(self.idempotency_key.0.len() as u64)?;
+            io.charge(key_work)?;
+        }
         IdempotencyKey::new(self.idempotency_key.0.clone())?;
-        if self.input_digest != input_digest(&self.input)?
+        if self.input_digest != input_digest_with_io(&self.input, io)?
             || self.prior.machine != self.next.machine
             || self.next.revision != next_revision(self.prior.revision)?
             || self.next.state != self.transition.state
@@ -223,7 +243,7 @@ impl WorkflowRecord {
                 "workflow transition envelope is inconsistent".into(),
             ));
         }
-        validate_commands(&self.transition.commands)?;
+        validate_commands_with_io(&self.transition.commands, io)?;
         if self
             .transition
             .commands
@@ -239,8 +259,34 @@ impl WorkflowRecord {
 }
 
 fn validate_commands(commands: &[WorkflowCommand]) -> Result<()> {
+    validate_commands_with_io(commands, None)
+}
+
+fn validate_commands_with_io(
+    commands: &[WorkflowCommand], io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    // Actual command identity slots, not opaque tree nodes or allocator stats.
+    #[cfg(feature = "filesystem")]
+    let _identities = if let Some(io) = io {
+        let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
+            .ok_or_else(|| Error::Invalid("workflow command set ownership overflow".into()))? as u64;
+        Some(io.reserve_decode(bytes)?)
+    } else { None };
     let mut identities = BTreeSet::new();
     for command in commands {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let work = acyclic_fs::WorkCounters {
+                items_examined: command.kind.len() as u64 + 1, ..Default::default()
+            };
+            io.preflight(work)?;
+            io.charge(work)?;
+            let _metadata;
+            let metadata = io.encode_json(&command.payload, io.remaining()?.bytes_encoded, false)?;
+            _metadata = io.guard_owned(metadata.len() as u64)?;
+        }
         command.validate()?;
         if !identities.insert(command.operation_id) {
             return Err(Error::Conflict(
@@ -277,6 +323,24 @@ pub struct WorkflowAdmission {
 impl WorkflowAdmission {
     /// Validates the immutable admission envelope before an owner retains it.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_io(None)
+    }
+
+    pub(crate) fn validate_with_io(
+        &self, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(not(feature = "filesystem"))]
+        let _ = io;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let work = acyclic_fs::WorkCounters {
+                items_examined: (self.initial.machine.name.len() as u64)
+                    .saturating_add(self.initial.machine.version.len() as u64).saturating_add(1),
+                ..Default::default()
+            };
+            io.preflight(work)?;
+            io.charge(work)?;
+        }
         if self.request_digest == [0; 32] || self.initial.revision != 0 {
             return Err(Error::Invalid(
                 "workflow admission identity is invalid".into(),
@@ -771,6 +835,25 @@ impl DurableWorkflowHost {
 }
 
 fn input_digest(input: &Value) -> Result<[u8; 32]> {
+    input_digest_with_io(input, None)
+}
+
+fn input_digest_with_io(
+    input: &Value, io: Option<&crate::executor::PreparationIo>,
+) -> Result<[u8; 32]> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let _bytes;
+        let bytes = io.encode_json(input, io.remaining()?.bytes_encoded, true)?;
+        _bytes = io.guard_owned(bytes.len() as u64)?;
+        let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+        io.preflight(work)?;
+        let digest = *blake3::hash(&bytes).as_bytes();
+        io.charge(work)?;
+        return Ok(digest);
+    }
     crate::contract::canonical_json_digest(input)
 }
 
