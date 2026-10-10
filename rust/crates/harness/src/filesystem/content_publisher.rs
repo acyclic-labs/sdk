@@ -92,6 +92,14 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        let io = PreparationIo::from_native_work(work)?;
+        super::fork_preparer_io::item(Some(&io), 0)?;
+        self.volume.validate()?;
+        self.grant.require(&self.volume, VolumeOperation::Write)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn stage_once_with_native_work<'a>(
         &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,

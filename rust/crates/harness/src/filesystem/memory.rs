@@ -410,6 +410,11 @@ impl ContentPublisher for MemoryContentPublisher {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.files.supports_native_stage(work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn stage_once_with_native_work<'a>(
         &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -1022,6 +1027,31 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             finite_content_budget(), &cancellation).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
         let baseline = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
+        storage.publisher.supports_native_stage(&work)?;
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?
+            .peak_allocation_bytes, baseline);
+        struct OrdinaryOnlyPublisher {
+            volume: VolumeRef,
+            effects: Arc<AtomicUsize>,
+        }
+        impl ContentPublisher for OrdinaryOnlyPublisher {
+            fn volume(&self) -> &VolumeRef { &self.volume }
+            fn stage<'a>(
+                &'a self, _: OperationId, _: &'a str, _: &'a [u8],
+                _: &'a str, _: &'a str,
+            ) -> BoxFuture<'a, Result<FileRef>> {
+                self.effects.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(Error::Unsupported("ordinary publisher was invoked".into())) })
+            }
+        }
+        let ordinary = OrdinaryOnlyPublisher {
+            volume: storage.volume.clone(), effects: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(matches!(ordinary.supports_native_stage(&work), Err(Error::Unsupported(_))));
+        assert_eq!(ordinary.effects.load(Ordering::SeqCst), 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
         let operation = OperationId::new();
         let (file, file_hold) = storage.publisher.stage_once_with_native_work(
             operation, "native.json", b"original", "application/json", "original.json", &work,

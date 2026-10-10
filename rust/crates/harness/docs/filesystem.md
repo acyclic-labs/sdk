@@ -100,6 +100,9 @@ capacity; retained guards use the newly owned buffers' actual capacities.
 The scheduler payload store's `stage_with_native_work` follows the same rule
 and preserves its original operation/key-derived result path and retry key.
 Task admission must keep the returned metadata guard through declaration.
+Call `supports_native_stage(work)` before process capture or any other external
+effect that requires publication: unavailable custom publishers reject before
+I/O, while stock publishers validate their original sealed write binding.
 
 `release_if_quiescent_with_native_work(work, workflow)` borrows the already
 configured original workflow journal. It authenticates the same task, lease,

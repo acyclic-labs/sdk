@@ -1273,6 +1273,13 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             Error::Unsupported("finite once-publication is unavailable".into()))) })
     }
 
+    /// Rejects unavailable original-ledger publication before a caller starts
+    /// process capture or another external side effect. It grants no authority.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_stage(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        Err(Error::Unsupported("original native-ledger publication is unavailable".into()))
+    }
+
     /// Publishes once on the original native ledger; the caller retains custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "exact once-publication identity and original native ledger")]
