@@ -733,6 +733,25 @@ pub trait AsyncAuthorityStore: StorageProvider {
         commit_workspace_fork_in_steps_guarded(self, fork, permit, budget, cancellation, guard)
     }
 
+    /// Reads only an existing reservation for the original operation identity.
+    /// Never reserves again, generates a gate tail, or substitutes the current head.
+    /// Backends without original reservation evidence reject before provider I/O.
+    fn publication_reservation(
+        &self,
+        _authority_id: AuthorityId,
+        _operation_id: OperationId,
+        _budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<Option<PublicationReservation>>> + StorageFuture {
+        async move {
+            cancellation.check()
+                .map_err(|_| crate::storage::AuthorityFailure::before_work(crate::storage::AuthorityStoreError::Cancelled))?;
+            Err(crate::storage::AuthorityFailure::before_work(crate::storage::AuthorityStoreError::Rejected(
+                "authority backend cannot query original publication reservation evidence".to_owned(),
+            )))
+        }
+    }
+
     /// Atomically acquires the exclusive publication gate at an exact head.
     fn reserve_publication(
         &self,

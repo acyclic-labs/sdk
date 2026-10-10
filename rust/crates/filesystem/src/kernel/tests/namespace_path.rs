@@ -427,3 +427,154 @@ fn cursor_codec_does_not_grow_unadmitted_output_or_allocate_on_cancellation()
     assert_eq!(ledger.live_bytes(), 0);
     Ok(())
 }
+
+#[test]
+fn canonical_lowercase_matches_std_contextual_unicode_model()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::types::lowercase_unicode_with_ledger;
+
+    let cancellation = CancellationToken::new();
+    let contexts = [
+        "", "A", "a", "ǅ", "Σ", "ʰ", "\u{0345}", "\u{200c}", "\u{200d}",
+        "\u{2060}", "\u{fe0f}", "'", ".", ":", " ", "1",
+        "A\u{0345}\u{200d}ʰ", "\u{0345}\u{200d}ʰA",
+    ];
+    let mut cases = vec![
+        "ΟΣ".to_owned(), "ΟΣΑ".to_owned(), "ΣΟΣ".to_owned(),
+        "İKẞ𐐀".to_owned(), "AΣ\u{0345}".to_owned(),
+        "AΣ\u{0345}B".to_owned(), "ǅʰΣ\u{200d}".to_owned(),
+    ];
+    for before in contexts {
+        for after in contexts {
+            cases.push(format!("{before}Σ{after}"));
+        }
+    }
+    for text in cases {
+        let expected = text.to_lowercase().into_bytes();
+        let name = LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), u32::MAX)?;
+        assert_eq!(name.case_fold_key(), expected, "ordinary key: {text:?}");
+        let mut ledger = AllocationLedger::default();
+        let mut work = WorkCounters::UNCHARGED;
+        let held = lowercase_unicode_with_ledger(
+            "already-held-root", &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        let held_bytes = held.capacity() as u64;
+        let before = work;
+        let folded = lowercase_unicode_with_ledger(
+            &text, &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        assert_eq!(folded, expected, "measured key: {text:?}");
+        let bytes = folded.capacity() as u64;
+        assert_eq!(ledger.live_bytes(), held_bytes + bytes);
+        assert_eq!(work.peak_allocation_bytes, held_bytes + bytes);
+        assert_eq!(work.allocation_operations, before.allocation_operations + 1);
+        assert_eq!(work.bytes_encoded, before.bytes_encoded + folded.len() as u64);
+        assert_eq!(work.bytes_copied, before.bytes_copied);
+        assert!(work.items_examined > before.items_examined);
+        drop(folded);
+        ledger.release(bytes)?;
+        assert_eq!(ledger.live_bytes(), held_bytes);
+        drop(held);
+        ledger.release(held_bytes)?;
+        assert_eq!(ledger.live_bytes(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_case_keys_preserve_native_byte_grammar()
+-> Result<(), Box<dyn std::error::Error>> {
+    for text in ["ΟΣ", "ǅΣ", "İ𝄞", "A\u{200d}Σ"] {
+        let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes.clone(), u32::MAX)?;
+        assert_eq!(name.case_fold_key(), bytes);
+    }
+    for (encoding, bytes) in [
+        (NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8, b'A', 0x00]),
+        (NameEncoding::PosixBytes, vec![0xff, b'A', b'S']),
+    ] {
+        let name = LogicalName::new(encoding, bytes.clone(), u32::MAX)?;
+        assert_eq!(name.case_fold_key(), bytes);
+    }
+    for invalid in ["", ".", "..", "a/b", "a\0b"] {
+        assert!(LogicalName::new(
+            NameEncoding::Utf8, invalid.as_bytes().to_vec(), u32::MAX,
+        ).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_lowercase_denial_preserves_performed_prefix_and_owned_overlap()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::types::lowercase_unicode_with_ledger;
+
+    let cancellation = CancellationToken::new();
+    let text = "AΣ\u{200d}";
+    for (mut budget, items, allocations, encoded, peak) in [
+        (WorkBudget { items_examined: 5, ..WorkBudget::UNBOUNDED }, 5, 0, 0, 17),
+        (WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, 6, 0, 0, 17),
+        (WorkBudget { peak_allocation_bytes: 22, ..WorkBudget::UNBOUNDED }, 6, 0, 0, 17),
+        (WorkBudget { bytes_encoded: 1, ..WorkBudget::UNBOUNDED }, 11, 1, 1, 23),
+        (WorkBudget { items_examined: 10, ..WorkBudget::UNBOUNDED }, 10, 1, 1, 23),
+    ] {
+        let mut ledger = AllocationLedger::default();
+        let mut work = WorkCounters::UNCHARGED;
+        let held = lowercase_unicode_with_ledger(
+            "already-held-root", &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        )?;
+        let held_bytes = held.capacity() as u64;
+        assert_eq!(held_bytes, 17);
+        let before = work;
+        budget.items_examined = budget.items_examined.saturating_add(before.items_examined);
+        budget.allocation_operations = budget.allocation_operations.saturating_add(before.allocation_operations);
+        budget.bytes_encoded = budget.bytes_encoded.saturating_add(before.bytes_encoded);
+        assert!(matches!(lowercase_unicode_with_ledger(
+            text, &mut ledger, &mut work, budget, &cancellation,
+        ), Err(NamespacePathError::Work(_))));
+        assert_eq!(work.items_examined, before.items_examined + items);
+        assert_eq!(work.allocation_operations, before.allocation_operations + allocations);
+        assert_eq!(work.bytes_encoded, before.bytes_encoded + encoded);
+        assert_eq!(work.bytes_copied, before.bytes_copied);
+        assert_eq!(work.peak_allocation_bytes, peak);
+        assert_eq!(ledger.live_bytes(), held_bytes);
+        drop(held);
+        ledger.release(held_bytes)?;
+        assert_eq!(ledger.live_bytes(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_lowercase_cancellation_and_empty_keys_do_not_allocate()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::types::lowercase_unicode_with_ledger;
+
+    let mut ledger = AllocationLedger::default();
+    let mut work = WorkCounters::UNCHARGED;
+    let cancellation = CancellationToken::new();
+    let held = lowercase_unicode_with_ledger(
+        "already-held-root", &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let held_bytes = held.capacity() as u64;
+    let before = work;
+    let empty = lowercase_unicode_with_ledger(
+        "", &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    assert!(empty.is_empty());
+    assert_eq!(empty.capacity(), 0);
+    assert_eq!(work, before);
+    assert_eq!(ledger.live_bytes(), held_bytes);
+    cancellation.cancel();
+    for text in ["", "ǅʰΣ\u{200d}", "İKẞ𐐀"] {
+        assert_eq!(lowercase_unicode_with_ledger(
+            text, &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        ), Err(NamespacePathError::Cancelled));
+        assert_eq!(work, before);
+        assert_eq!(ledger.live_bytes(), held_bytes);
+    }
+    drop(held);
+    ledger.release(held_bytes)?;
+    assert_eq!(ledger.live_bytes(), 0);
+    Ok(())
+}

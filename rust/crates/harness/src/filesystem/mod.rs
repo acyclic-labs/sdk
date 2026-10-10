@@ -69,7 +69,7 @@ mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
@@ -85,6 +85,7 @@ pub use native_execution::{
     NativeProcessView, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativeReservationError,
+    NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
 };
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,
@@ -1025,34 +1026,44 @@ where
                 if let Some(summary) = &seed.summary
                     && summary.context.volume().provider() == &self.host.provider
                 {
+                    let _bytes_hold;
                     let bytes = self.host.read_pinned_io(&summary.context, self.maximum_inherited_bytes, Some(&io)).await?;
+                    _bytes_hold = io.guard_owned(bytes.len() as u64)?;
                     let context = io.decode_preparation::<crate::context::Context>(&bytes)?;
-                    crate::context::validate_projected_context(&context, summary.selection.limits)?;
+                    crate::context::validate_projected_context_with_io(&context, summary.selection.limits, Some(&io))?;
+                    let _canonical_hold;
                     let canonical = io.encode_json(&*context, io.remaining()?.bytes_encoded, true)?;
+                    _canonical_hold = io.guard_owned(canonical.capacity() as u64)?;
                     if context.current_input_index.is_some() || canonical.as_slice() != bytes.as_ref() {
                         return Err(Error::Invalid("summary capture is not a canonical historical Context".into()));
                     }
+                    let _observed_hold;
                     let mut observed = Vec::new();
-                    for file in context.messages.iter().flat_map(|message| message.content.file_refs())
-                        .chain(context.metadata.values())
                     {
-                        fork_preparer_io::item(Some(&io), 0)?;
-                        let digest = fork_verify_digest(file, &io)?;
-                        fork_verify_insert(&mut observed, digest, Ord::cmp, &io)?;
+                        let mut examine = |file: &FileRef| -> Result<()> {
+                            fork_preparer_io::item(Some(&io), 0)?;
+                            let digest = fork_verify_digest(file, &io)?;
+                            fork_verify_insert(&mut observed, digest, Ord::cmp, &io)
+                        };
+                        for message in &context.messages {
+                            message.content.visit_file_bindings(|file, _| examine(file))?;
+                        }
+                        for file in context.metadata.values() {
+                            examine(file)?;
+                        }
                     }
+                    _observed_hold = io.guard_owned((observed.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
+                    let _declared_hold;
                     let mut declared = Vec::new();
                     for file in summary.payloads.iter().chain(&summary.references) {
                         fork_preparer_io::item(Some(&io), 0)?;
                         let digest = fork_verify_digest(file, &io)?;
                         fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
                     }
+                    _declared_hold = io.guard_owned((declared.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
                     if !fork_verify_equal(&observed, &declared, &io)? {
                         return Err(Error::Invalid("summary capture reference inventory differs from its Context".into()));
                     }
-                    io.release((observed.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
-                    io.release((declared.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
-                    io.release(canonical.capacity() as u64)?;
-                    io.release(bytes.len() as u64)?;
                 }
                 if seed.child_private_volume.provider() == &self.host.provider {
                     let private = fork_preparer_io::content_workspace(&self.host.provider, &seed.child_private_volume, Some(&io))?;

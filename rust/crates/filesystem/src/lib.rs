@@ -119,7 +119,7 @@ mod kani_proofs;
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_exchange;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
 #[cfg(not(target_arch = "wasm32"))]
@@ -236,7 +236,7 @@ pub use lazy_workspace::{
     LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay,
     LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
-    MemoryLazyWorkspaceStore,
+    MemoryLazyWorkspaceStore, SelectedImportPlan,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
@@ -278,7 +278,7 @@ pub use merge_driver::{
     MergePlanResolutionError, MergeResolution, MergeResolutionCache, ResolutionKey,
     UnpublishedMergeCandidate, resolve_merge_plan,
 };
-pub use model::{Lifecycle, VolumeConfig};
+pub use model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,

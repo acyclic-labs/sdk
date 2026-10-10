@@ -694,7 +694,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                             let mut components = path.components().to_vec();
                             components.push(entry.name);
                             let child = NamespacePath::new(components, limits)
-                                .map_err(WorkspaceError::path)?;
+                                .map_err(WorkspaceError::from)?;
                             let child_key = format!("{key}/");
                             queue_listing_task(
                                 &mut pending,
@@ -793,7 +793,7 @@ fn listing_frontier(
     let limits = config.limits;
     let Some(separator) = prefix.rfind('/') else {
         return Ok((
-            NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?,
+            NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::from)?,
             String::new(),
             prefix.to_owned(),
         ));
@@ -802,7 +802,7 @@ fn listing_frontier(
         "listing prefix split point is invalid",
     ))?;
     let path = if directory.is_empty() {
-        NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?
+        NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::from)?
     } else {
         key_path(directory, config)?
     };

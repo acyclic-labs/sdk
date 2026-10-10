@@ -479,6 +479,7 @@ where
         )
         .await?;
     let authority = || NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
+    result_content: content.clone(),
     results: results.clone(),
     approvals: approvals.clone(), };
     let process = Arc::new(
@@ -767,12 +768,11 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    Ok(NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        1_000_000,
-    )?),
+    let content: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
+        files.clone(), issuer.verifier(), scope.clone(), 1_000_000,
+    )?);
+    Ok(NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
+    content: content.clone(), result_content: content,
     results: Arc::new(FilesystemContentPublisher::new(
         files.clone(),
         volume.clone(),

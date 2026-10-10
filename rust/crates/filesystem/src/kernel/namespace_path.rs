@@ -115,6 +115,36 @@ impl NamespacePath {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
+    /// The allocation-free preflight shared by construction and root selection.
+    pub(crate) fn validate_in_profile_with_work(
+        path: &str,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(usize, NameEncoding, u32), NamespacePathError> {
+        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+        let depth = PortablePath::validate(path, limits).map_err(NamespacePathError::Path)?;
+        let encoding = match profile {
+            FilesystemProfile::Portable | FilesystemProfile::Browser => NameEncoding::Utf8,
+            FilesystemProfile::Posix => NameEncoding::PosixBytes,
+            FilesystemProfile::Windows => NameEncoding::WindowsUtf16Le,
+        };
+        let mut encoded_bytes = 1_u32;
+        let mut encoded_depth = 0;
+        for component in path.strip_prefix('/').unwrap_or_default()
+            .split('/').filter(|component| !component.is_empty()) {
+            cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+            work.charge(&WorkCounters { source_path_components: 1, items_examined: 1,
+                ..WorkCounters::default() }, &budget).map_err(NamespacePathError::Work)?;
+            let length = LogicalName::validate_unicode(encoding, component, limits.maximum_component_bytes)
+                .map_err(NamespacePathError::Name)?;
+            append_encoded_length(&mut encoded_depth, &mut encoded_bytes, length, limits)?;
+        }
+        Ok((depth, encoding, finish_encoded_lengths(encoded_depth, encoded_bytes, limits)?))
+    }
+
     pub(crate) fn parse_in_profile_with_ledger(
         path: &str,
         profile: FilesystemProfile,
@@ -124,26 +154,11 @@ impl NamespacePath {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<Self, NamespacePathError> {
-        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
-        let depth = PortablePath::validate(path, limits).map_err(NamespacePathError::Path)?;
-        let encoding = match profile {
-            FilesystemProfile::Portable | FilesystemProfile::Browser => NameEncoding::Utf8,
-            FilesystemProfile::Posix => NameEncoding::PosixBytes,
-            FilesystemProfile::Windows => NameEncoding::WindowsUtf16Le,
-        };
+        let (depth, encoding, encoded_bytes) = Self::validate_in_profile_with_work(
+            path, profile, limits, work, budget, cancellation,
+        )?;
         let components = || path.strip_prefix('/').unwrap_or_default()
             .split('/').filter(|component| !component.is_empty());
-        let mut encoded_bytes = 1_u32;
-        let mut encoded_depth = 0;
-        for component in components() {
-            cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
-            work.charge(&WorkCounters { source_path_components: 1, items_examined: 1,
-                ..WorkCounters::default() }, &budget).map_err(NamespacePathError::Work)?;
-            let length = LogicalName::validate_unicode(encoding, component, limits.maximum_component_bytes)
-                .map_err(NamespacePathError::Name)?;
-            append_encoded_length(&mut encoded_depth, &mut encoded_bytes, length, limits)?;
-        }
-        let encoded_bytes = finish_encoded_lengths(encoded_depth, encoded_bytes, limits)?;
         let initial_live = ledger.live_bytes();
         let result = (|| {
             let mut names = path_vec(depth, ledger, work, budget)?;
@@ -243,6 +258,22 @@ impl NamespacePath {
         )
     }
 
+    /// Copies only the selected prefix, using the same validated copy engine.
+    pub(crate) fn prefix_with_ledger(
+        &self,
+        depth: usize,
+        limits: VolumeLimits,
+        ledger: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, NamespacePathError> {
+        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+        let names = self.components.get(..depth).ok_or(NamespacePathError::TooDeep)?;
+        let encoded_bytes = namespace_encoded_bytes(names.iter(), limits)?;
+        Self::copy_names_with_ledger(names, None, encoded_bytes, ledger, work, budget, cancellation)
+    }
+
     fn copy_names_measured(
         names: &[LogicalName],
         tail: Option<&LogicalName>,
@@ -285,15 +316,7 @@ impl NamespacePath {
             }
             let mut components = path_vec(depth, ledger, work, budget)?;
             for name in names.iter().chain(tail) {
-                cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
-                let length = name.as_bytes().len();
-                let delta = WorkCounters { bytes_copied: length as u64, ..WorkCounters::default() };
-                work.admit(&delta, &budget).map_err(NamespacePathError::Work)?;
-                let mut bytes = path_vec(length, ledger, work, budget)?;
-                bytes.extend_from_slice(name.as_bytes());
-                work.charge(&delta, &budget).map_err(NamespacePathError::Work)?;
-                components.push(LogicalName::new(name.encoding(), bytes, u32::MAX)
-                    .map_err(NamespacePathError::Name)?);
+                components.push(name.clone_with_ledger(ledger, work, budget, cancellation)?);
             }
             Ok(Self { components, encoded_bytes })
         })();
@@ -464,6 +487,9 @@ pub enum NamespacePathError {
     /// The Unicode spelling violates the canonical portable rules.
     #[error(transparent)]
     Path(crate::path::PathError),
+    /// A valid opaque native name cannot be represented by the Unicode API.
+    #[error("non-Unicode path cannot be projected as a portable string")]
+    NonUnicodeProjection,
     /// An admitted work limit was exceeded.
     #[error(transparent)]
     Work(crate::WorkError),

@@ -152,6 +152,35 @@ impl LogicalName {
         Ok(())
     }
 
+    /// Copies an already-validated payload through the canonical path ledger.
+    /// The containing operation counts the borrowed name/component visit.
+    pub(crate) fn clone_with_ledger(
+        &self,
+        ledger: &mut AllocationLedger,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, NamespacePathError> {
+        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+        let delta = WorkCounters { bytes_copied: self.bytes.len() as u64,
+            ..WorkCounters::default() };
+        work.admit(&delta, &budget).map_err(NamespacePathError::Work)?;
+        let initial_live = ledger.live_bytes();
+        let result = (|| {
+            let mut bytes = path_vec(self.bytes.len(), ledger, work, budget)?;
+            bytes.extend_from_slice(&self.bytes);
+            work.charge(&delta, &budget).map_err(NamespacePathError::Work)?;
+            Ok(Self { encoding: self.encoding, bytes })
+        })();
+        if result.is_err() {
+            ledger.release(ledger.live_bytes() - initial_live).map_err(|error| match error {
+                super::allocation::AllocationError::Work(error) => NamespacePathError::Work(error),
+                _ => NamespacePathError::AllocationFailed,
+            })?;
+        }
+        result
+    }
+
     pub(crate) fn cursor_encoded_len(&self) -> Result<usize, NamespacePathError> {
         u32::try_from(self.bytes.len()).map_err(|_| NamespacePathError::ComponentTooLong)?;
         self.bytes.len().checked_add(5)
@@ -284,11 +313,144 @@ impl LogicalName {
                 let Ok(value) = std::str::from_utf8(&self.bytes) else {
                     return self.bytes.clone();
                 };
-                value.to_lowercase().into_bytes()
+                lowercase_unicode_with_ledger_inner(
+                    value,
+                    &mut AllocationLedger::default(),
+                    &mut WorkCounters::UNCHARGED,
+                    WorkBudget::UNBOUNDED,
+                    None,
+                ).expect("unbounded canonical lowercase allocation succeeds")
             }
             NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => self.bytes.clone(),
         }
     }
+}
+
+// ICU's pinned compiled Cased/Case_Ignorable data and Rust's character
+// mappings both use Unicode 17. Updating either requires updating both.
+const _: () = assert!(matches!(char::UNICODE_VERSION, (17, 0, 0)));
+
+/// The canonical lowercase engine used by ordinary name keys and admitted
+/// native keys. The returned capacity remains owned by the supplied ledger.
+pub(crate) fn lowercase_unicode_with_ledger(
+    text: &str,
+    ledger: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<Vec<u8>, NamespacePathError> {
+    lowercase_unicode_with_ledger_inner(text, ledger, work, budget, Some(cancellation))
+}
+
+fn lowercase_unicode_with_ledger_inner(
+    text: &str,
+    ledger: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<u8>, NamespacePathError> {
+    struct LowercaseBuffer<'a> {
+        value: Option<Vec<u8>>,
+        ledger: &'a mut AllocationLedger,
+        bytes: u64,
+    }
+
+    impl Drop for LowercaseBuffer<'_> {
+        fn drop(&mut self) {
+            if let Some(value) = self.value.take() {
+                drop(value);
+                self.ledger.release(self.bytes).expect("canonical lowercase ownership balances");
+            }
+        }
+    }
+
+    lowercase_check(cancellation)?;
+    let mut length = 0_usize;
+    let mut scalars = text.chars();
+    while !scalars.as_str().is_empty() {
+        lowercase_check(cancellation)?;
+        work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+        let scalar = scalars.next().expect("the borrowed scalar is present");
+        // Contextual sigma changes its spelling, but not its encoded size.
+        for mapped in scalar.to_lowercase() {
+            lowercase_check(cancellation)?;
+            work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+            length = length.checked_add(mapped.len_utf8())
+                .ok_or(NamespacePathError::Work(crate::WorkError::Overflow))?;
+        }
+    }
+    let value = path_vec::<u8>(length, ledger, work, budget)?;
+    let bytes = value.capacity() as u64;
+    let mut output = LowercaseBuffer { value: Some(value), ledger, bytes };
+    let mut scalars = text.chars();
+    while !scalars.as_str().is_empty() {
+        lowercase_check(cancellation)?;
+        work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+        let offset = text.len() - scalars.as_str().len();
+        let scalar = scalars.next().expect("the borrowed scalar is present");
+        let scalar = if scalar == 'Σ' {
+            lowercase_sigma(text, offset, work, budget, cancellation)?
+        } else {
+            scalar
+        };
+        for mapped in scalar.to_lowercase() {
+            lowercase_check(cancellation)?;
+            work.charge(&WorkCounters {
+                items_examined: 1,
+                bytes_encoded: mapped.len_utf8() as u64,
+                ..WorkCounters::UNCHARGED
+            }, &budget).map_err(NamespacePathError::Work)?;
+            let mut encoded = [0_u8; 4];
+            output.value.as_mut().expect("lowercase output is live")
+                .extend_from_slice(mapped.encode_utf8(&mut encoded).as_bytes());
+        }
+    }
+    lowercase_check(cancellation)?;
+    Ok(output.value.take().expect("lowercase output transfers once"))
+}
+
+fn lowercase_check(cancellation: Option<&CancellationToken>) -> Result<(), NamespacePathError> {
+    if let Some(cancellation) = cancellation {
+        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
+    }
+    Ok(())
+}
+
+fn lowercase_sigma(
+    text: &str,
+    offset: usize,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<char, NamespacePathError> {
+    fn non_ignorable_is_cased(
+        mut scalars: std::str::Chars<'_>,
+        reverse: bool,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<bool, NamespacePathError> {
+        let ignorable = icu_properties::CodePointSetData::new::<icu_properties::props::CaseIgnorable>();
+        let cased = icu_properties::CodePointSetData::new::<icu_properties::props::Cased>();
+        while !scalars.as_str().is_empty() {
+            lowercase_check(cancellation)?;
+            work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+            let scalar = if reverse { scalars.next_back() } else { scalars.next() }
+                .expect("the contextual scalar is present");
+            if !ignorable.contains(scalar) {
+                return Ok(cased.contains(scalar));
+            }
+        }
+        Ok(false)
+    }
+
+    let preceded_by_cased = non_ignorable_is_cased(
+        text[..offset].chars(), true, work, budget, cancellation,
+    )?;
+    let final_sigma = preceded_by_cased && !non_ignorable_is_cased(
+        text[offset + 'Σ'.len_utf8()..].chars(), false, work, budget, cancellation,
+    )?;
+    Ok(if final_sigma { 'ς' } else { 'σ' })
 }
 
 fn invalid_windows_name_unit(unit: u16) -> bool {
