@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![deny(unsafe_code)]
 
+pub mod analytics;
 pub mod api;
 pub mod map;
 #[cfg(test)]

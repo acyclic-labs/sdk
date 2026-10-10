@@ -5,7 +5,8 @@
 //! *live-verified* have round-tripped against a real organization with a container sandbox.
 //! The VM-only calls (pause, memory snapshot, fork, auto-pause) follow the specification and
 //! their routes answer on the live API, but their bodies have not yet run against a Linux VM.
-//! Daytona has no `resume` (use `start`), no snapshot-fork, and no per-sandbox usage route.
+//! Daytona has no `resume` (use `start`) or snapshot-fork. Per-sandbox billed
+//! usage is read through the separate [`crate::analytics`] API.
 //! Wire structs keep unknown fields in an `extra` map so shape drift shows up instead of being
 //! silently dropped.
 

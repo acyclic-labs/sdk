@@ -17,8 +17,22 @@ crosses into the harness, and switching providers changes bindings, not orchestr
 | `set_suspension_policy` | `POST /sandbox/{id}/autopause/{minutes}` (pause keeps memory; stop does not)  |
 | `destroy_*`             | `DELETE /sandbox/{id}` / `DELETE /snapshots/{id}`                             |
 | `events`                | poll `GET /sandbox/{id}` and diff state                                       |
-| `usage`                 | allocation estimate, marked provisional (Daytona has no per-sandbox meter)    |
+| `usage`                 | allocation estimate, marked provisional; never a final charge               |
 | `recover`               | registry, then `GET /sandbox?labels=` on the `acyclic.key` label              |
+
+`analytics::AnalyticsApi` reads the separate
+[`GET /organization/{organizationId}/sandbox/{sandboxId}/usage`](https://www.daytona.io/docs/analytics-openapi.json)
+endpoint at `https://analytics.app.daytona.io`, using the configured organization
+and a sandbox ID pinned by the consumer's original create receipt. It retains the
+exact RFC3339 query interval, HTTP provenance, raw response bytes and SHA-256, and
+required provider periods (`startAt`, `endAt`, `cpu`, `ramGB`, `diskGB`, `gpu`,
+`price`). It never falls back to organization aggregates or allocation estimates.
+Empty/missing records do not mean zero cost. According to
+[Daytona billing](https://www.daytona.io/docs/en/billing/), charges may lag up to
+48 hours; these observations are not signed immutable final invoices. Physical
+execution completion and a durable pending billing liability are separate from
+later monetary settlement. Retained raw price lexemes, not floating-point
+arithmetic on the projection, are the monetary reconciliation input.
 
 Live fork goes through the trait (`MachinesProvider::fork_machine`); callers read the fidelity
 from the machine contract or the outcome, never from the provider type:

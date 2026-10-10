@@ -1,12 +1,11 @@
 //! Allocation-based usage estimate mapped to [`UsageReceipt`].
 //!
-//! Daytona exposes no per-sandbox consumption endpoint (only an organization-wide usage
-//! overview), so this provider cannot read back what a sandbox was billed. Instead it reports
-//! the sandbox's *allocation* integrated over the part of the interval the sandbox existed:
-//! allocated vCPUs as CPU time, allocated memory as resident byte-seconds, and allocated disk as
-//! durable bytes. That is an upper bound on compute (a paused or stopped sandbox is not
-//! charged for CPU) and it carries no egress. Every receipt says so in its bytes
-//! (`"basis": "allocation"`, `"provisional": true`) and must not be used as billing evidence.
+//! This module reports the sandbox's allocation integrated over its lifetime,
+//! not actual provider charges. Daytona's separate [`crate::analytics`] API
+//! supplies per-sandbox usage periods and provider prices, which may arrive late
+//! and are not immutable final invoices. Allocation estimates cannot substitute
+//! for those records or imply zero cost when records are absent. Every estimate
+//! says `"basis": "allocation", "provisional": true` and is not billing evidence.
 
 use acyclic_machines::{MachineId, ProviderError, UsageReceipt};
 use serde::Serialize;
