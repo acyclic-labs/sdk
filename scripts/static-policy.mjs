@@ -14,6 +14,10 @@ export function pinnedActions(file, source) {
     // step name or environment value is not an action reference.
     const keys = line.replace(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
       (value, offset) => /^\s*:/.test(line.slice(offset + value.length)) ? value : ' '.repeat(value.length));
+    if (/(?:^\s*(?:-\s*)?|:\s*|[{,]\s*)[&*!]/.test(keys) ||
+        /(?:^\s*(?:-\s*)?|[{,]\s*)["'][^\n]*["']\s*:/.test(keys)) {
+      throw new Error(`${file}: YAML anchors, aliases, tags and quoted mapping keys are unsupported; use ordinary block mappings`);
+    }
     const key = /(?:^\s*(?:-\s*)?|[{,]\s*)(?:uses|["']uses["'])\s*:/.test(keys);
     if (!key && /^\s*(?:-\s*)?[^:]+:\s*[|>][0-9+-]*(?:\s+#.*)?\s*$/.test(line)) {
       scalarIndent = indent;

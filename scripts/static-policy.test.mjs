@@ -8,7 +8,9 @@ test('every supported action reference is pinned and alternative YAML forms fail
   pinnedActions('workflow.yml',`name: 'Build uses: pinned actions'\nname: "Build, uses: pinned actions"\nname: Build uses: pinned actions`);
   for (const source of ['- {uses: actions/checkout@main}', '- "uses": actions/checkout@main',
     '- uses: actions/checkout@main', '- uses: *action', '- {"uses": actions/checkout@main}',
-    '- uses: |-\n    actions/checkout@main', '- uses: >\n    actions/checkout@main']) {
+    '- uses: |-\n    actions/checkout@main', '- uses: >\n    actions/checkout@main',
+    '- &checkout uses: actions/checkout@main', '- !!map uses: actions/checkout@main',
+    'steps: *steps', '- "u\\u0073es": actions/checkout@main']) {
     assert.throws(()=>pinnedActions('workflow.yml',source));
   }
 });
